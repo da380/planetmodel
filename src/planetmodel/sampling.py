@@ -358,7 +358,17 @@ def _resolve_fields(body, fields, *, omega=None) -> dict[str, Field]:
 
 
 def _expect(values, shape: tuple[int, ...], name: str) -> np.ndarray:
-    """A C-contiguous float64 array of exactly the promised shape."""
+    """A C-contiguous float64 array of exactly the promised shape.
+
+    Complex values are refused rather than cast: dropping an imaginary
+    part silently is the one thing a sample must never do.
+    """
+    if np.iscomplexobj(values):
+        raise TypeError(
+            f"field {name!r} evaluated to complex values, and a sample is "
+            "float64 throughout: sample a frequency-dependent field with "
+            "omega= so that both parts are stored, or freeze it with "
+            "part=\"real\" or \"imag\"")
     values = np.asarray(values, dtype=float)
     if values.shape != shape:
         raise ValueError(

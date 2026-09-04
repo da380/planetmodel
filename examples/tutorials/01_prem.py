@@ -39,8 +39,10 @@ print(model)
 # %%
 for lay in model.layers:
     lo, hi = lay.interval
-    print(f"layer {lay.index:2d}  [{lo / 1e3:7.1f}, {hi / 1e3:7.1f}] km  "
-          f"{lay.state:6s} holds {len(lay.fields)} fields")
+    print(
+        f"layer {lay.index:2d}  [{lo / 1e3:7.1f}, {hi / 1e3:7.1f}] km  "
+        f"{lay.state:6s} holds {len(lay.fields)} fields"
+    )
 print("\nfield names:", model.field_names)
 
 # %% [markdown]
@@ -58,8 +60,8 @@ print("\nfield names:", model.field_names)
 
 # %%
 rho = model["rho"]
-print("rho is defined on layers", rho.domain)
-cmb = model.interface(1).radius            # interfaces are numbered from the centre
+print("\nrho is defined on layers", rho.domain)
+cmb = model.interface(1).radius  # interfaces are numbered from the centre
 print(f"CMB at {cmb / 1e3:.0f} km")
 print(f"rho just below: {rho.evaluate(cmb, side='lower'):8.1f} kg/m^3")
 print(f"rho just above: {rho.evaluate(cmb):8.1f} kg/m^3")
@@ -80,8 +82,12 @@ print("rho:", rho.character, rho.dimensions)
 C = model.elastic_moduli.evaluate(np.array([6.0e6]))
 print("Voigt matrix at 6000 km, in GPa, rounded:")
 print(np.round(C[0] / 1e9, 1))
-print("symmetry:", model.symmetry.name, "| L there:",
-      f"{model['L'].evaluate(6.0e6) / 1e9:.1f} GPa")
+print(
+    "symmetry:",
+    model.symmetry.name,
+    "| L there:",
+    f"{model['L'].evaluate(6.0e6) / 1e9:.1f} GPa",
+)
 
 # %% [markdown]
 # ## A profile plot
@@ -97,14 +103,14 @@ FIGURES = Path(__file__).resolve().parents[1] / "figures"
 def profile_figure(path):
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         print("matplotlib not installed; no figure written")
         return
-    fig, axes = plt.subplots(1, 3, figsize=(10, 5), sharey=True)
-    for ax, name, unit in zip(axes, ("rho", "vpv", "vsv"),
-                              ("kg/m^3", "m/s", "m/s")):
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5), sharey=True)
+    for ax, name, unit in zip(axes, ("rho", "vpv", "vsv"), ("kg/m^3", "m/s", "m/s")):
         model[name].plot(ax=ax, show_boundaries=True)
         ax.set_xlabel(f"{name} [{unit}]")
     axes[0].set_ylabel("radius [m]")
@@ -129,15 +135,19 @@ profile_figure(FIGURES / "tutorial_01_prem_profiles.png")
 # on request.
 
 # %%
-w_ref = 2.0 * np.pi / 1.0                       # PREM's reference period is 1 s
+w_ref = 2.0 * np.pi / 1.0  # PREM's reference period is 1 s
 w_100 = 2.0 * np.pi / 100.0
 r = np.array([6.0e6])
 at_ref = model.viscoelastic_moduli.evaluate(r, omega=w_ref)
-print("at 1 s the real part equals the static tensor:",
-      np.allclose(at_ref.real, model.elastic_moduli.evaluate(r)))
+print(
+    "at 1 s the real part equals the static tensor:",
+    np.allclose(at_ref.real, model.elastic_moduli.evaluate(r)),
+)
 loss = at_ref[0, 4, 4].imag / at_ref[0, 4, 4].real
-print(f"loss at 1 s, Im L / Re L: {loss:.4f}"
-      f"  (1 / Q_mu = {1.0 / model['qmu'].evaluate(6.0e6):.4f})")
+print(
+    f"loss at 1 s, Im L / Re L: {loss:.4f}"
+    f"  (1 / Q_mu = {1.0 / model['qmu'].evaluate(6.0e6):.4f})"
+)
 
 static_100 = model.moduli_at(w_100, part="real")
 ratio = static_100.evaluate(r)[0, 4, 4] / model.elastic_moduli.evaluate(r)[0, 4, 4]
@@ -152,12 +162,22 @@ print("moduli_at returns a static field of kind", repr(static_100.kind))
 periods = np.logspace(0.0, 3.0, 25)
 radii = np.array([1.0e6, 4.0e6, 5.8e6, 6.3e6])
 L_ref = model.elastic_moduli.evaluate(radii)[:, 4, 4]
-dispersion = np.array([
-    model.viscoelastic_moduli.evaluate(radii, omega=2.0 * np.pi / T)[:, 4, 4].real
-    for T in periods]) / L_ref
+dispersion = (
+    np.array(
+        [
+            model.viscoelastic_moduli.evaluate(radii, omega=2.0 * np.pi / T)[
+                :, 4, 4
+            ].real
+            for T in periods
+        ]
+    )
+    / L_ref
+)
 for k, rr in enumerate(radii):
-    print(f"r = {rr / 1e3:6.0f} km: L(1000 s) / L(1 s) = {dispersion[-1, k]:.4f}"
-          f"   Q_mu = {model['qmu'].evaluate(rr):.0f}")
+    print(
+        f"r = {rr / 1e3:6.0f} km: L(1000 s) / L(1 s) = {dispersion[-1, k]:.4f}"
+        f"   Q_mu = {model['qmu'].evaluate(rr):.0f}"
+    )
 
 
 def dispersion_figure(path):
@@ -196,28 +216,40 @@ dispersion_figure(FIGURES / "tutorial_01_dispersion.png")
 try:
     import netCDF4  # noqa: F401
 except ImportError:
-    print("netCDF4 not installed (pip install 'planetmodel[netcdf]'); "
-          "skipping the file")
+    print(
+        "netCDF4 not installed (pip install 'planetmodel[netcdf]'); "
+        "skipping the file"
+    )
 else:
     import tempfile
 
     from planetmodel import AngularGrid, read_model, write_model
 
-    grid = AngularGrid.gauss_legendre(8)          # a Gauss-Legendre grid for lmax = 8
-    sample = model.sample(grid)                   # every static field, on GLL nodes
+    grid = AngularGrid.gauss_legendre(8)  # a Gauss-Legendre grid for lmax = 8
+    sample = model.sample(grid)  # every static field, on GLL nodes
     print("sampled:", sorted(sample.fields), "on", sample.radius.size, "nodes")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "prem.nc"
         write_model(model, sample, path)
         back, sample_back = read_model(path)
-        print("read back:", type(back).__name__, "|", back.skeleton.nlayers,
-              "layers | states", {lay.state for lay in back.layers})
+        print(
+            "read back:",
+            type(back).__name__,
+            "|",
+            back.skeleton.nlayers,
+            "layers | states",
+            {lay.state for lay in back.layers},
+        )
         r = np.array([4.0e6, 6.0e6])
         print("rho agrees:", np.allclose(back.rho.evaluate(r), model.rho.evaluate(r)))
-        print("viscoelastic moduli agree at 100 s:",
-              np.allclose(back.viscoelastic_moduli.evaluate(r, omega=w_100),
-                          model.viscoelastic_moduli.evaluate(r, omega=w_100),
-                          rtol=1e-9))
+        print(
+            "viscoelastic moduli agree at 100 s:",
+            np.allclose(
+                back.viscoelastic_moduli.evaluate(r, omega=w_100),
+                model.viscoelastic_moduli.evaluate(r, omega=w_100),
+                rtol=1e-9,
+            ),
+        )
         law = back.layers[5]["viscoelastic_moduli"].law
         print("layer 5 rebuilt from the record:", law.law, law.constants)
 

@@ -306,7 +306,7 @@ def test_a_surface_on_a_truncated_boundary_is_dropped(body, relief):
 
 def test_a_surface_survives_coarsening_elsewhere(body, relief):
     b = body.with_surface("surface", relief)
-    coarse, _ = b.coarsened(drop=[0])
+    coarse, _ = b.coarsened(drop=[0], state="fluid")
     (idx,) = coarse.surfaces
     assert coarse.surfaces[idx].reference_radius == pytest.approx(
         body.interface("surface").radius)

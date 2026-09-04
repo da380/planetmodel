@@ -86,14 +86,15 @@ def test_surgery_preserves_the_class_and_revalidates(deck):
     m = deck.as_class(ElasticModel)
     outer = float(m.skeleton.boundaries[-1])
     for other in (m.truncated(6.0e6), m.extended([6.5e6]), m.refined([5.0e6]),
-                  m.coarsened(drop=[0])[0], m.with_buffer(ratio=0.2),
+                  m.coarsened(drop=[0], state="fluid")[0], m.with_buffer(ratio=0.2),
                   m.annotate(0, name="core"), m.classify_states(),
                   m.rescaled(Scales.geophysical(outer, density=5.5e3))):
         assert type(other) is ElasticModel
         other.validate()
     with pytest.raises(ValueError, match="guarantees"):
         m.without_field("rho")
-    with pytest.raises(ValueError, match="guarantees"):
+    with pytest.raises(ValueError, match="guarantees"), \
+            pytest.warns(UserWarning, match="shadowed"):
         m.add_field("elastic_moduli", m.layer(0)["elastic_moduli"],
                     replace=True)  # rho stays
     # ... whereas a plain body stays plain

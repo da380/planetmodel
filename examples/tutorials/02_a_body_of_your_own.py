@@ -95,13 +95,16 @@ print("from_fields gives the same view:",
 #
 # `extended` appends shells beyond the outer boundary. With no fields
 # given they are empty; with `state="vacuum"` they are voids, the buffer
-# region a mesh needs beyond the planet. A field is defined where it is
+# region a mesh needs beyond the planet. `names` names the new shells and
+# `interface_names` their outer boundaries. A field is defined where it is
 # defined: the density view now has a **domain** that stops at the crust,
 # and it refuses the vacuum by name rather than filling it with zeros.
 
 # %%
-with_shell = body.extended([7.0e6], state="vacuum", names=["space"])
+with_shell = body.extended([7.0e6], state="vacuum", names=["space"],
+                           interface_names=["outer"])
 print("layers:", [(lay.name, lay.state, lay.field_names) for lay in with_shell.layers])
+print("outer boundary:", with_shell.interface("outer").radius / 1e3, "km")
 print("rho domain:", with_shell["rho"].domain)
 try:
     with_shell["rho"].evaluate(6.5e6)

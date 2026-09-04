@@ -63,7 +63,7 @@ def body(*, scales=None, meta=None):
                          * np.cos(p), SK, character=DENSITY, name="scal")
     b = ReferenceBody.from_fields(SK, {"rho": rho, "scal": scal},
                       scales=scales, meta=meta)
-    return (b.extended([1.4 * B], fields=None, names=["crust"])
+    return (b.extended([1.4 * B], fields=None, interface_names=["crust"])
             .with_buffer(ratio=0.2))
 
 
@@ -258,7 +258,8 @@ def _same(a, b, *, what):
 
 def test_the_sample_comes_back_whole(written):
     b, sample, path = written
-    _, back = read(path)
+    with pytest.warns(UserWarning, match="scal"):
+        _, back = read(path)
     check_sample(back)                       # source is None: layout only
     assert set(back.fields) == set(sample.fields)
     _same(sample.radius, back.radius, what="radius")
@@ -284,7 +285,8 @@ def test_the_sample_comes_back_whole(written):
 
 def test_the_body_comes_back_with_its_radial_scalar_fields(written):
     b, sample, path = written
-    back, back_sample = read(path)
+    with pytest.warns(UserWarning, match="scal"):
+        back, back_sample = read(path)
     assert type(back) is ReferenceBody
     assert back.skeleton == b.skeleton
     # rho is radial and rank 0, so it is restored on its one layer; scal
@@ -486,7 +488,8 @@ def test_a_model_class_this_build_does_not_know_is_refused_by_name(
     shutil.copy(written[2], path)
     with Dataset(str(path), "a") as ds:
         ds.model_class = "elastic_earth"
-    with pytest.raises(ValueError, match="elastic_earth"):
+    with pytest.raises(ValueError, match="elastic_earth"), \
+            pytest.warns(UserWarning, match="scal"):
         read(path)
 
 

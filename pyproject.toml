@@ -51,6 +51,12 @@ markers = [
     "data: requires reference data files under tests/data",
     "netcdf: requires netCDF4 (planetmodel[netcdf])",
 ]
+filterwarnings = [
+    # tests/data/prem.nocrust keeps the header of the deck it was cut from,
+    # whose knot count disagrees with its table; the reader warns, one test
+    # asserts that it does, and every other reader of the file is quiet.
+    "ignore:header says 220 knots, file has 214:UserWarning",
+]
 
 [tool.ruff]
 line-length = 88

@@ -94,7 +94,7 @@ def test_at_the_reference_period_the_real_part_is_the_static_moduli(deck, law):
     # ... and the imaginary part is M0 / Q, modulus by modulus.
     mu, qm = deck["mu"].evaluate(r), deck["qmu"].evaluate(r)
     live = mu != 0.0
-    assert np.allclose(np.imag(dynamic[..., 3, 3])[live], (mu / qm)[live],
+    assert np.allclose(np.imag(dynamic[..., 3, 3])[live], mu[live] / qm[live],
                        rtol=1e-14)
 
 

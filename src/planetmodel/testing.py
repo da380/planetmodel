@@ -30,6 +30,8 @@ check says so and exercises it only where the object provides it.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 __all__ = [
@@ -785,7 +787,11 @@ def _check_model_surgery(model, cls) -> None:
             f"{name} returned {type(other).__name__}, not {cls.__name__}")
         other.validate()
     if sk.nlayers > 1:
-        coarse, _ = model.coarsened(drop=[0], state=model.layer(1).state)
+        with warnings.catch_warnings():
+            # A field held on one of the merged layers alone is dropped by
+            # rule, and the check wants the class, not the field.
+            warnings.filterwarnings("ignore", message="coarsening layers")
+            coarse, _ = model.coarsened(drop=[0], state=model.layer(1).state)
         assert type(coarse) is cls, (
             f"coarsened returned {type(coarse).__name__}, not {cls.__name__}")
         coarse.validate()

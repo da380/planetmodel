@@ -299,10 +299,19 @@ def test_sampling_takes_static_fields_and_frozen_dynamic_ones(mu, tau, sk):
     grid = AngularGrid.gauss_legendre(2)
     sample = body.sample(grid, drmax=0.5)
     assert set(sample.fields) == {"mu", "tau"}          # the dynamic one waits
-    frozen = body.sample(grid, drmax=0.5,
-                         fields={"dyn2": at_frequency(body["dyn"], 2.0)})
+    frozen = body.sample(grid, drmax=0.5, fields={"dyn2": body["dyn"]}, omega=2.0)
     assert set(frozen.fields) == {"dyn2"}
+    assert frozen.metadata.omegas == {"dyn2": 2.0}
+    assert frozen.fields["dyn2"].shape[-1] == 2            # (real, imaginary)
     assert np.all(np.isfinite(frozen.fields["dyn2"]))
+    # A field frozen to one real part samples as any static field does ...
+    real = body.sample(grid, drmax=0.5,
+                       fields={"re": at_frequency(body["dyn"], 2.0, part="real")})
+    assert np.allclose(real.fields["re"], frozen.fields["dyn2"][..., 0],
+                       equal_nan=True)
+    # ... and one frozen complex is refused rather than cast to float.
+    with pytest.raises(TypeError, match="complex"):
+        body.sample(grid, drmax=0.5, fields={"c": at_frequency(body["dyn"], 2.0)})
 
 
 def test_surgery_and_rescaling_carry_dynamic_fields(mu, tau, sk):

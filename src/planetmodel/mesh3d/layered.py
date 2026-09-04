@@ -61,7 +61,7 @@ def resolve_body(spec: MeshSpec):
 
     if len(spec.extend_radii):
         body = body.extended(spec.extend_radii,
-                             names=list(spec.extend_names) or None,
+                             interface_names=list(spec.extend_names) or None,
                              fields=spec.extend_fields, role=spec.extend_role)
 
     for buf in spec.buffers:
@@ -119,7 +119,7 @@ def _boundary_at(body, radius: float, name):
     outer = float(body.skeleton.boundaries[-1])
     if radius <= outer:
         return body.truncated(radius, name=name), False
-    body = body.extended([radius], fields="extrapolate", names=[name])
+    body = body.extended([radius], fields="extrapolate", interface_names=[name])
     body, _ = body.coarsened(drop=[len(body.interfaces) - 2])
     return body, True
 

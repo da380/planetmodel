@@ -228,7 +228,7 @@ if gmsh is not None:
 # Two things change. The sizing: replace the three sizes with the element
 # sizes you want at the interfaces, in metres, and the build takes minutes
 # and gives a mesh of a hundred thousand or more tetrahedra. And the
-# crust: `extended([6371.0e3], names=["surface"])` before the buffer adds
-# a 24 km shell with no fields, whose material the finite-element code
+# crust: `extended([6371.0e3], interface_names=["surface"])` before the buffer
+# adds a 24 km shell with no fields, whose material the finite-element code
 # supplies by attribute, and which needs elements a few tens of kilometres
 # across to mesh. Both are manual runs, not tests; `scripts/` holds one.

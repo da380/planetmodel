@@ -271,11 +271,32 @@ def test_overrides_reach_an_empty_shell_but_not_a_vacuum(deck):
 
 def test_extended_with_no_fields_marks_the_material_unspecified(deck):
     """The honest option for a shell the consumer will fill in."""
-    body = deck.extended([6.371e6], fields=None, names=["surface"])
+    body = deck.extended([6.371e6], fields=None, names=["crust"],
+                         interface_names=["surface"])
     assert body.layers[-1].fields == {}
-    assert body.interfaces[-1].name == "surface"
     with pytest.raises(ValueError, match="not defined"):
         body.rho.evaluate(6.36e6)
+
+
+def test_extended_names_the_shell_and_its_boundary_separately(deck):
+    """A shell and its outer boundary are different things and are
+    named independently; either name may be left off, and a list of
+    the wrong length is refused."""
+    body = deck.extended([6.371e6], names=["crust"], interface_names=["surface"])
+    assert body.layers[-1].name == "crust"
+    assert body.interfaces[-1].name == "surface"
+    assert body.layer("crust").index == body.layers[-1].index
+    assert body.interface("surface").radius == pytest.approx(6.371e6)
+    only_layer = deck.extended([6.371e6], names=["crust"])
+    assert only_layer.layers[-1].name == "crust"
+    assert only_layer.interfaces[-1].name is None
+    only_face = deck.extended([6.371e6], interface_names=["surface"])
+    assert only_face.layers[-1].name is None
+    assert only_face.interfaces[-1].name == "surface"
+    with pytest.raises(ValueError, match="names"):
+        deck.extended([6.371e6, 7.0e6], names=["crust"])
+    with pytest.raises(ValueError, match="interface names"):
+        deck.extended([6.371e6], interface_names=["a", "b"])
 
 
 def test_every_field_keeps_its_domain_after_growing(deck):
@@ -299,6 +320,7 @@ def test_buffer_is_a_vacuum_shell(deck):
     assert lay.fields == {} and lay.is_vacuum
     with pytest.raises(ValueError, match="not defined"):
         body.rho.evaluate(1.1 * a)
+    assert lay.name == "buffer"
     assert body.interfaces[-1].name == "buffer"
 
 
@@ -319,7 +341,7 @@ def test_buffer_arguments_are_exclusive_and_checked(deck):
 def test_surgery_is_copy_on_write(deck):
     """Nothing mutates the body it was called on."""
     n_layers, n_faces = len(deck.layers), len(deck.interfaces)
-    deck.coarsened(drop=[0])
+    deck.coarsened(drop=[0], state="fluid")
     deck.truncated(6e6)
     deck.refined([6e6])
     deck.extended([7e6])

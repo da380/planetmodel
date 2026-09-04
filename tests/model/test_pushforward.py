@@ -73,7 +73,7 @@ def uniform_dilation(c):
 
 def relerr(got, want):
     """Max absolute difference, scaled by the magnitude of the answer."""
-    got, want = np.asarray(got, dtype=float), np.asarray(want, dtype=float)
+    got, want = np.asarray(got), np.asarray(want)
     scale = float(np.max(np.abs(want))) or 1.0
     return float(np.max(np.abs(got - want))) / scale
 

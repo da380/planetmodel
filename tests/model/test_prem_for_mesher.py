@@ -76,11 +76,11 @@ def acceptance_body(relief, exaggeration=1.0):
 
     body, _ = read_isotropic_deck(DECK).coarsened(drop=range(-6, 0))
     assert r_moho > body.skeleton.boundaries[-1]           # the data's doing
-    body = body.extended([r_moho], fields="extrapolate", names=["moho"])
+    body = body.extended([r_moho], fields="extrapolate", interface_names=["moho"])
     body, _ = body.coarsened(drop=[len(body.interfaces) - 2])
 
     return (body.refined([r_moho - 300.0e3], names=["floor"], role="control")
-                .extended([r_surf], fields=None, names=["surface"])
+                .extended([r_surf], fields=None, interface_names=["surface"])
                 .with_buffer(ratio=0.2)
                 .with_surface("moho", centred(moho) * exaggeration)
                 .with_surface("surface", centred(surface) * exaggeration))
