@@ -97,4 +97,5 @@ library can use it.
 
 ## Licence
 
-Not yet chosen.
+BSD-3
+
