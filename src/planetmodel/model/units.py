@@ -1,0 +1,241 @@
+"""units.py -- physical dimensions, and the scales that remove them.
+
+The workflow this serves: data comes in with known dimensions (SI unless
+a file's metadata says otherwise), is non-dimensionalised once into
+pleasant O(1) numbers, is worked with in that form, and is
+re-dimensionalised on output.  The two pieces here are the bookkeeping
+that makes each step checkable rather than remembered.
+
+**Dimensions** are physical: exponents of (mass, length, time).  They
+are deliberately independent of Character, which is the transformation
+law under the mapping -- Q_kappa and an intrinsic relaxation time are
+both Character(0, 0), invariant under any relabelling, yet one is
+dimensionless and the other is seconds.  Three base dimensions cover
+everything planetmodel holds; temperature is omitted until a thermal field
+exists, and can then be added as a fourth exponent defaulting to zero
+without breaking anything.
+
+**Scales** say what one unit of each base dimension is, in SI.  A body
+whose scales are `Scales.SI` stores SI values; one whose scales are
+`Scales.geophysical(a, rho)` stores values divided by the appropriate
+combination of those scales.  The geophysical constructor fixes the time
+scale by G rho T^2 = 1, so the gravitational constant becomes 1 (to
+machine precision -- the time scale passes through a square root, so a
+few ulps is the honest claim).  That is the convention pyslfp and
+MMA26-style solvers use, and every solver in planetmodel's 1D stack takes G
+as a parameter, so a non-dimensional body runs through them with
+`G = body.scales.gravitational_constant`.
+
+The dimension constants live on the class (`Dimensions.DENSITY`)
+because module-level DENSITY already names a Character constant, and two
+importable DENSITYs differing in meaning would be a trap.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import KW_ONLY, dataclass
+from typing import ClassVar
+
+__all__ = ["Dimensions", "Scales", "EARTH_MEAN_DENSITY", "unit_string"]
+
+#: The conventional mean density of the Earth, kg/m^3.  Prescribed, not
+#: computed: a calculated mean would shift with every crustal edit and
+#: poison itself on vacuum buffers.  PREM's actual mean lands within a
+#: fraction of a percent of this figure, which a test pins.
+EARTH_MEAN_DENSITY = 5515.0
+
+#: CODATA gravitational constant, m^3 kg^-1 s^-2 (mirrors mesh1d.gravity).
+_G_SI = 6.6743e-11
+
+
+@dataclass(frozen=True)
+class Dimensions:
+    """Physical dimensions as exponents of (mass, length, time).
+
+    Algebra follows the physics: multiplying quantities adds exponents,
+    so `Dimensions.MODULUS == Dimensions.DENSITY * Dimensions.VELOCITY**2`
+    is a theorem here as it is on paper.
+    """
+
+    _: KW_ONLY
+    mass: int = 0
+    length: int = 0
+    time: int = 0
+
+    # -- the standard set, as class attributes ------------------------------
+    DIMENSIONLESS: ClassVar["Dimensions"]
+    MASS: ClassVar["Dimensions"]
+    LENGTH: ClassVar["Dimensions"]
+    TIME: ClassVar["Dimensions"]
+    DENSITY: ClassVar["Dimensions"]
+    VELOCITY: ClassVar["Dimensions"]
+    GRAVITY: ClassVar["Dimensions"]
+    MODULUS: ClassVar["Dimensions"]
+    VISCOSITY: ClassVar["Dimensions"]
+    GRAVITATIONAL_CONSTANT: ClassVar["Dimensions"]
+
+    def __post_init__(self) -> None:
+        for name in ("mass", "length", "time"):
+            value = getattr(self, name)
+            if not isinstance(value, int):
+                raise TypeError(
+                    f"{name} exponent must be an integer, got {value!r}; "
+                    "fractional dimensions have no place in this library")
+
+    @property
+    def is_dimensionless(self) -> bool:
+        return self.mass == 0 and self.length == 0 and self.time == 0
+
+    def __mul__(self, other: "Dimensions") -> "Dimensions":
+        if not isinstance(other, Dimensions):
+            return NotImplemented
+        return Dimensions(mass=self.mass + other.mass,
+                          length=self.length + other.length,
+                          time=self.time + other.time)
+
+    def __truediv__(self, other: "Dimensions") -> "Dimensions":
+        if not isinstance(other, Dimensions):
+            return NotImplemented
+        return Dimensions(mass=self.mass - other.mass,
+                          length=self.length - other.length,
+                          time=self.time - other.time)
+
+    def __pow__(self, n: int) -> "Dimensions":
+        if not isinstance(n, int):
+            return NotImplemented
+        return Dimensions(mass=self.mass * n, length=self.length * n,
+                          time=self.time * n)
+
+    def unit_string(self, *, si: bool = True) -> str:
+        """A udunits-style unit string: "kg m-3" in SI, "1" otherwise.
+
+        A non-dimensional body's numbers are pure, whatever their
+        physical dimensions, so `si=False` says "1" for every quantity.
+        """
+        if not si:
+            return "1"
+        parts = []
+        for symbol, n in (("kg", self.mass), ("m", self.length), ("s", self.time)):
+            if n == 1:
+                parts.append(symbol)
+            elif n != 0:
+                parts.append(f"{symbol}{n}")
+        return " ".join(parts) if parts else "1"
+
+    def __str__(self) -> str:
+        if self.is_dimensionless:
+            return "dimensionless"
+        parts = [f"{sym}^{e}" for sym, e in
+                 (("M", self.mass), ("L", self.length), ("T", self.time))
+                 if e != 0]
+        return " ".join(parts)
+
+
+def unit_string(dims: "Dimensions | None", *, si: bool = True) -> str:
+    """`dims.unit_string(si=si)`, or "unknown" where no dimensions were declared."""
+    return "unknown" if dims is None else dims.unit_string(si=si)
+
+
+Dimensions.DIMENSIONLESS = Dimensions(mass=0, length=0, time=0)
+Dimensions.MASS = Dimensions(mass=1, length=0, time=0)
+Dimensions.LENGTH = Dimensions(mass=0, length=1, time=0)
+Dimensions.TIME = Dimensions(mass=0, length=0, time=1)
+Dimensions.DENSITY = Dimensions(mass=1, length=-3, time=0)
+Dimensions.VELOCITY = Dimensions(mass=0, length=1, time=-1)
+Dimensions.GRAVITY = Dimensions(mass=0, length=1, time=-2)
+Dimensions.MODULUS = Dimensions(mass=1, length=-1, time=-2)
+Dimensions.VISCOSITY = Dimensions(mass=1, length=-1, time=-1)
+Dimensions.GRAVITATIONAL_CONSTANT = Dimensions(mass=-1, length=3, time=-2)
+
+
+@dataclass(frozen=True)
+class Scales:
+    """What one unit of each base dimension is, in SI.
+
+    A quantity of dimensions d stored under these scales relates to its
+    SI value by  stored = SI / factor(d).  `Scales.SI` is the identity,
+    and the default everywhere: a body is SI until something says
+    otherwise.
+    """
+
+    _: KW_ONLY
+    length: float = 1.0
+    mass: float = 1.0
+    time: float = 1.0
+
+    SI: ClassVar["Scales"]
+
+    def __post_init__(self) -> None:
+        for name in ("length", "mass", "time"):
+            value = getattr(self, name)
+            if not (isinstance(value, (int, float)) and math.isfinite(value)
+                    and value > 0.0):
+                raise ValueError(
+                    f"{name} scale must be a positive finite number, "
+                    f"got {value!r}")
+            object.__setattr__(self, name, float(value))
+
+    @classmethod
+    def geophysical(cls, length: float,
+                    *, density: float = EARTH_MEAN_DENSITY) -> "Scales":
+        """Scales for self-gravitating problems: G becomes 1.
+
+        `length` is the body's radius (metres) and `density` a
+        *prescribed* reference density -- conventionally the Earth's
+        mean, not a computed one.  The time scale is fixed by
+        G density T^2 = 1, which is what makes the gravitational
+        constant unity in the scaled system and matches the convention
+        of pyslfp and MMA26-style solvers.
+        """
+        length = float(length)
+        density = float(density)
+        if length <= 0.0 or density <= 0.0:
+            raise ValueError(
+                f"length and density must be positive, got {length}, {density}")
+        return cls(length=length, mass=density * length ** 3,
+                   time=1.0 / math.sqrt(_G_SI * density))
+
+    @property
+    def is_si(self) -> bool:
+        return self.length == 1.0 and self.mass == 1.0 and self.time == 1.0
+
+    def factor(self, dims: Dimensions) -> float:
+        """The SI size of one scaled unit of a quantity with `dims`."""
+        return (self.mass ** dims.mass * self.length ** dims.length
+                * self.time ** dims.time)
+
+    # -- derived scales, for reading off and for output metadata ------------
+
+    @property
+    def density(self) -> float:
+        return self.factor(Dimensions.DENSITY)
+
+    @property
+    def velocity(self) -> float:
+        return self.factor(Dimensions.VELOCITY)
+
+    @property
+    def gravity(self) -> float:
+        return self.factor(Dimensions.GRAVITY)
+
+    @property
+    def modulus(self) -> float:
+        return self.factor(Dimensions.MODULUS)
+
+    @property
+    def gravitational_constant(self) -> float:
+        """G in these scales: what a solver should be handed as G.
+
+        Exactly _G_SI under Scales.SI; 1 to machine precision under
+        geophysical scales.
+        """
+        return _G_SI / self.factor(Dimensions.GRAVITATIONAL_CONSTANT)
+
+    def __repr__(self) -> str:
+        if self.is_si:
+            return "Scales.SI"
+        return (f"Scales(length={self.length:.6g}, mass={self.mass:.6g}, "
+                f"time={self.time:.6g})")
+
+
+Scales.SI = Scales()

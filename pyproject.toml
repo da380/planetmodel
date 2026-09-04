@@ -1,0 +1,68 @@
+[project]
+name = "planetmodel"
+version = "0.5.0"
+description = "Spherically layered planetary models: reference bodies, fields, mappings and meshes"
+keywords = ["geophysics", "seismology", "planetary models", "PREM", "spectral elements", "meshing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+authors = [
+    {name = "David Al-Attar",email = "da380@cam.ac.uk"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5,<3",
+    "scipy>=1.18,<2",
+]
+
+[project.urls]
+repository = "https://github.com/da380/planetmodel"
+
+[project.optional-dependencies]
+meshing = ["gmsh>=4.13"]
+mfem = ["mfem>=4.8"]
+netcdf = ["netCDF4>=1.7"]
+plot = ["matplotlib>=3.11,<4"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "ruff>=0.6",
+]
+
+[tool.poetry]
+packages = [{include = "planetmodel", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: long-running tests (minutes); deselect with -m 'not slow'",
+    "gmsh: requires the optional gmsh dependency (planetmodel[meshing])",
+    "mfem: requires PyMFEM (planetmodel[mfem])",
+    "data: requires reference data files under tests/data",
+    "netcdf: requires netCDF4 (planetmodel[netcdf])",
+]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# Deliberate house style, not defects:
+#   E741  `l` is the spherical-harmonic degree and `I` an integral -- the
+#         standard symbols in this field, used consistently throughout.
+#   E702  paired assignments to symmetric matrix entries are written on one
+#         line so the symmetry is visible (loading.py assembly loops).
+#   E731  short lambdas bound to names read as the mathematical definitions
+#         they are (fitters, coefficient functions).
+ignore = ["E741", "E702", "E731"]

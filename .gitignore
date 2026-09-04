@@ -1,0 +1,36 @@
+__pycache__
+.ipynb_checkpoints
+*~
+dist/*
+
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+.coverage
+.coverage.*
+htmlcov/
+
+# Sphinx documentation build output
+docs/build/
+
+
+# outputs of examples and tests
+*.nc
+*.msh
+*.dat
+*.gf
+*.mesh
+examples/figures/
+
+# Claude Code session state and agent worktrees
+.claude/
+
+CHANGELOG.md
+CLAUDE.md
+docs/**/*.md
