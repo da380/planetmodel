@@ -1,6 +1,6 @@
 [project]
 name = "planetmodel"
-version = "0.5.0"
+version = "1.0.0.dev1"
 description = "Spherically layered planetary models: reference bodies, fields, mappings and meshes"
 keywords = ["geophysics", "seismology", "planetary models", "PREM", "spectral elements", "meshing"]
 classifiers = [
@@ -27,6 +27,7 @@ meshing = ["gmsh>=4.13"]
 mfem = ["mfem>=4.8"]
 netcdf = ["netCDF4>=1.7"]
 plot = ["matplotlib>=3.11,<4"]
+notebook = ["ipykernel>=6.29"]
 
 [dependency-groups]
 dev = [
@@ -44,23 +45,17 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+norecursedirs = ["archive", ".*", "build", "dist"]
 markers = [
     "slow: long-running tests (minutes); deselect with -m 'not slow'",
     "gmsh: requires the optional gmsh dependency (planetmodel[meshing])",
     "mfem: requires PyMFEM (planetmodel[mfem])",
-    "data: requires reference data files under tests/data",
-    "netcdf: requires netCDF4 (planetmodel[netcdf])",
-]
-filterwarnings = [
-    # tests/data/prem.nocrust keeps the header of the deck it was cut from,
-    # whose knot count disagrees with its table; the reader warns, one test
-    # asserts that it does, and every other reader of the file is quiet.
-    "ignore:header says 220 knots, file has 214:UserWarning",
 ]
 
 [tool.ruff]
 line-length = 88
 src = ["src", "tests"]
+extend-exclude = ["archive"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
@@ -68,7 +63,7 @@ select = ["E", "F", "W"]
 #   E741  `l` is the spherical-harmonic degree and `I` an integral -- the
 #         standard symbols in this field, used consistently throughout.
 #   E702  paired assignments to symmetric matrix entries are written on one
-#         line so the symmetry is visible (loading.py assembly loops).
+#         line so the symmetry is visible.
 #   E731  short lambdas bound to names read as the mathematical definitions
 #         they are (fitters, coefficient functions).
 ignore = ["E741", "E702", "E731"]

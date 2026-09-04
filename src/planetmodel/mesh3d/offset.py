@@ -1,57 +1,45 @@
-"""offset.py -- the offset two-body geometries, for semi-analytic tests.
+"""The offset two-body geometries, for semi-analytic tests.
 
-A small ball of radius `a`, its centre displaced by `d`, inside a body of
-radius `b`.  Two regions, two boundaries, and an answer that can be
-written down: this is the geometry a solver is checked against before
-anyone trusts it on a planet.
+A small ball of radius `a`, its centre displaced by `d`, inside a body
+of radius `b`: two regions, two boundaries, and an answer that can be
+written down.  It is a separate generator rather than a MeshSpec
+because the domain is not spherically layered, so there is no geometry
+and no mapping of which it is the image.  It shares everything below
+that: the session, the sizing fields, orientation repair, curving,
+validation, the writer and the manifest.
 
-It is a separate generator rather than a MeshSpec because the body is not
-spherically layered -- displace the inner sphere and the whole
-referential framework stops applying, since there is no radial mapping of
-which this is the image.  What it does share is everything below that:
-the session, the sizing fields, orientation repair, curving, validation,
-the writer and the manifest, so an offset mesh is checked exactly as hard
-as a planet is.
-
-Tagging is the one place it must differ.  Concentric geometry is
-identified from CAD bounding boxes before meshing, which an offset sphere
-defeats -- its box says how big it is, not where its surface averages
-out.  So the boundaries are identified twice here: by bounding-box size
-before meshing, because the sizing fields need a handle, and by
-node-average radius afterwards, which is the ordering the attributes
-take.  The two must agree, and a disagreement is raised rather than
-resolved, on the same principle as the layered tagging: an ordering
-nobody can check is one nobody should trust.
+Tagging differs.  Concentric geometry is identified from CAD bounding
+boxes before meshing, which an offset sphere defeats, so the boundaries
+are identified twice: by bounding-box size before meshing, because the
+sizing fields need a handle, and by node-average radius afterwards,
+which is the ordering the attributes take.  The two must agree, and a
+disagreement is raised rather than resolved.
 """
 from __future__ import annotations
 
 import time
-from collections import namedtuple
 from pathlib import Path
 
 import gmsh
 import numpy as np
 
-from ..io import manifest
-from ..registry import name_of
+from ..geometry import InterfaceInfo
+from . import manifest
 from ._orient import orient_mesh, raise_order
 from ._session import session
 from ._sizing import apply_mesh_options, apply_size_fields, check_sizing_scale
 from ._tagging import Tagging, mean_radius_of_entity
-from ._units import MeshUnits
 from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
+from .layered import policy_name
 from .spec import MeshResult
 
 __all__ = ["build_offset_mesh"]
 
-#: What a sizing rule needs of an interface: where it is and which it is.
-_Boundary = namedtuple("_Boundary", "index radius name")
-
 
 def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
                       offset: float = 0.0, sizing=None, dimension: int = 3,
-                      order: int = 2, rref: float | None = None,
+                      order: int = 2, divisor: float | None = None,
                       layer_names=("inclusion", "matrix"),
                       interface_names=("inclusion_boundary", "surface"),
                       algorithm_2d: int = 6, algorithm_3d: int = 1,
@@ -59,14 +47,12 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
                       ) -> MeshResult:
     """Mesh a ball of radius `a` offset by `d` inside one of radius `b`.
 
-    `offset` displaces the inner body along z in 3D and along x in 2D --
-    in both cases within the plane the geometry is drawn in.  Zero is
-    the concentric case, which is legitimate and worth meshing: it is
-    the same generator with an answer that is separable.
-
-    `rref` is one mesh length unit in metres, for a problem posed in SI;
-    without it the radii given are the coordinates written, which is
-    what a synthetic test usually wants.
+    `offset` displaces the inner body along z in 3D and along x in 2D,
+    within the plane the geometry is drawn in.  Zero is the concentric
+    case.  `sizing` is a sizing rule, applied to the two boundaries;
+    `divisor` is what every length is divided by before meshing, the
+    outer radius by default.  The result has no geometry, spec or
+    mapping.
     """
     path = Path(path)
     a, b, d = float(inner_radius), float(outer_radius), float(offset)
@@ -84,25 +70,27 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
     if sizing is None:
         raise ValueError(
             "no sizing given: an offset mesh takes the same sizing rules as "
-            "a layered body, applied to its two boundaries")
+            "a layered geometry, applied to its two boundaries")
+    divisor = b if divisor is None else float(divisor)
+    if not divisor > 0.0:
+        raise ValueError(f"divisor must be positive, got {divisor}")
 
-    units = (MeshUnits(divisor=float(rref), rref_m=float(rref)) if rref
-             else MeshUnits.identity())
-    a_nd, b_nd, d_nd = (float(units.to_mesh(x)) for x in (a, b, d))
+    a_nd, b_nd, d_nd = a / divisor, b / divisor, d / divisor
     timings: dict[str, float] = {}
     clock = time.perf_counter
 
-    # The sizing rule sees the boundaries in the body's own units, as a
-    # layered body's rule does, and its answer is converted with them.
-    sizes = {index: s.scaled(1.0 / units.divisor) for index, s in sizing(
-        [_Boundary(0, a, interface_names[0]),
-         _Boundary(1, b, interface_names[1])], b).items()}
+    # The sizing rule sees the boundaries in the given lengths, as a
+    # layered geometry's rule does, and its answer is divided with them.
+    faces = [InterfaceInfo(0, a, (0, 1), name=interface_names[0]),
+             InterfaceInfo(1, b, (1, -1), name=interface_names[1])]
+    sizes = {index: s.scaled(1.0 / divisor)
+             for index, s in sizing(faces, b).items()}
     check_sizing_scale(b_nd, sizes)
 
     with session(name=path.stem or "offset", verbose=verbose):
         t0 = clock()
-        cells, faces = _offset_geometry(a_nd, b_nd, d_nd, dimension)
-        tagging = Tagging(dimension=dimension, cells=cells, faces=faces,
+        cells, cad_faces = _offset_geometry(a_nd, b_nd, d_nd, dimension)
+        tagging = Tagging(dimension=dimension, cells=cells, faces=cad_faces,
                           radii=(a_nd, b_nd))
         timings["geometry"] = clock() - t0
 
@@ -115,10 +103,7 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         gmsh.model.mesh.generate(dimension)
         timings["mesh"] = clock() - t0
 
-        # "Outward" on the inclusion means away from *its* centre: a
-        # face on the far side of an inclusion that does not contain the
-        # origin points towards the origin while pointing out of the
-        # inclusion, and orienting it about the origin would reverse it.
+        # "Outward" on the inclusion means away from its own centre.
         centre = (0.0, 0.0, d_nd) if dimension == 3 else (d_nd, 0.0, 0.0)
         centres = {tagging.faces[0]: centre}
 
@@ -131,10 +116,9 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         groups = _apply_groups(tagging, layer_names, interface_names)
 
         t0 = clock()
-        # The outer boundary is a sphere about the origin and its mean
-        # radius is exactly b; the inner one is offset, so its node
-        # average is a property of the offset rather than a promise the
-        # geometry made, and there is nothing to check it against.
+        # The outer boundary is a sphere about the origin with mean
+        # radius b; the inner one is offset and has nothing to be
+        # checked against.
         report = validate_mesh(
             tagging, expected_radii=(np.nan, b_nd),
             layer_names=layer_names, interface_names=interface_names,
@@ -149,12 +133,12 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         msh_path = manifest.beside(path, ".msh")
         card = _build_manifest(
             dimension=dimension, order=order, a_nd=a_nd, b_nd=b_nd, d_nd=d_nd,
-            units=units, sizes=sizes, measured=measured, counts=counts,
+            divisor=divisor, sizes=sizes, measured=measured, counts=counts,
             report=report, curving=curving, orientation=orientation,
             layer_names=layer_names, interface_names=interface_names,
             algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
             msh_path=msh_path, gmsh_version=gmsh_version,
-            policy=name_of("sizing", sizing) or type(sizing).__name__)
+            policy=policy_name(sizing))
         manifest.validate_against(card, layer_count=2, interface_count=2,
                                   groups={k: list(v) for k, v in groups.items()})
         manifest_path = manifest.write(path, card)
@@ -170,19 +154,17 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
 
     counts["layers"] = 2
     counts["interfaces"] = 2
-    return MeshResult(msh_path=msh_path, manifest_path=manifest_path, body=None,
-                      counts=counts, validation=report, timings=timings,
-                      units=units)
+    return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
+                      geometry=None, counts=counts, validation=report,
+                      timings=timings, divisor=divisor)
 
 
 def _offset_geometry(a: float, b: float, d: float, dimension: int):
     """Two nested bodies, the inner one displaced, fragmented into one part.
 
-    Identified by bounding-box half-width, which separates them cleanly
+    Identified by bounding-box half-width, which separates them
     whatever the offset: the inner body's box is `a` across its own
-    centre and the outer one's is `b` about the origin, and the two can
-    only be confused if the bodies are the same size, which the caller
-    is already forbidden from asking for.
+    centre and the outer one's is `b` about the origin.
     """
     if dimension == 3:
         outer = gmsh.model.occ.addSphere(0.0, 0.0, 0.0, b)
@@ -215,15 +197,7 @@ def _half_width(dimension: int, tag: int) -> float:
 
 
 def _confirm_by_node_average(tagging: Tagging) -> tuple[float, ...]:
-    """Re-identify the boundaries from the mesh, and insist they agree.
-
-    The node average is the ordering the attributes of these bodies
-    take, and it is available only once a mesh exists.  Checking it
-    against the bounding-box ordering costs one pass over the boundary
-    nodes and turns a silent mis-tagging -- an inclusion labelled as the
-    exterior, and a test that disagrees with its analytic answer for no
-    visible reason -- into a refusal.
-    """
+    """Re-identify the boundaries from the mesh, and insist they agree."""
     d = tagging.dimension
     measured = tuple(mean_radius_of_entity(d - 1, face)
                      for face in tagging.faces)
@@ -252,7 +226,7 @@ def _apply_groups(tagging: Tagging, layer_names, interface_names) -> dict:
     return out
 
 
-def _build_manifest(*, dimension, order, a_nd, b_nd, d_nd, units, sizes,
+def _build_manifest(*, dimension, order, a_nd, b_nd, d_nd, divisor, sizes,
                     measured, counts, report, curving, orientation,
                     layer_names, interface_names, algorithm_2d, algorithm_3d,
                     msh_path, gmsh_version, policy):
@@ -260,37 +234,31 @@ def _build_manifest(*, dimension, order, a_nd, b_nd, d_nd, units, sizes,
 
     `r_inner_nd` and `r_outer_nd` are the spheres a region lies between,
     which for a displaced inclusion describes its size and not its
-    position -- `model.geometry.offset_nd` is what says where it is, and
-    a consumer reading the radii alone would place it wrongly.
+    position; `geometry.offset_nd` says where it is.
     """
     kind = "two_sphere" if dimension == 3 else "two_disc"
     layers = [
         manifest.LayerEntry(attribute=1, name=layer_names[0], r_inner_nd=0.0,
-                            r_outer_nd=a_nd, state="solid", fields=[],
-                            is_vacuum=False, law=None),
+                            r_outer_nd=a_nd, in_geometry=True),
         manifest.LayerEntry(attribute=2, name=layer_names[1], r_inner_nd=a_nd,
-                            r_outer_nd=b_nd, state="solid", fields=[],
-                            is_vacuum=False, law=None),
+                            r_outer_nd=b_nd, in_geometry=True),
     ]
     interfaces = [
         manifest.InterfaceEntry(attribute=i + 1, name=interface_names[i],
                                 mean_radius_nd=float(measured[i]),
-                                between_layers=[i, i + 1 if i == 0 else -1],
-                                role="material")
+                                between_layers=[i, i + 1 if i == 0 else -1])
         for i in (0, 1)
     ]
     return manifest.MeshManifest.from_build(
-        model={"name": f"offset_{kind}", "source": None, "sha256": None,
-               "rref_m": units.rref_m,
-               "geometry": {"kind": kind, "inner_radius_nd": a_nd,
-                            "outer_radius_nd": b_nd, "offset_nd": d_nd},
-               "units": manifest.units_block(None, units.divisor,
-                                             units.rref_m)},
+        geometry=manifest.geometry_block(
+            divisor=divisor, outer_radius_nd=b_nd, inner_radius_nd=0.0,
+            n_layers=2, kind=kind, inclusion_radius_nd=a_nd, offset_nd=d_nd),
         mesh=manifest.mesh_block(
             dimension=dimension, order=order, gmsh_version=gmsh_version,
             algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
             counts=counts, curving=curving),
         delivery="physical", layers=layers, interfaces=interfaces,
+        mapping=manifest.mapping_block(None, applied_to_nodes=False),
         sizing=manifest.sizing_block(policy=policy, sizes=sizes),
         validation=manifest.validation_block(report, orientation),
         provenance=manifest.provenance_block(mesh_file=msh_path.name))

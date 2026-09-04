@@ -1,16 +1,15 @@
-"""mesh3d -- 2D and 3D meshes of layered bodies, via gmsh.
+"""mesh3d: 2D and 3D meshes of layered geometries, via gmsh.
 
-The public surface is deliberately small: a MeshSpec describes what is
-wanted, build_layered_mesh produces it, and a MeshResult says what was
-written.  Geometry construction, tagging, sizing fields, orientation
-repair and gmsh session management are private -- consumers depend on
+A MeshSpec describes what is wanted, `build_layered_mesh` produces it
+and a MeshResult says what was written; `build_offset_mesh` makes the
+two-body benchmark geometries and `export_mfem_mesh` turns either into
+an MFEM delivery.  The manifest that travels with every mesh is
+`manifest`.  Geometry construction, tagging, sizing fields, orientation
+repair and gmsh session management are private: consumers depend on
 the mesh and its manifest, not on how either was built.
 
-gmsh is an optional dependency, imported only here.  Nothing else in
-planetmodel touches it, so `import planetmodel` never pulls the wheel; CI asserts
-that.  PyMFEM is the same one level down: `export_mfem` is named here,
-but `export.py` imports `mfem.ser` inside its functions, so importing
-this package needs only gmsh.
+gmsh is imported here and nowhere else in planetmodel; PyMFEM is
+imported inside the export function.
 """
 from __future__ import annotations
 
@@ -23,14 +22,17 @@ except ImportError as exc:  # pragma: no cover - exercised by the extra
         "(or: poetry install --extras meshing)"
     ) from exc
 
-from .offset import build_offset_mesh
-from .export import ExportResult, export_mfem
+from . import manifest
+from .export import ExportResult, export_mfem_mesh
 from .layered import build_layered_mesh
-from .spec import (AngularResolution, BufferSpec, InterfaceSizing, MeshResult,
-                   MeshSpec, PerInterface, UniformInterfaces)
+from .offset import build_offset_mesh
+from .spec import (AngularResolution, InterfaceSizing, MeshResult, MeshSpec,
+                   PerInterface, Shell, SizingRule, UniformInterfaces,
+                   ValidationReport)
 
 __all__ = [
-    "build_layered_mesh", "build_offset_mesh", "export_mfem",
-    "MeshSpec", "MeshResult", "ExportResult", "BufferSpec", "InterfaceSizing",
+    "MeshSpec", "MeshResult", "Shell", "InterfaceSizing", "SizingRule",
     "AngularResolution", "UniformInterfaces", "PerInterface",
+    "ValidationReport", "build_layered_mesh", "build_offset_mesh",
+    "export_mfem_mesh", "ExportResult", "manifest",
 ]

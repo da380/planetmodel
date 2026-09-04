@@ -1,23 +1,16 @@
-"""_displace.py -- the physical delivery: displace the mesh nodes by the mapping.
+"""The physical delivery: displace the mesh nodes by the mapping.
 
-The reference mesh is built on concentric spheres and then every node is
-moved by m.  High-order nodes are moved like any other node, which is
-correct -- and precisely why the discrete Jacobian check afterwards is
-not optional: a curved element can fold between corners that are
-individually fine.
+The reference mesh is built on concentric spheres and then every node
+is moved by m, high-order nodes like any other.  A curved element can
+fold between corners that are individually fine, which is why the
+discrete Jacobian check afterwards is not optional.
 
-**Check before moving.**  All three guards run on the whole node set
-first, and only then is a single node written.  A mesh half-displaced by
-a mapping that turns out to be invalid is worse than one not displaced
-at all: it looks finished.
-
-**On the write itself.**  gmsh has no bulk node setter.  `addNodes` with
-the existing tags *appends* rather than replaces, silently doubling the
-mesh, and `relocateNodes` is the opposite operation (it re-places nodes
-from their parametric coordinates onto the CAD, undoing a displacement).
-So `setNode` in a loop it is; the cost, measured in
-`docs/notes/mesh_thresholds.md`, is seconds for a million nodes against
-minutes in the mesher itself.
+Every guard runs on the whole node set first, and only then is a single
+node written: a mesh half-displaced by a mapping that turns out to be
+invalid looks finished.  gmsh has no bulk node setter (`addNodes` with
+existing tags appends, `relocateNodes` re-places nodes from their
+parametric coordinates and undoes a displacement), so `setNode` runs in
+a loop.
 """
 from __future__ import annotations
 
@@ -47,9 +40,8 @@ class PerturbationReport:
 def apply_mapping(mapping, *, check: bool = True) -> PerturbationReport:
     """Move every node of the current mesh by `mapping`.
 
-    The mapping must already be expressed in mesh coordinates -- the
-    builder conjugates an SI mapping through GeometryScaledMapping
-    before calling this, so nothing here knows about units.
+    The mapping must already be expressed in mesh coordinates; the
+    builder scales it before calling this.
     """
     tags, coords, _ = gmsh.model.mesh.getNodes()
     if tags.size == 0:
@@ -71,9 +63,8 @@ def apply_mapping(mapping, *, check: bool = True) -> PerturbationReport:
                 f"the mapping is not finite at node {int(tags[bad])}, "
                 f"reference position {X[bad]}")
 
-        # A node that reaches or crosses the origin has folded the body
-        # through itself; the interior one is the one that matters, since
-        # the centre node legitimately stays at zero.
+        # A node that reaches or crosses the origin has folded the domain
+        # through itself; the centre node legitimately stays at zero.
         interior = r_before > 0.0
         if np.any(r_after[interior] <= 0.0):
             bad = int(np.flatnonzero(interior & (r_after <= 0.0))[0])
@@ -82,14 +73,12 @@ def apply_mapping(mapping, *, check: bool = True) -> PerturbationReport:
                 f"{r_after[bad]:.6g} from {r_before[bad]:.6g}: the mapping "
                 "moves points to or through the origin")
 
-        report = getattr(mapping, "is_valid", None)
-        if report is not None:
+        if hasattr(mapping, "is_valid"):
             verdict = mapping.is_valid(X=X)
             if not verdict:
                 raise ValueError(
                     f"the mapping is not orientation-preserving on the mesh "
-                    f"nodes: {verdict!r}. Reduce the topography exaggeration, "
-                    "move the confining interface, or refine the region.")
+                    f"nodes: {verdict!r}")
             margin = float(verdict.margin)
         else:
             margin = float("nan")

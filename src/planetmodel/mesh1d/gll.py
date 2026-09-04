@@ -1,4 +1,4 @@
-"""gll.py -- Gauss-Lobatto-Legendre nodes, weights and Lagrange machinery.
+"""Gauss-Lobatto-Legendre nodes, weights and Lagrange machinery.
 
 Everything here lives on the reference element [-1, 1] and knows
 nothing of models or physics: the GLL quadrature rule, the differentiation

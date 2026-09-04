@@ -1,16 +1,16 @@
-"""_geometry.py -- concentric CAD, in 2D and 3D by the same code.
+"""Concentric CAD, in 2D and 3D by the same code.
 
-A layered body is a set of concentric balls (3D) or discs (2D), cut
-against each other so the shells between them become separate entities.
-The dimension is a parameter throughout: 2D discs are the cheap testing
-analogue of 3D spheres and must not fork the implementation, or the
-cheap tests stop testing the expensive path.
+A layered domain is a set of concentric balls (3D) or discs (2D), cut
+against each other so the shells between them become separate
+entities.  The dimension is a parameter throughout: discs are the cheap
+testing analogue of balls and must not fork the implementation.
 
 The construction is: build every radius as its own solid, fragment the
-outermost against all the others, remove duplicates, synchronize.  What
-comes back is one entity per shell and one per interface -- but in
-*arbitrary* tag order, which is why identification is a separate step
-(_tagging.py) and never a matter of sorting by tag.
+outermost against all the others, remove duplicates, and, for a hollow
+domain, remove the innermost solid while keeping its boundary.  What
+comes back is one entity per shell and one per interface in arbitrary
+tag order, which is why identification is a separate step (`_tagging`)
+and never a matter of sorting by tag.
 """
 from __future__ import annotations
 
@@ -19,22 +19,25 @@ from dataclasses import dataclass
 import gmsh
 import numpy as np
 
-__all__ = ["ConcentricGeometry", "build_concentric"]
+__all__ = ["ConcentricGeometry", "build_concentric", "entity_radius",
+           "outer_face_of"]
 
 
 @dataclass(frozen=True)
 class ConcentricGeometry:
-    """The CAD entities of a layered body, before any identification.
+    """The CAD entities of a layered domain, before any identification.
 
     `cells` are the shells (dimension d), `faces` the interfaces
-    (dimension d-1).  Tag order means nothing; `radii` records what was
-    asked for, so tagging can match rather than guess.
+    (dimension d-1), both in meaningless tag order.  `radii` are the
+    interface radii asked for, innermost first: for a hollow domain the
+    first is the inner boundary, so there is one more radius than cells.
     """
 
     dimension: int
     radii: tuple[float, ...]
     cells: tuple[int, ...]
     faces: tuple[int, ...]
+    hollow: bool
 
     @property
     def n_layers(self) -> int:
@@ -49,19 +52,24 @@ def _add_ball(radius: float, dimension: int) -> int:
 
 
 def build_concentric(radii, *, dimension: int = 3) -> ConcentricGeometry:
-    """Concentric shells from an increasing list of radii.
+    """Concentric shells from an increasing list of boundary radii.
 
-    `radii` are the interface radii, innermost first, in the units the
-    mesh will be written in (the caller non-dimensionalises first).  A
-    body whose innermost radius is zero is a ball at the centre rather
-    than a hole, so a leading zero is dropped: the centre is not a
-    surface.
+    `radii` are the skeleton boundaries, innermost first, in the units
+    the mesh will be written in.  A leading zero is the centre of a full
+    ball and is not a surface; a positive innermost radius makes the
+    domain hollow, with that boundary a face of the mesh.
     """
     radii = [float(r) for r in np.atleast_1d(np.asarray(radii, dtype=float))]
     if radii and radii[0] == 0.0:
         radii = radii[1:]
-    if len(radii) < 1:
-        raise ValueError("need at least one non-zero radius")
+        hollow = False
+    else:
+        hollow = True
+    if radii and radii[0] < 0.0:
+        raise ValueError(f"radii must be non-negative, got {radii}")
+    if len(radii) < (2 if hollow else 1):
+        raise ValueError("need at least one shell: two boundary radii, or one "
+                         "above a centre at zero")
     if not all(b > a for a, b in zip(radii[:-1], radii[1:])):
         raise ValueError(f"radii must be strictly increasing, got {radii}")
     if dimension not in (2, 3):
@@ -74,23 +82,40 @@ def build_concentric(radii, *, dimension: int = 3) -> ConcentricGeometry:
         gmsh.model.occ.removeAllDuplicates()
     gmsh.model.occ.synchronize()
 
+    if hollow:
+        # The innermost solid is the hole: remove it, keep its boundary.
+        cells = [tag for _, tag in gmsh.model.getEntities(dimension)]
+        inner = [tag for tag in cells
+                 if abs(entity_radius(dimension, tag) - radii[0])
+                 <= 1e-6 * radii[-1]]
+        if len(inner) != 1:
+            raise RuntimeError(
+                f"expected one solid of radius {radii[0]} to remove for the "
+                f"hollow, found {len(inner)}")
+        gmsh.model.occ.remove([(dimension, inner[0])], recursive=False)
+        gmsh.model.occ.synchronize()
+
     cells = tuple(tag for _, tag in gmsh.model.getEntities(dimension))
     faces = tuple(tag for _, tag in gmsh.model.getEntities(dimension - 1))
 
-    if len(cells) != len(radii):
+    n_shells = len(radii) - (1 if hollow else 0)
+    if len(cells) != n_shells:
         raise RuntimeError(
-            f"fragment produced {len(cells)} cells for {len(radii)} radii; "
+            f"fragment produced {len(cells)} cells for {n_shells} shells; "
             "the CAD kernel did not cut the shells as expected")
-    return ConcentricGeometry(dimension, tuple(radii), cells, faces)
+    if len(faces) != len(radii):
+        raise RuntimeError(
+            f"fragment produced {len(faces)} faces for {len(radii)} radii; "
+            "the CAD kernel did not cut the shells as expected")
+    return ConcentricGeometry(dimension, tuple(radii), cells, faces, hollow)
 
 
 def entity_radius(dimension: int, tag: int) -> float:
     """The radius of a concentric CAD entity, from its bounding box.
 
     Exact for a sphere or circle centred on the origin, and available
-    before any mesh exists -- which is what lets identification happen
-    before meshing, on the geometry the caller asked for rather than on
-    node positions that only exist afterwards.
+    before any mesh exists, which is what lets identification happen on
+    the geometry asked for rather than on node positions.
     """
     xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(
         dimension, tag)
@@ -100,10 +125,9 @@ def entity_radius(dimension: int, tag: int) -> float:
 def outer_face_of(dimension: int, cell: int) -> int:
     """The bounding face of a shell with the largest radius.
 
-    A shell is bounded by its inner and outer interfaces; the innermost
-    cell is a ball and has only one.  Taking the largest makes
-    "interface i is the outer boundary of layer i" true by
-    construction, which is the numbering convention consumers rely on.
+    A shell is bounded by its inner and outer interfaces; a central ball
+    has only one.  Taking the largest makes "interface i is the outer
+    boundary of layer i" true by construction.
     """
     boundary = gmsh.model.getBoundary([(dimension, cell)], oriented=False,
                                       recursive=False)

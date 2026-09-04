@@ -1,48 +1,59 @@
-"""Every meshing test runs inside a session, and leaves none behind."""
+"""Every meshing test runs inside a session, and leaves none behind.
+
+The geometries here are unit sized and a few elements across: the
+tests ask whether the pipeline is right, and no such question is
+answered better by a large mesh.
+"""
 import numpy as np
 import pytest
 
 pytest.importorskip("gmsh", reason="needs the planetmodel[meshing] extra")
 
+from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton  # noqa: E402
+from planetmodel.mesh3d import UniformInterfaces  # noqa: E402
 from planetmodel.mesh3d._session import is_active  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def no_leaked_gmsh_session():
-    """Assert the process is left as it was found.
-
-    gmsh has one global model per process, so a test that leaks a
-    session makes the *next* test fail for reasons of its own.  Checking
-    both before and after localises that to the test that caused it.
-    """
+    """The process is left as it was found: gmsh has one global model."""
     assert not is_active(), "a gmsh session was already active on entry"
     yield
     assert not is_active(), "this test leaked a gmsh session"
 
 
-def _write_relief_xyz(path, *, offset_km=0.0, amplitude_km=5.0,
-                      spacing_deg=10.0):
-    """Write the grid and return the path."""
-    lon = np.arange(-180.0, 180.0, spacing_deg)
-    lat = np.arange(90.0, -90.0 - 0.5 * spacing_deg, -spacing_deg)
-    L, A = np.meshgrid(lon, lat, indexing="xy")
-    t, p = np.deg2rad(90.0 - A), np.deg2rad(L)
-    value = offset_km + amplitude_km * (0.5 * (3.0 * np.cos(t) ** 2 - 1.0)
-                                        + np.sin(t) ** 2 * np.cos(2.0 * p))
-    np.savetxt(path, np.c_[L.ravel(), A.ravel(), value.ravel()], fmt="%.6f")
-    return path
+#: Coarse sizing for unit geometries: a few elements across.
+COARSE = UniformInterfaces(0.15, 0.3, 0.3)
 
 
-@pytest.fixture
-def write_relief_xyz():
-    """A writer of `lon lat value` relief grids, in the layout CRUST ships.
+def full_geometry():
+    """Three shells of a unit ball, named."""
+    return Geometry(Skeleton([0.0, 0.4, 0.8, 1.0]),
+                    layer_names=["core", "mantle", "crust"],
+                    interface_names=["cmb", "moho", "surface"])
 
-    Degree two, zonal plus sectoral -- `P_2(cos t) + sin^2 t cos 2p` --
-    about an offset, in kilometres, on a ten-degree grid with latitude
-    running downwards through the file.  Both harmonics integrate to
-    zero over the sphere, so the offset is the mean the reader will
-    find, up to the grid it is sampled on; the tests that need that mean
-    exactly compute it from the file rather than assume it, which is
-    what a recipe's author has to do too.
+
+def hollow_geometry():
+    """Two shells of a unit ball with a hole at the centre."""
+    return Geometry(Skeleton([0.5, 0.8, 1.0]), layer_names=["lower", "upper"],
+                    interface_names=["inner", "mid", "outer"])
+
+
+def flattening(amplitude=0.05):
+    """h = -f r P2(cos theta): a degree-2 flattening, not zero on the surface."""
+    def h(r, theta, phi):
+        return -amplitude * r * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
+    return RadialStretch(CallableDisplacement(h, name="flattening"), rmax=1.0)
+
+
+def confined_flattening(amplitude=0.05, *, top=1.0, ramp=0.2):
+    """The same flattening tapered to zero at r = top, with kinks declared.
+
+    Zero on and above r = top, so it is the identity on the outer
+    boundary of a domain whose shells begin there.
     """
-    return _write_relief_xyz
+    def h(r, theta, phi):
+        taper = np.clip((top - r) / ramp, 0.0, 1.0)
+        return -amplitude * r * taper * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
+    return RadialStretch(CallableDisplacement(h, knots=[top - ramp, top],
+                                             name="confined"), rmax=2.0 * top)

@@ -1,20 +1,18 @@
-"""_tagging.py -- deciding which CAD entity is which layer.
+"""Deciding which CAD entity is which layer.
 
 The attribute numbers are the interface with every consumer: MFEM turns
 physical groups into element attributes, and material selection,
-SubMesh construction and boundary conditions are all done by number.
-So getting this wrong is not a mesh that looks odd, it is a solve that
+submesh construction and boundary conditions are all done by number.
+Getting this wrong is not a mesh that looks odd, it is a solve that
 runs to completion on the wrong materials.
 
-Two decisions follow.  First, identify from the CAD, before meshing:
-bounding boxes give the radius of a concentric entity exactly, whereas
-a node average depends on how the mesher happened to distribute nodes
-and only exists after the fact.  Second, **match, do not sort**.  The
-entities come back in arbitrary order, and sorting them by radius
-always produces a plausible-looking answer -- including when the CAD
-kernel silently dropped or duplicated a shell.  Matching each measured
-radius against the radius that was asked for turns that from a wrong
-mesh into a loud failure.
+Two decisions follow.  Entities are identified from the CAD, before
+meshing: bounding boxes give the radius of a concentric entity exactly.
+And entities are matched, not sorted: they come back in arbitrary
+order, and sorting by radius always produces a plausible answer,
+including when the CAD kernel dropped or duplicated a shell.  Matching
+each measured radius against the radius that was asked for turns that
+into a loud failure.
 """
 from __future__ import annotations
 
@@ -33,35 +31,35 @@ __all__ = ["Tagging", "identify", "apply_physical_groups",
 class Tagging:
     """Which CAD entity is which layer, and which interface.
 
-    Both lists run centre outwards, so index i is layer i and interface
-    i -- the ordering the physical groups will carry.
+    Both lists run centre outwards: `cells[i]` is layer i and `faces[k]`
+    interface k, the ordering the physical groups will carry.  For a
+    hollow domain `faces[0]` is the inner boundary and layer i's outer
+    boundary is `faces[i + 1]`; for a full one it is `faces[i]`.
     """
 
     dimension: int
     cells: tuple[int, ...]          # layer i -> CAD entity
-    faces: tuple[int, ...]          # interface i -> CAD entity
-    radii: tuple[float, ...]        # interface i -> requested radius
+    faces: tuple[int, ...]          # interface k -> CAD entity
+    radii: tuple[float, ...]        # interface k -> requested radius
+    hollow: bool = False
 
     def __repr__(self) -> str:
         return (f"Tagging({len(self.cells)} layers, "
                 f"radii {[round(r, 6) for r in self.radii]})")
 
 
-#: OCC pads every bounding box by roughly this much, *absolutely* --
-#: measured at 1.0e-7 whether the radius is 0.2 or 6.371e6, so it is a
-#: kernel gap tolerance and not a relative one.  Any matching tolerance
-#: must clear it; a purely relative tolerance would be far too tight in
-#: non-dimensional units, where radii are of order 1.
+#: OCC pads every bounding box by roughly this much, absolutely: the
+#: same 1e-7 whether the radius is 0.2 or 6e6.  A matching tolerance
+#: must clear it, so a purely relative one would be too tight in mesh
+#: units, where radii are of order one.
 _OCC_BBOX_PAD = 1e-7
 
 
 def default_atol(r_outer: float) -> float:
-    """The matching tolerance for a body of the given outer radius.
+    """The matching tolerance for a domain of the given outer radius.
 
     Generous against OCC's absolute bounding-box padding, and still far
-    tighter than any interface separation worth meshing: PREM's
-    thinnest span is 12 km in 6371, or 1.9e-3 non-dimensional, three
-    orders above this floor.
+    tighter than any interface separation worth meshing.
     """
     return max(10.0 * _OCC_BBOX_PAD, 1e-9 * float(r_outer))
 
@@ -71,15 +69,15 @@ def identify(geometry: ConcentricGeometry, expected_radii, *,
     """Match CAD entities to the radii they were built from.
 
     `expected_radii` are the interface radii, innermost first, in the
-    geometry's units.  Every expected radius must be matched by exactly
-    one face and every face by exactly one radius; anything else raises
+    geometry's units; for a hollow domain the first is the inner
+    boundary.  Every expected radius must be matched by exactly one
+    face and every face by exactly one radius; anything else raises
     with both lists printed, because a near-match is the symptom of a
     CAD failure and guessing past it produces a silently wrong mesh.
 
-    The recorded radii are the ones asked for, not the measured ones:
-    a bounding box is padded by the CAD kernel, and a manifest saying an
-    interface sits at 1.0000001 would be recording that padding rather
-    than the model.
+    The recorded radii are the ones asked for, not the measured ones: a
+    bounding box is padded by the CAD kernel, and a manifest saying an
+    interface sits at 1.0000001 would be recording the padding.
     """
     expected = [float(r) for r in np.atleast_1d(
         np.asarray(expected_radii, dtype=float))]
@@ -102,31 +100,37 @@ def identify(geometry: ConcentricGeometry, expected_radii, *,
         raise RuntimeError(_mismatch(expected, measured, None,
                                      list(unmatched), tol))
 
-    # A cell is identified by its own outer face, which makes
-    # "interface i bounds layer i" true rather than assumed.
-    by_face = {face: i for i, face in enumerate(faces)}
-    cells: list[int | None] = [None] * len(faces)
+    # A cell is identified by its own outer face, which makes "interface
+    # i bounds layer i" true rather than assumed.
+    first = 1 if geometry.hollow else 0
+    by_face = {face: k for k, face in enumerate(faces)}
+    cells: list[int | None] = [None] * (len(faces) - first)
     for cell in geometry.cells:
         face = outer_face_of(geometry.dimension, cell)
         if face not in by_face:
             raise RuntimeError(
                 f"cell {cell} has outer face {face}, which matched no expected "
                 f"interface radius; measured faces {measured}")
-        i = by_face[face]
+        k = by_face[face]
+        if k < first:
+            raise RuntimeError(
+                f"cell {cell} has the inner boundary (radius {expected[k]}) as "
+                "its outer face; the hollow was not cut")
+        i = k - first
         if cells[i] is not None:
             raise RuntimeError(
-                f"cells {cells[i]} and {cell} both claim interface {i} "
-                f"(radius {expected[i]}) as their outer boundary")
+                f"cells {cells[i]} and {cell} both claim interface {k} "
+                f"(radius {expected[k]}) as their outer boundary")
         cells[i] = cell
     if any(c is None for c in cells):
         missing = [i for i, c in enumerate(cells) if c is None]
         raise RuntimeError(
-            f"no cell has interfaces {missing} as its outer boundary; the CAD "
-            f"kernel produced {len(geometry.cells)} cells for "
-            f"{len(expected)} interfaces")
+            f"no cell has layers {missing} bounded above; the CAD kernel "
+            f"produced {len(geometry.cells)} cells for {len(expected)} "
+            "interfaces")
 
     return Tagging(geometry.dimension, tuple(cells), tuple(faces),
-                   tuple(expected))
+                   tuple(expected), geometry.hollow)
 
 
 def _mismatch(expected, measured, radius, hits, tol) -> str:
@@ -151,11 +155,10 @@ def apply_physical_groups(tagging: Tagging, *, layer_names=(),
                           interface_names=()) -> dict:
     """Number the layers and interfaces 1..N from the centre outward.
 
-    The convention every consumer reads: physical group i is layer i
-    counting out from the centre, and physical group i of the next
-    dimension down is that layer's outer boundary.  Names are set where
-    the body supplies them, and are advisory -- the numbering is the
-    contract.
+    Physical group i of the mesh dimension is layer i counting out from
+    the centre, and physical group k of the next dimension down is
+    interface k.  Names are set where given and default to
+    `layer_<i>` and `interface_<k>`; the numbering is the contract.
     """
     d = tagging.dimension
     gmsh.model.removePhysicalGroups()
@@ -181,10 +184,9 @@ def apply_physical_groups(tagging: Tagging, *, layer_names=(),
 def mean_radius_of_entity(dimension: int, tag: int) -> float:
     """The node-average radius of a meshed entity.
 
-    The fallback for geometry that is not concentric -- the offset
-    benchmark bodies -- where a bounding box says nothing useful.  It
-    needs a mesh to exist and is biased by node density, which is why
-    it is not the primary path.
+    The measure for geometry that is not concentric, where a bounding
+    box says nothing useful.  It needs a mesh to exist and is biased by
+    node density, which is why it is not the primary path.
     """
     _, coords, _ = gmsh.model.mesh.getNodes(dimension, tag, includeBoundary=True)
     if coords.size == 0:

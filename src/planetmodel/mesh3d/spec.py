@@ -1,16 +1,22 @@
-"""spec.py -- what to mesh, and what came back.
+"""What to mesh, and what came back.
 
-A MeshSpec is the whole description of a wanted mesh: which body, which
-of its interfaces survive, what to add around it, how finely to resolve
-each boundary, and which delivery -- the physical mesh, or the
-reference mesh plus the mapping.  build_layered_mesh turns one into a
-MeshResult.
+A MeshSpec is the whole description of a wanted mesh: the geometry, the
+sizing of every interface, the shells appended outside the geometry,
+the dimension and element order, and the delivery.  The computational
+domain is the geometry's layers followed by the shells, numbered from
+the centre; `MeshSpec.domain` is that domain as a Geometry under the
+geometry's own mapping, and is what the builder meshes.
 
 Sizing is a callable, not a class hierarchy: a rule takes the
-interfaces and the reference radius and returns one InterfaceSizing per
-interface.  The three shipped rules are frozen dataclasses whose
-instances *are* the callable, so they print, compare and serialise, and
-anyone wanting something else writes a function.
+interfaces of the computational domain and its outer radius, in the
+geometry's own lengths, and returns one InterfaceSizing per interface
+index.  The three shipped rules are frozen dataclasses whose instances
+are the callable, so they print, compare and serialise; anything else
+is a function.
+
+Nothing here knows about units.  The builder divides every length by
+the spec's divisor (the outer radius of the computational domain by
+default) before handing it to gmsh, and records only that number.
 """
 from __future__ import annotations
 
@@ -18,42 +24,72 @@ from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from ..registry import register
+from ..geometry import Geometry, InterfaceInfo, LayerInfo
+from ..mapping import Mapping
 
 __all__ = [
-    "BufferSpec", "InterfaceSizing", "SizingRule", "AngularResolution",
+    "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "PerInterface", "MeshSpec", "MeshResult",
+    "ValidationReport", "DELIVERIES", "QUALITY_FLOOR",
 ]
+
+#: The two deliveries: nodes moved by the mapping, or the reference mesh
+#: with the mapping recorded for the consumer to apply.
+DELIVERIES = ("physical", "referential")
+
+#: The minSICN below which an element is poorly shaped: the level at
+#: which `raise_order` runs gmsh's high-order optimiser and at which
+#: `validate_mesh` warns.  Elements at or below zero are folded and fail.
+QUALITY_FLOOR = 0.05
 
 
 @dataclass(frozen=True)
-class BufferSpec:
-    """A vacuum shell outside the body, for exterior coupling.
+class Shell:
+    """A layer appended outside the geometry, numbered after its layers.
 
-    `ratio` is b/a - 1, so 0.2 means an outer radius 1.2 times the
-    surface; `radius` gives b directly.  Exactly one of them.
+    Exactly one of `ratio` and `radius` gives the outer radius b of the
+    shell: `ratio` is b / a - 1 with a the radius of the boundary the
+    shell is attached to (the geometry's outer boundary, or the previous
+    shell's), `radius` is b itself.  `name` names the layer; its outer
+    boundary takes the default interface name.
     """
 
     _: KW_ONLY
+    #: b / a - 1, the thickness as a fraction of the radius it sits on.
     ratio: float | None = None
+    #: b, the outer radius of the shell, in the geometry's lengths.
     radius: float | None = None
+    #: The layer's name in the mesh and the manifest.
     name: str = "buffer"
 
     def __post_init__(self) -> None:
         if (self.ratio is None) == (self.radius is None):
             raise ValueError("give exactly one of ratio and radius")
+        if self.ratio is not None and not self.ratio > 0.0:
+            raise ValueError(f"a shell's ratio must be positive, got {self.ratio}")
+        if self.radius is not None and not self.radius > 0.0:
+            raise ValueError(f"a shell's radius must be positive, got {self.radius}")
+
+    def outer_radius(self, inner: float) -> float:
+        """The shell's outer radius when attached to a boundary at `inner`."""
+        if self.radius is not None:
+            return float(self.radius)
+        return float(inner) * (1.0 + float(self.ratio))
 
 
 @dataclass(frozen=True)
 class InterfaceSizing:
     """Target element size at an interface, and how it relaxes away.
 
-    All three are in the same units as the geometry they describe --
-    the mesher non-dimensionalises them alongside the radii, once.
+    All three are lengths in the same units as the geometry; the builder
+    divides them by its divisor alongside the radii.
     """
 
+    #: The element size on the interface.
     size: float
+    #: The element size far from it.
     far_size: float
+    #: The distance over which the size grows from `size` to `far_size`.
     decay_width: float
 
     def __post_init__(self) -> None:
@@ -68,82 +104,84 @@ class InterfaceSizing:
                 "interface rather than towards it")
 
     def scaled(self, factor: float) -> "InterfaceSizing":
-        """The same sizing in units scaled by `factor`."""
+        """The same sizing with every length multiplied by `factor`."""
         return InterfaceSizing(self.size * factor, self.far_size * factor,
                                self.decay_width * factor)
 
 
-#: A sizing rule maps the interfaces of a body to a sizing for each.
-SizingRule = Callable[[Sequence, float], dict]
+#: A sizing rule: (interfaces of the computational domain, its outer
+#: radius) -> {interface index: InterfaceSizing}.  The interfaces are
+#: objects with `index`, `radius` and `name`.
+SizingRule = Callable[[Sequence[InterfaceInfo], float], dict]
 
 
-@register("sizing", "angular_resolution")
 @dataclass(frozen=True)
 class AngularResolution:
-    """Equal angular resolution on every interface: h_i = h_ref r_i/r_ref.
+    """Equal angular resolution on every interface: h_i = h_ref r_i / r_ref.
 
-    The default.  A deep interface is smaller than a shallow one, so
-    giving both the same absolute element size resolves the deep one far
-    more finely in angle than the shallow one -- usually not what is
-    wanted, and expensive where it is not.  Scaling with radius gives
-    every boundary comparable triangle counts.
-
-    The decay width scales with radius too, so the transition away from
-    each interface occupies a comparable fraction of the body.
+    A deep interface is smaller than a shallow one, so one absolute size
+    everywhere resolves the deep one far more finely in angle than the
+    shallow one.  Scaling with radius gives every boundary comparable
+    element counts, capped at `h_far`; the decay width is `fraction` of
+    each interface's radius.  `r_ref` defaults to the outer radius the
+    rule is called with.
     """
 
+    #: The element size at r_ref.
     h_ref: float
-    r_ref: float
+    #: The element size far from every interface, and the cap on h_i.
     h_far: float
     _: KW_ONLY
+    #: The radius at which the size is h_ref; the outer radius if None.
+    r_ref: float | None = None
+    #: The decay width as a fraction of each interface's radius.
     fraction: float = 0.2
 
-    def __call__(self, interfaces, rref: float) -> dict:
+    def __call__(self, interfaces, outer_radius: float) -> dict:
+        r_ref = float(outer_radius) if self.r_ref is None else float(self.r_ref)
         out = {}
         for face in interfaces:
-            h = self.h_ref * face.radius / self.r_ref
+            h = self.h_ref * face.radius / r_ref
             out[face.index] = InterfaceSizing(
-                size=min(h, self.h_far),
-                far_size=self.h_far,
+                size=min(h, self.h_far), far_size=self.h_far,
                 decay_width=self.fraction * face.radius)
         return out
 
 
-@register("sizing", "uniform_interfaces")
 @dataclass(frozen=True)
 class UniformInterfaces:
-    """The same absolute size at every interface.
+    """The same absolute size at every interface."""
 
-    Simplest, and right when the structure of interest is all at one
-    depth.
-    """
-
+    #: The element size on every interface.
     h_min: float
+    #: The element size far from every interface.
     h_max: float
+    #: The distance over which the size grows from h_min to h_max.
     decay_width: float
 
-    def __call__(self, interfaces, rref: float) -> dict:
+    def __call__(self, interfaces, outer_radius: float) -> dict:
         return {face.index: InterfaceSizing(self.h_min, self.h_max,
                                             self.decay_width)
                 for face in interfaces}
 
 
-@register("sizing", "per_interface")
 @dataclass(frozen=True)
 class PerInterface:
     """Explicit sizing for named or indexed interfaces, with a fallback.
 
-    For when the default reading of "resolve this boundary well" is
-    wrong and the user knows better.  Interfaces not named fall through
-    to `base`; without a base they must all be named.
+    Interfaces not named in `sizes_by` fall through to `base`; without a
+    base they must all be named.
     """
 
+    #: {interface name or index: InterfaceSizing}.
     sizes_by: dict
     _: KW_ONLY
+    #: The rule for the interfaces `sizes_by` does not name.
     base: SizingRule | None = None
 
-    def __call__(self, interfaces, rref: float) -> dict:
-        out = dict(self.base(interfaces, rref)) if self.base is not None else {}
+    def __call__(self, interfaces, outer_radius: float) -> dict:
+        out = (dict(self.base(interfaces, outer_radius))
+               if self.base is not None else {})
         by_name = {f.name: f.index for f in interfaces if f.name}
         for key, sizing in self.sizes_by.items():
             if isinstance(key, str):
@@ -166,128 +204,192 @@ class PerInterface:
 class MeshSpec:
     """The complete description of a mesh to build.
 
-    The geometry steps happen in the order listed here and in
-    build_layered_mesh: coarsen, set the outer boundary, refine, extend,
-    buffer, and then the surfaces are attached.  That order is not
-    arbitrary -- cutting after refining would drop inserted interfaces,
-    buffering before extending would bury the buffer inside the body,
-    and a surface attaches to an interface that has to exist first.
-
-    `delivery` is `"physical"` (the nodes carry the mapping) or
-    `"referential"` (the mesh stays spherical and the mapping travels
-    with it for the consumer to apply).
+    Surgery is done on the geometry before it comes here.  The
+    computational domain is the geometry followed by the shells; its
+    layers are numbered 1..N from the centre and its interfaces 1..M in
+    the order of `geometry.interfaces`, then the shells' outer
+    boundaries.
     """
 
-    body: object                                # ReferenceBody
+    #: The geometry to mesh: a skeleton, a mapping and names.
+    geometry: Geometry
+    #: The rule giving every interface of the computational domain its sizing.
     sizing: SizingRule
     _: KW_ONLY
-    rref: float | None = None                   # required only for an SI body
-    dimension: int = 3                          # 3 spheres, 2 discs
-    order: int = 2                              # element order, 1..3
-
-    keep_interfaces: Sequence[int] | None = None
-    drop_interfaces: Sequence[int] | None = None
-    outer_radius: float | None = None           # outer boundary: cut, or grown, to here
-    outer_name: str | None = None               # what that boundary is called
-    insert_radii: Sequence[float] = ()
-    insert_names: Sequence[str | None] = ()
-    insert_role: str = "material"
-    extend_radii: Sequence[float] = ()
-    extend_names: Sequence[str | None] = ()
-    extend_fields: object = "extrapolate"
-    extend_role: str = "material"
-    buffers: Sequence[BufferSpec] = ()
-
-    #: Boundary shapes to attach *after* the surgery, by interface name
-    #: or index.  Attaching beforehand is impossible for the interesting
-    #: case -- a Moho relief belongs on the boundary that truncation
-    #: creates, which does not exist until the surgery has run.
-    surfaces: dict = field(default_factory=dict)
-
-    mapping: object | None = None               # Mapping, or None
-    #: A displacement rule (layer_linear() and friends), from which the
-    #: mapping is built once the resolved body exists.  A rule reads the
-    #: attached surfaces, so a caller who lets the spec attach them
-    #: cannot build the mapping itself; this is the either/or that
-    #: ReferenceBody.mapping already draws, lifted to the spec.
-    mapping_rule: object | None = None
-    delivery: str = "physical"                  # physical | referential
-
+    #: What every length is divided by before meshing; the outer radius
+    #: of the computational domain if None.
+    divisor: float | None = None
+    #: 3 for balls, 2 for discs.
+    dimension: int = 3
+    #: The element order, 1..3.
+    order: int = 2
+    #: Shells appended outside the geometry, innermost first.
+    shells: Sequence[Shell] = ()
+    #: "physical": the nodes are moved by the mapping; "referential": the
+    #: mesh stays spherical and the mapping is recorded.
+    delivery: str = "physical"
+    #: gmsh's Mesh.Algorithm.
     algorithm_2d: int = 6
+    #: gmsh's Mesh.Algorithm3D.
     algorithm_3d: int = 1
+    #: False writes a failing mesh with the failures recorded in the manifest.
     validate: bool = True
+    #: Copied into the manifest's provenance block.
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.geometry, Geometry):
+            raise TypeError(
+                f"geometry must be a Geometry, got {type(self.geometry).__name__}")
+        if not callable(self.sizing):
+            raise TypeError("sizing must be a callable sizing rule")
         if self.dimension not in (2, 3):
             raise ValueError(f"dimension must be 2 or 3, got {self.dimension}")
         if not 1 <= self.order <= 3:
             raise ValueError(f"element order must be 1..3, got {self.order}")
-        if self.delivery not in ("physical", "referential"):
+        if self.delivery not in DELIVERIES:
             raise ValueError(
-                "delivery must be 'physical' or 'referential', got "
-                f"{self.delivery!r}")
-        if self.keep_interfaces is not None and self.drop_interfaces is not None:
-            raise ValueError("give keep_interfaces or drop_interfaces, not both")
-        if self.mapping is not None and self.mapping_rule is not None:
-            raise ValueError(
-                "give mapping or mapping_rule, not both: a rule builds the "
-                "mapping from the resolved body's surfaces, so passing "
-                "another one alongside would be two answers to one question")
-        if self.outer_name is not None and self.outer_radius is None:
-            raise ValueError(
-                "outer_name names the boundary outer_radius creates, but "
-                "outer_radius is not set")
-        if self.rref is not None and not self.rref > 0.0:
-            raise ValueError(f"rref must be positive, got {self.rref}")
-        if self.surfaces and self.mapping_rule is None:
-            raise ValueError(
-                "surfaces are attached but no mapping_rule builds a mapping "
-                "from them, so the relief would never reach the mesh"
-                + ("; an explicit mapping does not read them"
-                   if self.mapping is not None else ""))
-        if self.delivery == "referential" and self.mapping is None \
-                and self.mapping_rule is None:
-            raise ValueError(
-                "a referential delivery hands the consumer the mapping to "
-                "apply, and none is given; a spherical body wants "
-                "delivery='physical'")
-        for radii, names, what in ((self.insert_radii, self.insert_names,
-                                    "insert"),
-                                   (self.extend_radii, self.extend_names,
-                                    "extend")):
-            if names and len(names) != len(radii):
+                f"delivery must be one of {DELIVERIES}, got {self.delivery!r}")
+        if self.divisor is not None and not self.divisor > 0.0:
+            raise ValueError(f"divisor must be positive, got {self.divisor}")
+        object.__setattr__(self, "shells", tuple(self.shells))
+        for shell in self.shells:
+            if not isinstance(shell, Shell):
+                raise TypeError(
+                    f"shells must be Shell instances, got {type(shell).__name__}")
+        inner = float(self.geometry.skeleton.boundaries[-1])
+        for shell in self.shells:
+            outer = shell.outer_radius(inner)
+            if not outer > inner:
                 raise ValueError(
-                    f"{what}_names has {len(names)} entries for "
-                    f"{len(radii)} radii")
+                    f"shell {shell.name!r} has outer radius {outer:g}, not above "
+                    f"the boundary it is attached to at {inner:g}")
+            inner = outer
+        self.domain     # names must be unique across the geometry and the shells
+
+    @property
+    def shell_radii(self) -> tuple[float, ...]:
+        """The outer radii of the shells, innermost first."""
+        radii = []
+        inner = float(self.geometry.skeleton.boundaries[-1])
+        for shell in self.shells:
+            inner = shell.outer_radius(inner)
+            radii.append(inner)
+        return tuple(radii)
+
+    @property
+    def outer_radius(self) -> float:
+        """The outer radius of the computational domain."""
+        radii = self.shell_radii
+        return radii[-1] if radii else float(self.geometry.skeleton.boundaries[-1])
+
+    @property
+    def effective_divisor(self) -> float:
+        """The divisor the builder uses: the one given, or the outer radius."""
+        return self.outer_radius if self.divisor is None else float(self.divisor)
+
+    @property
+    def domain(self) -> Geometry:
+        """The computational domain: the geometry then the shells, unchecked.
+
+        A Geometry under the geometry's own mapping, whose layers and
+        interfaces carry the numbering the mesh will.  Whether the mapping
+        is defined on the shells is the builder's check, not this one's.
+        """
+        g = self.geometry
+        if not self.shells:
+            return g
+        sk = g.skeleton.extended(self.shell_radii)
+        return Geometry(
+            sk, mapping=g.mapping,
+            layer_names=[lay.name for lay in g.layers] + [s.name for s in self.shells],
+            interface_names=[f.name for f in g.interfaces] + [None] * len(self.shells),
+            rtol=g.rtol, check=False)
+
+    @property
+    def layers(self) -> tuple[LayerInfo, ...]:
+        """The layers of the computational domain, centre outward."""
+        return self.domain.layers
+
+    @property
+    def interfaces(self) -> tuple[InterfaceInfo, ...]:
+        """The interfaces of the computational domain, centre outward."""
+        return self.domain.interfaces
+
+
+@dataclass
+class ValidationReport:
+    """The outcome of every check of a built mesh, whether or not any failed."""
+
+    #: The mesh dimension.
+    dimension: int
+    _: KW_ONLY
+    #: Elements whose minSICN is not positive.
+    negative_jacobians: int = 0
+    #: The worst minSICN over the cells.
+    min_sicn: float = 0.0
+    #: Cells with negative signed volume or area.
+    negative_cells: int = 0
+    #: Boundary faces whose normal points towards the centre they enclose.
+    inward_faces: int = 0
+    #: The largest distance of a tagged interface's mean radius from the
+    #: radius asked for, in mesh units.
+    max_interface_radius_error: float = 0.0
+    #: The number of physical groups found, by "layers" and "interfaces".
+    group_counts: dict = field(default_factory=dict)
+    #: Every failed check, in words.
+    failures: list = field(default_factory=list)
+    #: Every warning, in words.
+    warnings: list = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
+
+    def raise_if_failed(self) -> "ValidationReport":
+        """Raise ValueError listing every failure, or return self."""
+        if self.failures:
+            raise ValueError(
+                "the generated mesh failed validation:\n  - "
+                + "\n  - ".join(self.failures))
+        return self
+
+    def __repr__(self) -> str:
+        state = "ok" if self.ok else f"{len(self.failures)} FAILED"
+        return (f"ValidationReport({state}, minSICN {self.min_sicn:.4g}, "
+                f"max interface error {self.max_interface_radius_error:.3g})")
 
 
 @dataclass(frozen=True)
 class MeshResult:
     """What a build produced.
 
-    `body` is the *resolved* body -- after coarsening, the outer
-    boundary, insertion and buffering -- which is what the manifest describes and
-    what a caller needs to interpret the attribute numbers.
-
-    The last three are what the MFEM exporter (`mesh3d/export.py`) needs
-    and cannot recover from the files: the spec it was built from, the
-    `MeshUnits` relating mesh lengths to the body's, and the mapping in
-    the *body's* coordinates, which is the one whose F and J carry the
-    fields across.  They are keyword-only with defaults so a MeshResult
-    written by hand, in a test or a script, still constructs.
+    `mapping` is the mapping in mesh units, `ScaledMapping(geometry.mapping,
+    1 / divisor)`, which is what the exporter applies to the nodes it
+    reads back; it is None for a mesh that was not built from a
+    geometry.  The keyword fields have defaults so a MeshResult written
+    by hand still constructs.
     """
 
+    #: The MSH 2.2 file.
     msh_path: Path
+    #: The JSON manifest beside it.
     manifest_path: Path
-    body: object
+    #: The geometry the mesh was built from; None for an offset mesh.
+    geometry: Geometry | None
+    #: Element, node, layer and interface counts.
     counts: dict
-    validation: object
+    #: The checks the mesh passed or failed.
+    validation: ValidationReport
+    #: Seconds spent in each stage of the build.
     timings: dict
     _: KW_ONLY
-    spec: object = None
-    units: object = None
-    mapping: object = None
+    #: The spec the mesh was built from, if any.
+    spec: MeshSpec | None = None
+    #: What every length was divided by before meshing.
+    divisor: float = 1.0
+    #: The mapping in mesh units, or None where there was no geometry.
+    mapping: Mapping | None = None
 
     def __repr__(self) -> str:
         n = self.counts.get("elements", "?")

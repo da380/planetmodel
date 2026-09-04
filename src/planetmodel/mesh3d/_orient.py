@@ -1,31 +1,21 @@
-"""_orient.py -- consistent element and boundary orientation.
+"""Consistent element and boundary orientation, and curving.
 
-MFEM reports "elements with wrong orientation (fixed)" when it has to
-repair a mesh on load.  It is a warning rather than an error, and the
-mesh works afterwards, which is exactly why it is worth eliminating at
-the source: a warning that always appears stops being read, and the
-next one -- about something that matters -- goes with it.
+MFEM repairs a mesh with inconsistent orientation on load and says so
+with a warning; a warning that always appears stops being read, so the
+mesh is delivered consistent instead.  Two things are checked.
 
-Two separate things are checked here.
+Cells: every element must have positive signed volume (3D) or area
+(2D).  Boundary faces: every interface of a concentric domain encloses
+the origin, so "outward" means "away from the origin" and is
+unambiguous; OCC orients a surface that bounds shells on both sides by
+its own convention, which can point inward, and consistency here is
+what lets a consumer treat interface i as the outer boundary of layer i
+without inspecting normals itself.
 
-**Cells.**  Every element must have positive signed volume (3D) or area
-(2D).  gmsh 4.15 does not in fact produce negatives for these
-geometries, but that is an observation about one version and one set of
-algorithms, not a guarantee, so it is checked and repaired rather than
-assumed.
-
-**Boundary faces.**  Every interface bounds a region containing the
-origin, so "outward" means "away from the origin" and is unambiguous.
-gmsh inherits face orientation from the CAD surface, and OCC orients a
-surface that bounds shells on both sides -- every interior interface --
-by its own convention, which for the middle interface of a three-shell
-body points *inward*.  Consistency here is what lets a consumer treat
-interface i as the outer boundary of layer i without inspecting normals
-itself.
-
-Both run at element order 1, before setOrder: permuting the vertices of
-a straight simplex is trivial, whereas permuting a curved element's
-interior nodes consistently is not.
+Both run at element order 1, before the order is raised: permuting the
+vertices of a straight simplex is trivial, permuting a curved element's
+interior nodes consistently is not.  `raise_order` then curves the mesh
+and repairs what curving folded.
 """
 from __future__ import annotations
 
@@ -34,10 +24,11 @@ from dataclasses import KW_ONLY, dataclass
 import gmsh
 import numpy as np
 
+from .spec import QUALITY_FLOOR
+
 __all__ = ["OrientationReport", "node_positions", "signed_measures",
-           "orient_cells", "orient_boundary", "orient_mesh",
-           "raise_order",
-           "element_quality"]
+           "outward_dots", "orient_cells", "orient_boundary", "orient_mesh",
+           "raise_order", "element_quality"]
 
 
 @dataclass(frozen=True)
@@ -125,11 +116,10 @@ def orient_cells(dimension: int, *, pos: dict | None = None) -> tuple[int, int]:
 def outward_dots(tag: int, pos: dict, *, centre=(0.0, 0.0, 0.0)):
     """(element tags, normal . (centroid - centre)) for a 3D surface.
 
-    Positive means the face normal points away from `centre`.  This is a
-    well-posed question only for a surface that encloses `centre` -- a
-    layered body's interfaces all enclose the origin, which is the
-    default; an offset inclusion encloses its own centre and nothing
-    else, and asking about the origin there reverses part of it.
+    Positive means the face normal points away from `centre`.  This is
+    well posed only for a surface that encloses `centre`: a concentric
+    interface encloses the origin, an offset inclusion encloses its own
+    centre and nothing else.
     """
     centre = np.asarray(centre, dtype=float)
     all_tags, all_dots = [], []
@@ -168,12 +158,15 @@ def orient_boundary(dimension: int, *, pos: dict | None = None,
 
 def orient_mesh(dimension: int, *, centres: dict | None = None
                 ) -> OrientationReport:
-    """Repair cell and boundary orientation; call before setOrder."""
+    """Repair cell and boundary orientation; call before raising the order."""
     pos = node_positions()
     cells_checked, cells_flipped = orient_cells(dimension, pos=pos)
-    faces_checked, faces_flipped = orient_boundary(dimension, pos=pos, centres=centres)
-    return OrientationReport(cells_checked=cells_checked, cells_flipped=cells_flipped,
-                             faces_checked=faces_checked, faces_flipped=faces_flipped)
+    faces_checked, faces_flipped = orient_boundary(dimension, pos=pos,
+                                                   centres=centres)
+    return OrientationReport(cells_checked=cells_checked,
+                             cells_flipped=cells_flipped,
+                             faces_checked=faces_checked,
+                             faces_flipped=faces_flipped)
 
 
 def element_quality(dimension: int) -> tuple[float, int, int]:
@@ -196,19 +189,17 @@ def element_quality(dimension: int) -> tuple[float, int, int]:
 
 
 def raise_order(dimension: int, order: int, *, optimize: bool = True,
-                quality_floor: float = 0.05) -> dict:
+                quality_floor: float = QUALITY_FLOOR) -> dict:
     """Curve the mesh to `order`, then repair any element that folded or
     came out badly shaped.
 
     Raising the order moves the new nodes onto the CAD surface, and
     where an element is large compared with the local curvature that
-    can invert it -- *before* any topography is applied.  So gmsh's
-    high-order optimiser runs whenever order > 1 and some element is
-    invalid, or the worst minSICN is below `quality_floor` (the level
-    the validation report warns at).  It is not free, and it is not
-    always sufficient, which is why the caller still validates
-    afterwards rather than trusting this to have worked.  The numbers
-    behind the floor are in `docs/notes/mesh_thresholds.md`.
+    can invert it.  gmsh's high-order optimiser runs whenever order > 1
+    and some element is invalid or the worst minSICN is below
+    `quality_floor`.  It is not always sufficient, which is why the
+    caller validates afterwards rather than trusting this to have
+    worked.
     """
     if order < 1:
         raise ValueError(f"element order must be at least 1, got {order}")
