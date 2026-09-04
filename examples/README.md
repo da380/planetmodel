@@ -10,7 +10,8 @@ a temporary directory.
 |---|---|
 | `01_skeleton_and_geometry.py` | a skeleton, its surgery, a geometry with names, hollow geometries, scaling |
 | `02_an_analytic_mapping.py` | a radial stretch from an analytic displacement, `F` and `J`, validity, kinks, a non-radial mapping |
-| `03_a_mesh_for_mfem.py` | a 2D and a 3D mesh of a geometry with a buffer shell, the manifest, export to MFEM (needs the `meshing` and `mfem` extras) |
+| `03_a_radial_mesh.py` | the GLL reference element, a radial mesh over a skeleton, per-element nodes, the exact polynomial view, truncation by degree, a figure (uses the `plot` extra when present) |
+| `04_a_mesh_for_mfem.py` | a 2D and a 3D mesh of a geometry with a buffer shell, the manifest, export to MFEM; the files are kept under `figures/tutorial_04_meshes/` for gmsh and glvis, or discarded with `--temp` (needs the `meshing` and `mfem` extras) |
 
 ```
 poetry run python examples/tutorials/01_skeleton_and_geometry.py

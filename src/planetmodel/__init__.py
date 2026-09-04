@@ -19,7 +19,7 @@ from .displacement import (CallableDisplacement, RadialDisplacement,
 from .geometry import Geometry, InterfaceInfo, LayerInfo
 from .mapping import (IdentityMapping, Mapping, MappingBase, MappingPerturbation,
                       RadialStretch, ScaledMapping, ValidityReport,
-                      validity_lattice)
+                      outer_radius_of, validity_lattice)
 from .mesh1d import RadialMesh
 from .skeleton import CoarseningMap, Location, Skeleton
 from . import testing  # noqa: F401
@@ -30,7 +30,7 @@ __all__ = [
     "Skeleton", "Location", "CoarseningMap",
     "Geometry", "LayerInfo", "InterfaceInfo",
     "Mapping", "MappingBase", "IdentityMapping", "RadialStretch", "ScaledMapping",
-    "ValidityReport", "MappingPerturbation", "validity_lattice",
+    "ValidityReport", "MappingPerturbation", "validity_lattice", "outer_radius_of",
     "RadialDisplacement", "ZeroDisplacement", "CallableDisplacement",
     "as_displacement",
     "RadialMesh",

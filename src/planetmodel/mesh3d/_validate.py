@@ -60,7 +60,7 @@ def validate_mesh(tagging, *, expected_radii, layer_names=(),
                   centres: dict | None = None) -> ValidationReport:
     """Check a finished mesh against what was asked for.
 
-    `expected_radii` are the interface radii in mesh units.
+    `expected_radii` are the interface radii the mesh was built at.
     `radius_check` is a (worst_error, failures) pair from
     `check_interface_radii` measured before the nodes were displaced;
     without it the radii are measured here, which is correct only while

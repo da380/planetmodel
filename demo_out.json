@@ -1,0 +1,160 @@
+{
+  "geometry": {
+    "outer_radius": 1.2,
+    "inner_radius": 0.0,
+    "n_layers": 4,
+    "n_shells": 1
+  },
+  "mesh": {
+    "dimension": 3,
+    "element_order": 2,
+    "gmsh_version": "4.15.2",
+    "msh_version": 2.2,
+    "algorithm_2d": 6,
+    "algorithm_3d": 1,
+    "n_nodes": 14292,
+    "n_elements": 13265,
+    "high_order_optimised": false,
+    "date": "2026-09-04T17:02:45+00:00"
+  },
+  "delivery": "referential",
+  "layers": [
+    {
+      "attribute": 1,
+      "name": "core",
+      "r_inner": 0.0,
+      "r_outer": 0.4,
+      "in_geometry": true
+    },
+    {
+      "attribute": 2,
+      "name": "mantle",
+      "r_inner": 0.4,
+      "r_outer": 0.8,
+      "in_geometry": true
+    },
+    {
+      "attribute": 3,
+      "name": "crust",
+      "r_inner": 0.8,
+      "r_outer": 1.0,
+      "in_geometry": true
+    },
+    {
+      "attribute": 4,
+      "name": "buffer",
+      "r_inner": 1.0,
+      "r_outer": 1.2,
+      "in_geometry": false
+    }
+  ],
+  "interfaces": [
+    {
+      "attribute": 1,
+      "name": "cmb",
+      "mean_radius": 0.4,
+      "between_layers": [
+        0,
+        1
+      ]
+    },
+    {
+      "attribute": 2,
+      "name": "moho",
+      "mean_radius": 0.8,
+      "between_layers": [
+        1,
+        2
+      ]
+    },
+    {
+      "attribute": 3,
+      "name": "surface",
+      "mean_radius": 1.0,
+      "between_layers": [
+        2,
+        3
+      ]
+    },
+    {
+      "attribute": 4,
+      "name": "interface_4",
+      "mean_radius": 1.2,
+      "between_layers": [
+        3,
+        -1
+      ]
+    }
+  ],
+  "mapping": {
+    "kind": "RadialStretch",
+    "repr": "RadialStretch(CallableDisplacement(h 'confined', knots=[0.8, 1.0]), rmax=2)",
+    "knots": [
+      0.8,
+      1.0
+    ],
+    "applied_to_nodes": false
+  },
+  "sizing": {
+    "policy": "UniformInterfaces",
+    "per_interface": [
+      {
+        "attribute": 1,
+        "size": 0.15,
+        "far_size": 0.3,
+        "decay_width": 0.3
+      },
+      {
+        "attribute": 2,
+        "size": 0.15,
+        "far_size": 0.3,
+        "decay_width": 0.3
+      },
+      {
+        "attribute": 3,
+        "size": 0.15,
+        "far_size": 0.3,
+        "decay_width": 0.3
+      },
+      {
+        "attribute": 4,
+        "size": 0.15,
+        "far_size": 0.3,
+        "decay_width": 0.3
+      }
+    ]
+  },
+  "validation": {
+    "negative_jacobians": 0,
+    "min_sicn": 0.1589815490845203,
+    "wrong_orientation": 0,
+    "faces_reoriented": 1174,
+    "max_interface_radius_error": 2.220446049250313e-16,
+    "warnings": []
+  },
+  "provenance": {
+    "planetmodel_version": "1.0.0.dev1",
+    "mesh_file": "demo.msh",
+    "perturbation": null,
+    "meta": {}
+  },
+  "files": {
+    "mesh": "demo_out.mesh",
+    "mesh_read_options": {
+      "generate_edges": 1,
+      "refine": 0,
+      "fix_orientation": false
+    },
+    "grid_functions": [
+      {
+        "kind": "displacement",
+        "name": "displacement",
+        "file": "demo_out.displacement.gf",
+        "fe_space": "H1_3D_P2",
+        "vdim": 3,
+        "ordering": "byVDIM"
+      }
+    ]
+  },
+  "schema": "planetmodel.mesh.manifest/2"
+}

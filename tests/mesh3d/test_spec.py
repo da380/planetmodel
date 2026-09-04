@@ -34,7 +34,6 @@ def test_shells_chain_outward_from_the_geometry():
                     shells=[Shell(ratio=0.5, name="a"), Shell(ratio=0.5, name="b")])
     assert spec.shell_radii == pytest.approx((1.5, 2.25))
     assert spec.outer_radius == pytest.approx(2.25)
-    assert spec.effective_divisor == pytest.approx(2.25)
     assert [lay.name for lay in spec.layers] == ["core", "mantle", "crust", "a", "b"]
     assert [f.name for f in spec.interfaces] == ["cmb", "moho", "surface", None, None]
     assert [f.between for f in spec.interfaces] == \
@@ -67,8 +66,6 @@ def test_without_shells_the_domain_is_the_geometry():
     spec = MeshSpec(g, COARSE)
     assert spec.domain is g
     assert spec.outer_radius == 1.0
-    assert spec.effective_divisor == 1.0
-    assert MeshSpec(g, COARSE, divisor=2.0).effective_divisor == 2.0
 
 
 # -------------------------------------------------------------- the spec
@@ -86,8 +83,8 @@ def test_mesh_spec_validates():
         MeshSpec(g, COARSE, order=4)
     with pytest.raises(ValueError, match="delivery must be"):
         MeshSpec(g, COARSE, delivery="halfway")
-    with pytest.raises(ValueError, match="divisor must be positive"):
-        MeshSpec(g, COARSE, divisor=0.0)
+    with pytest.raises(TypeError, match="divisor"):
+        MeshSpec(g, COARSE, divisor=2.0)
 
 
 def test_mesh_spec_is_frozen_with_defaults():
@@ -179,7 +176,7 @@ def test_mesh_result_constructs_by_hand(tmp_path):
     r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None, counts={"elements": 3, "layers": 1},
                    validation=ValidationReport(dimension=2), timings={})
-    assert r.spec is None and r.mapping is None and r.divisor == 1.0
+    assert r.spec is None and r.mapping is None
     assert repr(r) == "MeshResult(a.msh, 3 elements, 1 layers)"
 
 

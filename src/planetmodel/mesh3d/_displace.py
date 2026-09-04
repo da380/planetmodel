@@ -40,8 +40,8 @@ class PerturbationReport:
 def apply_mapping(mapping, *, check: bool = True) -> PerturbationReport:
     """Move every node of the current mesh by `mapping`.
 
-    The mapping must already be expressed in mesh coordinates; the
-    builder scales it before calling this.
+    The mapping acts on the node coordinates as they are: the mesh is
+    in the reference geometry's own numbers, and so is the mapping.
     """
     tags, coords, _ = gmsh.model.mesh.getNodes()
     if tags.size == 0:

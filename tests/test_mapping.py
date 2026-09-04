@@ -2,9 +2,10 @@
 import numpy as np
 import pytest
 
-from planetmodel import (CallableDisplacement, IdentityMapping, MappingBase,
-                         RadialStretch, ScaledMapping, Skeleton, ValidityReport,
-                         ZeroDisplacement, testing, validity_lattice)
+from planetmodel import (CallableDisplacement, Geometry, IdentityMapping,
+                         MappingBase, RadialStretch, ScaledMapping, Skeleton,
+                         ValidityReport, ZeroDisplacement, outer_radius_of, testing,
+                         validity_lattice)
 from planetmodel.frames import cartesian_points, spherical_coordinates
 
 SK = Skeleton([0.0, 0.4, 0.8, 1.0])
@@ -103,6 +104,9 @@ def test_radial_stretch_needs_rmax_and_moves_along_rays():
         RadialStretch(flattening_h(0.05))
     with pytest.raises(ValueError, match="positive"):
         RadialStretch(flattening_h(0.05), rmax=0.0)
+    assert RadialStretch(flattening_h(0.05), rmax=SK).rmax == 1.0
+    assert RadialStretch(flattening_h(0.05), rmax=Geometry(SK)).rmax == 1.0
+    assert outer_radius_of(2.5) == 2.5 and outer_radius_of(SK) == 1.0
     m = RadialStretch(flattening_h(0.05), rmax=A)
     X = points()
     x = m(X)

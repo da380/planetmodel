@@ -1,12 +1,12 @@
 """The assembly line: a MeshSpec becomes a mesh on disk.
 
-The computational domain is the geometry followed by its shells.  Every
-length is divided by the spec's divisor and the mapping is conjugated
-by the same factor with `ScaledMapping`, so gmsh sees coordinates of
-order one whatever the geometry's units.  Then CAD, tagging, sizing,
-meshing at order 1, orientation, curving; then, for a physical delivery
-of a non-identity mapping, the node displacement; then validation; and
-only then anything is written.  A mesh that fails its checks and exists
+The computational domain is the geometry followed by its shells, and
+its numbers are the mesh's numbers: every radius and every element
+size reaches gmsh as the geometry gives it, and the mapping acts on
+the mesh's coordinates as they are.  Then CAD, tagging, sizing, meshing
+at order 1, orientation, curving; then, for a physical delivery of a
+non-identity mapping, the node displacement; then validation; and only
+then anything is written.  A mesh that fails its checks and exists
 anyway looks finished, so nothing reaches disk before validation.
 
 With shells and a non-identity mapping the mapping must be defined and
@@ -18,7 +18,6 @@ geometry's own checks are the whole guarantee.
 from __future__ import annotations
 
 import time
-import warnings
 from pathlib import Path
 
 import gmsh
@@ -40,10 +39,6 @@ from ._writer import confirm_reread, element_counts, write_msh
 from .spec import MeshResult, MeshSpec
 
 __all__ = ["build_layered_mesh", "require_mapping_on_shells", "policy_name"]
-
-#: Outer radii outside this range, in mesh units, put gmsh far from the
-#: coordinate magnitudes its absolute kernel tolerances are tuned for.
-_GMSH_COMFORTABLE_RANGE = (1e-3, 1e4)
 
 
 def require_mapping_on_shells(spec: MeshSpec) -> None:
@@ -97,32 +92,21 @@ def build_layered_mesh(spec: MeshSpec, path, *, verbose: bool = False
     t0 = clock()
     geometry = spec.geometry
     domain = spec.domain
-    divisor = spec.effective_divisor
     if spec.shells and not geometry.is_identity:
         require_mapping_on_shells(spec)
-    nd = domain.scaled(1.0 / divisor)
-    mapping = nd.mapping
-    moved = spec.delivery == "physical" and not nd.is_identity
+    mapping = domain.mapping
+    moved = spec.delivery == "physical" and not domain.is_identity
     timings["resolve"] = clock() - t0
 
     d = spec.dimension
-    boundaries = nd.skeleton.boundaries
-    outer_nd = float(boundaries[-1])
-    lo, hi = _GMSH_COMFORTABLE_RANGE
-    if not lo <= outer_nd <= hi:
-        warnings.warn(
-            f"the divided outer radius is {outer_nd:g}, outside [{lo:g}, {hi:g}]; "
-            "gmsh's kernel tolerances are absolute and tuned for coordinates "
-            "of order one, so expect degraded robustness. Check the divisor.",
-            stacklevel=2)
-    interface_radii = [f.radius for f in nd.interfaces]
+    boundaries = domain.skeleton.boundaries
+    outer = spec.outer_radius
+    interface_radii = [f.radius for f in domain.interfaces]
     layer_names = [lay.name for lay in domain.layers]
     interface_names = [f.name for f in domain.interfaces]
 
-    # Sizing is computed in the geometry's own lengths and divided with them.
-    sizes = {i: s.scaled(1.0 / divisor)
-             for i, s in spec.sizing(domain.interfaces, spec.outer_radius).items()}
-    check_sizing_scale(outer_nd, sizes)
+    sizes = dict(spec.sizing(domain.interfaces, outer))
+    check_sizing_scale(outer, sizes)
     check_sizing_resolves_spans(boundaries, sizes)
 
     with session(name=path.stem or "planetmodel", verbose=verbose):
@@ -172,13 +156,13 @@ def build_layered_mesh(spec: MeshSpec, path, *, verbose: bool = False
         # Read inside the session: gmsh answers nothing once finalized.
         gmsh_version = gmsh.option.getString("General.Version")
         msh_path = manifest.beside(path, ".msh")
-        card = _build_manifest(spec, nd, divisor, sizes, counts, report,
-                               curving, orientation, perturbation, msh_path,
+        card = _build_manifest(spec, sizes, counts, report, curving,
+                               orientation, perturbation, msh_path,
                                gmsh_version, moved=moved)
         # The manifest is checked and written before the mesh: a mesh on
         # disk with no manifest, or with one that disagrees, looks finished.
-        manifest.validate_against(card, layer_count=nd.nlayers,
-                                  interface_count=len(nd.interfaces),
+        manifest.validate_against(card, layer_count=domain.nlayers,
+                                  interface_count=len(domain.interfaces),
                                   groups={k: list(v) for k, v in groups.items()})
         manifest_path = manifest.write(path, card)
         try:
@@ -190,40 +174,38 @@ def build_layered_mesh(spec: MeshSpec, path, *, verbose: bool = False
 
     confirm_reread(msh_path, manifest_path, d, layer_names, interface_names)
 
-    counts["layers"] = nd.nlayers
-    counts["interfaces"] = len(nd.interfaces)
+    counts["layers"] = domain.nlayers
+    counts["interfaces"] = len(domain.interfaces)
     return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
                       geometry=geometry, counts=counts, validation=report,
-                      timings=timings, spec=spec, divisor=divisor,
-                      mapping=mapping)
+                      timings=timings, spec=spec, mapping=mapping)
 
 
-def _build_manifest(spec, nd, divisor, sizes, counts, report, curving,
-                    orientation, perturbation, msh_path, gmsh_version, *,
-                    moved: bool):
-    """Assemble the manifest from what the build did; `nd` is the
-    computational domain in mesh units."""
-    b = nd.skeleton.boundaries
+def _build_manifest(spec, sizes, counts, report, curving, orientation,
+                    perturbation, msh_path, gmsh_version, *, moved: bool):
+    """Assemble the manifest from what the build did."""
+    domain = spec.domain
+    b = domain.skeleton.boundaries
     n_geometry = spec.geometry.nlayers
 
     layers = [manifest.LayerEntry.from_layer(
-        lay, attribute=i + 1, r_inner_nd=b[i], r_outer_nd=b[i + 1],
+        lay, attribute=i + 1, r_inner=b[i], r_outer=b[i + 1],
         in_geometry=i < n_geometry)
-        for i, lay in enumerate(nd.layers)]
+        for i, lay in enumerate(domain.layers)]
     interfaces = [manifest.InterfaceEntry.from_interface(
-        face, attribute=k + 1, mean_radius_nd=face.radius)
-        for k, face in enumerate(nd.interfaces)]
+        face, attribute=k + 1, mean_radius=face.radius)
+        for k, face in enumerate(domain.interfaces)]
 
     return manifest.MeshManifest.from_build(
         geometry=manifest.geometry_block(
-            divisor=divisor, outer_radius_nd=b[-1], inner_radius_nd=b[0],
-            n_layers=nd.nlayers, n_shells=len(spec.shells)),
+            outer_radius=b[-1], inner_radius=b[0], n_layers=domain.nlayers,
+            n_shells=len(spec.shells)),
         mesh=manifest.mesh_block(
             dimension=spec.dimension, order=spec.order,
             gmsh_version=gmsh_version, algorithm_2d=spec.algorithm_2d,
             algorithm_3d=spec.algorithm_3d, counts=counts, curving=curving),
         delivery=spec.delivery, layers=layers, interfaces=interfaces,
-        mapping=manifest.mapping_block(nd.mapping, knots_nd=nd.knots(),
+        mapping=manifest.mapping_block(domain.mapping, knots=domain.knots(),
                                        applied_to_nodes=moved),
         sizing=manifest.sizing_block(policy=policy_name(spec.sizing),
                                      sizes=sizes),

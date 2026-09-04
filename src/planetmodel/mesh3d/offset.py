@@ -39,8 +39,7 @@ __all__ = ["build_offset_mesh"]
 
 def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
                       offset: float = 0.0, sizing=None, dimension: int = 3,
-                      order: int = 2, divisor: float | None = None,
-                      layer_names=("inclusion", "matrix"),
+                      order: int = 2, layer_names=("inclusion", "matrix"),
                       interface_names=("inclusion_boundary", "surface"),
                       algorithm_2d: int = 6, algorithm_3d: int = 1,
                       validate: bool = True, verbose: bool = False
@@ -49,10 +48,9 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
 
     `offset` displaces the inner body along z in 3D and along x in 2D,
     within the plane the geometry is drawn in.  Zero is the concentric
-    case.  `sizing` is a sizing rule, applied to the two boundaries;
-    `divisor` is what every length is divided by before meshing, the
-    outer radius by default.  The result has no geometry, spec or
-    mapping.
+    case.  `sizing` is a sizing rule, applied to the two boundaries.
+    Every length is meshed in the numbers given.  The result has no
+    geometry, spec or mapping.
     """
     path = Path(path)
     a, b, d = float(inner_radius), float(outer_radius), float(offset)
@@ -71,27 +69,21 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         raise ValueError(
             "no sizing given: an offset mesh takes the same sizing rules as "
             "a layered geometry, applied to its two boundaries")
-    divisor = b if divisor is None else float(divisor)
-    if not divisor > 0.0:
-        raise ValueError(f"divisor must be positive, got {divisor}")
-
-    a_nd, b_nd, d_nd = a / divisor, b / divisor, d / divisor
     timings: dict[str, float] = {}
     clock = time.perf_counter
 
-    # The sizing rule sees the boundaries in the given lengths, as a
-    # layered geometry's rule does, and its answer is divided with them.
+    # The sizing rule sees the two boundaries as a layered geometry's
+    # rule sees its interfaces.
     faces = [InterfaceInfo(0, a, (0, 1), name=interface_names[0]),
              InterfaceInfo(1, b, (1, -1), name=interface_names[1])]
-    sizes = {index: s.scaled(1.0 / divisor)
-             for index, s in sizing(faces, b).items()}
-    check_sizing_scale(b_nd, sizes)
+    sizes = dict(sizing(faces, b))
+    check_sizing_scale(b, sizes)
 
     with session(name=path.stem or "offset", verbose=verbose):
         t0 = clock()
-        cells, cad_faces = _offset_geometry(a_nd, b_nd, d_nd, dimension)
+        cells, cad_faces = _offset_geometry(a, b, d, dimension)
         tagging = Tagging(dimension=dimension, cells=cells, faces=cad_faces,
-                          radii=(a_nd, b_nd))
+                          radii=(a, b))
         timings["geometry"] = clock() - t0
 
         t0 = clock()
@@ -104,7 +96,7 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         timings["mesh"] = clock() - t0
 
         # "Outward" on the inclusion means away from its own centre.
-        centre = (0.0, 0.0, d_nd) if dimension == 3 else (d_nd, 0.0, 0.0)
+        centre = (0.0, 0.0, d) if dimension == 3 else (d, 0.0, 0.0)
         centres = {tagging.faces[0]: centre}
 
         t0 = clock()
@@ -120,7 +112,7 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         # radius b; the inner one is offset and has nothing to be
         # checked against.
         report = validate_mesh(
-            tagging, expected_radii=(np.nan, b_nd),
+            tagging, expected_radii=(np.nan, b),
             layer_names=layer_names, interface_names=interface_names,
             centres=centres)
         if validate:
@@ -132,8 +124,8 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
         gmsh_version = gmsh.option.getString("General.Version")
         msh_path = manifest.beside(path, ".msh")
         card = _build_manifest(
-            dimension=dimension, order=order, a_nd=a_nd, b_nd=b_nd, d_nd=d_nd,
-            divisor=divisor, sizes=sizes, measured=measured, counts=counts,
+            dimension=dimension, order=order, a=a, b=b, d=d, sizes=sizes,
+            measured=measured, counts=counts,
             report=report, curving=curving, orientation=orientation,
             layer_names=layer_names, interface_names=interface_names,
             algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
@@ -156,7 +148,7 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
     counts["interfaces"] = 2
     return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
                       geometry=None, counts=counts, validation=report,
-                      timings=timings, divisor=divisor)
+                      timings=timings)
 
 
 def _offset_geometry(a: float, b: float, d: float, dimension: int):
@@ -226,33 +218,32 @@ def _apply_groups(tagging: Tagging, layer_names, interface_names) -> dict:
     return out
 
 
-def _build_manifest(*, dimension, order, a_nd, b_nd, d_nd, divisor, sizes,
-                    measured, counts, report, curving, orientation,
-                    layer_names, interface_names, algorithm_2d, algorithm_3d,
-                    msh_path, gmsh_version, policy):
+def _build_manifest(*, dimension, order, a, b, d, sizes, measured, counts,
+                    report, curving, orientation, layer_names, interface_names,
+                    algorithm_2d, algorithm_3d, msh_path, gmsh_version, policy):
     """The same schema a layered mesh ships, saying what is true here.
 
-    `r_inner_nd` and `r_outer_nd` are the spheres a region lies between,
-    which for a displaced inclusion describes its size and not its
-    position; `geometry.offset_nd` says where it is.
+    `r_inner` and `r_outer` are the spheres a region lies between, which
+    for a displaced inclusion describes its size and not its position;
+    `geometry.offset` says where it is.
     """
     kind = "two_sphere" if dimension == 3 else "two_disc"
     layers = [
-        manifest.LayerEntry(attribute=1, name=layer_names[0], r_inner_nd=0.0,
-                            r_outer_nd=a_nd, in_geometry=True),
-        manifest.LayerEntry(attribute=2, name=layer_names[1], r_inner_nd=a_nd,
-                            r_outer_nd=b_nd, in_geometry=True),
+        manifest.LayerEntry(attribute=1, name=layer_names[0], r_inner=0.0,
+                            r_outer=a, in_geometry=True),
+        manifest.LayerEntry(attribute=2, name=layer_names[1], r_inner=a,
+                            r_outer=b, in_geometry=True),
     ]
     interfaces = [
         manifest.InterfaceEntry(attribute=i + 1, name=interface_names[i],
-                                mean_radius_nd=float(measured[i]),
+                                mean_radius=float(measured[i]),
                                 between_layers=[i, i + 1 if i == 0 else -1])
         for i in (0, 1)
     ]
     return manifest.MeshManifest.from_build(
         geometry=manifest.geometry_block(
-            divisor=divisor, outer_radius_nd=b_nd, inner_radius_nd=0.0,
-            n_layers=2, kind=kind, inclusion_radius_nd=a_nd, offset_nd=d_nd),
+            outer_radius=b, inner_radius=0.0, n_layers=2, kind=kind,
+            inclusion_radius=a, offset=d),
         mesh=manifest.mesh_block(
             dimension=dimension, order=order, gmsh_version=gmsh_version,
             algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,

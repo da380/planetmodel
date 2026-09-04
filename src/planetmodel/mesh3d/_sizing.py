@@ -19,8 +19,9 @@ __all__ = ["apply_size_fields", "apply_mesh_options",
 def apply_size_fields(tagging, sizes: dict) -> int:
     """Build the background size field from per-interface sizings.
 
-    `sizes` maps interface index to InterfaceSizing, in mesh units.
-    Returns the tag of the field set as the background.
+    `sizes` maps interface index to InterfaceSizing, in the lengths the
+    geometry is drawn in.  Returns the tag of the field set as the
+    background.
     """
     if not sizes:
         raise ValueError("no sizing given: every interface needs one")
@@ -77,8 +78,8 @@ def check_sizing_resolves_spans(boundaries, sizes, *, max_ratio: float = 10.0,
     from the sizing rule that caused it.  `max_ratio` is the ratio of
     element size to layer thickness at which gmsh fails.
 
-    `boundaries` are the skeleton boundaries in mesh units, innermost
-    first (a leading zero for a full domain); `sizes` maps interface
+    `boundaries` are the skeleton boundaries, innermost first (a leading
+    zero for a full domain); `sizes` maps interface
     index to InterfaceSizing, interface k sitting on boundary k for a
     hollow domain and on boundary k + 1 for a full one.  Each layer is
     judged by the finer of its two bounding interfaces.
@@ -111,13 +112,14 @@ def check_sizing_scale(outer_radius: float, sizes, *, floor: float = 1e-5,
                        ceiling: float = 2.0) -> None:
     """Catch a sizing given at the wrong scale before gmsh does.
 
-    Sizing rules return lengths in the geometry's own units, and the
-    builder divides them by the divisor along with the radii.  Values
-    already divided get divided a second time, and gmsh reports the
-    result as "identical points in triangulation", which names neither
-    the scale nor the rule.  A target element more than a hundred
-    thousand times smaller than the domain, or larger than the domain
-    itself, is not a resolution choice.
+    Sizing rules return lengths in the geometry's own units, the ones
+    its radii are in; a rule written for a unit ball and applied to one
+    of radius 6.4e6 asks for elements a million times too small, and
+    gmsh reports that as "identical points in triangulation", which
+    names neither the scale nor the rule.  Both bounds are relative to
+    the outer radius: a target element more than a hundred thousand
+    times smaller than the domain, or larger than the domain itself, is
+    not a resolution choice.
     """
     outer = float(outer_radius)
     smallest = min(s.size for s in sizes.values())
@@ -127,8 +129,7 @@ def check_sizing_scale(outer_radius: float, sizes, *, floor: float = 1e-5,
             f"the smallest element size is {smallest:.3g} against an outer "
             f"radius of {outer:.3g}, a ratio of {smallest / outer:.1e}, "
             "which is not a resolution choice. Sizing rules take lengths in "
-            "the geometry's own units; values already divided by the divisor "
-            "get divided a second time.")
+            "the geometry's own units, the ones its radii are in.")
     if largest > ceiling * outer:
         raise ValueError(
             f"the largest element size is {largest:.3g}, more than the outer "

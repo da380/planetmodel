@@ -38,7 +38,7 @@ from .frames import cartesian_points, spherical_coordinates
 __all__ = [
     "Mapping", "MappingBase", "IdentityMapping", "RadialStretch",
     "ScaledMapping", "ValidityReport", "MappingPerturbation",
-    "validity_lattice",
+    "validity_lattice", "outer_radius_of",
 ]
 
 #: A point closer to the origin than this fraction of `rmax` is treated as
@@ -121,6 +121,17 @@ def validity_lattice(skeleton, *, n_r: int = 8, n_theta: int = 25,
     theta = np.linspace(0.0, np.pi, n_theta)
     phi = np.linspace(-np.pi, np.pi, n_phi, endpoint=False)
     return (r[:, None, None], theta[None, :, None], phi[None, None, :])
+
+
+def outer_radius_of(domain) -> float:
+    """The outer radius a mapping is meant for: a number, or the outer
+    boundary of a skeleton or of a geometry."""
+    sk = getattr(domain, "skeleton", domain)
+    b = getattr(sk, "boundaries", None)
+    r = float(b[-1]) if b is not None else float(domain)
+    if not r > 0.0:
+        raise ValueError(f"the outer radius must be positive, got {r}")
+    return r
 
 
 def _points_or_sample(X, sample):
@@ -227,15 +238,14 @@ class RadialStretch(MappingBase):
 
     and orientation is preserved exactly when both factors are positive.
     Cartesian components are R F R^T with R the frame matrix.  `rmax` is
-    the outer radius of the domain the mapping is meant for: it sets the
-    scale of "close to the origin" and brackets the inverse.
+    the outer radius of the domain the mapping is meant for, given as a
+    number or as a skeleton or geometry whose outer boundary it is: it
+    sets the scale of "close to the origin" and brackets the inverse.
     """
 
-    def __init__(self, h, *, rmax: float, name: str | None = None) -> None:
+    def __init__(self, h, *, rmax, name: str | None = None) -> None:
         self.h = as_displacement(h)
-        self.rmax = float(rmax)
-        if not self.rmax > 0.0:
-            raise ValueError(f"rmax must be positive, got {rmax}")
+        self.rmax = outer_radius_of(rmax)
         self.name = name
 
     @property

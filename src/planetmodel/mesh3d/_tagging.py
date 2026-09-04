@@ -50,8 +50,8 @@ class Tagging:
 
 #: OCC pads every bounding box by roughly this much, absolutely: the
 #: same 1e-7 whether the radius is 0.2 or 6e6.  A matching tolerance
-#: must clear it, so a purely relative one would be too tight in mesh
-#: units, where radii are of order one.
+#: must clear it, so a purely relative one would be too tight for a
+#: domain of radius near one.
 _OCC_BBOX_PAD = 1e-7
 
 

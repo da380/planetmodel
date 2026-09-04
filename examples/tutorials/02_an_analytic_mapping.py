@@ -15,8 +15,14 @@
 # %%
 import numpy as np
 
-from planetmodel import (CallableDisplacement, Geometry, RadialStretch,
-                         Skeleton, testing, validity_lattice)
+from planetmodel import (
+    CallableDisplacement,
+    Geometry,
+    RadialStretch,
+    Skeleton,
+    testing,
+    validity_lattice,
+)
 from planetmodel.frames import cartesian_points
 
 sk = Skeleton([0.0, 0.19, 0.55, 0.99, 1.0])
@@ -26,8 +32,15 @@ sk = Skeleton([0.0, 0.19, 0.55, 0.99, 1.0])
 #
 # An oblate planet is `h = -f r P2(cos theta)` with `P2` the second
 # Legendre polynomial: the poles move in, the equator moves out, and the
-# displacement grows linearly with radius so the centre stays put. The
-# derivatives are written down too, so the deformation gradient is exact.
+# displacement grows linearly with radius so the centre stays put.
+#
+# A displacement is any callable `h(r, theta, phi)`. Wrapping it in a
+# `CallableDisplacement` gives it the rest of the protocol: the radial
+# derivative and the angular gradient, exact when they are passed in (or
+# carried by the function as attributes) and central differences
+# otherwise, and the list of `knots`, the radii where `dh/dr` is allowed to
+# jump. The three arguments arrive already broadcast to one shape, so a
+# derivative that does not depend on `r` need not mention it.
 
 # %%
 f = 1.0 / 300.0
@@ -42,17 +55,28 @@ def h(r, theta, phi):
 
 
 def dh_dr(r, theta, phi):
-    return -f * p2(theta) + 0.0 * r
+    return -f * p2(theta)
 
 
 def dh_dangles(r, theta, phi):
-    return (3.0 * f * r * np.cos(theta) * np.sin(theta),
-            np.zeros(np.broadcast(r, theta, phi).shape))
+    return (
+        3.0 * f * r * np.cos(theta) * np.sin(theta),
+        np.zeros(np.broadcast(r, theta, phi).shape),
+    )
 
 
-flattening = CallableDisplacement(h, radial_derivative=dh_dr,
-                                  angular_gradient=dh_dangles, name="flattening")
-m = RadialStretch(flattening, rmax=1.0)
+flattening = CallableDisplacement(
+    h, radial_derivative=dh_dr, angular_gradient=dh_dangles, name="flattening"
+)
+
+# %% [markdown]
+# A `RadialStretch` needs the outer radius of the domain it is meant for,
+# which sets the scale of "close to the centre" and brackets its inverse.
+# Give it as a number, or as the skeleton or geometry whose outer boundary
+# it is.
+
+# %%
+m = RadialStretch(flattening, rmax=sk)
 print(m)
 
 # %% [markdown]
@@ -75,11 +99,14 @@ print("J =", m.jacobian(X))
 # the inverse where the mapping has one.
 
 # %%
-points = cartesian_points(np.linspace(0.1, 0.95, 6)[:, None],
-                          np.linspace(0.2, 3.0, 5)[None, :], 0.4).reshape(-1, 3)
+points = cartesian_points(
+    np.linspace(0.1, 0.95, 6)[:, None], np.linspace(0.2, 3.0, 5)[None, :], 0.4
+).reshape(-1, 3)
 testing.check_mapping(m, points)
-print("contract passed; inverse round trip error:",
-      np.max(np.abs(m.inverse(m(points)) - points)))
+print(
+    "contract passed; inverse round trip error:",
+    np.max(np.abs(m.inverse(m(points)) - points)),
+)
 
 # %% [markdown]
 # ## Validity
@@ -97,8 +124,9 @@ print(m.is_valid(sample=lattice))
 # Exaggerate the flattening until the poles move in faster than the
 # radius grows.
 for amp in (100.0, 250.0, 320.0):
-    big = RadialStretch(CallableDisplacement(lambda r, t, p, a=amp: a * h(r, t, p)),
-                        rmax=1.0)
+    big = RadialStretch(
+        CallableDisplacement(lambda r, t, p, a=amp: a * h(r, t, p)), rmax=sk
+    )
     print(f"{amp:5.0f} x:", big.is_valid(sample=lattice))
 
 # %% [markdown]
@@ -110,12 +138,20 @@ for amp in (100.0, 250.0, 320.0):
 # let a mesher trust the mapping without checking it again.
 
 # %%
-g = Geometry(sk, mapping=m,
-             layer_names=["inner_core", "outer_core", "mantle", "crust"],
-             interface_names=["icb", "cmb", "moho", "surface"])
+g = Geometry(
+    sk,
+    mapping=m,
+    layer_names=["inner_core", "outer_core", "mantle", "crust"],
+    interface_names=["icb", "cmb", "moho", "surface"],
+)
 print(g)
 print("validity:", g.validity())
 testing.check_geometry(g)
+
+# The same in one step: `stretched` builds the radial stretch with this
+# geometry's outer radius and checks it.
+same = Geometry(sk).stretched(flattening)
+print(same)
 
 # %% [markdown]
 # A kinked displacement is one whose radial derivative jumps. It is
@@ -133,10 +169,10 @@ def crustal_bulge(knot):
     return CallableDisplacement(hk, knots=[knot], name="crustal bulge")
 
 
-ok = Geometry(sk, mapping=RadialStretch(crustal_bulge(0.99), rmax=1.0))
+ok = Geometry(sk).stretched(crustal_bulge(0.99))
 print("kink on the Moho:", ok.knots(), "accepted")
 try:
-    Geometry(sk, mapping=RadialStretch(crustal_bulge(0.9), rmax=1.0))
+    Geometry(sk).stretched(crustal_bulge(0.9))
 except ValueError as err:
     print("kink in the mantle:", err)
 

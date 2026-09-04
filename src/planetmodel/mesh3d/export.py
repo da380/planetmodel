@@ -1,9 +1,10 @@
 """The MFEM delivery: the mesh, the displacement, and the manifest.
 
 Everything is built on the reference mesh: the mesher writes concentric
-spheres as MSH 2.2, PyMFEM reads them, and the mapping in mesh units is
-evaluated at the nodal degrees of freedom of that mesh, whose
-coordinates are reference coordinates and need no inverse mapping.
+spheres as MSH 2.2 in the geometry's own numbers, PyMFEM reads them,
+and the geometry's mapping is evaluated at the nodal degrees of freedom
+of that mesh, whose coordinates are reference coordinates and need no
+inverse mapping.
 `delivery="physical"` adds the displacement to the nodes before the
 mesh is written; `delivery="referential"` leaves the mesh spherical and
 writes `m(X) - X` beside it as a GridFunction in the mesh's own nodal
@@ -174,12 +175,13 @@ def export_mfem_mesh(result, path_base, *, delivery=None) -> ExportResult:
     in referential delivery, and the manifest with its `files` block.
 
     `result` is what a builder returned: the reference mesh on disk and
-    the mapping in mesh units (None for a mesh built without one, taken
-    as the identity).  `path_base` is the basename the files are written
-    beside: `<base>.mesh`, `<base>.displacement.gf` in referential
-    delivery, and `<base>.json`.  Giving the mesher's own basename
-    overwrites its manifest with this one; a separate basename keeps
-    both.  `delivery` defaults to the build's.
+    the geometry's mapping (None for a mesh built without one, taken as
+    the identity), applied to the node coordinates as they are.
+    `path_base` is the basename the files are written beside:
+    `<base>.mesh`, `<base>.displacement.gf` in referential delivery, and
+    `<base>.json`.  Giving the mesher's own basename overwrites its
+    manifest with this one; a separate basename keeps both.  `delivery`
+    defaults to the build's.
     """
     mfem = _mfem()
     path_base = Path(path_base)
@@ -194,7 +196,7 @@ def export_mfem_mesh(result, path_base, *, delivery=None) -> ExportResult:
     mesh = _load_reference_mesh(result.msh_path, card)
     nodes = mesh.GetNodes()
     X = np.array(_node_array(nodes), dtype=float, copy=True)
-    u = _displacement_at(mapping, X, scale=float(card.geometry["outer_radius_nd"]))
+    u = _displacement_at(mapping, X, scale=float(card.geometry["outer_radius"]))
     displacement = mfem.GridFunction(nodes.FESpace())
     _write_vector(displacement, u)
 

@@ -14,9 +14,9 @@ index.  The three shipped rules are frozen dataclasses whose instances
 are the callable, so they print, compare and serialise; anything else
 is a function.
 
-Nothing here knows about units.  The builder divides every length by
-the spec's divisor (the outer radius of the computational domain by
-default) before handing it to gmsh, and records only that number.
+Nothing here knows about units.  Every length is a number in the
+geometry's own lengths, and the builder hands those numbers to gmsh
+unchanged: a geometry of radius 6.4e6 is meshed at radius 6.4e6.
 """
 from __future__ import annotations
 
@@ -81,8 +81,8 @@ class Shell:
 class InterfaceSizing:
     """Target element size at an interface, and how it relaxes away.
 
-    All three are lengths in the same units as the geometry; the builder
-    divides them by its divisor alongside the radii.
+    All three are lengths in the geometry's own units, handed to gmsh as
+    they are.
     """
 
     #: The element size on the interface.
@@ -216,9 +216,6 @@ class MeshSpec:
     #: The rule giving every interface of the computational domain its sizing.
     sizing: SizingRule
     _: KW_ONLY
-    #: What every length is divided by before meshing; the outer radius
-    #: of the computational domain if None.
-    divisor: float | None = None
     #: 3 for balls, 2 for discs.
     dimension: int = 3
     #: The element order, 1..3.
@@ -250,8 +247,6 @@ class MeshSpec:
         if self.delivery not in DELIVERIES:
             raise ValueError(
                 f"delivery must be one of {DELIVERIES}, got {self.delivery!r}")
-        if self.divisor is not None and not self.divisor > 0.0:
-            raise ValueError(f"divisor must be positive, got {self.divisor}")
         object.__setattr__(self, "shells", tuple(self.shells))
         for shell in self.shells:
             if not isinstance(shell, Shell):
@@ -282,11 +277,6 @@ class MeshSpec:
         """The outer radius of the computational domain."""
         radii = self.shell_radii
         return radii[-1] if radii else float(self.geometry.skeleton.boundaries[-1])
-
-    @property
-    def effective_divisor(self) -> float:
-        """The divisor the builder uses: the one given, or the outer radius."""
-        return self.outer_radius if self.divisor is None else float(self.divisor)
 
     @property
     def domain(self) -> Geometry:
@@ -333,7 +323,7 @@ class ValidationReport:
     #: Boundary faces whose normal points towards the centre they enclose.
     inward_faces: int = 0
     #: The largest distance of a tagged interface's mean radius from the
-    #: radius asked for, in mesh units.
+    #: radius asked for, in the mesh's lengths.
     max_interface_radius_error: float = 0.0
     #: The number of physical groups found, by "layers" and "interfaces".
     group_counts: dict = field(default_factory=dict)
@@ -364,11 +354,11 @@ class ValidationReport:
 class MeshResult:
     """What a build produced.
 
-    `mapping` is the mapping in mesh units, `ScaledMapping(geometry.mapping,
-    1 / divisor)`, which is what the exporter applies to the nodes it
-    reads back; it is None for a mesh that was not built from a
-    geometry.  The keyword fields have defaults so a MeshResult written
-    by hand still constructs.
+    `mapping` is the geometry's own mapping, which acts on the mesh's
+    coordinates as they are and is what the exporter applies to the
+    nodes it reads back; it is None for a mesh that was not built from
+    a geometry.  The keyword fields have defaults so a MeshResult
+    written by hand still constructs.
     """
 
     #: The MSH 2.2 file.
@@ -386,9 +376,7 @@ class MeshResult:
     _: KW_ONLY
     #: The spec the mesh was built from, if any.
     spec: MeshSpec | None = None
-    #: What every length was divided by before meshing.
-    divisor: float = 1.0
-    #: The mapping in mesh units, or None where there was no geometry.
+    #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
 
     def __repr__(self) -> str:

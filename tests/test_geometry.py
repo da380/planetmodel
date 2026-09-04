@@ -119,6 +119,16 @@ def test_with_mapping_and_scaled():
     testing.check_geometry(big)
 
 
+def test_stretched():
+    g = Geometry(SK, **NAMES)
+    d = g.stretched(lambda r, t, p: -0.05 * r * 0.5 * (3 * np.cos(t) ** 2 - 1),
+                    name="flat")
+    assert isinstance(d.mapping, RadialStretch) and d.mapping.rmax == 1.0
+    assert d.mapping.name == "flat" and not d.is_identity
+    assert d.layer("crust").name == "crust"
+    testing.check_geometry(d)
+
+
 def test_refined_keeps_the_mapping_and_carries_names():
     g = Geometry(SK, mapping=stretch(knot=0.8), **NAMES)
     fine = g.refined([0.6], names=["floor"])

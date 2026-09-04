@@ -1,6 +1,8 @@
 """The assembly line: MeshSpec in, checked mesh and manifest out.
 
-Every geometry here is unit sized and a few elements across."""
+Every geometry here is unit sized and a few elements across, but for
+the one that checks an Earth-sized geometry is meshed in its own
+numbers."""
 import json
 
 import numpy as np
@@ -8,7 +10,7 @@ import pytest
 
 import gmsh
 
-from planetmodel import Geometry, ScaledMapping, Skeleton
+from planetmodel import Geometry, Skeleton
 from planetmodel.mesh3d import (InterfaceSizing, MeshSpec, Shell,
                                 UniformInterfaces, build_layered_mesh,
                                 manifest as sc)
@@ -69,8 +71,8 @@ def test_identity_builds_produce_a_checked_mesh_and_manifest(build, dimension,
     assert res.counts["elements"] > 0
     assert set(res.timings) >= {"resolve", "geometry", "mesh", "orient",
                                 "validate", "write"}
-    assert res.divisor == pytest.approx(1.25 if shells else 1.0)
-    assert res.mapping.is_identity and res.spec.dimension == dimension
+    assert res.mapping is res.geometry.mapping and res.mapping.is_identity
+    assert res.spec.dimension == dimension
     assert res.geometry is res.spec.geometry
 
 
@@ -83,11 +85,11 @@ def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
                         interface_count=res.counts["interfaces"])
     assert card.mesh["dimension"] == dimension and card.mesh["element_order"] == 2
     assert card.mesh["n_elements"] == res.counts["elements"]
-    assert card.geometry["divisor"] == res.divisor
-    assert card.geometry["outer_radius_nd"] == pytest.approx(1.0)
-    assert card.geometry["inner_radius_nd"] == pytest.approx(
-        (0.5 if hollow else 0.0) / res.divisor)
+    assert "divisor" not in card.geometry
+    assert card.geometry["outer_radius"] == pytest.approx(1.25 if shells else 1.0)
+    assert card.geometry["inner_radius"] == pytest.approx(0.5 if hollow else 0.0)
     assert card.geometry["n_layers"] == res.counts["layers"]
+    assert card.geometry["n_shells"] == int(shells)
     flags = [lay["in_geometry"] for lay in card.layers]
     assert flags == [True] * (2 if hollow else 3) + [False] * int(shells)
     assert card.shell_attributes == ((res.counts["layers"],) if shells else ())
@@ -103,7 +105,7 @@ def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
                        for k in range(len(between))]
     assert card.mapping["kind"] == "IdentityMapping"
     assert card.mapping["applied_to_nodes"] is False
-    assert card.mapping["knots_nd"] == []
+    assert card.mapping["knots"] == []
     assert card.sizing["policy"] == "UniformInterfaces"
     assert card.provenance["perturbation"] is None
     assert card.provenance["mesh_file"] == res.msh_path.name
@@ -124,8 +126,8 @@ def test_a_hollow_mesh_has_no_nodes_inside_the_hole(build):
     r = node_radii(build(3, True, False).msh_path)
     assert r.min() == pytest.approx(0.5, abs=1e-6)
     r = node_radii(build(2, True, True).msh_path)
-    assert r.min() == pytest.approx(0.5 / 1.25, abs=1e-6)
-    assert r.max() == pytest.approx(1.0, abs=1e-6)
+    assert r.min() == pytest.approx(0.5, abs=1e-6)
+    assert r.max() == pytest.approx(1.25, abs=1e-6)
 
 
 def test_unnamed_layers_get_default_names(tmp_path):
@@ -160,7 +162,7 @@ def test_the_physical_delivery_moves_the_nodes(deformed):
     assert card.mapping["applied_to_nodes"] is True
     p = card.provenance["perturbation"]
     assert p["nodes"] == res.counts["nodes"]
-    assert p["max_displacement_nd"] == pytest.approx(0.05, rel=0.05)
+    assert p["max_displacement"] == pytest.approx(0.05, rel=0.05)
     assert p["validity_margin"] > 0.0
     assert "perturb" in res.timings
     # the surface nodes carry the flattening: radii spread over 1 -+ 0.05
@@ -178,7 +180,7 @@ def test_the_referential_delivery_leaves_the_nodes_alone(deformed):
     assert card.mapping["applied_to_nodes"] is False
     assert card.provenance["perturbation"] is None
     assert node_radii(res.msh_path).max() == pytest.approx(1.0, abs=1e-6)
-    assert isinstance(res.mapping, ScaledMapping) and res.mapping.k == 1.0
+    assert res.mapping is res.geometry.mapping
 
 
 def test_two_dimensions_take_the_same_mapping(tmp_path):
@@ -220,44 +222,51 @@ def test_a_displacement_confined_to_the_geometry_is_accepted_with_shells(tmp_pat
     spec = MeshSpec(g, COARSE, shells=[Shell(ratio=0.2)], delivery="physical")
     res = build_layered_mesh(spec, tmp_path / "confined")
     assert res.validation.ok
-    assert res.divisor == pytest.approx(1.2)
     card = sc.read(res.manifest_path)
+    assert card.geometry["outer_radius"] == pytest.approx(1.2)
     assert card.mapping["applied_to_nodes"] is True
-    assert card.mapping["knots_nd"] == pytest.approx([0.8 / 1.2, 1.0 / 1.2])
-    # the outer boundary of the shell stays a sphere of mesh radius one
+    assert card.mapping["knots"] == pytest.approx([0.8, 1.0])
+    # the outer boundary of the shell stays a sphere of radius 1.2
     r = node_radii(res.msh_path)
-    assert r.max() == pytest.approx(1.0, abs=1e-9)
-    # the displacement is largest at the Moho's poles: 0.05 * 0.8, in mesh units
+    assert r.max() == pytest.approx(1.2, abs=1e-9)
+    # the displacement is largest at the Moho's poles: 0.05 * 0.8
     p = card.provenance["perturbation"]
-    assert p["max_displacement_nd"] == pytest.approx(0.04 / 1.2, rel=0.05)
+    assert p["max_displacement"] == pytest.approx(0.04, rel=0.05)
 
 
-# --------------------------------------------------------------- divisor
+# ------------------------------------------------- the geometry's numbers
 
-def test_the_divisor_scales_everything_handed_to_gmsh(tmp_path):
-    g = full_geometry().with_mapping(flattening(0.05))
-    spec = MeshSpec(g, UniformInterfaces(0.15, 0.3, 0.3), dimension=2, divisor=2.0,
-                    delivery="referential")
-    res = build_layered_mesh(spec, tmp_path / "half")
-    assert res.divisor == 2.0
+def test_the_geometry_is_meshed_in_its_own_numbers(tmp_path):
+    """An Earth-sized geometry reaches gmsh, the manifest and the mesh
+    file in metres: nothing is normalised."""
+    a = 6.371e6
+    g = Geometry(Skeleton([0.0, 3.48e6, 5.7e6, a]),
+                 layer_names=["core", "mantle", "crust"],
+                 interface_names=["cmb", "moho", "surface"])
+    spec = MeshSpec(g, UniformInterfaces(1.5e6, 3e6, 3e6), dimension=2, order=2)
+    res = build_layered_mesh(spec, tmp_path / "earth")
+    assert res.validation.ok, res.validation.failures
+    assert res.mapping is g.mapping
     card = sc.read(res.manifest_path)
-    assert card.geometry["divisor"] == 2.0
-    assert card.geometry["outer_radius_nd"] == pytest.approx(0.5)
-    assert [lay["r_outer_nd"] for lay in card.layers] == pytest.approx([0.2, 0.4, 0.5])
-    assert card.sizing["per_interface"][0]["size_nd"] == pytest.approx(0.075)
-    assert node_radii(res.msh_path).max() == pytest.approx(0.5, abs=1e-6)
-    # the result's mapping is the geometry's conjugated by the divisor
-    X = np.array([[0.3, 0.1, 0.2]])
-    assert np.allclose(res.mapping(X), g.mapping(2.0 * X) / 2.0)
-    assert res.mapping.k == pytest.approx(0.5)
-
-
-def test_a_divisor_far_from_order_one_warns(tmp_path):
-    spec = MeshSpec(full_geometry(), COARSE, dimension=2, divisor=1e-5)
-    with pytest.warns(UserWarning, match="outside"):
-        res = build_layered_mesh(spec, tmp_path / "huge")
-    assert sc.read(res.manifest_path).geometry["outer_radius_nd"] == \
-        pytest.approx(1e5)
+    assert card.geometry["outer_radius"] == a
+    assert card.geometry["inner_radius"] == 0.0
+    assert [lay["r_outer"] for lay in card.layers] == [3.48e6, 5.7e6, a]
+    assert [f["mean_radius"] for f in card.interfaces] == [3.48e6, 5.7e6, a]
+    assert card.sizing["per_interface"][0] == {
+        "attribute": 1, "size": 1.5e6, "far_size": 3e6, "decay_width": 3e6}
+    assert card.validation["max_interface_radius_error"] < 1e-3 * a
+    r = node_radii(res.msh_path)
+    assert r.max() == pytest.approx(a, rel=1e-9)
+    assert r.min() < 1.5e6                      # the core is meshed, not a hole
+    # the nodes of the Moho sit on a circle of radius 5.7e6, in metres
+    with session(name="moho"):
+        gmsh.merge(str(res.msh_path))
+        (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, 2)
+        _, coords, _ = gmsh.model.mesh.getNodes(1, curve, includeBoundary=True)
+    moho = np.linalg.norm(coords.reshape(-1, 3), axis=1)
+    assert np.allclose(moho, 5.7e6, rtol=1e-9)
+    # element sizes are in the same numbers: a coarse mesh, a few across
+    assert 10 < res.counts["elements"] < 400
 
 
 # ---------------------------------------------------------------- guards

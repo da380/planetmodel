@@ -29,7 +29,8 @@ from dataclasses import KW_ONLY, dataclass
 import numpy as np
 
 from .frames import cartesian_points
-from .mapping import IdentityMapping, Mapping, ScaledMapping, validity_lattice
+from .mapping import (IdentityMapping, Mapping, RadialStretch, ScaledMapping,
+                      validity_lattice)
 from .skeleton import CoarseningMap, Skeleton
 
 __all__ = ["Geometry", "LayerInfo", "InterfaceInfo"]
@@ -250,6 +251,16 @@ class Geometry:
     def with_mapping(self, mapping, *, check: bool = True) -> "Geometry":
         """A copy with another mapping, checked unless told otherwise."""
         return self._copy(mapping=mapping, check=check)
+
+    def stretched(self, h, *, name: str | None = None,
+                  check: bool = True) -> "Geometry":
+        """A copy whose mapping is the radial stretch driven by `h`.
+
+        `h` is any radial displacement; the stretch's `rmax` is this
+        geometry's outer radius.
+        """
+        return self.with_mapping(RadialStretch(h, rmax=self._sk, name=name),
+                                 check=check)
 
     def scaled(self, k: float) -> "Geometry":
         """The same geometry with every length multiplied by k."""
