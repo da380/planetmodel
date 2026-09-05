@@ -43,7 +43,6 @@ class LayerInfo:
     index: int
     interval: tuple[float, float]
     _: KW_ONLY
-    _: KW_ONLY
     name: str | None = None
 
 
@@ -59,7 +58,6 @@ class InterfaceInfo:
     index: int
     radius: float
     between: tuple[int, int]
-    _: KW_ONLY
     _: KW_ONLY
     name: str | None = None
 

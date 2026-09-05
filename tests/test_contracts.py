@@ -36,3 +36,25 @@ def test_mappings(m):
 @pytest.mark.parametrize("mapping", [None, RadialStretch(bump, rmax=1.0)])
 def test_geometries(sk, mapping):
     testing.check_geometry(Geometry(sk, mapping=mapping))
+
+
+# ------------------------------------------------------------ stage-2 objects
+
+def test_catalogue_models_and_their_fields():
+    from planetmodel import gauss_legendre, prem, sample
+    m = prem()
+    testing.check_model(m)
+    for layer in m.layers:
+        for f in layer.fields.values():
+            testing.check_field(f)
+    s = sample(m, gauss_legendre(4), ngll=3, drmax=1.5e6)
+    testing.check_sample(s, m)
+
+
+def test_shipped_displacements():
+    from planetmodel import flattening, layer_linear
+    testing.check_displacement(flattening(0.01, rmax=1.0), SK)
+    h = layer_linear(SK, [None, lambda t, p: 0.02 * np.sin(t) ** 2 * np.cos(3.0 * p),
+                          None, lambda t, p: 0.01 * np.cos(t)])
+    testing.check_displacement(h, SK)
+    testing.check_geometry(Geometry(SK, mapping=RadialStretch(h, rmax=1.0)))

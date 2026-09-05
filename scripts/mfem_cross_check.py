@@ -9,6 +9,17 @@ one.  Run it, read the numbers, record them in a note.
 
     python scripts/mfem_cross_check.py --h-ref-km 400 --out /tmp/prem
 
+The build is done on the non-dimensional model, radii in units of the
+outer radius and densities in units of the mean density, with G equal
+to one: gmsh's kernel works in absolute tolerances and leaves the outer
+surfaces of a ball six million metres across without elements, and the
+mesher normalises nothing on purpose.  With PyMFEM present the script
+also exports PREM's density on the coarsened layers and integrates it
+over the MFEM mesh: the referential density over the reference volume
+is the mass whatever the mapping, so the number is compared with the
+exact mass of PREM, and the mesh's own volume with that of the sphere,
+to show what the discretisation costs.
+
 The coarsening is the one judgement in it.  PREM's outermost spans are
 9.4 and 12 km thick, and the mesher refuses any element size more than
 ten times a span it has to fill, so a 400 km mesh cannot see the crust.
@@ -25,9 +36,11 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
+from planetmodel import (DENSITY, CallableDisplacement, Geometry, Model,
+                         RadialField, RadialStretch, Skeleton, mass, prem)
+from planetmodel.units import LENGTH, MASS
 from planetmodel.mesh3d import (AngularResolution, MeshSpec, Shell,
-                                build_layered_mesh, export_mfem_mesh, manifest)
+                                build_layered_mesh, export_mfem, manifest)
 
 #: PREM's boundary radii in metres, centre outward.
 PREM_BOUNDARIES = [0.0, 1221.5e3, 3480.0e3, 3630.0e3, 5600.0e3, 5701.0e3,
@@ -55,6 +68,26 @@ def coarsened_for(h_ref: float) -> tuple[Skeleton, int]:
     return Skeleton(b), dropped
 
 
+def prem_density_on(geometry: Geometry, fine: Model) -> Model:
+    """The density of `fine` on the coarsened layers of `geometry`, as
+    numeric layer functions that look the exact model up radius by radius."""
+    b = fine.skeleton.boundaries
+
+    def rho_fine(r):
+        r = np.asarray(r, dtype=float)
+        out = np.empty(r.shape)
+        idx = np.clip(np.searchsorted(b, r, side="right") - 1, 0, fine.nlayers - 1)
+        for i in np.unique(idx):
+            m = idx == i
+            out[m] = fine.layer(int(i))["rho"](r[m])
+        return out
+
+    layers = [{"rho": RadialField(geometry.skeleton.interval(i), rho_fine,
+                                  character=DENSITY, name="rho")}
+              for i in range(geometry.nlayers)]
+    return Model(geometry, layers, scales=fine.scales)
+
+
 def surface_relief(amplitude: float, a: float, b: float) -> RadialStretch:
     """Degree-two relief on the surface at radius `a`, growing linearly from
     0.9 a and decaying linearly to zero at the buffer's outer radius `b`,
@@ -78,13 +111,17 @@ def main(argv=None) -> int:
     ap.add_argument("--order", type=int, default=2)
     args = ap.parse_args(argv)
 
-    h_ref = args.h_ref_km * 1e3
-    sk, dropped = coarsened_for(h_ref)
+    fine = prem().nondimensionalised()          # radii in units of a = 6371 km
+    length = fine.scales.factor(LENGTH)         # metres per unit
+    h_ref = args.h_ref_km * 1e3 / length
+    sk_m, dropped = coarsened_for(args.h_ref_km * 1e3)
+    sk = Skeleton(sk_m.boundaries / length)
     a = float(sk.boundaries[-1])
     sk = sk.refined([0.9 * a]) if not np.any(np.isclose(sk.boundaries, 0.9 * a)) else sk
-    print(f"skeleton: {sk.nlayers} layers after dropping {dropped} boundaries")
+    print(f"skeleton: {sk.nlayers} layers after dropping {dropped} boundaries; "
+          f"one unit is {length / 1e3:.0f} km, G = {fine.G:.3g}")
     b = a * (1.0 + BUFFER_RATIO)
-    geometry = Geometry(sk, mapping=surface_relief(RELIEF_M, a, b))
+    geometry = Geometry(sk, mapping=surface_relief(RELIEF_M / length, a, b))
     print("validity:", geometry.validity())
 
     spec = MeshSpec(geometry, AngularResolution(h_ref, 3.0 * h_ref, fraction=0.25),
@@ -98,7 +135,7 @@ def main(argv=None) -> int:
     print("validation:", result.validation)
 
     card = manifest.read(result.manifest_path)
-    print("divisor:", card.geometry["divisor"], "| layers:", len(card.layers))
+    print("outer radius:", card.geometry["outer_radius"], "| layers:", len(card.layers))
 
     try:
         import mfem.ser as mfem
@@ -106,8 +143,9 @@ def main(argv=None) -> int:
         print("PyMFEM not installed; stopping after the build")
         return 0
     t0 = time.perf_counter()
-    exported = export_mfem_mesh(result, args.out.with_name(args.out.name + "_mfem"),
-                                delivery="referential")
+    model = prem_density_on(geometry, fine)
+    exported = export_mfem(result, args.out.with_name(args.out.name + "_mfem"),
+                           model=model, delivery="referential")
     opts = exported.files["mesh_read_options"]
     mesh = mfem.Mesh(str(exported.mesh_path), opts["generate_edges"], opts["refine"],
                      opts["fix_orientation"])
@@ -116,6 +154,23 @@ def main(argv=None) -> int:
           f"{list(mesh.attributes.ToList())}")
     wrong = mesh.CheckElementOrientation(False)
     print("elements MFEM would reorient:", wrong)
+
+    rho = mfem.GridFunction(mesh, str(exported.field_paths["rho"]))
+    one = mfem.LinearForm(rho.FESpace())
+    unity = mfem.ConstantCoefficient(1.0)      # kept alive while the form is
+    one.AddDomainIntegrator(mfem.DomainLFIntegrator(unity))
+    one.Assemble()
+    integrated = one * rho
+    volume = sum(mesh.GetElementVolume(e) for e in range(mesh.GetNE())
+                 if mesh.GetAttribute(e) <= geometry.nlayers)
+    exact_volume = 4.0 * math.pi * a ** 3 / 3.0
+    exact_mass = mass(fine)
+    kg = fine.scales.factor(MASS)
+    print(f"mesh volume {volume:.6f} vs sphere {exact_volume:.6f}: "
+          f"relative error {volume / exact_volume - 1.0:+.3e}")
+    print(f"integrated density {integrated:.6f} vs PREM mass {exact_mass:.6f} "
+          f"({exact_mass * kg:.4e} kg): relative error "
+          f"{integrated / exact_mass - 1.0:+.3e}")
     return 0 if math.isfinite(result.validation.min_sicn) else 1
 
 

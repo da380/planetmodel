@@ -10,7 +10,7 @@ every other block holds, `MeshManifest.from_build` assembles a manifest
 from them and `validate_structure` checks a file against the same
 definitions.
 
-The schema is `planetmodel.mesh.manifest/2`, with these blocks:
+The schema is `planetmodel.mesh.manifest/3`, with these blocks:
 
   geometry     outer_radius, inner_radius, n_layers
   mesh         dimension, element_order, gmsh_version, msh_version,
@@ -24,14 +24,19 @@ The schema is `planetmodel.mesh.manifest/2`, with these blocks:
   validation   the counts and warnings of the mesh checks
   provenance   planetmodel_version, mesh_file, perturbation, meta
   files        null until the MFEM export writes it
+  model        null until fields of a model are exported beside the mesh
 
 Every length is in the geometry's own numbers, the ones the mesh file
 holds: the mesher neither scales nor normalises, so a radius in the
 manifest is a radius in the mesh.  Layers are numbered by `attribute`
 1..N from the centre and `between_layers` gives 0-based layer indices
-with -1 for the outside.  Flat and boring on purpose: a C++ reader will
-parse it, nested objects only where the nesting carries meaning, no
-polymorphism, every number a number.
+with -1 for the outside.  The `model` block is the one place units are
+spoken of: it records the scales the exported values are in, the
+constants in those units, and for every exported field its character,
+its unit string and the attributes of the layers that hold it.  Flat
+and boring on purpose: a C++ reader will parse it, nested objects only
+where the nesting carries meaning, no polymorphism, every number a
+number.
 """
 from __future__ import annotations
 
@@ -43,16 +48,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence, get_type_hints
 
+from ..units import unit_string
 from .spec import DELIVERIES
 
 __all__ = ["SCHEMA", "MeshManifest", "LayerEntry", "InterfaceEntry",
            "write", "read", "file_digest", "beside", "planetmodel_version",
            "geometry_block", "mesh_block", "mapping_block", "sizing_block",
-           "validation_block", "provenance_block", "validate_structure",
-           "validate_against"]
+           "validation_block", "provenance_block", "model_block",
+           "validate_structure", "validate_against"]
 
 #: Bump only for an incompatible change; consumers check it.
-SCHEMA = "planetmodel.mesh.manifest/2"
+SCHEMA = "planetmodel.mesh.manifest/3"
 
 #: The MSH format version the mesher writes and MFEM's reader wants.
 MSH_VERSION = 2.2
@@ -247,13 +253,48 @@ def _finite(value):
     return float(value) if math.isfinite(value) else None
 
 
+def model_block(model, *, holders: dict) -> dict:
+    """The `model` record: what the exported field values mean.
+
+    `class` is the model's class name; `scales` says what one stored
+    unit of length, mass and time is in SI, so every value in the
+    grid functions and every constant here is in the model's own
+    units; `fields[]` has one record per exported name, in the order of
+    `holders`, with the field's character as `rank`, `weight` and
+    `voigt`, its `unit` string (from the dimensions of the name's spec,
+    "unknown" for a name without one, "1" throughout a model that is
+    not in SI), and `layers`, the attributes of the layers holding it.
+    `holders` maps each exported name to those attributes.
+    """
+    scales = model.scales
+    si = scales.is_si
+    fields = []
+    for name, attributes in holders.items():
+        character = model.layer(model.layers_with(name)[0])[name].character
+        spec = model.spec(name)
+        fields.append({
+            "name": str(name),
+            "rank": int(character.rank),
+            "weight": int(character.weight),
+            "voigt": bool(character.voigt_shape is not None),
+            "unit": unit_string(None if spec is None else spec.dimensions, si=si),
+            "layers": [int(a) for a in attributes],
+        })
+    return {
+        "class": type(model).__name__,
+        "scales": {"length": float(scales.length), "mass": float(scales.mass),
+                   "time": float(scales.time)},
+        "constants": {str(k): float(model.constant(k)) for k in model.constants},
+        "fields": fields,
+    }
+
+
 # ---------------------------------------------------------- the manifest
 
 @dataclass
 class MeshManifest:
     """Everything a consumer needs that the mesh file cannot carry."""
 
-    _: KW_ONLY
     _: KW_ONLY
     geometry: dict = field(default_factory=dict)
     mesh: dict = field(default_factory=dict)
@@ -268,6 +309,10 @@ class MeshManifest:
     #: written, how the mesh must be constructed for their dof numbering
     #: to hold, and one record per GridFunction.  Written by the export.
     files: dict | None = None
+    #: What the exported field values mean, or None where no fields were
+    #: exported: the model's class, scales, constants and one record per
+    #: field.  Written by the field export; see `model_block`.
+    model: dict | None = None
     schema: str = SCHEMA
 
     @classmethod
@@ -317,9 +362,10 @@ class MeshManifest:
         """A readable multi-line summary of the manifest.
 
         The schema and the delivery, the geometry block, one line per
-        layer and per interface, the mapping, the validation verdict and
-        the files block where the MFEM export wrote one.  Every length
-        is in the geometry's own numbers.
+        layer and per interface, the mapping, the validation verdict,
+        the files block where the MFEM export wrote one and the model
+        block where fields were exported.  Every length is in the
+        geometry's own numbers.
         """
         lines = [f"{self.schema}", f"  delivery    {self.delivery}",
                  "  geometry    " + _pairs(self.geometry)]
@@ -370,6 +416,19 @@ class MeshManifest:
                     f"    {gf.get('kind', '?')}  {gf.get('name', '?')}  "
                     f"{gf.get('file', '?')}  {gf.get('fe_space', '?')} "
                     f"vdim {gf.get('vdim', '?')} {gf.get('ordering', '?')}")
+        m = self.model
+        if m is not None:
+            lines.append(
+                f"  model       {m.get('class', '?')}, scales "
+                + _pairs(m.get("scales", {})) + ", constants "
+                + _pairs(m.get("constants", {})))
+            rows = [(str(e.get("name", "?")),
+                     f"rank {e.get('rank', '?')} weight {e.get('weight', '?')}"
+                     + (" Voigt" if e.get("voigt") else ""),
+                     str(e.get("unit", "?")),
+                     f"layers {list(e.get('layers', []))}")
+                    for e in m.get("fields", [])]
+            lines.extend(_table(rows, numbered=False))
         return "\n".join(lines)
 
     def __str__(self) -> str:
@@ -392,14 +451,15 @@ def _pairs(record: dict) -> str:
     return ", ".join(f"{k} {_num(v)}" for k, v in record.items())
 
 
-def _table(rows) -> list:
+def _table(rows, *, numbered: bool = True) -> list:
     """Rows of strings as indented lines with their columns aligned, the
-    first column right-aligned as a number and the rest left-aligned."""
+    first column right-aligned as a number when `numbered` and every
+    other column left-aligned."""
     if not rows:
         return []
     widths = [max(len(r[j]) for r in rows) for j in range(len(rows[0]))]
     return ["    " + "  ".join(
-        cell.rjust(w) if j == 0 else cell.ljust(w)
+        cell.rjust(w) if j == 0 and numbered else cell.ljust(w)
         for j, (cell, w) in enumerate(zip(row, widths))).rstrip()
         for row in rows]
 
@@ -464,6 +524,15 @@ _SIZING_FIELDS = {"attribute": (int,), "size": (int, float),
 #: these to build the space before it opens the file.
 _GF_FIELDS = {"kind": (str,), "name": (str,), "file": (str,),
               "fe_space": (str,), "vdim": (int,), "ordering": (str,)}
+
+#: What the `model` block carries, and what each of its `fields[]`
+#: records carries.
+_MODEL_FIELDS = {"class": (str,), "scales": (dict,), "constants": (dict,),
+                 "fields": (list,)}
+_MODEL_SCALES = {"length": (int, float), "mass": (int, float),
+                 "time": (int, float)}
+_MODEL_FIELD_ENTRY = {"name": (str,), "rank": (int,), "weight": (int,),
+                      "voigt": (bool,), "unit": (str,), "layers": (list,)}
 
 
 def _typed(value, kinds) -> bool:
@@ -548,6 +617,7 @@ def validate_structure(manifest: MeshManifest) -> None:
             fail(f"interfaces[{i}].between_layers is "
                  f"{face['between_layers']}, expected {want}")
     _check_files(manifest.files, fail)
+    _check_model(manifest.model, manifest.files, n_layers, fail)
 
 
 def _check_files(files, fail) -> None:
@@ -567,6 +637,32 @@ def _check_files(files, fail) -> None:
         fail("files.grid_functions must be a list of objects")
     for i, e in enumerate(entries):
         _check_record(e, _GF_FIELDS, f"files.grid_functions[{i}]", fail)
+
+
+def _check_model(model, files, n_layers: int, fail) -> None:
+    """The field export's `model` block, or nothing where none was written.
+
+    Every field record names a grid function of kind "field" in `files`
+    and lies on attributes the mesh has.
+    """
+    if model is None:
+        return
+    _check_record(model, _MODEL_FIELDS, "model", fail)
+    _check_record(model["scales"], _MODEL_SCALES, "model.scales", fail)
+    for key, value in model["constants"].items():
+        if not _typed(value, (int, float)):
+            fail(f"model.constants.{key} is {value!r}, not a number")
+    written = {e.get("name") for e in (files or {}).get("grid_functions", [])
+               if e.get("kind") == "field"}
+    for i, e in enumerate(model["fields"]):
+        where = f"model.fields[{i}]"
+        _check_record(e, _MODEL_FIELD_ENTRY, where, fail)
+        if not all(_typed(a, (int,)) and 1 <= a <= n_layers for a in e["layers"]):
+            fail(f"{where}.layers is {e['layers']}, not attributes in "
+                 f"1..{n_layers}")
+        if e["name"] not in written:
+            fail(f"{where} names {e['name']!r}, which files.grid_functions "
+                 "holds no field grid function for")
 
 
 def validate_against(manifest: MeshManifest, *, layer_count: int,

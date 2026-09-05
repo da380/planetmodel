@@ -54,7 +54,7 @@ FILES = {"mesh": "m.mesh", "mesh_read_options": {"generate_edges": 1, "refine": 
 
 def test_from_build_assembles_every_block():
     card = card_for(full_geometry(), files=FILES)
-    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/2"
+    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/3"
     assert card.geometry == {"outer_radius": 1.0, "inner_radius": 0.0,
                              "n_layers": 3}
     assert [lay["name"] for lay in card.layers] == ["core", "mantle", "crust"]
@@ -277,5 +277,5 @@ def test_describe_is_a_readable_summary_and_str():
     assert "validation  FAILED" in bare.describe()
     # repr stays one line
     assert repr(card) == \
-        "MeshManifest(planetmodel.mesh.manifest/2, referential, 2 layers, " \
+        "MeshManifest(planetmodel.mesh.manifest/3, referential, 2 layers, " \
         "3 interfaces)"

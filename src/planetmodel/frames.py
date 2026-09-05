@@ -14,6 +14,12 @@ and R takes spherical-frame components to Cartesian ones: a vector as
 R v, a rank-2 tensor as R V R^T, and in general one factor of R on every
 slot, which is what `rotate_slots` does.  The inverse direction is R^T.
 
+Symmetric rank-2 and rank-4 tensors are also carried in Voigt form, the
+six index pairs in the order (11, 22, 33, 23, 13, 12) with no
+engineering-strain factors; `bond_matrix` is the (6, 6) matrix that
+moves such components between frames, `voigt_to_tensor` and
+`tensor_to_voigt` go between the two forms.
+
 Nothing here depends on the rest of the package.
 """
 from __future__ import annotations
@@ -21,7 +27,8 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["spherical_frame", "spherical_coordinates", "cartesian_points",
-           "rotate_slots", "rotation_subscripts", "MAX_RANK"]
+           "rotate_slots", "rotation_subscripts", "MAX_RANK",
+           "VOIGT_PAIRS", "bond_matrix", "voigt_to_tensor", "tensor_to_voigt"]
 
 #: Index letters for the output (lowercase) and contracted (uppercase)
 #: slots of `rotate_slots`; their length is the rank ceiling.
@@ -117,3 +124,98 @@ def rotate_slots(values, M, rank: int) -> np.ndarray:
         raise ValueError(f"expected (..., 3, 3) matrices, got {M.shape}")
     return np.einsum(rotation_subscripts(rank), *([M] * rank), values,
                      optimize=True)
+
+
+#: The index pairs behind the six Voigt slots, in Voigt order.
+VOIGT_PAIRS = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
+
+
+def bond_matrix(R) -> np.ndarray:
+    """The (6, 6) Bond matrix of an orthogonal R, shape R.shape[:-2] + (6, 6).
+
+    A frame change with orthogonal R takes tensor components as
+    c'_ijkl = R_ia R_jb R_kc R_ld c_abcd, and the Voigt matrix holding
+    those same components, with no engineering-strain factors, therefore
+    transforms as V' = M V M^T with
+
+        M[a, b] = R[i, k] R[j, l] + R[i, l] R[j, k]   (k != l)
+                = R[i, k] R[j, k]                     (k == l)
+
+    for a <-> (i, j) and b <-> (k, l) in Voigt order.  A rank-2 Voigt
+    vector transforms by the same M applied once, v' = M v.  With
+    R = spherical_frame(theta, phi) this takes spherical Voigt
+    components to Cartesian ones; the inverse is bond_matrix of R^T.
+    """
+    R = np.asarray(R, dtype=float)
+    if R.shape[-2:] != (3, 3):
+        raise ValueError(f"expected rotations of shape (..., 3, 3), got {R.shape}")
+    M = np.empty(R.shape[:-2] + (6, 6))
+    for a, (i, j) in enumerate(VOIGT_PAIRS):
+        for b, (k, m) in enumerate(VOIGT_PAIRS):
+            term = R[..., i, k] * R[..., j, m]
+            if k != m:
+                term = term + R[..., i, m] * R[..., j, k]
+            M[..., a, b] = term
+    return M
+
+
+def voigt_to_tensor(v, *, rank: int = 4) -> np.ndarray:
+    """Expand Voigt components to full ones: (..., 6, 6) -> (..., 3, 3, 3, 3)
+    for rank 4, (..., 6) -> (..., 3, 3) for rank 2.
+
+    Every symmetry-related slot receives the same number, so the result
+    has the minor and major symmetries by construction.  `rank` is
+    explicit because a (6, 6) array is one Voigt matrix or six Voigt
+    vectors, and only the caller's character says which.
+    """
+    v = np.asarray(v)
+    if rank == 4:
+        if v.shape[-2:] != (6, 6):
+            raise ValueError(
+                f"a rank-4 Voigt matrix has trailing shape (6, 6), got {v.shape}")
+        out = np.zeros(v.shape[:-2] + (3, 3, 3, 3), dtype=v.dtype)
+        for a, (i, j) in enumerate(VOIGT_PAIRS):
+            for b, (k, m) in enumerate(VOIGT_PAIRS):
+                val = v[..., a, b]
+                for ii, jj in ((i, j), (j, i)):
+                    for kk, mm in ((k, m), (m, k)):
+                        out[..., ii, jj, kk, mm] = val
+        return out
+    if rank == 2:
+        if v.shape[-1:] != (6,):
+            raise ValueError(
+                f"a rank-2 Voigt vector has trailing shape (6,), got {v.shape}")
+        out = np.zeros(v.shape[:-1] + (3, 3), dtype=v.dtype)
+        for a, (i, j) in enumerate(VOIGT_PAIRS):
+            out[..., i, j] = out[..., j, i] = v[..., a]
+        return out
+    raise ValueError(f"only ranks 2 and 4 have a Voigt form, got {rank}")
+
+
+def tensor_to_voigt(t, *, rank: int = 4) -> np.ndarray:
+    """Reduce full components to Voigt by reading the six index pairs.
+
+    The inverse of voigt_to_tensor on a tensor with the symmetries; on
+    any other it is a projection that keeps one slot of each symmetry
+    class, so the caller is responsible for knowing the reduction is
+    faithful.
+    """
+    t = np.asarray(t)
+    if rank == 4:
+        if t.shape[-4:] != (3, 3, 3, 3):
+            raise ValueError(
+                f"a rank-4 tensor has trailing shape (3, 3, 3, 3), got {t.shape}")
+        out = np.empty(t.shape[:-4] + (6, 6), dtype=t.dtype)
+        for a, (i, j) in enumerate(VOIGT_PAIRS):
+            for b, (k, m) in enumerate(VOIGT_PAIRS):
+                out[..., a, b] = t[..., i, j, k, m]
+        return out
+    if rank == 2:
+        if t.shape[-2:] != (3, 3):
+            raise ValueError(
+                f"a rank-2 tensor has trailing shape (3, 3), got {t.shape}")
+        out = np.empty(t.shape[:-2] + (6,), dtype=t.dtype)
+        for a, (i, j) in enumerate(VOIGT_PAIRS):
+            out[..., a] = t[..., i, j]
+        return out
+    raise ValueError(f"only ranks 2 and 4 have a Voigt form, got {rank}")

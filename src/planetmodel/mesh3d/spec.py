@@ -56,7 +56,6 @@ class Shell:
 
     _: KW_ONLY
     #: b / a - 1, the thickness as a fraction of the radius it sits on.
-    _: KW_ONLY
     ratio: float | None = None
     #: b, the outer radius of the shell, in the geometry's lengths.
     radius: float | None = None
@@ -134,7 +133,6 @@ class AngularResolution:
     h_far: float
     _: KW_ONLY
     #: The radius at which the size is h_ref; the outer radius if None.
-    _: KW_ONLY
     r_ref: float | None = None
     #: The decay width as a fraction of each interface's radius.
     fraction: float = 0.2
@@ -179,7 +177,6 @@ class PerInterface:
     sizes_by: dict
     _: KW_ONLY
     #: The rule for the interfaces `sizes_by` does not name.
-    _: KW_ONLY
     base: SizingRule | None = None
 
     def __call__(self, interfaces, outer_radius: float) -> dict:
@@ -220,7 +217,6 @@ class MeshSpec:
     sizing: SizingRule
     _: KW_ONLY
     #: 3 for balls, 2 for discs.
-    _: KW_ONLY
     dimension: int = 3
     #: The element order, 1..3.
     order: int = 2
@@ -319,7 +315,6 @@ class ValidationReport:
     dimension: int
     _: KW_ONLY
     #: Elements whose minSICN is not positive.
-    _: KW_ONLY
     negative_jacobians: int = 0
     #: The worst minSICN over the cells.
     min_sicn: float = 0.0
@@ -380,7 +375,6 @@ class MeshResult:
     timings: dict
     _: KW_ONLY
     #: The spec the mesh was built from, if any.
-    _: KW_ONLY
     spec: MeshSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None

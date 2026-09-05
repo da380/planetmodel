@@ -16,7 +16,11 @@ and everything else is an optional enrichment discovered by attribute:
 A bare function is accepted wherever a displacement is wanted, with the
 derivatives taken by central differences; supplying them exactly gives
 exact deformation gradients.  `as_displacement(h)` adapts any callable
-to an object carrying every method, exact where `h` supplied it.
+to an object carrying every method, exact where `h` supplied it.  Two
+displacements are shipped: `flattening`, the degree-2 shape of a
+hydrostatic ellipsoid, and `layer_linear`, which gives every boundary of
+a skeleton an analytic relief and interpolates linearly in r between
+them within each layer.
 
 Knots make smoothness checkable.  A displacement that is C0 but whose
 radial derivative jumps declares the radii where it does, and a
@@ -30,7 +34,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 __all__ = ["RadialDisplacement", "ZeroDisplacement", "CallableDisplacement",
-           "as_displacement"]
+           "as_displacement", "flattening", "layer_linear", "LayerLinear"]
 
 
 @runtime_checkable
@@ -145,3 +149,131 @@ def as_displacement(fn, *, knots=(), **kw) -> RadialDisplacement:
                 "extra arguments would be ignored")
         return fn
     return CallableDisplacement(fn, knots=knots, **kw)
+
+
+def flattening(f: float, *, rmax: float) -> CallableDisplacement:
+    """h = -f r P2(cos theta): the degree-2 shape of flattening `f`.
+
+    Every sphere of the reference body becomes a spheroid of the same
+    mean radius with polar radius r (1 - 2f/3)... and equatorial radius
+    r (1 + f/3), so that the outer boundary has flattening f to first
+    order; `rmax` is the outer radius, where the shape is given.
+    """
+    f, rmax = float(f), float(rmax)
+
+    def h(r, theta, phi):
+        return -f * r * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
+
+    def dh_dr(r, theta, phi):
+        return -f * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0) + 0.0 * r
+
+    def dh_dangles(r, theta, phi):
+        return 3.0 * f * r * np.cos(theta) * np.sin(theta), 0.0 * r
+
+    return CallableDisplacement(h, radial_derivative=dh_dr,
+                                angular_gradient=dh_dangles,
+                                name=f"flattening({f:g})")
+
+
+class LayerLinear:
+    """Reliefs on a skeleton's boundaries, interpolated linearly in r.
+
+    `reliefs` gives one callable `relief(theta, phi)` per boundary of
+    `skeleton`, or None for a boundary that stays spherical; within
+    layer i the displacement is the linear interpolation in r between
+    the reliefs of its two boundaries, so h is continuous, its radial
+    derivative jumps only at the boundaries (the knots), and every
+    boundary takes exactly its relief.  A relief carrying an
+    `angular_gradient(theta, phi)` attribute is used for the angular
+    gradient; otherwise central differences with step `dstep` are taken.
+    """
+
+    def __init__(self, skeleton, reliefs, *, dstep: float = 1e-6) -> None:
+        b = np.asarray(skeleton.boundaries, dtype=float)
+        reliefs = list(reliefs)
+        if len(reliefs) != b.size:
+            raise ValueError(
+                f"{b.size} boundaries need {b.size} reliefs (None where "
+                f"spherical), got {len(reliefs)}")
+        for rel in reliefs:
+            if rel is not None and not callable(rel):
+                raise TypeError(f"a relief is a callable of (theta, phi) or None, "
+                                f"got {type(rel).__name__}")
+        self._b = b
+        self._reliefs = reliefs
+        self._h = float(dstep)
+        self.knots = tuple(float(x) for x in b[1:-1])
+        self.name = "layer_linear"
+
+    @property
+    def boundaries(self) -> np.ndarray:
+        return self._b
+
+    @property
+    def reliefs(self) -> tuple:
+        return tuple(self._reliefs)
+
+    def _relief(self, j: int, theta, phi):
+        rel = self._reliefs[j]
+        if rel is None:
+            return np.zeros(np.broadcast(theta, phi).shape)
+        return np.asarray(rel(theta, phi), dtype=float) + 0.0 * theta
+
+    def _pieces(self, r, theta, phi):
+        """The layer of every point and the reliefs at its two boundaries."""
+        r, theta, phi = _broadcast(r, theta, phi)
+        i = np.clip(np.searchsorted(self._b, r, side="right") - 1,
+                    0, self._b.size - 2)
+        lo, hi = self._b[i], self._b[i + 1]
+        below = np.empty(r.shape)
+        above = np.empty(r.shape)
+        for j in np.unique(i):
+            m = i == j
+            below[m] = self._relief(j, theta[m], phi[m])
+            above[m] = self._relief(j + 1, theta[m], phi[m])
+        return r, theta, phi, lo, hi, below, above
+
+    def __call__(self, r, theta, phi):
+        r, theta, phi, lo, hi, below, above = self._pieces(r, theta, phi)
+        t = (r - lo) / (hi - lo)
+        return (1.0 - t) * below + t * above
+
+    def radial_derivative(self, r, theta, phi):
+        """dh/dr: the slope of the layer's interpolation, exact."""
+        r, theta, phi, lo, hi, below, above = self._pieces(r, theta, phi)
+        return (above - below) / (hi - lo)
+
+    def angular_gradient(self, r, theta, phi):
+        """(dh/dtheta, dh/dphi), exact where the reliefs supply theirs."""
+        r, theta, phi = _broadcast(r, theta, phi)
+        if all(rel is None or hasattr(rel, "angular_gradient")
+               for rel in self._reliefs):
+            i = np.clip(np.searchsorted(self._b, r, side="right") - 1,
+                        0, self._b.size - 2)
+            lo, hi = self._b[i], self._b[i + 1]
+            t = (r - lo) / (hi - lo)
+            dt = np.zeros(r.shape)
+            dp = np.zeros(r.shape)
+            for j in np.unique(i):
+                m = i == j
+                for k, w in ((j, 1.0 - t[m]), (j + 1, t[m])):
+                    rel = self._reliefs[k]
+                    if rel is None:
+                        continue
+                    gt, gp = rel.angular_gradient(theta[m], phi[m])
+                    dt[m] += w * np.asarray(gt, dtype=float)
+                    dp[m] += w * np.asarray(gp, dtype=float)
+            return dt, dp
+        h = self._h
+        dt = (self(r, theta + h, phi) - self(r, theta - h, phi)) / (2.0 * h)
+        dp = (self(r, theta, phi + h) - self(r, theta, phi - h)) / (2.0 * h)
+        return dt, dp
+
+    def __repr__(self) -> str:
+        n = sum(rel is not None for rel in self._reliefs)
+        return f"LayerLinear({n} reliefs on {self._b.size} boundaries)"
+
+
+def layer_linear(skeleton, reliefs, *, dstep: float = 1e-6) -> LayerLinear:
+    """The displacement interpolating boundary reliefs linearly in r."""
+    return LayerLinear(skeleton, reliefs, dstep=dstep)

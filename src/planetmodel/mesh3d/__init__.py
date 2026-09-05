@@ -2,14 +2,15 @@
 
 A MeshSpec describes what is wanted, `build_layered_mesh` produces it
 and a MeshResult says what was written; `build_offset_mesh` makes the
-two-body benchmark geometries and `export_mfem_mesh` turns either into
-an MFEM delivery.  The manifest that travels with every mesh is
-`manifest`.  Geometry construction, tagging, sizing fields, orientation
-repair and gmsh session management are private: consumers depend on
-the mesh and its manifest, not on how either was built.
+two-body benchmark geometries, `export_mfem_mesh` turns either into an
+MFEM delivery and `export_mfem` adds the fields of a model to a layered
+one.  The manifest that travels with every mesh is `manifest`.
+Geometry construction, tagging, sizing fields, orientation repair and
+gmsh session management are private: consumers depend on the mesh and
+its manifest, not on how either was built.
 
 gmsh is imported here and nowhere else in planetmodel; PyMFEM is
-imported inside the export function.
+imported inside the export functions.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ except ImportError as exc:  # pragma: no cover - exercised by the extra
     ) from exc
 
 from . import manifest
-from .export import ExportResult, export_mfem_mesh
+from .export import ExportResult, export_mfem, export_mfem_mesh
 from .layered import build_layered_mesh
 from .offset import build_offset_mesh
 from .spec import (AngularResolution, InterfaceSizing, MeshResult, MeshSpec,
@@ -34,5 +35,5 @@ __all__ = [
     "MeshSpec", "MeshResult", "Shell", "InterfaceSizing", "SizingRule",
     "AngularResolution", "UniformInterfaces", "PerInterface",
     "ValidationReport", "build_layered_mesh", "build_offset_mesh",
-    "export_mfem_mesh", "ExportResult", "manifest",
+    "export_mfem_mesh", "export_mfem", "ExportResult", "manifest",
 ]

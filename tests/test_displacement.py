@@ -104,3 +104,60 @@ def test_broadcasting():
     p = np.linspace(-3.0, 3.0, 2)[None, None, :]
     assert h(r, t, p).shape == (4, 3, 2)
     assert h.radial_derivative(r, t, p).shape == (4, 3, 2)
+
+
+# ------------------------------------------------- the shipped displacements
+
+def test_flattening_is_the_degree_two_shape_with_exact_derivatives():
+    from planetmodel.displacement import flattening as shipped
+    h = shipped(0.05, rmax=1.0)
+    r, theta, phi = np.linspace(0.1, 1.0, 5), np.linspace(0.1, 3.0, 5), 0.3
+    assert np.allclose(h(r, theta, phi), flattening(r, theta, phi))
+    assert np.allclose(h.radial_derivative(r, theta, phi), flattening_dr(r, theta, phi))
+    assert h.knots == () and "flattening" in repr(h)
+    testing.check_displacement(h, SK)
+    assert np.isclose(h(1.0, 0.0, 0.0), -0.05) and np.isclose(h(1.0, np.pi / 2, 0.0),
+                                                              0.025)
+
+
+def test_layer_linear_takes_each_boundary_relief_exactly():
+    from planetmodel.displacement import LayerLinear, layer_linear
+    top = lambda t, p: 0.02 * np.cos(t)              # noqa: E731
+    cmb = lambda t, p: 0.01 * np.sin(t) * np.cos(p)  # noqa: E731
+    h = layer_linear(SK, [None, cmb, top])
+    assert isinstance(h, LayerLinear) and h.knots == (0.5,)
+    t, p = np.linspace(0.1, 3.0, 7), np.linspace(-3.0, 3.0, 7)
+    assert np.allclose(h(0.0, t, p), 0.0)
+    assert np.allclose(h(0.5, t, p), cmb(t, p))
+    assert np.allclose(h(1.0, t, p), top(t, p))
+    assert np.allclose(h(0.25, t, p), 0.5 * cmb(t, p))
+    assert np.allclose(h(0.75, t, p), 0.5 * (cmb(t, p) + top(t, p)))
+    assert np.allclose(h.radial_derivative(0.3, t, p), cmb(t, p) / 0.5)
+    assert np.allclose(h.radial_derivative(0.7, t, p), (top(t, p) - cmb(t, p)) / 0.5)
+    testing.check_displacement(h, SK)
+    assert "2 reliefs" in repr(h)
+
+
+def test_layer_linear_uses_exact_angular_gradients_when_given():
+    from planetmodel.displacement import layer_linear
+
+    def top(t, p):
+        return 0.02 * np.cos(t)
+
+    def top_grad(t, p):
+        return -0.02 * np.sin(t) + 0.0 * p, 0.0 * t + 0.0 * p
+
+    top.angular_gradient = top_grad
+    h = layer_linear(SK, [None, None, top])
+    t, p = np.linspace(0.1, 3.0, 7), np.linspace(-3.0, 3.0, 7)
+    gt, gp = h.angular_gradient(0.75, t, p)
+    assert np.allclose(gt, 0.5 * -0.02 * np.sin(t), rtol=1e-15) and np.allclose(gp, 0.0)
+    testing.check_displacement(h, SK)
+
+
+def test_layer_linear_refusals():
+    from planetmodel.displacement import layer_linear
+    with pytest.raises(ValueError, match="3 reliefs"):
+        layer_linear(SK, [None, None])
+    with pytest.raises(TypeError, match="callable"):
+        layer_linear(SK, [None, 1.0, None])

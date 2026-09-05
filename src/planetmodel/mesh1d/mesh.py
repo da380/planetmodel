@@ -10,7 +10,10 @@ each side.
 
 RadialMesh lays such a mesh over a Skeleton so that every skeleton
 boundary is an element boundary, and records the layer each element
-lies in.  Everything is numbers: the mesh knows nothing about units.
+lies in.  Given a model, `nodal` evaluates the field of each element's
+own layer at the element's nodes, so a shared node carries both
+one-sided values, and `nodal_gravity` the model's gravity there.
+Everything is numbers: the mesh knows nothing about units.
 """
 from __future__ import annotations
 
@@ -204,6 +207,49 @@ class RadialMesh(Mesh1D):
     def start_element(self, l: int, *, eps: float = 1e-8) -> int:
         """The first element of the sub-mesh for a degree-l solve."""
         return self.element_at(self.truncation_radius(l, eps=eps))
+
+    def nodal(self, model, name: str, *, nu: int = 0,
+              missing: str = "refuse") -> np.ndarray:
+        """A radial field of a model at the nodes, per element: (nspec, ngll)
+        for rank 0, with the stored components appended for higher rank.
+
+        Each element takes the field of its own layer, so a node on a
+        skeleton boundary carries both one-sided values; `nu` asks for
+        the nu-th radial derivative.  An element whose layer lacks the
+        name is refused by name, or filled with NaN when
+        `missing="nan"`.  A new array each call.
+        """
+        if missing not in ("refuse", "nan"):
+            raise ValueError(f"missing must be 'refuse' or 'nan', got {missing!r}")
+        out = None
+        for i in np.unique(self.layer):
+            layer = model.layer(int(i))
+            if name not in layer:
+                if missing == "nan":
+                    continue
+                raise KeyError(
+                    f"layer {int(i)} ({layer.name!r}) holds no field {name!r}; "
+                    "pass missing='nan' to fill NaN there")
+            field = layer[name]
+            if not getattr(field, "is_radial", False):
+                raise ValueError(
+                    f"{name!r} on layer {int(i)} depends on direction; nodal "
+                    "values are for radial fields")
+            if nu:
+                field = field.derivative(nu=nu)
+            m = self.layer == i
+            values = field.evaluate(self.r[m], 0.0, 0.0)
+            if out is None:
+                out = np.full((self.nspec, self.ngll) + values.shape[2:], np.nan)
+            out[m] = values
+        if out is None:
+            raise KeyError(f"no layer of the mesh holds {name!r}")
+        return out
+
+    def nodal_gravity(self, model) -> np.ndarray:
+        """The model's gravity at the nodes, per element, over the whole model."""
+        from .gravity import gravity
+        return gravity(model, self.r)
 
     def __repr__(self) -> str:
         return (f"RadialMesh({self.nspec} elements x {self.ngll} GLL, "
