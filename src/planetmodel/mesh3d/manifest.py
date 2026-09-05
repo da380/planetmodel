@@ -254,6 +254,7 @@ class MeshManifest:
     """Everything a consumer needs that the mesh file cannot carry."""
 
     _: KW_ONLY
+    _: KW_ONLY
     geometry: dict = field(default_factory=dict)
     mesh: dict = field(default_factory=dict)
     delivery: str = "physical"

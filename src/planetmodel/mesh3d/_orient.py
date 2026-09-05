@@ -36,6 +36,7 @@ class OrientationReport:
     """What orientation repair found and did."""
 
     _: KW_ONLY
+    _: KW_ONLY
     cells_checked: int = 0
     cells_flipped: int = 0
     faces_checked: int = 0

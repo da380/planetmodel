@@ -78,6 +78,7 @@ class ValidityReport:
     valid: bool
     margin: float
     _: KW_ONLY
+    _: KW_ONLY
     worst_point: tuple[float, float, float] | None = None
     reason: str = ""
 

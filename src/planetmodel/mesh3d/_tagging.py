@@ -16,7 +16,7 @@ into a loud failure.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 
 import gmsh
 import numpy as np
@@ -41,6 +41,7 @@ class Tagging:
     cells: tuple[int, ...]          # layer i -> CAD entity
     faces: tuple[int, ...]          # interface k -> CAD entity
     radii: tuple[float, ...]        # interface k -> requested radius
+    _: KW_ONLY
     hollow: bool = False
 
     def __repr__(self) -> str:
@@ -130,7 +131,7 @@ def identify(geometry: ConcentricGeometry, expected_radii, *,
             "interfaces")
 
     return Tagging(geometry.dimension, tuple(cells), tuple(faces),
-                   tuple(expected), geometry.hollow)
+                   tuple(expected), hollow=geometry.hollow)
 
 
 def _mismatch(expected, measured, radius, hits, tol) -> str:

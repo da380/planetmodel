@@ -29,6 +29,7 @@ class Location:
     """
     layers: tuple[int, ...]
     _: KW_ONLY
+    _: KW_ONLY
     boundary: int | None = None
 
     @property

@@ -1,12 +1,12 @@
 """The public surface: exports resolve, and optional arguments are keyword-only."""
+import dataclasses
 import importlib
 import inspect
+import pkgutil
 import tomllib
 from pathlib import Path
 
 import planetmodel
-import planetmodel.frames
-import planetmodel.testing
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,8 +23,9 @@ def test_version_matches_pyproject():
     assert planetmodel.__version__ == declared
 
 
-# Every parameter with a default is keyword-only; the allowlist below is
-# the agreed set of exceptions and is not extended solo.
+# Every parameter with a default is keyword-only, in every function, method
+# and constructor of the package; the allowlist below is the agreed set of
+# exceptions and is not extended solo.
 KEYWORD_ONLY_EXCEPTIONS = set()
 
 
@@ -39,35 +40,31 @@ def _positional_defaults(fn):
 
 
 def _modules():
-    mods = [planetmodel, planetmodel.frames, planetmodel.testing]
-    for name in ("planetmodel.mesh1d", "planetmodel.mesh3d"):
+    """Every module of the package that imports without optional dependencies."""
+    mods = [planetmodel]
+    for info in pkgutil.walk_packages(planetmodel.__path__, "planetmodel."):
         try:
-            mods.append(importlib.import_module(name))
+            mods.append(importlib.import_module(info.name))
         except ImportError:
             pass
     return mods
 
 
 def _public_callables():
+    """Every function and class defined in the package, and every method."""
     seen = set()
     for mod in _modules():
-        for name in getattr(mod, "__all__", ()):
-            obj = getattr(mod, name)
+        for name, obj in vars(mod).items():
+            if getattr(obj, "__module__", None) != mod.__name__ or obj in seen:
+                continue
+            seen.add(obj)
             if inspect.isclass(obj):
-                for cls in obj.__mro__:
-                    if not getattr(cls, "__module__", "").startswith("planetmodel"):
-                        continue
-                    if cls in seen:
-                        continue
-                    seen.add(cls)
-                    yield cls.__name__, cls
-                    for attr, member in vars(cls).items():
-                        if attr.startswith("_") and attr != "__call__":
-                            continue
-                        if isinstance(member, (staticmethod, classmethod)):
-                            member = member.__func__
-                        if inspect.isfunction(member):
-                            yield f"{cls.__name__}.{attr}", member
+                yield obj.__name__, obj
+                for attr, member in vars(obj).items():
+                    if isinstance(member, (staticmethod, classmethod)):
+                        member = member.__func__
+                    if inspect.isfunction(member):
+                        yield f"{obj.__name__}.{attr}", member
             elif inspect.isfunction(obj):
                 yield name, obj
 
@@ -82,3 +79,15 @@ def test_optional_arguments_are_keyword_only():
         if bad:
             offenders[qualname] = bad
     assert not offenders, f"positional optionals: {offenders}"
+
+
+# Every dataclass field with a default sits after a `_: KW_ONLY` sentinel, so
+# a constructor reads like a signature: required fields, then `*`, then the
+# optionals by name.
+def test_dataclass_optional_fields_are_keyword_only():
+    offenders = [qualname for qualname, obj in _public_callables()
+                 if inspect.isclass(obj) and dataclasses.is_dataclass(obj)
+                 and any(f.default is not dataclasses.MISSING
+                         or f.default_factory is not dataclasses.MISSING
+                         for f in dataclasses.fields(obj) if not f.kw_only)]
+    assert not offenders, f"positional optional fields: {offenders}"
