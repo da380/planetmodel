@@ -42,7 +42,7 @@ from typing import ClassVar
 __all__ = [
     "Dimensions", "Scales", "unit_string", "G_SI", "EARTH_MEAN_DENSITY",
     "DIMENSIONLESS", "MASS", "LENGTH", "TIME", "DENSITY", "VELOCITY",
-    "GRAVITY", "MODULUS", "VISCOSITY", "GRAVITATIONAL_CONSTANT",
+    "GRAVITY", "MODULUS", "VISCOSITY", "GRAVITATIONAL_CONSTANT", "FREQUENCY",
 ]
 
 #: The gravitational constant, m^3 kg^-1 s^-2 (CODATA 2018).  The one
@@ -132,6 +132,7 @@ DIMENSIONLESS = Dimensions()
 MASS = Dimensions(mass=1)
 LENGTH = Dimensions(length=1)
 TIME = Dimensions(time=1)
+FREQUENCY = Dimensions(time=-1)
 DENSITY = Dimensions(mass=1, length=-3)
 VELOCITY = Dimensions(length=1, time=-1)
 GRAVITY = Dimensions(length=1, time=-2)

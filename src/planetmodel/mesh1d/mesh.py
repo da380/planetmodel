@@ -217,11 +217,12 @@ class RadialMesh(Mesh1D):
         skeleton boundary carries both one-sided values; `nu` asks for
         the nu-th radial derivative.  An element whose layer lacks the
         name is refused by name, or filled with NaN when
-        `missing="nan"`.  A new array each call.
+        `missing="nan"`.  Complex where any layer's field is complex.
+        A new array each call.
         """
         if missing not in ("refuse", "nan"):
             raise ValueError(f"missing must be 'refuse' or 'nan', got {missing!r}")
-        out = None
+        pieces = {}
         for i in np.unique(self.layer):
             layer = model.layer(int(i))
             if name not in layer:
@@ -237,13 +238,14 @@ class RadialMesh(Mesh1D):
                     "values are for radial fields")
             if nu:
                 field = field.derivative(nu=nu)
-            m = self.layer == i
-            values = field.evaluate(self.r[m], 0.0, 0.0)
-            if out is None:
-                out = np.full((self.nspec, self.ngll) + values.shape[2:], np.nan)
-            out[m] = values
-        if out is None:
+            pieces[int(i)] = field.evaluate(self.r[self.layer == i], 0.0, 0.0)
+        if not pieces:
             raise KeyError(f"no layer of the mesh holds {name!r}")
+        first = next(iter(pieces.values()))
+        dtype = np.result_type(*(v.dtype for v in pieces.values()))
+        out = np.full((self.nspec, self.ngll) + first.shape[2:], np.nan, dtype=dtype)
+        for i, values in pieces.items():
+            out[self.layer == i] = values
         return out
 
     def nodal_gravity(self, model) -> np.ndarray:

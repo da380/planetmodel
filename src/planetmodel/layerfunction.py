@@ -30,7 +30,7 @@ from scipy.interpolate import BSpline, PPoly
 
 __all__ = ["LayerFunction", "PolynomialLayer", "NumericLayer",
            "as_layer_function", "polynomial_layer", "constant_layer",
-           "polynomial_fit", "same_interval"]
+           "polynomial_fit", "same_interval", "as_values", "as_scalar"]
 
 #: Two intervals are the same when their ends agree to this fraction of
 #: the wider one's width.
@@ -63,7 +63,8 @@ def _require_same_interval(a, b) -> tuple[float, float]:
 class LayerFunction(Protocol):
     """A function of one radius on one interval.
 
-    `__call__(r)` broadcasts over any shape and returns float64;
+    `__call__(r)` broadcasts over any shape and returns float64, or
+    complex128 for a complex-valued function;
     `derivative(*, nu)` and `integrate(a, b)` (signed) are the
     calculus; `on_interval(lo, hi)` re-states the same function on
     another interval by its own rule; `rescaled(*, k, v)` is
@@ -92,6 +93,17 @@ def _is_number(x) -> bool:
     return np.isscalar(x) and not isinstance(x, (str, bytes))
 
 
+def as_values(x) -> np.ndarray:
+    """`x` as a float64 array, or complex128 when it is complex."""
+    a = np.asarray(x)
+    return a if a.dtype.kind == "c" else a.astype(float)
+
+
+def as_scalar(x):
+    """`x` as a float, or a complex when it is complex."""
+    return complex(x) if np.iscomplexobj(x) or isinstance(x, complex) else float(x)
+
+
 class PolynomialLayer:
     """A piecewise polynomial on one interval, exact in every operation.
 
@@ -106,7 +118,7 @@ class PolynomialLayer:
             ppoly = PPoly.from_spline(ppoly)
         if not isinstance(ppoly, PPoly):
             raise TypeError(f"expected a PPoly or BSpline, got {type(ppoly).__name__}")
-        c = np.asarray(ppoly.c, dtype=float)
+        c = as_values(ppoly.c)
         x = np.asarray(ppoly.x, dtype=float)
         self._p = PPoly(c, x, extrapolate=True)
         self._interval = (_interval(interval) if interval is not None
@@ -126,7 +138,7 @@ class PolynomialLayer:
         return self._p.c.shape[0] - 1
 
     def __call__(self, r):
-        return np.asarray(self._p(np.asarray(r, dtype=float)), dtype=float)
+        return as_values(self._p(np.asarray(r, dtype=float)))
 
     def derivative(self, *, nu: int = 1) -> "PolynomialLayer":
         if nu < 0:
@@ -137,7 +149,7 @@ class PolynomialLayer:
 
     def integrate(self, a: float, b: float) -> float:
         """The signed integral from a to b, exact."""
-        return float(self._p.integrate(float(a), float(b)))
+        return as_scalar(self._p.integrate(float(a), float(b)))
 
     def on_interval(self, lo: float, hi: float) -> "PolynomialLayer":
         """The same polynomial on [lo, hi]: the end pieces continue."""
@@ -170,8 +182,8 @@ class PolynomialLayer:
             x, a, b = self._aligned(other)
             return PolynomialLayer(PPoly(op(a, b), x), interval=interval)
         if _is_number(other):
-            c = np.array(self._p.c, dtype=float)
-            return PolynomialLayer(PPoly(op(c, float(other)), self._p.x),
+            c = np.array(self._p.c)
+            return PolynomialLayer(PPoly(op(c, as_scalar(other)), self._p.x),
                                    interval=self._interval)
         if _is_layer_function(other):
             return NotImplemented
@@ -186,7 +198,7 @@ class PolynomialLayer:
 
     def __sub__(self, other):
         if _is_number(other):
-            return self + (-float(other))
+            return self + (-as_scalar(other))
         return self._combine(other, _sub_c)
 
     def __rsub__(self, other):
@@ -201,7 +213,7 @@ class PolynomialLayer:
             x, a, b = self._aligned(other)
             return PolynomialLayer(PPoly(_mul_c(a, b), x), interval=interval)
         if _is_number(other):
-            return PolynomialLayer(PPoly(self._p.c * float(other), self._p.x),
+            return PolynomialLayer(PPoly(self._p.c * as_scalar(other), self._p.x),
                                    interval=self._interval)
         return NotImplemented
 
@@ -209,7 +221,7 @@ class PolynomialLayer:
 
     def __truediv__(self, other):
         if _is_number(other):
-            return self * (1.0 / float(other))
+            return self * (1.0 / as_scalar(other))
         if isinstance(other, PolynomialLayer):
             interval = _require_same_interval(self, other)
             return NumericLayer(lambda r: self(r) / other(r), interval)
@@ -232,7 +244,7 @@ class PolynomialLayer:
 def _refine(p: PPoly, x: np.ndarray) -> np.ndarray:
     """p's coefficients on the breakpoints x, a superset of p.x."""
     n = p.c.shape[0]
-    out = np.zeros((n, x.size - 1))
+    out = np.zeros((n, x.size - 1), dtype=p.c.dtype)
     mid = 0.5 * (x[:-1] + x[1:])
     owner = np.clip(np.searchsorted(p.x, mid, side="right") - 1, 0, p.x.size - 2)
     for j, i in enumerate(owner):
@@ -246,18 +258,19 @@ def _refine(p: PPoly, x: np.ndarray) -> np.ndarray:
 
 
 def _pad(a: np.ndarray, n: int) -> np.ndarray:
-    out = np.zeros((n, a.shape[1]))
+    out = np.zeros((n, a.shape[1]), dtype=a.dtype)
     out[n - a.shape[0]:] = a
     return out
 
 
 def _add_c(a, b):
     if _is_number(b):
-        a = np.array(a, dtype=float)
+        a = np.array(a, dtype=np.result_type(a, b))
         a[-1] += b
         return a
     n = max(a.shape[0], b.shape[0])
-    return _pad(a, n) + _pad(b, n)
+    dtype = np.result_type(a, b)
+    return _pad(a.astype(dtype), n) + _pad(b.astype(dtype), n)
 
 
 def _sub_c(a, b):
@@ -269,7 +282,7 @@ def _mul_c(a, b):
     npiece = a.shape[1]
     cols = [polymul(a[::-1, i], b[::-1, i])[::-1] for i in range(npiece)]
     deg = max(c.size for c in cols)
-    out = np.zeros((deg, npiece))
+    out = np.zeros((deg, npiece), dtype=np.result_type(a, b))
     for i, col in enumerate(cols):
         out[deg - col.size:, i] = col
     return out
@@ -304,7 +317,7 @@ class NumericLayer:
 
     def __call__(self, r):
         r = np.asarray(r, dtype=float)
-        out = np.asarray(self._fn(r), dtype=float)
+        out = as_values(self._fn(r))
         return np.broadcast_to(out, r.shape).copy() if out.shape != r.shape else out
 
     def derivative(self, *, nu: int = 1) -> "NumericLayer":
@@ -317,14 +330,21 @@ class NumericLayer:
         else:
             h = self._dstep * (self._interval[1] - self._interval[0])
             fn = self._fn
-            first = NumericLayer(lambda r: (np.asarray(fn(r + h), dtype=float)
-                                            - np.asarray(fn(r - h), dtype=float))
-                                 / (2.0 * h),
+            first = NumericLayer(lambda r: (as_values(fn(r + h))
+                                            - as_values(fn(r - h))) / (2.0 * h),
                                  self._interval, dstep=self._dstep)
         return first.derivative(nu=nu - 1)
 
     def integrate(self, a: float, b: float) -> float:
-        """The signed integral from a to b by adaptive quadrature."""
+        """The signed integral from a to b by adaptive quadrature; the real
+        and imaginary parts of a complex function separately."""
+        lo, hi = self._interval
+        if np.iscomplexobj(self(np.array(0.5 * (lo + hi)))):
+            re, _ = quad(lambda x: float(self(np.array(x)).real), float(a),
+                         float(b), limit=200)
+            im, _ = quad(lambda x: float(self(np.array(x)).imag), float(a),
+                         float(b), limit=200)
+            return complex(re, im)
         val, _ = quad(lambda x: float(self(np.array(x))), float(a), float(b),
                       limit=200)
         return float(val)
@@ -340,22 +360,22 @@ class NumericLayer:
         fn, d = self._fn, self._d
         lo, hi = self._interval
         return NumericLayer(
-            lambda r: v * np.asarray(fn(np.asarray(r, dtype=float) / k), dtype=float),
+            lambda r: v * as_values(fn(np.asarray(r, dtype=float) / k)),
             (k * lo, k * hi),
             derivative=(None if d is None else
-                        lambda r: (v / k) * np.asarray(
-                            d(np.asarray(r, dtype=float) / k), dtype=float)),
+                        lambda r: (v / k) * as_values(
+                            d(np.asarray(r, dtype=float) / k))),
             dstep=self._dstep)
 
     def _binary(self, other, op):
         if _is_number(other):
-            c = float(other)
+            c = as_scalar(other)
             return NumericLayer(lambda r: op(self(r), c), self._interval,
                                 dstep=self._dstep)
         if _is_layer_function(other):
             interval = _require_same_interval(self, other)
             return NumericLayer(
-                lambda r: op(self(r), np.asarray(other(r), dtype=float)),
+                lambda r: op(self(r), as_values(other(r))),
                 interval, dstep=self._dstep)
         return NotImplemented
 
@@ -422,7 +442,7 @@ def as_layer_function(fn, interval) -> LayerFunction:
 def polynomial_layer(coeffs, interval, *, scale: float = 1.0) -> PolynomialLayer:
     """sum_k c_k (r / scale)^k on `interval`, as one exact piece in r."""
     lo, hi = _interval(interval)
-    c = np.asarray(coeffs, dtype=float).ravel()
+    c = as_values(np.asarray(coeffs).ravel())
     if c.size == 0:
         raise ValueError("need at least one coefficient")
     scale = float(scale)
@@ -430,14 +450,14 @@ def polynomial_layer(coeffs, interval, *, scale: float = 1.0) -> PolynomialLayer
         raise ValueError(f"scale must be positive, got {scale}")
     p = Polynomial(c / scale ** np.arange(c.size))          # in r
     local = p(Polynomial([lo, 1.0]))                         # in (r - lo)
-    coef = np.zeros(c.size)
+    coef = np.zeros(c.size, dtype=c.dtype)
     coef[:local.coef.size] = local.coef
     return PolynomialLayer(PPoly(coef[::-1][:, None], [lo, hi]))
 
 
 def constant_layer(value, interval) -> PolynomialLayer:
     """The constant `value` on `interval`, as an exact polynomial."""
-    return polynomial_layer([float(value)], interval)
+    return polynomial_layer([as_scalar(value)], interval)
 
 
 def polynomial_fit(fn, interval, *, degree: int,
@@ -456,6 +476,6 @@ def polynomial_fit(fn, interval, *, degree: int,
         raise ValueError("need more points than the degree")
     t = np.cos(np.pi * (np.arange(n) + 0.5) / n)
     r = 0.5 * (lo + hi) + 0.5 * (hi - lo) * t
-    y = np.asarray(fn(r), dtype=float)
+    y = as_values(fn(r))
     p = Polynomial.fit(r, y, degree, domain=[lo, hi]).convert()
     return polynomial_layer(p.coef, (lo, hi))

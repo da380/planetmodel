@@ -10,7 +10,10 @@ first two: the skeleton, the geometry and its mappings, a radial
 spectral-element mesh, a 2D and 3D mesher with export to MFEM; and
 fields on one interval, the model with its units, PREM from its
 polynomials, gravity, sampling, and the export of a model's fields to
-MFEM. Readers, files and frequency-dependent behaviour follow. The
+MFEM. Two sub-packages consume the radial mesh: `planetmodel.loading`
+solves the loading and tidal problem and gives Love numbers, and
+`planetmodel.randomfield` draws Matern random fields on balls, annuli
+and layers. Readers, files and time-dependent rheology follow. The
 previous version is kept under `archive/v0.5/` for reference and is not
 imported.
 
@@ -97,8 +100,8 @@ print(nd.G, mesh.nodal(nd, "rho").shape, nd.geometry.validity())
 
 ## Where to go next
 
-- `examples/tutorials/`: nine walkthroughs, from a skeleton to a model's
-  fields read back by MFEM, each a `# %%` script that runs headless.
+- `examples/tutorials/`: eleven walkthroughs, from a skeleton to Love
+  numbers and random fields, each a `# %%` script that runs headless.
 - `docs/formats/mesh_manifest.md`: the manifest beside every mesh, from
   the consumer's side.
 

@@ -16,10 +16,23 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import (DENSITY, ELASTIC, SCALAR, STRESS, AnalyticField,
-                         ComposedField, NumericLayer, PolynomialLayer,
-                         PushedForwardField, RadialField, RadialStretch,
-                         flattening, polynomial_fit, polynomial_layer, testing)
+from planetmodel import (
+    DENSITY,
+    ELASTIC,
+    SCALAR,
+    STRESS,
+    AnalyticField,
+    ComposedField,
+    NumericLayer,
+    PolynomialLayer,
+    PushedForwardField,
+    RadialField,
+    RadialStretch,
+    flattening,
+    polynomial_fit,
+    polynomial_layer,
+    testing,
+)
 from planetmodel.frames import spherical_frame, voigt_to_tensor
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
@@ -31,7 +44,7 @@ FIGURES.mkdir(exist_ok=True)
 # Underneath a radial field sits a layer function: a function of one
 # radius on one interval that differentiates, integrates, re-states and
 # rescales itself. `polynomial_layer` writes one as `sum c_k (r / a)^k`,
-# the form reference models are published in; here the density and P
+# the form some reference models are published in; here the density and P
 # velocity of PREM's outer core, with `a = 6371 km`.
 
 # %%
@@ -50,11 +63,13 @@ print("integral over the core:", rho_fn.integrate(*OC))
 # degree-9 polynomial, not a refit.
 
 # %%
-kappa_fn = rho_fn * vp_fn ** 2
+kappa_fn = rho_fn * vp_fn**2
 print(kappa_fn, "| exact:", isinstance(kappa_fn, PolynomialLayer))
 r = np.linspace(*OC, 5)
-print("max error against the pointwise product:",
-      np.max(np.abs(kappa_fn(r) - rho_fn(r) * vp_fn(r) ** 2)))
+print(
+    "max error against the pointwise product:",
+    np.max(np.abs(kappa_fn(r) - rho_fn(r) * vp_fn(r) ** 2)),
+)
 
 # %% [markdown]
 # A bare callable becomes a `NumericLayer`, whose derivative is a central
@@ -80,7 +95,7 @@ print(type(mixed).__name__, "| derivative at 2000 km:", mixed.derivative()(2000e
 # %%
 rho = RadialField(OC, rho_fn, character=DENSITY, name="rho")
 vp = RadialField(OC, vp_fn, name="vp")
-kappa = rho * vp ** 2
+kappa = rho * vp**2
 print(kappa, "| function:", kappa.function)
 try:
     rho + vp
@@ -90,7 +105,7 @@ except ValueError as exc:
 # %% [markdown]
 # A field refuses radii outside its interval. Stepping beyond a layer on
 # purpose, as a ray tracer's trial step might, is `on_interval`: the
-# same polynomial continued on a wider interval.
+# same function continued on a wider interval.
 
 # %%
 try:
@@ -109,13 +124,18 @@ print("continued past the CMB:", wider(3500e3))
 # through the formula whose residual the caller judges.
 
 # %%
-bulk_sound = ComposedField(lambda k, d: np.sqrt(k / d), (kappa, rho),
-                           character=SCALAR, name="bulk_sound_speed")
+bulk_sound = ComposedField(
+    lambda k, d: np.sqrt(k / d), (kappa, rho), character=SCALAR, name="bulk_sound_speed"
+)
 print(bulk_sound, "| radial:", bulk_sound.is_radial)
 fit = RadialField(OC, polynomial_fit(bulk_sound, OC, degree=3), name="fit")
 rr = np.linspace(*OC, 200)
-print("max residual of the cubic fit:", np.max(np.abs(fit(rr) - bulk_sound(rr))),
-      "m/s on values near", bulk_sound(rr).mean())
+print(
+    "max residual of the cubic fit:",
+    np.max(np.abs(fit(rr) - bulk_sound(rr))),
+    "m/s on values near",
+    bulk_sound(rr).mean(),
+)
 
 # %% [markdown]
 # ## Tensor fields and frames
@@ -126,16 +146,22 @@ print("max residual of the cubic fit:", np.max(np.abs(fit(rr) - bulk_sound(rr)))
 # three coordinates; it may return its components in either frame.
 
 # %%
-sigma = AnalyticField(OC, lambda r, t, p: np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0]),
-                      character=STRESS, name="sigma")
+sigma = AnalyticField(
+    OC,
+    lambda r, t, p: np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0]),
+    character=STRESS,
+    name="sigma",
+)
 th, ph = 0.6, 1.2
 s_sph = sigma(2000e3, th, ph)
 s_cart = sigma.evaluate(2000e3, th, ph, frame="cartesian")
 R = spherical_frame(th, ph)
 print("spherical Voigt:", s_sph)
 S_sph = voigt_to_tensor(s_sph, rank=2)
-print("cartesian agrees with R S R^T:",
-      np.allclose(voigt_to_tensor(s_cart, rank=2), R @ S_sph @ R.T))
+print(
+    "cartesian agrees with R S R^T:",
+    np.allclose(voigt_to_tensor(s_cart, rank=2), R @ S_sph @ R.T),
+)
 
 # %% [markdown]
 # ## Push-forward
@@ -153,8 +179,10 @@ X = np.array([[0.0, 0.0, 2000e3]])
 print(rho_phys, "| J at the pole:", m.jacobian(X)[0])
 print("rho / J:", rho(2000e3) / m.jacobian(X)[0], "=", rho_phys(2000e3, 0.0, 0.0))
 C = AnalyticField(OC, lambda r, t, p: np.eye(6) * 1e11, character=ELASTIC)
-print("a pushed-forward elastic tensor is still (6, 6):",
-      PushedForwardField(C, m)(2000e3, 0.6, 1.2).shape)
+print(
+    "a pushed-forward elastic tensor is still (6, 6):",
+    PushedForwardField(C, m)(2000e3, 0.6, 1.2).shape,
+)
 
 # %% [markdown]
 # Every shipped field passes `check_field`, and so must a field written
@@ -171,6 +199,7 @@ print("all contracts pass")
 # %%
 try:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 except ImportError:
@@ -180,13 +209,20 @@ except ImportError:
 fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
 km = rr / 1e3
 axes[0].plot(km, rho(rr) / 1e3, label="rho")
-axes[0].plot(km, (rho + RadialField(OC, bump_fn, character=DENSITY))(rr) / 1e3,
-             "--", label="rho + bump (numeric)")
-axes[0].set_ylabel("g/cm^3"); axes[0].legend()
+axes[0].plot(
+    km,
+    (rho + RadialField(OC, bump_fn, character=DENSITY))(rr) / 1e3,
+    "--",
+    label="rho + bump (numeric)",
+)
+axes[0].set_ylabel("g/cm^3")
+axes[0].legend()
 axes[1].plot(km, kappa(rr) / 1e9, label="rho vp^2, exact")
-axes[1].set_ylabel("GPa"); axes[1].legend()
+axes[1].set_ylabel("GPa")
+axes[1].legend()
 axes[2].plot(km, fit(rr) - bulk_sound(rr))
-axes[2].set_ylabel("m/s"); axes[2].set_title("cubic fit residual of a composed field")
+axes[2].set_ylabel("m/s")
+axes[2].set_title("cubic fit residual of a composed field")
 for ax in axes:
     ax.set_xlabel("r (km)")
 fig.tight_layout()

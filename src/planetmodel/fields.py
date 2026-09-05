@@ -7,6 +7,8 @@ no units: a discontinuity is two layers asked separately, and what the
 numbers mean is the model's business.
 
 `evaluate(r, theta, phi)` broadcasts its coordinates and returns float64
+(complex128 for a complex-valued field, as a model frozen at a frequency
+holds)
 of the broadcast shape followed by the character's Voigt shape for
 ranks 2 and 4, or its component shape otherwise.  Components are given
 in the local spherical frame (e_r, e_theta, e_phi) at the point unless
@@ -38,7 +40,8 @@ import numpy as np
 from .character import SCALAR, Character
 from .frames import (bond_matrix, rotate_slots, spherical_coordinates,
                      spherical_frame, tensor_to_voigt)
-from .layerfunction import as_layer_function, constant_layer, same_interval
+from .layerfunction import (as_layer_function, as_scalar, as_values, constant_layer,
+                            same_interval)
 
 __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "ComposedField", "constant_field", "FRAMES", "check_frame",
@@ -152,11 +155,19 @@ class FieldBase:
                 f"of {self!r}; on_interval re-states a field on purpose")
         return r, theta, phi
 
+    @property
+    def dtype(self) -> np.dtype:
+        """float64, or complex128 for a complex-valued field, from a probe
+        at the middle of the interval."""
+        lo, hi = self._interval
+        return self.evaluate(0.5 * (lo + hi), 1.0, 0.5).dtype
+
     def evaluate(self, r, theta, phi, *, frame: str = "spherical"):
-        """The components at (r, theta, phi) in `frame`, float64."""
+        """The components at (r, theta, phi) in `frame`, float64 or
+        complex128."""
         check_frame(frame)
         r, theta, phi = self._points(r, theta, phi)
-        values = np.asarray(self._values(r, theta, phi), dtype=float)
+        values = as_values(self._values(r, theta, phi))
         if frame == "cartesian" and self._character.rank:
             values = _rotate(values, spherical_frame(theta, phi), self._character)
         return values
@@ -212,7 +223,7 @@ class FieldBase:
             return _combine((self, other), np.multiply,
                             self._character * other.character)
         if _is_number(other):
-            return _scale(self, float(other))
+            return _scale(self, as_scalar(other))
         return NotImplemented
 
     __rmul__ = __mul__
@@ -225,7 +236,7 @@ class FieldBase:
             char = Character(0, self._character.weight - other.character.weight)
             return _combine((self, other), np.divide, char)
         if _is_number(other):
-            return _scale(self, 1.0 / float(other))
+            return _scale(self, 1.0 / as_scalar(other))
         return NotImplemented
 
     def __pow__(self, n):
@@ -259,7 +270,7 @@ def _combine(fields, op, character):
     return ComposedField(op, fields, character=character)
 
 
-def _scale(field, c: float):
+def _scale(field, c):
     if isinstance(field, RadialField):
         return RadialField(field.interval, _elementwise(lambda f: f * c, field._fs),
                            character=field.character, rtol=field.rtol)
@@ -323,10 +334,9 @@ class RadialField(FieldBase):
     def _values(self, r, theta, phi):
         if not self._fs.shape:
             return self._fs[()](r)
-        out = np.empty(r.shape + self._fs.shape)
-        for idx in np.ndindex(self._fs.shape):
-            out[(...,) + idx] = self._fs[idx](r)
-        return out
+        parts = [np.broadcast_to(self._fs[idx](r), r.shape)
+                 for idx in np.ndindex(self._fs.shape)]
+        return np.stack(parts, axis=-1).reshape(r.shape + self._fs.shape)
 
     def _map(self, fn, *, character=None, interval=None, name=None):
         fs = np.empty(self._fs.shape, dtype=object)
@@ -376,7 +386,7 @@ class AnalyticField(FieldBase):
     The formula receives broadcast coordinate arrays and returns the
     components at each point, full or Voigt for ranks 2 and 4 (a
     constant tensor is broadcast); the result is presented Voigt.  A
-    formula returning complex values is refused.
+    formula may return complex values.
     """
 
     def __init__(self, interval, fn, *, character: Character = SCALAR,
@@ -404,8 +414,6 @@ class AnalyticField(FieldBase):
 
     def _values(self, r, theta, phi):
         raw = np.asarray(self._fn(r, theta, phi))
-        if np.iscomplexobj(raw):
-            raise TypeError(f"{self!r} returned complex values; a field is real")
         vals = _to_stored(raw, r.shape, self._character, self)
         if self._frame == "cartesian" and self._character.rank:
             R = spherical_frame(theta, phi)
@@ -461,7 +469,7 @@ def _to_stored(raw, point_shape, character, owner):
             raise ValueError(
                 f"{owner!r} should return {target} at {point_shape} points, "
                 f"got {raw.shape}") from None
-    return np.array(vals, dtype=float)
+    return as_values(np.array(vals))
 
 
 class ComposedField(FieldBase):
@@ -508,8 +516,6 @@ class ComposedField(FieldBase):
     def _values(self, r, theta, phi):
         args = [s.evaluate(r, theta, phi) for s in self._sources]
         raw = np.asarray(self._fn(*args))
-        if np.iscomplexobj(raw):
-            raise TypeError(f"{self!r} returned complex values; a field is real")
         return _to_stored(raw, r.shape, self._character, self)
 
     def on_interval(self, lo: float, hi: float) -> "ComposedField":
@@ -540,14 +546,14 @@ def constant_field(value, interval, *, character: Character = SCALAR,
     """The constant `value` (a number, or an array of the stored shape) as an
     exact radial field."""
     lo, hi = _interval(interval)
-    v = np.asarray(value, dtype=float)
+    v = as_values(value)
     shape = stored_shape(character)
     if v.shape != shape:
         raise ValueError(f"a {character} constant has shape {shape}, got {v.shape}")
     if shape == ():
-        return RadialField((lo, hi), constant_layer(float(v), (lo, hi)),
+        return RadialField((lo, hi), constant_layer(as_scalar(v), (lo, hi)),
                            character=character, name=name)
     fs = np.empty(shape, dtype=object)
     for idx in np.ndindex(shape):
-        fs[idx] = constant_layer(float(v[idx]), (lo, hi))
+        fs[idx] = constant_layer(as_scalar(v[idx]), (lo, hi))
     return RadialField((lo, hi), fs, character=character, name=name)

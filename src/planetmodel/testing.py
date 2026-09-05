@@ -205,7 +205,7 @@ def check_geometry(geometry) -> None:
 def check_layer_function(fn, *, n: int = 17, rtol: float = 1e-6) -> None:
     """Hold a LayerFunction to its protocol on its own interval.
 
-    Checks finite float64 values of the argument's shape; `derivative`
+    Checks finite float64 (or complex128) values of the argument's shape; `derivative`
     against a central difference; `integrate` against a fine
     trapezoid rule and its sign convention; `on_interval` agreeing on
     the overlap; and `rescaled` against v f(r / k) and its round trip.
@@ -216,7 +216,7 @@ def check_layer_function(fn, *, n: int = 17, rtol: float = 1e-6) -> None:
     width = hi - lo
     r = np.linspace(lo, hi, n)
     y = fn(r)
-    assert isinstance(y, np.ndarray) and y.dtype == np.float64, (
+    assert isinstance(y, np.ndarray) and y.dtype in (np.float64, np.complex128), (
         f"values are {type(y).__name__} of dtype {getattr(y, 'dtype', None)}")
     assert y.shape == r.shape, f"values have shape {y.shape} for {r.shape} radii"
     assert np.all(np.isfinite(y)), "values are not finite"
@@ -234,8 +234,10 @@ def check_layer_function(fn, *, n: int = 17, rtol: float = 1e-6) -> None:
         "derivative(nu=0) is not the function")
 
     fine = np.linspace(lo, hi, 20001)
-    want = float(np.trapezoid(fn(fine), fine))
-    got = float(fn.integrate(lo, hi))
+    want = np.trapezoid(fn(fine), fine)
+    got = fn.integrate(lo, hi)
+    assert isinstance(got, complex if y.dtype.kind == "c" else float), (
+        f"integrate returns {type(got).__name__}")
     assert abs(got - want) <= 1e-6 * max(abs(want), scale * width), (
         "integrate disagrees with a trapezoid rule")
     assert abs(fn.integrate(hi, lo) + got) <= 1e-12 * max(abs(got), scale * width), (
@@ -264,8 +266,9 @@ def check_field(field, *, rng=None, n: int = 64) -> None:
     """Hold a Field to its protocol.
 
     Checks the three attributes; that a call with the radius alone is
-    accepted exactly when the field is radial and of rank 0; float64 values of
-    the broadcast shape plus the stored shape; both ends of the
+    accepted exactly when the field is radial and of rank 0; float64 (or
+    complex128) values of the broadcast shape plus the stored shape,
+    agreeing with `dtype`; both ends of the
     interval; refusal outside it and of an unknown frame; the two
     frames related by the rotation the character implies (a factor of
     R on every slot, expanded from Voigt where the field is Voigt);
@@ -291,8 +294,10 @@ def check_field(field, *, rng=None, n: int = 64) -> None:
     phi = rng.uniform(-np.pi, np.pi, n)
 
     values = field.evaluate(r, theta, phi)
-    assert isinstance(values, np.ndarray) and values.dtype == np.float64, (
+    assert isinstance(values, np.ndarray) and values.dtype in (np.float64,
+                                                                np.complex128), (
         f"values are dtype {getattr(values, 'dtype', None)}, not float64")
+    assert field.dtype == values.dtype, "dtype disagrees with the values"
     assert values.shape == (n,) + shape, (
         f"values have shape {values.shape}, expected {(n,) + shape}")
     assert np.all(np.isfinite(values)), "values are not finite"

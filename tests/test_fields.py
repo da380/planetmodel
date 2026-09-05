@@ -166,8 +166,8 @@ def test_analytic_scalar():
     assert a(r[:, None], np.zeros(4), 0.0).shape == (50, 4)
     with pytest.raises(ValueError, match="theta and phi"):
         a(r)
-    with pytest.raises(TypeError, match="complex"):
-        AnalyticField(IV, lambda r, t, p: 1j * r)(r, 0.1, 0.2)
+    z = AnalyticField(IV, lambda r, t, p: 1j * r)
+    assert z(r, 0.1, 0.2).dtype == np.complex128 and z.dtype == np.complex128
     with pytest.raises(TypeError, match="callable"):
         AnalyticField(IV, 3.0)
 

@@ -12,12 +12,16 @@ Modules reached by name, one level down:
   frames       the local spherical frame, tensors moved between frames, Voigt
   materials    velocity and moduli conversions, the elastic field, what a
                layer's fields imply (fluidity, moduli)
+  rheology     what a layer's rheology fields imply, and a model frozen at
+               a frequency with complex moduli
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   catalogue    prem, and simple models for use and testing
   sampling     a model on a radial mesh times an angular grid
   mesh1d       radial spectral-element meshes (GLL), nodal values, gravity
   mesh3d       2D and 3D meshes via gmsh, and MFEM export
+  loading      the loading and tidal problem on a radial mesh: Love numbers
+  randomfield  Matern random fields on balls, annuli and layers
   testing      the executable contracts, `check_field` and its kin
 """
 from .catalogue import homogeneous, layered, prem
@@ -41,6 +45,7 @@ from .mesh1d.gravity import gravity, mass
 from .model import Layer, Model
 from .pushforward import (PulledBackField, PushedForwardField, pull_back,
                           push_forward)
+from .rheology import frozen, frozen_moduli, is_viscoelastic
 from .sampling import AngularGrid, Sample, equiangular, gauss_legendre, sample
 from .skeleton import CoarseningMap, Location, Skeleton
 from .units import EARTH_MEAN_DENSITY, G_SI, Dimensions, Scales
@@ -63,6 +68,7 @@ __all__ = [
     "Field", "FieldBase", "RadialField", "AnalyticField", "ComposedField",
     "constant_field",
     "ElasticField", "is_fluid", "moduli", "elastic_moduli", "kappa_mu",
+    "is_viscoelastic", "frozen_moduli", "frozen",
     "push_forward", "pull_back", "PushedForwardField", "PulledBackField",
     "Dimensions", "Scales", "G_SI", "EARTH_MEAN_DENSITY",
     "FieldSpec", "Constant", "VOCABULARY", "CONSTANTS",
