@@ -47,7 +47,15 @@ def layer_method[T](fn: Callable[..., T]) -> Callable[..., T]:
 
 class Elastic:
     """The elastic behaviour: fluidity, the moduli and the Voigt average
-    by layer, and the isotropic re-description of the whole model."""
+    by layer, and the isotropic re-description of the whole model.
+
+    `elastic_moduli(which)` is the layer's tensor of any symmetry, its
+    own where it holds one; `moduli(which)` is the spherically symmetric
+    reading, the five transversely isotropic moduli, and `kappa_mu` and
+    `isotropic` go through them, so a layer holding a general anisotropic
+    tensor is refused by those three until the general Voigt average is
+    written.
+    """
 
     is_fluid = layer_method(materials.is_fluid)
     moduli = layer_method(materials.moduli)

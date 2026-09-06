@@ -1,12 +1,18 @@
 # %% [markdown]
-# # 5. Fields on one interval
+# # 5. Fields on one layer
 #
-# A field is data on one layer: an interval, a character that says how it
-# transforms, a name, and `evaluate(r, theta, phi, *, frame)`. It knows no
-# skeleton, no units and no other layer. This tutorial builds fields from
-# polynomials, from callables and from formulas, does arithmetic on them,
-# shows where that arithmetic is exact, and pushes a field forward through
-# a mapping.
+# A field is a function of position on one layer of the reference body:
+# `evaluate(r, theta, phi, *, frame)` takes the spherical coordinates of
+# a point and returns the components there, in the local spherical frame
+# `(e_r, e_theta, e_phi)` or in Cartesian components. Beside that it has
+# an interval, the layer's; a character, which says how it transforms
+# under a mapping; and a name. It knows no skeleton, no units and no
+# other layer. A *radial* field is the special case with no angular
+# dependence, a function of the radius alone: it is what a spherically
+# symmetric reference model holds, and it is exact where its polynomials
+# are. This tutorial starts with the general field, then the radial one
+# and the exact arithmetic it allows, then tensors, frames and the
+# push-forward through a mapping.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -39,17 +45,49 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 # %% [markdown]
-# ## Layer functions
+# ## A field is three-dimensional
 #
-# Underneath a radial field sits a layer function: a function of one
-# radius on one interval that differentiates, integrates, re-states and
-# rescales itself. `polynomial_layer` writes one as `sum c_k (r / a)^k`,
-# the form some reference models are published in; here the density and P
-# velocity of PREM's outer core, with `a = 6371 km`.
+# `AnalyticField` is the general field: any formula of `(r, theta, phi)`
+# on an interval, given a character and a name. Here a density on the
+# interval of PREM's outer core with a degree-2 variation in colatitude,
+# the shape a rotating fluid core takes. The coordinates broadcast, the
+# result has their shape, and a field that depends on direction must be
+# asked all three coordinates. The same constructor wraps any callable
+# you already have, an interpolant of a tomographic model say, so that
+# the library can carry it.
 
 # %%
 A = 6371e3
 OC = (1221.5e3, 3480.0e3)
+
+
+def core_density(r, theta, phi):
+    p2 = 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
+    return 12.0e3 - 2.0e3 * (r / OC[1]) ** 2 + 30.0 * (r / OC[1]) ** 2 * p2
+
+
+rho3 = AnalyticField(OC, core_density, character=DENSITY, name="rho")
+print(rho3, "| radial:", rho3.is_radial)
+print("at one point:", rho3(2000e3, 0.3, 1.0))
+radii, colats = np.linspace(*OC, 3)[:, None], np.linspace(0, np.pi, 4)[None, :]
+print("on a grid:", rho3(radii, colats, 0.0).shape)
+try:
+    rho3(2000e3)
+except ValueError as exc:
+    print("refused:", str(exc)[:60], "...")
+
+# %% [markdown]
+# ## Radial fields, the special case
+#
+# A `RadialField` depends on the radius alone, so it may be called with
+# `r` by itself, and underneath it sits a *layer function*: a function of
+# one radius on one interval that differentiates, integrates, re-states
+# and rescales itself. `polynomial_layer` writes one as
+# `sum c_k (r / a)^k`, the form some reference models are published in;
+# here the density and P velocity of PREM's outer core, with
+# `a = 6371 km`.
+
+# %%
 rho_fn = polynomial_layer([12.5815, -1.2638, -3.6426, -5.5281], OC, scale=A)
 vp_fn = polynomial_layer([11.0487, -4.0362, 4.8023, -13.5732], OC, scale=A)
 print(rho_fn)
@@ -84,23 +122,29 @@ mixed = rho_fn + bump_fn
 print(type(mixed).__name__, "| derivative at 2000 km:", mixed.derivative()(2000e3))
 
 # %% [markdown]
-# ## Fields
-#
 # A `RadialField` is a layer function with a character and a name. A
 # density has character `DENSITY` (rank 0, weight 1: it picks up a factor
 # `1/J` under a mapping); a velocity is a plain `SCALAR`. The field algebra
 # follows the characters: a density times a velocity squared has weight
-# 1, as a modulus should; adding a density to a velocity is refused.
+# 1, as a modulus should; adding a density to a velocity is refused. When
+# every operand is radial the result is radial and, on polynomials,
+# exact; a radial field times a field of direction is a general field
+# again.
 
 # %%
 rho = RadialField(OC, rho_fn, character=DENSITY, name="rho")
 vp = RadialField(OC, vp_fn, name="vp")
 kappa = rho * vp**2
-print(kappa, "| function:", kappa.function)
+print(kappa, "| radial:", kappa.is_radial, "| function:", kappa.function)
+print("radial field called with r alone:", rho(2000e3),
+      "| with all three:", rho(2000e3, 0.3, 1.0))
 try:
     rho + vp
 except ValueError as exc:
     print("refused:", exc)
+shape = AnalyticField(OC, lambda r, t, p: 1.0 + 0.01 * np.cos(t), name="shape")
+rho_shaped = rho * shape
+print(rho_shaped, "| radial:", rho_shaped.is_radial)
 
 # %% [markdown]
 # A field refuses radii outside its interval. Stepping beyond a layer on
@@ -138,12 +182,37 @@ print(
 )
 
 # %% [markdown]
+# ## Real and complex fields
+#
+# A field's values are float64, or complex128 where the field is complex,
+# and `dtype` says which. A linear viscoelastic body at one frequency is
+# an elastic body with complex moduli, so a model frozen at a frequency
+# holds complex fields where it holds a rheology, and everything below
+# carries the dtype through: complex coefficients make a complex
+# polynomial layer, the algebra between a real and a complex field is
+# complex, and integrals come back complex. Nothing is cast: a real field
+# stays float64.
+
+# %%
+mu_r = RadialField(OC, polynomial_layer([1.0e11, -2.0e10], OC, scale=A),
+                   character=DENSITY, name="mu")
+mu_c = RadialField(OC, polynomial_layer([1.0e11 + 2.0e9j, -2.0e10], OC, scale=A),
+                   character=DENSITY, name="mu")
+print("real:", mu_r.dtype, "| complex:", mu_c.dtype)
+print("a real times a complex field:", (vp * mu_c).dtype,
+      "| a real times a real:", (vp * mu_r).dtype)
+print("complex value:", mu_c(2000e3), "| integral:", mu_c.integrate(*OC))
+print("a complex formula is a complex field:",
+      AnalyticField(OC, lambda r, t, p: r * np.exp(1j * p), name="phase").dtype)
+
+# %% [markdown]
 # ## Tensor fields and frames
 #
 # Fields of rank 1 and above give their components in the local spherical
 # frame `(e_r, e_theta, e_phi)`; `frame="cartesian"` rotates them. Ranks 2
-# and 4 are carried in Voigt form. An `AnalyticField` is a formula of all
-# three coordinates; it may return its components in either frame.
+# and 4 are carried in Voigt form. A formula may return its components in
+# either frame; here a constant stress in the spherical frame, which in
+# Cartesian components varies from point to point with the frame.
 
 # %%
 sigma = AnalyticField(
@@ -189,7 +258,7 @@ print(
 # outside the library.
 
 # %%
-for f in (rho, vp, kappa, bulk_sound, sigma, rho_phys):
+for f in (rho3, rho, vp, kappa, rho_shaped, bulk_sound, mu_c, sigma, rho_phys):
     testing.check_field(f)
 print("all contracts pass")
 

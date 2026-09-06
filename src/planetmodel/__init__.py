@@ -19,6 +19,7 @@ Modules reached by name, one level down:
   behaviours   the free functions as methods: `layer_method` and the mixins
   catalogue    PREM and LayeredIsotropicElastic, model types for use and testing
   sampling     a model on a radial mesh times an angular grid
+  harmonics    real spherical harmonics; grid transforms via pyshtools (optional)
   mesh1d       radial spectral-element meshes (GLL), nodal values, gravity
   mesh3d       2D and 3D meshes via gmsh, and MFEM export
   loading      the loading and tidal problem on a radial mesh: Love numbers
@@ -35,6 +36,7 @@ from .displacement import (CallableDisplacement, RadialDisplacement,
 from .fields import (AnalyticField, ComposedField, Field, FieldBase, RadialField,
                      constant_field)
 from .geometry import Geometry, InterfaceInfo, LayerInfo
+from .harmonics import analyse_grid, real_harmonics, synthesise, synthesise_grid
 from .layerfunction import (LayerFunction, NumericLayer, PolynomialLayer,
                             as_layer_function, constant_layer, polynomial_fit,
                             polynomial_layer)
@@ -78,6 +80,7 @@ __all__ = [
     "PREM", "LayeredIsotropicElastic",
     "flattening", "layer_linear",
     "AngularGrid", "Sample", "sample", "gauss_legendre", "equiangular",
+    "real_harmonics", "synthesise", "synthesise_grid", "analyse_grid",
     "gravity", "mass",
     "testing",
     "__version__",

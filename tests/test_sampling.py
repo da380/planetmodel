@@ -15,7 +15,6 @@ from math import factorial
 
 import numpy as np
 import pytest
-from scipy.fft import next_fast_len
 from scipy.special import lpmv
 
 from planetmodel import RadialMesh, Skeleton
@@ -99,7 +98,7 @@ def test_gauss_legendre_nodes_and_band():
     assert g.ntheta == lmax + 1
     assert np.all(np.diff(g.colatitudes) > 0)
     assert 0 < g.colatitudes[0] and g.colatitudes[-1] < np.pi
-    assert g.nphi >= 2 * lmax + 1 and g.nphi == next_fast_len(2 * lmax + 1)
+    assert g.nphi == 2 * lmax + 1
     assert np.isclose(g.weights.sum(), 2.0, rtol=1e-14)
     assert g.longitudes[0] == 0.0 and np.allclose(
         np.diff(g.longitudes), 2 * np.pi / g.nphi)

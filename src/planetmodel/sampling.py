@@ -35,8 +35,9 @@ a `custom` grid.  The Gauss-Legendre grid resolves degrees up to `lmax`
 with `lmax + 1` colatitudes; its longitude rule is the trapezoid rule
 on `nphi` equally spaced points, exact for `exp(i (m - m') phi)` only
 while `|m - m'| < nphi`, so resolving orders `|m| <= lmax` needs
-`nphi >= 2 lmax + 1`, and the smallest fast FFT length at or above that
-bound is the default.  The weight convention is
+`nphi >= 2 lmax + 1`, and that bound is the default: the count
+pyshtools' Gauss-Legendre grid has, so that `planetmodel.harmonics` can
+transform on the grid as it is.  The weight convention is
 
     integral over S^2 of f dOmega  ~=  sum_i w_i sum_j (2 pi / nphi) f_ij,
 
@@ -54,7 +55,6 @@ from types import MappingProxyType
 
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.fft import next_fast_len
 
 from .character import Character
 from .fields import Field
@@ -154,8 +154,8 @@ def gauss_legendre(lmax: int, *, nphi: int | None = None) -> AngularGrid:
 
     `lmax + 1` Gauss-Legendre colatitudes in x = cos(theta), sorted so
     that theta increases, with the Legendre weights alongside, and
-    `nphi` equally spaced longitudes from zero, defaulting to the
-    smallest fast FFT length at or above 2 lmax + 1.  An explicit `nphi`
+    `nphi` equally spaced longitudes from zero, 2 lmax + 1 by default,
+    the count pyshtools' Gauss-Legendre grid has.  An explicit `nphi`
     below that bound is refused: at 2 lmax the orders +lmax and -lmax
     are one discrete mode and cannot be told apart.
     """
@@ -167,7 +167,7 @@ def gauss_legendre(lmax: int, *, nphi: int | None = None) -> AngularGrid:
     order = np.argsort(theta)
     need = 2 * lmax + 1
     if nphi is None:
-        nphi = int(next_fast_len(need))
+        nphi = need
     elif int(nphi) < need:
         raise ValueError(
             f"nphi={nphi} cannot resolve orders |m| <= {lmax}: the trapezoid "

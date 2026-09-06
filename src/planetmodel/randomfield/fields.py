@@ -41,11 +41,13 @@ boundary condition.  Robin coefficients can be added on top via
 artificial boundary, or explicitly.
 
 `SphericalGRF` samples are coefficient arrays with respect to the real
-orthonormal harmonics of `randomfield.harmonics`, with a trailing radial
+orthonormal harmonics of `planetmodel.harmonics`, with a trailing radial
 axis over the physical nodes `r`; `to_field` wraps one as an
-`AnalyticField` on the shell.  `LayeredGRF` draws an independent
-`RadialGRF` on each chosen layer of a skeleton and returns one
-`RadialField` per layer.  All fields are real and zero-mean.
+`AnalyticField` on the shell, and `sample_grid` synthesises one on a
+Gauss-Legendre grid through pyshtools (the `harmonics` extra).
+`LayeredGRF` draws an independent `RadialGRF` on each chosen layer of a
+skeleton and returns one `RadialField` per layer.  All fields are real
+and zero-mean.
 """
 from __future__ import annotations
 
@@ -60,15 +62,16 @@ from scipy.interpolate import PPoly
 
 from ..character import SCALAR, Character
 from ..fields import AnalyticField, RadialField
+from ..harmonics import real_harmonics, synthesise_grid
 from ..layerfunction import PolynomialLayer, constant_layer
 from ..mesh1d import Mesh1D
 from ..skeleton import Skeleton
-from .harmonics import real_harmonics
 from .operator import RadialOperatorFamily, Robin
 
 if TYPE_CHECKING:
     from ..geometry import Geometry
     from ..model import Model
+    from ..sampling import AngularGrid
 
 __all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF", "Profile"]
 
@@ -384,6 +387,12 @@ class SphericalGRF:
                 c[1, l, 1:l + 1] = U[:, l + 1:].T
         c *= self._scale
         return c
+
+    def sample_grid(self, grid: AngularGrid, *, rng: Any = None) -> np.ndarray:
+        """One sample synthesised on a Gauss-Legendre grid of band at least
+        `lmax`: values of shape (r.size, ntheta, nphi), the layout of a
+        sample.  Through `synthesise_grid`, so it needs pyshtools."""
+        return synthesise_grid(self.sample(rng=rng), grid)
 
     def variance(self) -> np.ndarray:
         """Pointwise variance sigma(r)^2 of the truncated field (exact)."""

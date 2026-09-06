@@ -12,7 +12,7 @@ tutorial keeps go under `figures/`, which is gitignored.
 | `02_an_analytic_mapping.py` | a radial stretch from an analytic displacement, `F` and `J`, validity, kinks, a non-radial mapping |
 | `03_a_radial_mesh.py` | the GLL reference element, a radial mesh over a skeleton, per-element nodes, the exact polynomial view, truncation by degree, a figure (uses the `plot` extra when present) |
 | `04_a_mesh_for_mfem.py` | a 2D and a 3D mesh of a geometry with a buffer shell, the manifest, export to MFEM; the files are kept under `figures/tutorial_04_meshes/` for gmsh and glvis, or discarded with `--temp` (needs the `meshing` and `mfem` extras) |
-| `05_fields.py` | fields on one interval: polynomials, callables, formulas, the exact algebra, push-forward through a mapping, a figure |
+| `05_fields.py` | fields as functions of position on one layer, radial fields as the exact special case, the algebra, real and complex dtypes, tensors and frames, push-forward, a figure |
 | `06_a_model_of_your_own.py` | a model from scratch: geometry, fields, specs and constants, validation, conversion of units, surgery |
 | `07_prem.py` | PREM from its polynomials: layers, moduli, gravity, nodal values on a radial mesh, a figure |
 | `08_simple_models.py` | homogeneous, layered and ellipsoidal models with analytic boundary shapes, a figure |

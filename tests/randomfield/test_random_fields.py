@@ -3,9 +3,8 @@ shell as a field, and a layered sample as model fields."""
 import numpy as np
 import pytest
 
-from planetmodel import Skeleton, PREM, testing
-from planetmodel.randomfield import (LayeredGRF, RadialGRF, SphericalGRF,
-                                     real_harmonics, synthesise)
+from planetmodel import PREM, Skeleton, real_harmonics, synthesise, testing
+from planetmodel.randomfield import LayeredGRF, RadialGRF, SphericalGRF
 
 
 def test_radial_grf_normalisation_and_stats():

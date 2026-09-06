@@ -2,9 +2,12 @@
 layer's fields imply.
 
 The moduli are the canonical elastic description, because velocities
-have no transformation law (see character.py).  A transversely
-isotropic medium with its symmetry axis along e_r is described by the
-five moduli
+have no transformation law (see character.py).  The general elastic
+medium is a second elasticity tensor, character ELASTIC, which a layer
+may hold directly under the name `elastic_moduli`; what this module
+builds and reads is the spherically symmetric case, where the tensor is
+at most transversely isotropic about e_r.  A transversely isotropic
+medium with its symmetry axis along e_r is described by the five moduli
 
     A = rho vph^2      C = rho vpv^2      L = rho vsv^2
     N = rho vsh^2      F = eta (A - 2 L)
@@ -44,6 +47,12 @@ The functions of a layer read whatever fields it holds, by name, and
 refuse by name when the fields they need are absent: `is_fluid` asks
 the shear-bearing fields whether they vanish, `moduli` builds the five
 moduli, `elastic_moduli` the tensor, and `kappa_mu` the Voigt average.
+A layer holding `elastic_moduli` itself is answered with that field by
+`elastic_moduli`, whatever its symmetry; `moduli`, the five, and the
+Voigt average through them are the transversely isotropic reading and
+refuse such a layer by name.  A fully anisotropic medium is therefore
+stored as its tensor, and the general Voigt average waits for the first
+model that needs it.
 """
 from __future__ import annotations
 
@@ -368,11 +377,17 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
 
     The five moduli when held; else kappa and mu; else rho with the five
     transversely isotropic velocities; else rho with vp and vs, which
-    are isotropic; a layer holding none of these is refused with
-    KeyError.
+    are isotropic; a layer holding none of these, or holding its tensor
+    directly under `elastic_moduli`, is refused with KeyError.
     """
     vti = MODULI_NAMES[Symmetry.VTI]
     iso = MODULI_NAMES[Symmetry.ISOTROPIC]
+    if "elastic_moduli" in layer and not (all(n in layer for n in vti)
+                                          or all(n in layer for n in iso)):
+        raise KeyError(
+            f"{_describe(layer)} holds its elastic tensor directly as "
+            "'elastic_moduli'; the five transversely isotropic moduli are not "
+            "read from a tensor, ask elastic_moduli for the tensor itself")
     if all(n in layer for n in vti):
         return Symmetry.VTI, {n: layer[n] for n in vti}
     if all(n in layer for n in iso):
@@ -394,18 +409,26 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
 
 
 def moduli(layer: LayerLike) -> dict[str, Field]:
-    """The moduli A, C, F, L, N of a layer as rank-0 fields, from
-    whatever it holds (see `elastic_moduli`); exact on polynomial layers."""
+    """The transversely isotropic moduli A, C, F, L, N of a layer as
+    rank-0 fields, from whatever it holds (see `elastic_moduli`); exact
+    on polynomial layers.  A layer holding a general tensor is refused."""
     symmetry, fields = _independent_moduli(layer)
     if symmetry is Symmetry.ISOTROPIC:
         fields = _vti_from_isotropic(fields["kappa"], fields["mu"])
     return fields
 
 
-def elastic_moduli(layer: LayerLike) -> ElasticField:
-    """The elastic tensor of a layer: ISOTROPIC when it holds kappa and
-    mu or rho with vp and vs, VTI when it holds the five moduli or rho
-    with vpv, vph, vsv, vsh and eta; refused with KeyError otherwise."""
+def elastic_moduli(layer: LayerLike) -> Field:
+    """The elastic tensor of a layer.
+
+    The layer's own `elastic_moduli` field where it holds one, whatever
+    its symmetry; otherwise an `ElasticField` built from the fields it
+    holds: ISOTROPIC when it holds kappa and mu or rho with vp and vs,
+    VTI when it holds the five moduli or rho with vpv, vph, vsv, vsh and
+    eta; refused with KeyError otherwise.
+    """
+    if "elastic_moduli" in layer:
+        return layer["elastic_moduli"]
     symmetry, fields = _independent_moduli(layer)
     return ElasticField(symmetry, fields, name="elastic_moduli")
 

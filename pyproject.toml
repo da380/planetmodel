@@ -28,6 +28,7 @@ mfem = ["mfem>=4.8"]
 netcdf = ["netCDF4>=1.7"]
 plot = ["matplotlib>=3.11,<4"]
 notebook = ["ipykernel>=6.29"]
+harmonics = ["pyshtools (>=4.14)", "ducc0 (>=0.41)"]
 
 [dependency-groups]
 dev = [
@@ -50,6 +51,7 @@ markers = [
     "slow: long-running tests (minutes); deselect with -m 'not slow'",
     "gmsh: requires the optional gmsh dependency (planetmodel[meshing])",
     "mfem: requires PyMFEM (planetmodel[mfem])",
+    "harmonics: requires pyshtools (planetmodel[harmonics])",
 ]
 
 [tool.ruff]

@@ -515,3 +515,28 @@ def test_moduli_refuse_a_layer_without_enough():
                                            "vpv": RadialField(OC, 1.0)}))
     with pytest.raises(KeyError, match="kappa"):
         kappa_mu({"mu": RadialField(OC, 1.0)})
+
+
+def test_a_layer_holding_its_tensor_is_answered_with_it():
+    from planetmodel import ELASTIC, AnalyticField
+    # a general anisotropic tensor: no TI structure, stored directly
+    rng = np.random.default_rng(3)
+    M = rng.standard_normal((6, 6))
+    C6 = M @ M.T + 6.0 * np.eye(6)
+
+    def tensor(r, theta, phi):
+        return C6 * (1.0 + 0.1 * np.cos(theta))[..., None, None]
+
+    field = AnalyticField(LM, tensor, character=ELASTIC, name="elastic_moduli")
+    lay = layer_of(LM, LM_POLY)
+    held = {"rho": lay["rho"], "elastic_moduli": field}
+    assert elastic_moduli(held) is field
+    with pytest.raises(KeyError, match="elastic tensor directly"):
+        moduli(held)
+    with pytest.raises(KeyError, match="elastic tensor directly"):
+        kappa_mu(held)
+    # the five beside a tensor: the five are still read, the tensor wins
+    five = moduli_from_velocities(lay["rho"], lay["vp"], lay["vs"])
+    both = {**five, "elastic_moduli": field}
+    assert elastic_moduli(both) is field
+    assert list(moduli(both)) == ["A", "C", "F", "L", "N"]

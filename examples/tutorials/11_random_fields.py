@@ -98,6 +98,26 @@ slice_values = random_field.evaluate(rr, tt, 0.0)
 print("map std at r = 0.9:", surface_map.std().round(3), "(sigma = 1)")
 
 # %% [markdown]
+# On a Gauss-Legendre grid the synthesis is a fast transform through
+# pyshtools (the `harmonics` extra, with ducc0 as its backend where it
+# is installed): `sample_grid` gives nodes times grid, the layout of a
+# sample, and `analyse_grid` is its inverse for a band-limited field.
+
+# %%
+try:
+    from planetmodel import analyse_grid, gauss_legendre, synthesise_grid
+    grid = gauss_legendre(shell.lmax)
+    on_grid = shell.sample_grid(grid, rng=rng)
+    back = analyse_grid(on_grid, grid)
+    print("on the grid:", on_grid.shape, "| coefficients back:", back.shape,
+          "| round trip error:", np.abs(synthesise_grid(back, grid) - on_grid).max())
+    print("sphere average of u^2 at a node:",
+          float(np.sum(on_grid[10] ** 2 * grid.weights[:, None])
+                * (2 * np.pi / grid.nphi) / (4 * np.pi)).__round__(3), "(sigma^2 = 1)")
+except ImportError as exc:
+    print("skipped:", str(exc).splitlines()[0])
+
+# %% [markdown]
 # ## The operator family underneath
 #
 # `RadialOperatorFamily` is the degree-indexed operator A_l of
