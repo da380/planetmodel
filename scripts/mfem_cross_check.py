@@ -36,8 +36,8 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import (DENSITY, CallableDisplacement, Geometry, Model,
-                         RadialField, RadialStretch, Skeleton, mass, prem)
+from planetmodel import (DENSITY, CallableDisplacement, Geometry, Model, RadialField,
+                         RadialStretch, Skeleton, mass, PREM)
 from planetmodel.units import LENGTH, MASS
 from planetmodel.mesh3d import (AngularResolution, MeshSpec, Shell,
                                 build_layered_mesh, export_mfem, manifest)
@@ -111,7 +111,7 @@ def main(argv=None) -> int:
     ap.add_argument("--order", type=int, default=2)
     args = ap.parse_args(argv)
 
-    fine = prem().nondimensionalised()          # radii in units of a = 6371 km
+    fine = PREM().nondimensionalised()          # radii in units of a = 6371 km
     length = fine.scales.factor(LENGTH)         # metres per unit
     h_ref = args.h_ref_km * 1e3 / length
     sk_m, dropped = coarsened_for(args.h_ref_km * 1e3)

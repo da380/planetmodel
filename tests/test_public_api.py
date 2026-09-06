@@ -1,4 +1,5 @@
 """The public surface: exports resolve, and optional arguments are keyword-only."""
+import ast
 import dataclasses
 import importlib
 import inspect
@@ -91,3 +92,36 @@ def test_dataclass_optional_fields_are_keyword_only():
                          or f.default_factory is not dataclasses.MISSING
                          for f in dataclasses.fields(obj) if not f.kw_only)]
     assert not offenders, f"positional optional fields: {offenders}"
+
+
+# Every parameter and every return is annotated, in every function of the
+# package, nested functions and dunders included: a signature says what it
+# takes and gives.  Read from the source so that modules needing gmsh are
+# held to it too.
+def _unannotated(tree):
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        a = node.args
+        params = a.posonlyargs + a.args + a.kwonlyargs
+        missing = [p.arg for p in params
+                   if p.annotation is None and p.arg not in ("self", "cls")]
+        if a.vararg is not None and a.vararg.annotation is None:
+            missing.append("*" + a.vararg.arg)
+        if a.kwarg is not None and a.kwarg.annotation is None:
+            missing.append("**" + a.kwarg.arg)
+        if node.returns is None:
+            missing.append("->")
+        if missing:
+            yield node.lineno, node.name, missing
+
+
+def test_every_signature_is_annotated():
+    root = Path(planetmodel.__file__).parent
+    offenders = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        rows = list(_unannotated(tree))
+        if rows:
+            offenders[str(path.relative_to(root))] = rows
+    assert not offenders, f"unannotated signatures: {offenders}"

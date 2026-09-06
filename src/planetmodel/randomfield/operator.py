@@ -41,15 +41,27 @@ independently, values-only and eigenpair caches separately.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.linalg import eig_banded, eigvals_banded, solveh_banded
 
 from ..mesh1d import Mesh1D
 
-__all__ = ["RadialOperatorFamily"]
+__all__ = ["RadialOperatorFamily", "Coefficient", "Robin"]
+
+#: A coefficient of the operator: a number, a callable of the radius, or a
+#: nodal array of the mesh's shape (nspec, ngll).
+type Coefficient = ArrayLike | Callable[[np.ndarray], ArrayLike]
+
+#: Robin coefficients: None for Neumann on both boundaries, one gamma for
+#: both, or a pair (inner, outer) with None meaning Neumann there.
+type Robin = float | tuple[float | None, float | None] | None
 
 
-def _nodal_coefficient(mesh: Mesh1D, c) -> np.ndarray:
+def _nodal_coefficient(mesh: Mesh1D, c: Coefficient) -> np.ndarray:
     """A coefficient as a per-element nodal array of shape (nspec, ngll):
     a scalar, a callable of radius, or an array already in that shape."""
     if callable(c):
@@ -68,7 +80,7 @@ def _nodal_coefficient(mesh: Mesh1D, c) -> np.ndarray:
     return out
 
 
-def _parse_robin(robin) -> tuple[float, float]:
+def _parse_robin(robin: Robin) -> tuple[float, float]:
     """(gamma_inner, gamma_outer) from None, one number, or a pair with
     None entries meaning Neumann."""
     if robin is None:
@@ -107,8 +119,9 @@ class RadialOperatorFamily:
     Results are cached per degree.
     """
 
-    def __init__(self, mesh: Mesh1D, *, kappa=1.0, kappa_h=None,
-                 weight: str = "r2", robin=None) -> None:
+    def __init__(self, mesh: Mesh1D, *, kappa: Coefficient = 1.0,
+                 kappa_h: Coefficient | None = None, weight: str = "r2",
+                 robin: Robin = None) -> None:
         if weight not in ("r2", "one"):
             raise ValueError("weight must be 'r2' or 'one'")
         if not isinstance(mesh, Mesh1D):
@@ -196,7 +209,7 @@ class RadialOperatorFamily:
         """Diagonal mass on the active dofs at degree l."""
         return self._M[self._n0(l):]
 
-    def embed(self, l: int, values) -> np.ndarray:
+    def embed(self, l: int, values: ArrayLike) -> np.ndarray:
         """Active-dof values completed to the full mesh (a no-op off balls):
         the centre is zero for l >= 1 and the statically condensed value
         f(0) = c . f_(first element) for l = 0; works on (n,) vectors and
@@ -296,13 +309,13 @@ class RadialOperatorFamily:
 
     # -- the operators themselves --------------------------------------------
 
-    def _check(self, l: int, v) -> np.ndarray:
+    def _check(self, l: int, v: ArrayLike) -> np.ndarray:
         v = np.asarray(v, dtype=float)
         if v.shape[0] != self.ndof(l):
             raise ValueError(f"expected {self.ndof(l)} active dofs, got {v.shape[0]}")
         return v
 
-    def apply(self, l: int, v) -> np.ndarray:
+    def apply(self, l: int, v: ArrayLike) -> np.ndarray:
         """A_l v on active-dof values v of shape (n,) or (n, k): the
         operator of the weighted space, M^-1 K_l v with K_l the banded
         pencil, so that `inner(l, 0, u, apply(l, v))` is the bilinear
@@ -323,7 +336,7 @@ class RadialOperatorFamily:
                     out[:n - u] += b * v[u:]
         return out / mass[:, None] if v.ndim == 2 else out / mass
 
-    def solve(self, l: int, b) -> np.ndarray:
+    def solve(self, l: int, b: ArrayLike) -> np.ndarray:
         """A_l^-1 b, the inverse of `apply`, by banded Cholesky of the
         pencil, for b of shape (n,) or (n, k)."""
         b = self._check(l, b)
@@ -331,17 +344,19 @@ class RadialOperatorFamily:
         rhs = mass[:, None] * b if b.ndim == 2 else mass * b
         return solveh_banded(band, rhs, lower=False)
 
-    def white_noise(self, l: int, *, rng=None, size: int | None = None) -> np.ndarray:
+    def white_noise(self, l: int, *, rng: Any = None,
+                    size: int | None = None) -> np.ndarray:
         """White noise of L^2(w dr) on the active dofs: M^-1/2 z with z
         standard normal, of shape (n,) or (n, size).  Its covariance is
-        M^-1, so <f, white> is N(0, |f|^2) for every nodal f."""
+        M^-1, so <f, white> is N(0, |f|^2) for every nodal f.  `rng` is
+        anything `np.random.default_rng` accepts."""
         rng = np.random.default_rng(rng)
         s = 1.0 / np.sqrt(self.mass(l))
         if size is None:
             return s * rng.standard_normal(s.size)
         return s[:, None] * rng.standard_normal((s.size, int(size)))
 
-    def apply_power(self, l: int, s: float, v) -> np.ndarray:
+    def apply_power(self, l: int, s: float, v: ArrayLike) -> np.ndarray:
         """A_l^s v on active-dof values v of shape (n,) or (n, k), through
         the full eigendecomposition A_l^s = Phi Theta^s Phi^T M; any real
         power, the spectrum being bounded below by 1."""
@@ -353,7 +368,7 @@ class RadialOperatorFamily:
         c = Phi.T @ (mass[:, None] * v)
         return Phi @ (theta[:, None] ** s * c)
 
-    def inner(self, l: int, s: float, u, v) -> float:
+    def inner(self, l: int, s: float, u: ArrayLike, v: ArrayLike) -> float:
         """The H^s inner product <u, A_l^s v> with the L^2(w dr) pairing;
         s = 0 is the weighted L^2 inner product."""
         u = np.asarray(u, dtype=float)

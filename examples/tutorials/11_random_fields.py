@@ -18,13 +18,13 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import SCALAR, prem, testing
+from planetmodel import SCALAR, PREM, testing
 from planetmodel.randomfield import LayeredGRF, RadialGRF, SphericalGRF
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 rng = np.random.default_rng(7)
-model = prem(ocean=False)
+model = PREM(ocean=False)
 a = model.skeleton.boundaries[-1]
 
 # %% [markdown]

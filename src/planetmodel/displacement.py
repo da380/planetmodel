@@ -29,12 +29,28 @@ A displacement declaring no knots asserts that it is smooth.
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+from numpy.typing import ArrayLike
+
+from .frames import SphericalFunction
+
+if TYPE_CHECKING:
+    from .skeleton import Skeleton
 
 __all__ = ["RadialDisplacement", "ZeroDisplacement", "CallableDisplacement",
-           "as_displacement", "flattening", "layer_linear", "LayerLinear"]
+           "as_displacement", "flattening", "layer_linear", "LayerLinear",
+           "AngularGradientFunction", "Relief"]
+
+#: A function of (r, theta, phi) returning (dh/dtheta, dh/dphi).
+type AngularGradientFunction = Callable[[np.ndarray, np.ndarray, np.ndarray],
+                                        tuple[ArrayLike, ArrayLike]]
+
+#: The shape of one boundary: a callable of (theta, phi), which may carry
+#: an `angular_gradient(theta, phi)` attribute returning its two derivatives.
+type Relief = Callable[[np.ndarray, np.ndarray], ArrayLike]
 
 
 @runtime_checkable
@@ -46,10 +62,12 @@ class RadialDisplacement(Protocol):
     `knots`, `bounds`.
     """
 
-    def __call__(self, r, theta, phi): ...
+    def __call__(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+                 ) -> np.ndarray: ...
 
 
-def _broadcast(r, theta, phi):
+def _broadcast(r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The three arguments broadcast to a common float array shape."""
     return np.broadcast_arrays(np.asarray(r, dtype=float),
                                np.asarray(theta, dtype=float),
@@ -61,14 +79,16 @@ class ZeroDisplacement:
 
     knots: tuple[float, ...] = ()
 
-    def __call__(self, r, theta, phi):
+    def __call__(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
         r, _, _ = _broadcast(r, theta, phi)
         return np.zeros(r.shape)
 
-    def radial_derivative(self, r, theta, phi):
+    def radial_derivative(self, r: ArrayLike, theta: ArrayLike,
+                          phi: ArrayLike) -> np.ndarray:
         return self(r, theta, phi)
 
-    def angular_gradient(self, r, theta, phi):
+    def angular_gradient(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+                         ) -> tuple[np.ndarray, np.ndarray]:
         z = self(r, theta, phi)
         return z, z.copy()
 
@@ -89,9 +109,10 @@ class CallableDisplacement:
     the radii where dh/dr jumps; leaving them empty asserts smoothness.
     """
 
-    def __init__(self, fn, *, knots=(), radial_derivative=None,
-                 angular_gradient=None, name: str | None = None,
-                 dstep: float = 1e-6) -> None:
+    def __init__(self, fn: SphericalFunction, *, knots: Iterable[float] = (),
+                 radial_derivative: SphericalFunction | None = None,
+                 angular_gradient: AngularGradientFunction | None = None,
+                 name: str | None = None, dstep: float = 1e-6) -> None:
         if not callable(fn):
             raise TypeError(f"expected a callable, got {type(fn).__name__}")
         self._fn = fn
@@ -103,11 +124,12 @@ class CallableDisplacement:
         self.knots = tuple(sorted(float(k) for k in knots))
         self.name = name
 
-    def __call__(self, r, theta, phi):
+    def __call__(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
         r, theta, phi = _broadcast(r, theta, phi)
         return np.asarray(self._fn(r, theta, phi), dtype=float)
 
-    def radial_derivative(self, r, theta, phi):
+    def radial_derivative(self, r: ArrayLike, theta: ArrayLike,
+                          phi: ArrayLike) -> np.ndarray:
         """dh/dr, exact if supplied, else a central difference."""
         if self._dr is not None:
             return np.asarray(self._dr(*_broadcast(r, theta, phi)), dtype=float)
@@ -115,7 +137,8 @@ class CallableDisplacement:
         h = np.maximum(self._h, self._h * np.abs(r))
         return (self(r + h, theta, phi) - self(r - h, theta, phi)) / (2.0 * h)
 
-    def angular_gradient(self, r, theta, phi):
+    def angular_gradient(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+                         ) -> tuple[np.ndarray, np.ndarray]:
         """(dh/dtheta, dh/dphi), exact if supplied, else differenced."""
         if self._da is not None:
             gt, gp = self._da(*_broadcast(r, theta, phi))
@@ -133,7 +156,8 @@ class CallableDisplacement:
         return f"CallableDisplacement({fn}{nm}{knots})"
 
 
-def as_displacement(fn, *, knots=(), **kw) -> RadialDisplacement:
+def as_displacement(fn: RadialDisplacement | SphericalFunction, *,
+                    knots: Iterable[float] = (), **kw: object) -> RadialDisplacement:
     """Adapt any callable of (r, theta, phi) to the protocol.
 
     An object that already carries `radial_derivative`, `angular_gradient`
@@ -161,13 +185,14 @@ def flattening(f: float, *, rmax: float) -> CallableDisplacement:
     """
     f, rmax = float(f), float(rmax)
 
-    def h(r, theta, phi):
+    def h(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
         return -f * r * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
 
-    def dh_dr(r, theta, phi):
+    def dh_dr(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
         return -f * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0) + 0.0 * r
 
-    def dh_dangles(r, theta, phi):
+    def dh_dangles(r: np.ndarray, theta: np.ndarray, phi: np.ndarray
+                   ) -> tuple[np.ndarray, np.ndarray]:
         return 3.0 * f * r * np.cos(theta) * np.sin(theta), 0.0 * r
 
     return CallableDisplacement(h, radial_derivative=dh_dr,
@@ -188,7 +213,8 @@ class LayerLinear:
     gradient; otherwise central differences with step `dstep` are taken.
     """
 
-    def __init__(self, skeleton, reliefs, *, dstep: float = 1e-6) -> None:
+    def __init__(self, skeleton: Skeleton, reliefs: Iterable[Relief | None], *,
+                 dstep: float = 1e-6) -> None:
         b = np.asarray(skeleton.boundaries, dtype=float)
         reliefs = list(reliefs)
         if len(reliefs) != b.size:
@@ -210,17 +236,19 @@ class LayerLinear:
         return self._b
 
     @property
-    def reliefs(self) -> tuple:
+    def reliefs(self) -> tuple[Relief | None, ...]:
         return tuple(self._reliefs)
 
-    def _relief(self, j: int, theta, phi):
+    def _relief(self, j: int, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
         rel = self._reliefs[j]
         if rel is None:
             return np.zeros(np.broadcast(theta, phi).shape)
         return np.asarray(rel(theta, phi), dtype=float) + 0.0 * theta
 
-    def _pieces(self, r, theta, phi):
-        """The layer of every point and the reliefs at its two boundaries."""
+    def _pieces(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+                ) -> tuple[np.ndarray, ...]:
+        """The layer of every point and the reliefs at its two boundaries:
+        (r, theta, phi, lo, hi, below, above)."""
         r, theta, phi = _broadcast(r, theta, phi)
         i = np.clip(np.searchsorted(self._b, r, side="right") - 1,
                     0, self._b.size - 2)
@@ -233,17 +261,19 @@ class LayerLinear:
             above[m] = self._relief(j + 1, theta[m], phi[m])
         return r, theta, phi, lo, hi, below, above
 
-    def __call__(self, r, theta, phi):
+    def __call__(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
         r, theta, phi, lo, hi, below, above = self._pieces(r, theta, phi)
         t = (r - lo) / (hi - lo)
         return (1.0 - t) * below + t * above
 
-    def radial_derivative(self, r, theta, phi):
+    def radial_derivative(self, r: ArrayLike, theta: ArrayLike,
+                          phi: ArrayLike) -> np.ndarray:
         """dh/dr: the slope of the layer's interpolation, exact."""
         r, theta, phi, lo, hi, below, above = self._pieces(r, theta, phi)
         return (above - below) / (hi - lo)
 
-    def angular_gradient(self, r, theta, phi):
+    def angular_gradient(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
+                         ) -> tuple[np.ndarray, np.ndarray]:
         """(dh/dtheta, dh/dphi), exact where the reliefs supply theirs."""
         r, theta, phi = _broadcast(r, theta, phi)
         if all(rel is None or hasattr(rel, "angular_gradient")
@@ -274,6 +304,7 @@ class LayerLinear:
         return f"LayerLinear({n} reliefs on {self._b.size} boundaries)"
 
 
-def layer_linear(skeleton, reliefs, *, dstep: float = 1e-6) -> LayerLinear:
+def layer_linear(skeleton: Skeleton, reliefs: Iterable[Relief | None], *,
+                 dstep: float = 1e-6) -> LayerLinear:
     """The displacement interpolating boundary reliefs linearly in r."""
     return LayerLinear(skeleton, reliefs, dstep=dstep)

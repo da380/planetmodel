@@ -28,18 +28,29 @@ is relative to a length the mapping is given.
 from __future__ import annotations
 
 from dataclasses import KW_ONLY, dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+from numpy.typing import ArrayLike
 
-from .displacement import ZeroDisplacement, as_displacement
+from .displacement import (RadialDisplacement, SphericalFunction, ZeroDisplacement,
+                           as_displacement)
 from .frames import cartesian_points, spherical_coordinates
+
+if TYPE_CHECKING:
+    from .geometry import Geometry
+    from .skeleton import Skeleton
 
 __all__ = [
     "Mapping", "MappingBase", "IdentityMapping", "RadialStretch",
     "ScaledMapping", "ValidityReport", "MappingPerturbation",
-    "validity_lattice", "outer_radius_of",
+    "validity_lattice", "outer_radius_of", "SphericalSample",
 ]
+
+#: A set of points given as (r, theta, phi) arrays that broadcast against
+#: one another, as `validity_lattice` builds and `is_valid(sample=...)`
+#: takes.
+type SphericalSample = tuple[ArrayLike, ArrayLike, ArrayLike]
 
 #: A point closer to the origin than this fraction of `rmax` is treated as
 #: the origin, where the radial frame is undefined.
@@ -59,11 +70,11 @@ class Mapping(Protocol):
     F[i, j] = d m_i / d X_j, and `jacobian(X)` returning det F.
     """
 
-    def __call__(self, X): ...
+    def __call__(self, X: ArrayLike) -> np.ndarray: ...
 
-    def deformation_gradient(self, X): ...
+    def deformation_gradient(self, X: ArrayLike) -> np.ndarray: ...
 
-    def jacobian(self, X): ...
+    def jacobian(self, X: ArrayLike) -> np.ndarray: ...
 
 
 @dataclass(frozen=True)
@@ -102,8 +113,8 @@ class MappingPerturbation:
     dJ: np.ndarray
 
 
-def validity_lattice(skeleton, *, n_r: int = 8, n_theta: int = 25,
-                     n_phi: int = 16):
+def validity_lattice(skeleton: Skeleton, *, n_r: int = 8, n_theta: int = 25,
+                     n_phi: int = 16) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """A (r, theta, phi) sample covering a skeleton, for `is_valid(sample=...)`.
 
     `n_r` radii are laid strictly inside every layer of the skeleton, so
@@ -123,7 +134,7 @@ def validity_lattice(skeleton, *, n_r: int = 8, n_theta: int = 25,
     return (r[:, None, None], theta[None, :, None], phi[None, None, :])
 
 
-def outer_radius_of(domain) -> float:
+def outer_radius_of(domain: float | Skeleton | Geometry) -> float:
     """The outer radius a mapping is meant for: a number, or the outer
     boundary of a skeleton or of a geometry."""
     sk = getattr(domain, "skeleton", domain)
@@ -134,7 +145,8 @@ def outer_radius_of(domain) -> float:
     return r
 
 
-def _points_or_sample(X, sample):
+def _points_or_sample(X: ArrayLike | None, sample: SphericalSample | None
+                      ) -> np.ndarray:
     """Cartesian points from either argument of `is_valid`, or ValueError."""
     if X is None and sample is not None:
         X = cartesian_points(*sample)
@@ -150,17 +162,27 @@ class MappingBase:
     refusals of `inverse` and `linearise`; nothing requires it.
     """
 
-    def right_cauchy_green(self, X):
+    def __call__(self, X: ArrayLike) -> np.ndarray:
+        raise NotImplementedError
+
+    def deformation_gradient(self, X: ArrayLike) -> np.ndarray:
+        raise NotImplementedError
+
+    def jacobian(self, X: ArrayLike) -> np.ndarray:
+        raise NotImplementedError
+
+    def right_cauchy_green(self, X: ArrayLike) -> np.ndarray:
         """C = F^T F."""
         F = self.deformation_gradient(X)
         return np.einsum("...ki,...kj->...ij", F, F)
 
-    def displacement(self, X):
+    def displacement(self, X: ArrayLike) -> np.ndarray:
         """u(X) = m(X) - X, Cartesian in and out."""
         X = np.asarray(X, dtype=float)
         return np.asarray(self(X), dtype=float) - X
 
-    def is_valid(self, *, X=None, sample=None) -> ValidityReport:
+    def is_valid(self, *, X: ArrayLike | None = None,
+                 sample: SphericalSample | None = None) -> ValidityReport:
         """Whether J > 0 on the given points or on a (r, theta, phi) sample.
 
         The verdict is only as good as the sample; `validity_lattice`
@@ -178,12 +200,13 @@ class MappingBase:
             False, worst, worst_point=(float(r), float(theta), float(phi)),
             reason=f"J = {worst:.4g} is not positive")
 
-    def inverse(self, x):
+    def inverse(self, x: ArrayLike) -> np.ndarray:
         """X such that m(X) = x, where the mapping can invert itself."""
         raise NotImplementedError(
             f"{type(self).__name__} does not provide an inverse")
 
-    def linearise(self, delta, *, X) -> MappingPerturbation:
+    def linearise(self, delta: RadialDisplacement | SphericalFunction, *,
+                  X: ArrayLike) -> MappingPerturbation:
         """dF and dJ at points X for a perturbation of the mapping."""
         raise NotImplementedError(
             f"{type(self).__name__} does not provide a linearisation")
@@ -199,21 +222,22 @@ class IdentityMapping(MappingBase):
 
     knots: tuple[float, ...] = ()
 
-    def __call__(self, X):
+    def __call__(self, X: ArrayLike) -> np.ndarray:
         return np.array(np.asarray(X, dtype=float))
 
-    def deformation_gradient(self, X):
+    def deformation_gradient(self, X: ArrayLike) -> np.ndarray:
         X = np.asarray(X, dtype=float)
         return np.broadcast_to(np.eye(3), X.shape[:-1] + (3, 3)).copy()
 
-    def jacobian(self, X):
+    def jacobian(self, X: ArrayLike) -> np.ndarray:
         X = np.asarray(X, dtype=float)
         return np.ones(X.shape[:-1])
 
-    def inverse(self, x):
+    def inverse(self, x: ArrayLike) -> np.ndarray:
         return np.array(np.asarray(x, dtype=float))
 
-    def is_valid(self, *, X=None, sample=None) -> ValidityReport:
+    def is_valid(self, *, X: ArrayLike | None = None,
+                 sample: SphericalSample | None = None) -> ValidityReport:
         return ValidityReport(True, 1.0)
 
     @property
@@ -243,7 +267,8 @@ class RadialStretch(MappingBase):
     sets the scale of "close to the origin" and brackets the inverse.
     """
 
-    def __init__(self, h, *, rmax, name: str | None = None) -> None:
+    def __init__(self, h: RadialDisplacement | SphericalFunction, *,
+                 rmax: float | Skeleton | Geometry, name: str | None = None) -> None:
         self.h = as_displacement(h)
         self.rmax = outer_radius_of(rmax)
         self.name = name
@@ -256,7 +281,7 @@ class RadialStretch(MappingBase):
     def _floor(self) -> float:
         return _R_FLOOR_FRACTION * self.rmax
 
-    def _parts(self, X):
+    def _parts(self, X: ArrayLike) -> tuple[np.ndarray, ...]:
         """(r, theta, phi, R, h, dh/dr, dh/dtheta, dh/dphi) at X."""
         r, theta, phi, R = spherical_coordinates(X)
         h = np.asarray(self.h(r, theta, phi), dtype=float)
@@ -265,7 +290,7 @@ class RadialStretch(MappingBase):
         return (r, theta, phi, R, h, dr,
                 np.asarray(dth, dtype=float), np.asarray(dph, dtype=float))
 
-    def __call__(self, X):
+    def __call__(self, X: ArrayLike) -> np.ndarray:
         """The displaced points x = (r + h) e_r; the origin stays put."""
         X = np.asarray(X, dtype=float)
         r, theta, phi, _ = spherical_coordinates(X)
@@ -274,7 +299,7 @@ class RadialStretch(MappingBase):
         scale = np.where(r > floor, (r + h) / np.maximum(r, floor), 1.0)
         return X * scale[..., None]
 
-    def deformation_gradient_spherical(self, X):
+    def deformation_gradient_spherical(self, X: ArrayLike) -> np.ndarray:
         """F in the local (e_r, e_theta, e_phi) frame, shape (..., 3, 3)."""
         r, theta, phi, R, h, dr, dth, dph = self._parts(X)
         rs = np.maximum(r, self._floor())
@@ -288,19 +313,20 @@ class RadialStretch(MappingBase):
         F[..., 2, 2] = stretch
         return F
 
-    def deformation_gradient(self, X):
+    def deformation_gradient(self, X: ArrayLike) -> np.ndarray:
         """F in Cartesian components, R F_sph R^T."""
         _, _, _, R = spherical_coordinates(X)
         F = self.deformation_gradient_spherical(X)
         return np.einsum("...ik,...kl,...jl->...ij", R, F, R)
 
-    def jacobian(self, X):
+    def jacobian(self, X: ArrayLike) -> np.ndarray:
         """J = (1 + dh/dr)(1 + h/r)^2."""
         r, theta, phi, _, h, dr, _, _ = self._parts(X)
         rs = np.maximum(r, self._floor())
         return (1.0 + dr) * (1.0 + h / rs) ** 2
 
-    def is_valid(self, *, X=None, sample=None) -> ValidityReport:
+    def is_valid(self, *, X: ArrayLike | None = None,
+                 sample: SphericalSample | None = None) -> ValidityReport:
         """The analytic conditions 1 + dh/dr > 0 and 1 + h/r > 0.
 
         Conditions on the mapping itself rather than on a discrete
@@ -322,7 +348,7 @@ class RadialStretch(MappingBase):
         dr = np.asarray(self.h.radial_derivative(r, theta, phi), dtype=float)
         floor = self._floor()
 
-        def at(k):
+        def at(k: int) -> tuple[float, float, float]:
             return (float(np.ravel(r)[k]), float(np.ravel(theta)[k]),
                     float(np.ravel(phi)[k]))
 
@@ -356,7 +382,7 @@ class RadialStretch(MappingBase):
                 "shells cross through the origin")
         return ValidityReport(True, min(worst_radial, worst_tangential))
 
-    def inverse(self, x, *, tol: float = 1e-12):
+    def inverse(self, x: ArrayLike, *, tol: float = 1e-12) -> np.ndarray:
         """X with m(X) = x, by a scalar root-find along each ray.
 
         Direction is preserved, so each point is one scalar problem:
@@ -378,7 +404,8 @@ class RadialStretch(MappingBase):
             target = float(flat[0][k])
             th, ph = float(flat[1][k]), float(flat[2][k])
 
-            def residual(s, *, th=th, ph=ph, target=target):
+            def residual(s: float, *, th: float = th, ph: float = ph,
+                         target: float = target) -> float:
                 return float(s + self.h(s, th, ph)) - target
 
             lo, hi = 0.0, max(top, target * 1.5)
@@ -393,7 +420,8 @@ class RadialStretch(MappingBase):
 
         return cartesian_points(out, theta, phi)
 
-    def linearise(self, delta, *, X) -> MappingPerturbation:
+    def linearise(self, delta: RadialDisplacement | SphericalFunction, *,
+                  X: ArrayLike) -> MappingPerturbation:
         """dF and dJ at X for a perturbation `delta` of the displacement.
 
             dF_rr    = d(dh)/dr
@@ -442,23 +470,24 @@ class ScaledMapping(MappingBase):
     the underlying mapping in its own coordinates.
     """
 
-    def __init__(self, mapping, k: float) -> None:
+    def __init__(self, mapping: Mapping, k: float) -> None:
         self.mapping = mapping
         self.k = float(k)
         if not self.k > 0.0:
             raise ValueError(f"the scale factor must be positive, got {k}")
 
-    def __call__(self, X):
+    def __call__(self, X: ArrayLike) -> np.ndarray:
         return self.k * np.asarray(self.mapping(np.asarray(X, dtype=float) / self.k),
                                    dtype=float)
 
-    def deformation_gradient(self, X):
+    def deformation_gradient(self, X: ArrayLike) -> np.ndarray:
         return self.mapping.deformation_gradient(np.asarray(X, dtype=float) / self.k)
 
-    def jacobian(self, X):
+    def jacobian(self, X: ArrayLike) -> np.ndarray:
         return self.mapping.jacobian(np.asarray(X, dtype=float) / self.k)
 
-    def is_valid(self, *, X=None, sample=None) -> ValidityReport:
+    def is_valid(self, *, X: ArrayLike | None = None,
+                 sample: SphericalSample | None = None) -> ValidityReport:
         if X is not None:
             return self.mapping.is_valid(X=np.asarray(X, dtype=float) / self.k)
         if sample is not None:
@@ -467,7 +496,7 @@ class ScaledMapping(MappingBase):
                 sample=(np.asarray(r, dtype=float) / self.k, theta, phi))
         raise ValueError("give either points X or a (r, theta, phi) sample")
 
-    def inverse(self, x):
+    def inverse(self, x: ArrayLike) -> np.ndarray:
         return self.k * np.asarray(
             self.mapping.inverse(np.asarray(x, dtype=float) / self.k), dtype=float)
 

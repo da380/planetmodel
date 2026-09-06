@@ -6,6 +6,7 @@ than assumed to be still in place from whatever ran before.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import gmsh
@@ -16,7 +17,7 @@ from .manifest import MSH_VERSION, beside
 __all__ = ["write_msh", "read_groups", "confirm_reread", "element_counts"]
 
 
-def write_msh(path, *, binary: bool = False) -> Path:
+def write_msh(path: str | Path, *, binary: bool = False) -> Path:
     """Write the current model as MSH 2.2 and return the path."""
     path = beside(path, ".msh")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,7 +27,7 @@ def write_msh(path, *, binary: bool = False) -> Path:
     return path
 
 
-def read_groups(path) -> dict:
+def read_groups(path: str | Path) -> dict[int, dict[int, str]]:
     """Re-read a written mesh and report its physical groups.
 
     gmsh's writer drops entities that belong to no physical group, so a
@@ -41,8 +42,9 @@ def read_groups(path) -> dict:
     return out
 
 
-def confirm_reread(msh_path, manifest_path, dimension: int, layer_names,
-                   interface_names) -> None:
+def confirm_reread(msh_path: str | Path, manifest_path: str | Path, dimension: int,
+                   layer_names: Sequence[str | None],
+                   interface_names: Sequence[str | None]) -> None:
     """Merge the written file in a fresh session and check its groups.
 
     A fresh session merging the file is the only evidence a consumer's
@@ -66,7 +68,7 @@ def confirm_reread(msh_path, manifest_path, dimension: int, layer_names,
                 f"not {dict(enumerate(names, 1))}; both files were removed")
 
 
-def element_counts(*, dimension: int = 3) -> dict:
+def element_counts(*, dimension: int = 3) -> dict[str, int]:
     """Elements and nodes of the current model, by dimension.
 
     `elements` counts what the file will hold: the cells of `dimension`

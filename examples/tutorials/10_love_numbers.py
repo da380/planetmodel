@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import RadialMesh, constant_field, frozen, prem
+from planetmodel import RadialMesh, constant_field, frozen, PREM
 from planetmodel.loading import (Material, love_numbers, read_love_numbers,
                                  solve_degree)
 
@@ -36,7 +36,7 @@ FIGURES.mkdir(exist_ok=True)
 # at every node.
 
 # %%
-model = prem(ocean=False)
+model = PREM(ocean=False)
 LMAX = 64
 mesh = RadialMesh(model, ngll=5, lmax=LMAX)
 material = Material(mesh, model)

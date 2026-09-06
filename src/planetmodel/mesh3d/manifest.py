@@ -43,13 +43,20 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import KW_ONLY, asdict, dataclass, field, fields as _fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence, get_type_hints
+from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 
 from ..units import unit_string
-from .spec import DELIVERIES
+from .spec import DELIVERIES, InterfaceSizing, ValidationReport
+
+if TYPE_CHECKING:
+    from ..geometry import InterfaceInfo, LayerInfo
+    from ..model import Model
+    from ._displace import PerturbationReport
+    from ._orient import OrientationReport
 
 __all__ = ["SCHEMA", "MeshManifest", "LayerEntry", "InterfaceEntry",
            "write", "read", "file_digest", "beside", "planetmodel_version",
@@ -64,7 +71,7 @@ SCHEMA = "planetmodel.mesh.manifest/3"
 MSH_VERSION = 2.2
 
 
-def beside(path, suffix: str) -> Path:
+def beside(path: str | Path, suffix: str) -> Path:
     """`path` with `suffix`, treating the path as a basename.
 
     Only a mesh or manifest suffix is replaced; anything else is part of
@@ -83,7 +90,7 @@ def planetmodel_version() -> str:
     return __version__
 
 
-def file_digest(path) -> str | None:
+def file_digest(path: str | Path) -> str | None:
     """The sha256 of a file, or None if it is not there to hash."""
     path = Path(path)
     if not path.is_file():
@@ -113,7 +120,7 @@ class LayerEntry:
     in_geometry: bool
 
     @classmethod
-    def from_layer(cls, layer, *, attribute: int, r_inner: float,
+    def from_layer(cls, layer: LayerInfo, *, attribute: int, r_inner: float,
                    r_outer: float, in_geometry: bool) -> "LayerEntry":
         """The record of a LayerInfo between the given radii."""
         return cls(attribute=int(attribute),
@@ -141,7 +148,7 @@ class InterfaceEntry:
     between_layers: list
 
     @classmethod
-    def from_interface(cls, face, *, attribute: int,
+    def from_interface(cls, face: InterfaceInfo, *, attribute: int,
                        mean_radius: float) -> "InterfaceEntry":
         """The record of an InterfaceInfo at the given mean radius."""
         below, above = face.between
@@ -156,7 +163,7 @@ _JSON_TYPES = {int: (int,), float: (int, float), bool: (bool,), str: (str,),
                list: (list,), dict: (dict,)}
 
 
-def _entry_types(cls) -> dict:
+def _entry_types(cls: type) -> dict[str, tuple[type, ...]]:
     """Each field of an entry and the JSON types it must hold."""
     hints = get_type_hints(cls)
     return {f.name: _JSON_TYPES[hints[f.name]] for f in _fields(cls)
@@ -166,7 +173,7 @@ def _entry_types(cls) -> dict:
 # ------------------------------------------------------------ the blocks
 
 def geometry_block(*, outer_radius: float, inner_radius: float, n_layers: int,
-                   **extra) -> dict:
+                   **extra: Any) -> dict[str, Any]:
     """The `geometry` record: the domain's extent, in the geometry's own
     numbers, and its layer count.
 
@@ -179,8 +186,8 @@ def geometry_block(*, outer_radius: float, inner_radius: float, n_layers: int,
 
 
 def mesh_block(*, dimension: int, order: int, gmsh_version: str,
-               algorithm_2d: int, algorithm_3d: int, counts: dict,
-               curving: dict) -> dict:
+               algorithm_2d: int, algorithm_3d: int, counts: Mapping[str, int],
+               curving: Mapping[str, Any]) -> dict[str, Any]:
     """The `mesh` record: what gmsh was asked for and what it produced."""
     return {
         "dimension": int(dimension),
@@ -195,7 +202,8 @@ def mesh_block(*, dimension: int, order: int, gmsh_version: str,
     }
 
 
-def mapping_block(mapping, *, knots=(), applied_to_nodes: bool) -> dict:
+def mapping_block(mapping: object, *, knots: Iterable[float] = (),
+                  applied_to_nodes: bool) -> dict[str, Any]:
     """The `mapping` record: the mapping's class and repr, its knots, and
     whether the nodes already carry it.
 
@@ -210,7 +218,8 @@ def mapping_block(mapping, *, knots=(), applied_to_nodes: bool) -> dict:
             "applied_to_nodes": bool(applied_to_nodes)}
 
 
-def sizing_block(*, policy: str, sizes: dict) -> dict:
+def sizing_block(*, policy: str,
+                 sizes: Mapping[int, InterfaceSizing]) -> dict[str, Any]:
     """The `sizing` record: the rule by name and what it gave each interface."""
     return {
         "policy": str(policy),
@@ -222,7 +231,8 @@ def sizing_block(*, policy: str, sizes: dict) -> dict:
     }
 
 
-def validation_block(report, orientation) -> dict:
+def validation_block(report: ValidationReport,
+                     orientation: OrientationReport) -> dict[str, Any]:
     """The `validation` record, from the mesh checks and the orientation repair."""
     return {
         "negative_jacobians": int(report.negative_jacobians),
@@ -235,7 +245,9 @@ def validation_block(report, orientation) -> dict:
     }
 
 
-def provenance_block(*, mesh_file: str, perturbation=None, meta=None) -> dict:
+def provenance_block(*, mesh_file: str,
+                     perturbation: PerturbationReport | None = None,
+                     meta: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The `provenance` record: version, mesh file, what the displacement
     did, and the spec's `meta` copied in."""
     block = {"planetmodel_version": planetmodel_version(),
@@ -248,12 +260,13 @@ def provenance_block(*, mesh_file: str, perturbation=None, meta=None) -> dict:
     return block
 
 
-def _finite(value):
+def _finite(value: float) -> float | None:
     """A number, or None where there is no number to report."""
     return float(value) if math.isfinite(value) else None
 
 
-def model_block(model, *, holders: dict) -> dict:
+def model_block(model: Model, *,
+                holders: Mapping[str, Sequence[int]]) -> dict[str, Any]:
     """The `model` record: what the exported field values mean.
 
     `class` is the model's class name; `scales` says what one stored
@@ -296,31 +309,32 @@ class MeshManifest:
     """Everything a consumer needs that the mesh file cannot carry."""
 
     _: KW_ONLY
-    geometry: dict = field(default_factory=dict)
-    mesh: dict = field(default_factory=dict)
+    geometry: dict[str, Any] = field(default_factory=dict)
+    mesh: dict[str, Any] = field(default_factory=dict)
     delivery: str = "physical"
-    layers: list = field(default_factory=list)
-    interfaces: list = field(default_factory=list)
-    mapping: dict = field(default_factory=dict)
-    sizing: dict = field(default_factory=dict)
-    validation: dict = field(default_factory=dict)
-    provenance: dict = field(default_factory=dict)
+    layers: list[dict[str, Any]] = field(default_factory=list)
+    interfaces: list[dict[str, Any]] = field(default_factory=list)
+    mapping: dict[str, Any] = field(default_factory=dict)
+    sizing: dict[str, Any] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
     #: The MFEM delivery, or None for a bare mesh: which files were
     #: written, how the mesh must be constructed for their dof numbering
     #: to hold, and one record per GridFunction.  Written by the export.
-    files: dict | None = None
+    files: dict[str, Any] | None = None
     #: What the exported field values mean, or None where no fields were
     #: exported: the model's class, scales, constants and one record per
     #: field.  Written by the field export; see `model_block`.
-    model: dict | None = None
+    model: dict[str, Any] | None = None
     schema: str = SCHEMA
 
     @classmethod
-    def from_build(cls, *, geometry: dict, mesh: dict, delivery: str,
-                   layers: Sequence[LayerEntry],
-                   interfaces: Sequence[InterfaceEntry], mapping: dict,
-                   sizing: dict, validation: dict,
-                   provenance: dict) -> "MeshManifest":
+    def from_build(cls, *, geometry: Mapping[str, Any], mesh: Mapping[str, Any],
+                   delivery: str, layers: Sequence[LayerEntry],
+                   interfaces: Sequence[InterfaceEntry],
+                   mapping: Mapping[str, Any], sizing: Mapping[str, Any],
+                   validation: Mapping[str, Any],
+                   provenance: Mapping[str, Any]) -> "MeshManifest":
         """A manifest from typed entries and the blocks the builders make.
 
         The one place a manifest is assembled, so a key cannot drift
@@ -439,19 +453,19 @@ class MeshManifest:
                 f"{len(self.layers)} layers, {len(self.interfaces)} interfaces)")
 
 
-def _num(value) -> str:
+def _num(value: object) -> str:
     """A number for `describe`, short and exact enough to recognise."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return str(value)
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
-def _pairs(record: dict) -> str:
+def _pairs(record: Mapping[str, Any]) -> str:
     """`key value` pairs of a flat record, for `describe`."""
     return ", ".join(f"{k} {_num(v)}" for k, v in record.items())
 
 
-def _table(rows, *, numbered: bool = True) -> list:
+def _table(rows: Sequence[Sequence[str]], *, numbered: bool = True) -> list[str]:
     """Rows of strings as indented lines with their columns aligned, the
     first column right-aligned as a number when `numbered` and every
     other column left-aligned."""
@@ -464,7 +478,7 @@ def _table(rows, *, numbered: bool = True) -> list:
         for row in rows]
 
 
-def write(path, manifest: MeshManifest) -> Path:
+def write(path: str | Path, manifest: MeshManifest) -> Path:
     """Write the manifest beside its mesh, and return the path."""
     path = beside(path, ".json")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -479,7 +493,7 @@ def write(path, manifest: MeshManifest) -> Path:
     return path
 
 
-def read(path) -> MeshManifest:
+def read(path: str | Path) -> MeshManifest:
     """Read a manifest, checking the schema it declares and its structure."""
     with open(path) as fh:
         data = json.load(fh)
@@ -535,14 +549,19 @@ _MODEL_FIELD_ENTRY = {"name": (str,), "rank": (int,), "weight": (int,),
                       "voigt": (bool,), "unit": (str,), "layers": (list,)}
 
 
-def _typed(value, kinds) -> bool:
+def _typed(value: object, kinds: tuple[type, ...]) -> bool:
     """Whether `value` is one of `kinds`, with bool never passing as int."""
     if isinstance(value, bool) and bool not in kinds:
         return False
     return isinstance(value, kinds)
 
 
-def _check_record(record, types: dict, where: str, fail) -> None:
+#: What the structural checks call on the first defect: it raises.
+type Fail = Callable[[str], NoReturn]
+
+
+def _check_record(record: object, types: Mapping[str, tuple[type, ...]],
+                  where: str, fail: Fail) -> None:
     """Every key of `types` present in `record` with the type it demands."""
     if not isinstance(record, dict):
         fail(f"{where} is {type(record).__name__}, not an object")
@@ -559,7 +578,7 @@ def validate_structure(manifest: MeshManifest) -> None:
     a consumer gets one ValueError naming the field rather than a
     TypeError from deep inside its own reader.
     """
-    def fail(msg):
+    def fail(msg: str) -> NoReturn:
         raise ValueError(f"malformed manifest: {msg}")
 
     if manifest.delivery not in DELIVERIES:
@@ -620,7 +639,7 @@ def validate_structure(manifest: MeshManifest) -> None:
     _check_model(manifest.model, manifest.files, n_layers, fail)
 
 
-def _check_files(files, fail) -> None:
+def _check_files(files: object, fail: Fail) -> None:
     """The MFEM delivery's `files` block, or nothing where none was written."""
     if files is None:
         return
@@ -639,7 +658,8 @@ def _check_files(files, fail) -> None:
         _check_record(e, _GF_FIELDS, f"files.grid_functions[{i}]", fail)
 
 
-def _check_model(model, files, n_layers: int, fail) -> None:
+def _check_model(model: object, files: Mapping[str, Any] | None, n_layers: int,
+                 fail: Fail) -> None:
     """The field export's `model` block, or nothing where none was written.
 
     Every field record names a grid function of kind "field" in `files`
@@ -666,7 +686,8 @@ def _check_model(model, files, n_layers: int, fail) -> None:
 
 
 def validate_against(manifest: MeshManifest, *, layer_count: int,
-                     interface_count: int, groups: dict | None = None) -> None:
+                     interface_count: int,
+                     groups: Mapping[str, Iterable[int]] | None = None) -> None:
     """Check a manifest describes the mesh it was written beside.
 
     `groups` maps "layers" and "interfaces" to the physical group

@@ -47,16 +47,32 @@ moduli, `elastic_moduli` the tensor, and `kappa_mu` the Voigt average.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .character import ELASTIC, Symmetry
 from .fields import Field, FieldBase, RadialField
 from .frames import voigt_to_tensor
 from .layerfunction import same_interval
 
+if TYPE_CHECKING:
+    from .model import Layer
+
 __all__ = ["moduli_from_velocities", "velocities_from_moduli",
            "kappa_mu_from_moduli", "voigt_matrix", "ElasticField",
-           "is_fluid", "moduli", "elastic_moduli", "kappa_mu"]
+           "is_fluid", "moduli", "elastic_moduli", "kappa_mu", "LayerLike",
+           "Operand", "MODULI_NAMES", "SHEAR_NAMES", "ELASTIC_NAMES"]
+
+#: What the functions of a layer accept: a model's `Layer`, or any mapping
+#: of field name to field.
+type LayerLike = Layer | Mapping[str, Field]
+
+#: What the conversions take and return: a rank-0 field, or a number or
+#: array.
+type Operand = Field | ArrayLike
 
 #: The independent moduli of each symmetry, in canonical order.
 MODULI_NAMES = {Symmetry.ISOTROPIC: ("kappa", "mu"),
@@ -68,18 +84,26 @@ SHEAR_NAMES = ("vs", "vsv", "vsh", "mu", "L", "N")
 #: The five transversely isotropic velocities beside rho.
 _TI_VELOCITIES = ("vpv", "vph", "vsv", "vsh", "eta")
 
+#: Every name that describes the elastic medium beside rho: what
+#: `moduli` reads from, and what an isotropic re-description replaces.
+ELASTIC_NAMES = ("vp", "vs") + _TI_VELOCITIES + MODULI_NAMES[Symmetry.ISOTROPIC] \
+    + MODULI_NAMES[Symmetry.VTI] + ("elastic_moduli",)
 
-def _unknown_symmetry(symmetry) -> ValueError:
+
+def _unknown_symmetry(symmetry: object) -> ValueError:
     names = [s.name for s in MODULI_NAMES]
     return ValueError(f"unknown symmetry {symmetry!r}: expected one of {names}")
 
 
-def _operand(x):
+def _operand(x: Operand) -> Field | np.ndarray:
     """x as it is when it is a field, else as a float64 array."""
     return x if isinstance(x, Field) else np.asarray(x, dtype=float)
 
 
-def moduli_from_velocities(rho, vpv, vsv, *, vph=None, vsh=None, eta=None) -> dict:
+def moduli_from_velocities(rho: Operand, vpv: Operand, vsv: Operand, *,
+                           vph: Operand | None = None, vsh: Operand | None = None,
+                           eta: Operand | None = None
+                           ) -> dict[str, Field | np.ndarray]:
     """The moduli A, C, F, L, N from density and velocities.
 
     With vph, vsh and eta omitted the medium is isotropic: vph = vpv,
@@ -99,7 +123,8 @@ def moduli_from_velocities(rho, vpv, vsv, *, vph=None, vsh=None, eta=None) -> di
     return {"A": A, "C": C, "F": F, "L": L, "N": N}
 
 
-def velocities_from_moduli(rho, A, C, F, L, N) -> dict:
+def velocities_from_moduli(rho: ArrayLike, A: ArrayLike, C: ArrayLike, F: ArrayLike,
+                           L: ArrayLike, N: ArrayLike) -> dict[str, np.ndarray]:
     """The velocities vpv, vph, vsv, vsh and eta from density and moduli.
 
     The inverse of `moduli_from_velocities` on numbers and arrays.  A
@@ -115,14 +140,15 @@ def velocities_from_moduli(rho, A, C, F, L, N) -> dict:
     denom = A - 2.0 * L
     defined = denom != 0.0
 
-    def speed(modulus):
+    def speed(modulus: np.ndarray) -> np.ndarray:
         return np.sqrt(np.maximum(np.where(positive, modulus / safe, 0.0), 0.0))
 
     return {"vpv": speed(C), "vph": speed(A), "vsv": speed(L), "vsh": speed(N),
             "eta": np.where(defined, F / np.where(defined, denom, 1.0), 1.0)}
 
 
-def kappa_mu_from_moduli(A, C, F, L, N) -> tuple:
+def kappa_mu_from_moduli(A: Operand, C: Operand, F: Operand, L: Operand, N: Operand
+                         ) -> tuple[Field | np.ndarray, Field | np.ndarray]:
     """The Voigt average (kappa, mu) of the moduli, on numbers or fields."""
     A, C, F, L, N = (_operand(x) for x in (A, C, F, L, N))
     kappa = (4.0 * A + C + 4.0 * F - 4.0 * N) / 9.0
@@ -130,12 +156,12 @@ def kappa_mu_from_moduli(A, C, F, L, N) -> tuple:
     return kappa, mu
 
 
-def _named(field, name: str):
+def _named(field: Field, name: str) -> Field:
     """The field under `name` where it can be renamed, else as it is."""
     return field.renamed(name) if hasattr(field, "renamed") else field
 
 
-def _vti_from_isotropic(kappa, mu) -> dict:
+def _vti_from_isotropic(kappa: Field, mu: Field) -> dict[str, Field]:
     """A = C = kappa + 4 mu / 3, F = kappa - 2 mu / 3, L = N = mu, as fields
     named for what they are."""
     A = kappa + (4.0 / 3.0) * mu
@@ -144,7 +170,7 @@ def _vti_from_isotropic(kappa, mu) -> dict:
             for k, f in (("A", A), ("C", A), ("F", F), ("L", mu), ("N", mu))}
 
 
-def voigt_matrix(symmetry: Symmetry, components) -> np.ndarray:
+def voigt_matrix(symmetry: Symmetry, components: Mapping[str, ArrayLike]) -> np.ndarray:
     """The Voigt matrix of a second elasticity tensor in the spherical
     frame, shape broadcast + (6, 6), with the symmetry axis along e_r.
 
@@ -193,7 +219,8 @@ class ElasticField(FieldBase):
 
     _character = ELASTIC
 
-    def __init__(self, symmetry: Symmetry, moduli, *, name: str | None = None) -> None:
+    def __init__(self, symmetry: Symmetry, moduli: Mapping[str, Field], *,
+                 name: str | None = None) -> None:
         expected = MODULI_NAMES.get(symmetry)
         if expected is None:
             raise _unknown_symmetry(symmetry)
@@ -229,7 +256,7 @@ class ElasticField(FieldBase):
         return self._symmetry
 
     @property
-    def moduli(self) -> dict:
+    def moduli(self) -> dict[str, Field]:
         """The independent moduli, in canonical order."""
         return dict(self._moduli)
 
@@ -238,18 +265,19 @@ class ElasticField(FieldBase):
         """Whether every modulus is a function of the radius alone."""
         return all(bool(getattr(f, "is_radial", False)) for f in self._moduli.values())
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         vals = {k: f.evaluate(r, theta, phi) for k, f in self._moduli.items()}
         return voigt_matrix(self._symmetry, vals)
 
-    def evaluate(self, r, theta, phi, *, frame: str = "spherical",
-                 voigt: bool = True):
+    def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
+                 *, frame: str = "spherical", voigt: bool = True) -> np.ndarray:
         """The tensor at (r, theta, phi) in `frame`: Voigt (..., 6, 6), or
         the full (..., 3, 3, 3, 3) components with `voigt=False`."""
         v = super().evaluate(r, theta, phi, frame=frame)
         return v if voigt else voigt_to_tensor(v, rank=4)
 
-    def _with(self, moduli, *, name) -> "ElasticField":
+    def _with(self, moduli: Mapping[str, Field], *, name: str | None) -> "ElasticField":
         return ElasticField(self._symmetry, moduli, name=name)
 
     def on_interval(self, lo: float, hi: float) -> "ElasticField":
@@ -293,13 +321,13 @@ class ElasticField(FieldBase):
 
 # -- what a layer's fields imply -------------------------------------------
 
-def _held(layer) -> tuple[str, ...]:
+def _held(layer: LayerLike) -> tuple[str, ...]:
     """The names a layer holds: its `names`, else its keys."""
     names = getattr(layer, "names", None)
     return tuple(names if names is not None else layer.keys())
 
 
-def _describe(layer) -> str:
+def _describe(layer: LayerLike) -> str:
     name = getattr(layer, "name", None)
     if name is not None:
         return f"layer {name!r}"
@@ -309,7 +337,7 @@ def _describe(layer) -> str:
     return f"a layer holding {list(_held(layer))}"
 
 
-def _vanishes(field) -> bool:
+def _vanishes(field: Field) -> bool:
     """Whether a field is zero throughout its interval: by its polynomial
     coefficients where it has them, else at nine radii."""
     if isinstance(field, RadialField) and field.character.rank == 0:
@@ -323,7 +351,7 @@ def _vanishes(field) -> bool:
     return not np.any(np.asarray(values))
 
 
-def is_fluid(layer) -> bool:
+def is_fluid(layer: LayerLike) -> bool:
     """Whether every shear-bearing field the layer holds, among
     `SHEAR_NAMES`, vanishes throughout it; a layer holding none of them
     is refused with KeyError."""
@@ -335,7 +363,7 @@ def is_fluid(layer) -> bool:
     return all(_vanishes(layer[n]) for n in held)
 
 
-def _independent_moduli(layer) -> tuple[Symmetry, dict]:
+def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
     """The symmetry a layer states and its independent moduli as fields.
 
     The five moduli when held; else kappa and mu; else rho with the five
@@ -365,7 +393,7 @@ def _independent_moduli(layer) -> tuple[Symmetry, dict]:
         "or rho with vp and vs")
 
 
-def moduli(layer) -> dict:
+def moduli(layer: LayerLike) -> dict[str, Field]:
     """The moduli A, C, F, L, N of a layer as rank-0 fields, from
     whatever it holds (see `elastic_moduli`); exact on polynomial layers."""
     symmetry, fields = _independent_moduli(layer)
@@ -374,7 +402,7 @@ def moduli(layer) -> dict:
     return fields
 
 
-def elastic_moduli(layer) -> ElasticField:
+def elastic_moduli(layer: LayerLike) -> ElasticField:
     """The elastic tensor of a layer: ISOTROPIC when it holds kappa and
     mu or rho with vp and vs, VTI when it holds the five moduli or rho
     with vpv, vph, vsv, vsh and eta; refused with KeyError otherwise."""
@@ -382,7 +410,7 @@ def elastic_moduli(layer) -> ElasticField:
     return ElasticField(symmetry, fields, name="elastic_moduli")
 
 
-def kappa_mu(layer) -> tuple:
+def kappa_mu(layer: LayerLike) -> tuple[Field, Field]:
     """The Voigt average (kappa, mu) of `moduli(layer)`, as fields."""
     kappa, mu = kappa_mu_from_moduli(**moduli(layer))
     return _named(kappa, "kappa"), _named(mu, "mu")

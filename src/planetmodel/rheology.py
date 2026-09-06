@@ -32,28 +32,34 @@ second, which is PREM's.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .character import DENSITY
-from .fields import ComposedField
-from .materials import _named, kappa_mu, moduli
+from .fields import ComposedField, Field
+from .materials import LayerLike, _named, kappa_mu, moduli
 from .units import FREQUENCY
 from .vocabulary import Constant
+
+if TYPE_CHECKING:
+    from .model import Model
 
 __all__ = ["is_viscoelastic", "frozen_moduli", "frozen"]
 
 RHEOLOGY_NAMES = ("viscosity", "qmu", "qkappa")
 
 
-def is_viscoelastic(layer) -> bool:
+def is_viscoelastic(layer: LayerLike) -> bool:
     """Whether a layer holds any of `RHEOLOGY_NAMES`."""
     return any(n in layer for n in RHEOLOGY_NAMES)
 
 
-def _maxwell_shift(mu, eta, omega: float):
+def _maxwell_shift(mu: Field, eta: Field, omega: float) -> ComposedField:
     """delta mu of a Maxwell body: mu (f - 1) with f = z / (1 + z),
     z = i omega eta / mu, zero where mu vanishes."""
-    def fn(m, e):
+    def fn(m: ArrayLike, e: ArrayLike) -> np.ndarray:
         m = np.asarray(m, dtype=complex)
         out = np.zeros(np.broadcast(m, e).shape, dtype=complex)
         solid = m != 0.0
@@ -62,12 +68,13 @@ def _maxwell_shift(mu, eta, omega: float):
     return ComposedField(fn, [mu, eta], character=DENSITY)
 
 
-def _band_shift(modulus, q, omega: float, reference_omega: float):
+def _band_shift(modulus: Field, q: Field, omega: float,
+                reference_omega: float) -> ComposedField:
     """delta of a modulus in a constant-Q band: modulus times
     (2 / pi Q) ln(omega / omega_0) + i / Q, zero where Q <= 0."""
     log = np.log(omega / reference_omega)
 
-    def fn(m, Q):
+    def fn(m: ArrayLike, Q: ArrayLike) -> np.ndarray:
         Q = np.asarray(Q, dtype=float)
         inv = np.zeros(Q.shape)
         np.divide(1.0, Q, out=inv, where=Q > 0.0)
@@ -75,7 +82,8 @@ def _band_shift(modulus, q, omega: float, reference_omega: float):
     return ComposedField(fn, [modulus, q], character=DENSITY)
 
 
-def frozen_moduli(layer, omega: float, *, reference_omega: float) -> dict:
+def frozen_moduli(layer: LayerLike, omega: float, *,
+                  reference_omega: float) -> dict[str, Field]:
     """The complex moduli A, C, F, L, N of a viscoelastic layer at `omega`
     as fields, from its rheology fields and its elastic moduli; an
     elastic layer's moduli come back unchanged."""
@@ -101,7 +109,8 @@ def frozen_moduli(layer, omega: float, *, reference_omega: float) -> dict:
                                          ("N", base["N"] + dmu))}
 
 
-def frozen(model, omega: float, *, reference_omega: float | None = None):
+def frozen(model: Model, omega: float, *,
+           reference_omega: float | None = None) -> Model:
     """The model frozen at angular frequency `omega`: every viscoelastic
     layer carries its complex moduli under A, C, F, L, N, and the
     constant `omega` records the frequency.  A model with no
@@ -124,5 +133,4 @@ def frozen(model, omega: float, *, reference_omega: float | None = None):
     constants = dict(model.constants)
     constants["omega"] = Constant(omega * factor, FREQUENCY,
                                   meaning="angular frequency the model is frozen at")
-    return type(model)(model.geometry, layers, scales=model.scales,
-                       specs=model.specs, constants=constants)
+    return model.replaced(layers=layers, constants=constants)

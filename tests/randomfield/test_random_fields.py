@@ -3,7 +3,7 @@ shell as a field, and a layered sample as model fields."""
 import numpy as np
 import pytest
 
-from planetmodel import Skeleton, prem, testing
+from planetmodel import Skeleton, PREM, testing
 from planetmodel.randomfield import (LayeredGRF, RadialGRF, SphericalGRF,
                                      real_harmonics, synthesise)
 
@@ -167,7 +167,7 @@ def test_layered_grf_as_model_fields():
     with pytest.raises(TypeError):
         LayeredGRF([0.0, 1.0], 1.0, 0.05)
 
-    model = prem(ocean=False)
+    model = PREM(ocean=False)
     mantle = [i for i in range(model.nlayers) if model.layer(i).interval[0] >= 3480e3]
     layered = LayeredGRF(model, 1.5, 300e3, sigma=0.02, layers=mantle, name="delta")
     delta = layered.sample(rng=1)

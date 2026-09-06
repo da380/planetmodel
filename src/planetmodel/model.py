@@ -24,17 +24,31 @@ Surgery goes through the geometry's own and carries the fields: a
 split layer's fields are re-stated on each part, a cut layer's on its
 remainder, and appended shells hold the fields they are given.  Every
 change is a copy that validates again.
+
+A model type is a class derived from `Model` alone, plus the stateless
+behaviour mixins of `planetmodel.behaviours` that wrap the free
+functions as methods; there is no hierarchy of model types.  Every copy
+goes through `replaced`, a shallow copy with the changed parts swapped
+in, never through `__init__`, so a model type may give itself whatever
+constructor its construction needs and every surgery, conversion and
+freezing returns an instance of the same class carrying the same
+instance state.
 """
 from __future__ import annotations
 
+import copy
+from collections import abc
+from collections.abc import Iterable, Iterator, Sequence
 from types import MappingProxyType
-from typing import Mapping
 
 import numpy as np
+from numpy.typing import ArrayLike
 
+from .displacement import RadialDisplacement, SphericalFunction
 from .fields import Field
-from .geometry import Geometry, LayerInfo
+from .geometry import Geometry, LayerInfo, Names, Renames
 from .layerfunction import same_interval
+from .mapping import Mapping
 from .skeleton import Skeleton
 from .units import EARTH_MEAN_DENSITY, LENGTH, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec
@@ -50,7 +64,7 @@ class Layer:
     `name in layer`, and `names`.
     """
 
-    def __init__(self, info: LayerInfo, fields: Mapping[str, Field]) -> None:
+    def __init__(self, info: LayerInfo, fields: abc.Mapping[str, Field]) -> None:
         self._info = info
         self._fields = MappingProxyType(dict(fields))
 
@@ -71,7 +85,7 @@ class Layer:
         return self._info
 
     @property
-    def fields(self) -> Mapping[str, Field]:
+    def fields(self) -> abc.Mapping[str, Field]:
         return self._fields
 
     @property
@@ -86,10 +100,10 @@ class Layer:
                 f"layer {self._label()} holds no field {name!r}; it holds "
                 f"{list(self._fields)}") from None
 
-    def __contains__(self, name) -> bool:
+    def __contains__(self, name: object) -> bool:
         return name in self._fields
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self._fields)
 
     def __len__(self) -> int:
@@ -115,8 +129,11 @@ class Model:
     for fields already known to fit.
     """
 
-    def __init__(self, geometry, layers, *, scales: Scales = Scales.SI,
-                 specs=None, constants=None, check: bool = True) -> None:
+    def __init__(self, geometry: Geometry, layers: Iterable[abc.Mapping[str, Field]],
+                 *, scales: Scales = Scales.SI,
+                 specs: abc.Mapping[str, FieldSpec] | None = None,
+                 constants: abc.Mapping[str, Constant] | None = None,
+                 check: bool = True) -> None:
         if not isinstance(geometry, Geometry):
             raise TypeError(f"expected a Geometry, got {type(geometry).__name__}")
         layers = [dict(m) for m in layers]
@@ -185,15 +202,15 @@ class Model:
         return self._layers
 
     @property
-    def specs(self) -> Mapping[str, FieldSpec]:
+    def specs(self) -> abc.Mapping[str, FieldSpec]:
         """Every name with a meaning: the vocabulary, then `specs=`."""
         return self._specs
 
     @property
-    def constants(self) -> Mapping[str, Constant]:
+    def constants(self) -> abc.Mapping[str, Constant]:
         return self._constants
 
-    def layer(self, which) -> Layer:
+    def layer(self, which: int | str) -> Layer:
         """A layer by index (negatives allowed) or by name."""
         return self._layers[self._geometry.layer(which).index]
 
@@ -235,16 +252,48 @@ class Model:
 
     # -- copies -------------------------------------------------------------
 
-    def _copy(self, *, geometry=None, layers=None, scales=None,
-              check: bool = True) -> "Model":
-        """A copy of the same class; a subclass keeps the constructor's signature."""
-        return type(self)(
-            self._geometry if geometry is None else geometry,
-            [layer.fields for layer in self._layers] if layers is None else layers,
-            scales=self._scales if scales is None else scales,
-            specs=self._specs, constants=self._constants, check=check)
+    def replaced(self, *, geometry: Geometry | None = None,
+                 layers: Sequence[abc.Mapping[str, Field]] | None = None,
+                 scales: Scales | None = None,
+                 specs: abc.Mapping[str, FieldSpec] | None = None,
+                 constants: abc.Mapping[str, Constant] | None = None,
+                 check: bool = True) -> "Model":
+        """A shallow copy with the given parts replaced, validated unless
+        `check=False`: the one path every copy of a model takes.
 
-    def with_field(self, which, name: str, field, *, replace: bool = False) -> "Model":
+        `layers` is one mapping of name to field per layer of the (new)
+        geometry; `specs` and `constants` replace the model's own
+        tables, the vocabulary and the shipped constants being merged in
+        again.  The class and every other instance attribute are kept.
+        """
+        out = copy.copy(self)
+        if geometry is not None:
+            if not isinstance(geometry, Geometry):
+                raise TypeError(f"expected a Geometry, got {type(geometry).__name__}")
+            out._geometry = geometry
+        if geometry is not None or layers is not None:
+            fields = ([layer.fields for layer in self._layers] if layers is None
+                      else [dict(m) for m in layers])
+            if len(fields) != out._geometry.nlayers:
+                raise ValueError(
+                    f"got fields for {len(fields)} layers; the geometry has "
+                    f"{out._geometry.nlayers}")
+            out._layers = tuple(Layer(info, f)
+                                for info, f in zip(out._geometry.layers, fields))
+        if scales is not None:
+            if not isinstance(scales, Scales):
+                raise TypeError(f"expected Scales, got {type(scales).__name__}")
+            out._scales = scales
+        if specs is not None:
+            out._specs = MappingProxyType({**VOCABULARY, **dict(specs)})
+        if constants is not None:
+            out._constants = MappingProxyType({**CONSTANTS, **dict(constants)})
+        if check:
+            out.validate()
+        return out
+
+    def with_field(self, which: int | str, name: str, field: Field, *,
+                   replace: bool = False) -> "Model":
         """A copy with `field` attached to one layer under `name`."""
         i = self._geometry.layer(which).index
         layers = [dict(layer.fields) for layer in self._layers]
@@ -253,44 +302,47 @@ class Model:
                 f"layer {self._layers[i]._label()} already holds {name!r}; "
                 "pass replace=True to replace it")
         layers[i][name] = field
-        return self._copy(layers=layers)
+        return self.replaced(layers=layers)
 
-    def without_field(self, name: str, *, layers=None) -> "Model":
+    def without_field(self, name: str, *,
+                      layers: Iterable[int | str] | None = None) -> "Model":
         """A copy without `name` on every layer, or on the layers given."""
         which = (range(self.nlayers) if layers is None
                  else [self._geometry.layer(w).index for w in layers])
         out = [dict(layer.fields) for layer in self._layers]
         for i in which:
             out[i].pop(name, None)
-        return self._copy(layers=out, check=False)
+        return self.replaced(layers=out, check=False)
 
-    def with_geometry(self, geometry) -> "Model":
+    def with_geometry(self, geometry: Geometry) -> "Model":
         """A copy on another geometry over the same skeleton."""
         a, b = self.skeleton.boundaries, geometry.skeleton.boundaries
         if a.size != b.size or not np.allclose(a, b, rtol=self._geometry.rtol,
                                                atol=0.0):
             raise ValueError("the new geometry has another skeleton; use the "
                              "surgery methods to change the layering")
-        return self._copy(geometry=geometry)
+        return self.replaced(geometry=geometry)
 
-    def renamed(self, *, layers=None, interfaces=None) -> "Model":
-        return self._copy(geometry=self._geometry.renamed(layers=layers,
+    def renamed(self, *, layers: Renames = None, interfaces: Renames = None) -> "Model":
+        return self.replaced(geometry=self._geometry.renamed(layers=layers,
                                                           interfaces=interfaces),
                           check=False)
 
-    def with_mapping(self, mapping, *, check: bool = True) -> "Model":
-        return self._copy(geometry=self._geometry.with_mapping(mapping, check=check),
+    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "Model":
+        return self.replaced(geometry=self._geometry.with_mapping(mapping, check=check),
                           check=False)
 
-    def stretched(self, h, *, name: str | None = None,
-                  check: bool = True) -> "Model":
-        return self._copy(geometry=self._geometry.stretched(h, name=name,
+    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
+                  name: str | None = None, check: bool = True) -> "Model":
+        return self.replaced(geometry=self._geometry.stretched(h, name=name,
                                                             check=check),
                           check=False)
 
     # -- surgery ------------------------------------------------------------
 
-    def _carried(self, geometry: Geometry, *, shells=None) -> list[dict]:
+    def _carried(self, geometry: Geometry, *,
+                 shells: Sequence[abc.Mapping[str, Field]] | None = None
+                 ) -> list[dict[str, Field]]:
         """The fields of every layer of `geometry`, taken from this model.
 
         A new layer inside the old skeleton takes the old layer around
@@ -312,23 +364,24 @@ class Model:
                 out.append(dict(shells.pop(0)) if shells else {})
         return out
 
-    def refined(self, radii, *, names=None) -> "Model":
+    def refined(self, radii: ArrayLike, *, names: Names = None) -> "Model":
         """Interior boundaries inserted; a split layer's fields on each part."""
         g = self._geometry.refined(radii, names=names)
-        return self._copy(geometry=g, layers=self._carried(g))
+        return self.replaced(geometry=g, layers=self._carried(g))
 
-    def truncated(self, radius, *, name: str | None = None) -> "Model":
+    def truncated(self, radius: float, *, name: str | None = None) -> "Model":
         """The model cut at `radius`; the cut layer's fields on its remainder."""
         g = self._geometry.truncated(radius, name=name)
-        return self._copy(geometry=g, layers=self._carried(g))
+        return self.replaced(geometry=g, layers=self._carried(g))
 
-    def hollowed(self, radius, *, name: str | None = None) -> "Model":
+    def hollowed(self, radius: float, *, name: str | None = None) -> "Model":
         """The model cut from below at `radius`."""
         g = self._geometry.hollowed(radius, name=name)
-        return self._copy(geometry=g, layers=self._carried(g))
+        return self.replaced(geometry=g, layers=self._carried(g))
 
-    def extended(self, radii, *, fields=None, names=None,
-                 interface_names=None) -> "Model":
+    def extended(self, radii: ArrayLike, *,
+                 fields: str | Sequence[abc.Mapping[str, Field]] | None = None,
+                 names: Names = None, interface_names: Names = None) -> "Model":
         """Shells appended outside, holding the fields given.
 
         `fields` is None for empty shells, "extrapolate" to re-state the
@@ -352,7 +405,7 @@ class Model:
             if len(shells) != n_new:
                 raise ValueError(f"got fields for {len(shells)} shells, "
                                  f"expected {n_new}")
-        return self._copy(geometry=g, layers=self._carried(g, shells=shells))
+        return self.replaced(geometry=g, layers=self._carried(g, shells=shells))
 
     # -- units --------------------------------------------------------------
 
@@ -375,7 +428,7 @@ class Model:
                 v = old.factor(spec.dimensions) / new.factor(spec.dimensions)
                 out[name] = f.rescaled(k=k, v=v)
             layers.append(out)
-        return self._copy(geometry=self._geometry.scaled(k), layers=layers,
+        return self.replaced(geometry=self._geometry.scaled(k), layers=layers,
                           scales=new)
 
     def nondimensionalised(self, *, density: float = EARTH_MEAN_DENSITY,

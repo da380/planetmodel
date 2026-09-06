@@ -33,15 +33,17 @@ is a `ComposedField`.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Sequence
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .character import SCALAR, Character
-from .frames import (bond_matrix, rotate_slots, spherical_coordinates,
-                     spherical_frame, tensor_to_voigt)
-from .layerfunction import (as_layer_function, as_scalar, as_values, constant_layer,
-                            same_interval)
+from .frames import (SphericalFunction, bond_matrix, rotate_slots,
+                     spherical_coordinates, spherical_frame, tensor_to_voigt)
+from .layerfunction import (LayerFunction, LayerFunctionLike, as_layer_function,
+                            as_scalar, as_values, constant_layer, same_interval)
 
 __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "ComposedField", "constant_field", "FRAMES", "check_frame",
@@ -72,17 +74,18 @@ class Field(Protocol):
     character: Character
     name: str | None
 
-    def evaluate(self, r, theta, phi, *, frame: str = "spherical"): ...
+    def evaluate(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike, *,
+                 frame: str = "spherical") -> np.ndarray: ...
 
 
-def _interval(interval) -> tuple[float, float]:
+def _interval(interval: tuple[float, float]) -> tuple[float, float]:
     lo, hi = (float(x) for x in interval)
     if not hi > lo:
         raise ValueError(f"an interval must increase, got ({lo:g}, {hi:g})")
     return lo, hi
 
 
-def _rotate(values, R, character: Character):
+def _rotate(values: np.ndarray, R: np.ndarray, character: Character) -> np.ndarray:
     """Components rotated by R: Bond on a Voigt form, a factor per slot else."""
     rank = character.rank
     if rank == 0:
@@ -134,7 +137,8 @@ class FieldBase:
     def _needs_angles(self) -> bool:
         return not (self.is_radial and self._character.rank == 0)
 
-    def _points(self, r, theta, phi):
+    def _points(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None
+                ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
         """(r, theta, phi) broadcast and checked; angles None when allowed."""
         r = np.asarray(r, dtype=float)
         if theta is None or phi is None:
@@ -162,7 +166,13 @@ class FieldBase:
         lo, hi = self._interval
         return self.evaluate(0.5 * (lo + hi), 1.0, 0.5).dtype
 
-    def evaluate(self, r, theta, phi, *, frame: str = "spherical"):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
+        """The stored components in the spherical frame at checked points."""
+        raise NotImplementedError
+
+    def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
+                 *, frame: str = "spherical") -> np.ndarray:
         """The components at (r, theta, phi) in `frame`, float64 or
         complex128."""
         check_frame(frame)
@@ -172,7 +182,7 @@ class FieldBase:
             values = _rotate(values, spherical_frame(theta, phi), self._character)
         return values
 
-    def __call__(self, *coordinates):
+    def __call__(self, *coordinates: ArrayLike) -> np.ndarray:
         """`evaluate` in the spherical frame: f(r, theta, phi), or f(r) for a
         radial field of rank 0."""
         if len(coordinates) == 1:
@@ -182,20 +192,20 @@ class FieldBase:
                             f"alone, not {len(coordinates)} arguments")
         return self.evaluate(*coordinates)
 
-    def evaluate_at(self, X, *, frame: str = "cartesian"):
+    def evaluate_at(self, X: ArrayLike, *, frame: str = "cartesian") -> np.ndarray:
         """The components at Cartesian points X of shape (..., 3), in `frame`."""
         r, theta, phi, _ = spherical_coordinates(X)
         return self.evaluate(r, theta, phi, frame=frame)
 
     # -- the algebra --------------------------------------------------------
 
-    def _same_interval(self, other) -> None:
+    def _same_interval(self, other: Field) -> None:
         if not same_interval(self._interval, other.interval, rtol=self._rtol):
             raise ValueError(
                 f"fields on different intervals cannot be combined: "
                 f"{self._interval} and {other.interval}")
 
-    def __add__(self, other):
+    def __add__(self, other: Field) -> Field:
         if not isinstance(other, Field):
             return NotImplemented
         self._same_interval(other)
@@ -204,7 +214,7 @@ class FieldBase:
                 f"cannot add a {other.character} field to a {self._character} one")
         return _combine((self, other), np.add, self._character)
 
-    def __sub__(self, other):
+    def __sub__(self, other: Field) -> Field:
         if not isinstance(other, Field):
             return NotImplemented
         self._same_interval(other)
@@ -214,10 +224,10 @@ class FieldBase:
                 f"{self._character} one")
         return _combine((self, other), np.subtract, self._character)
 
-    def __neg__(self):
+    def __neg__(self) -> Field:
         return _scale(self, -1.0)
 
-    def __mul__(self, other):
+    def __mul__(self, other: Field | float | complex) -> Field:
         if isinstance(other, Field):
             self._same_interval(other)
             return _combine((self, other), np.multiply,
@@ -228,7 +238,7 @@ class FieldBase:
 
     __rmul__ = __mul__
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: Field | float | complex) -> Field:
         if isinstance(other, Field):
             self._same_interval(other)
             if self._character.rank or other.character.rank:
@@ -239,7 +249,7 @@ class FieldBase:
             return _scale(self, 1.0 / as_scalar(other))
         return NotImplemented
 
-    def __pow__(self, n):
+    def __pow__(self, n: int) -> Field:
         if self._character.rank or self._character.weight:
             raise ValueError("only a field of rank 0 and weight 0 is raised to a power")
         if not isinstance(n, (int, np.integer)) or n < 0:
@@ -250,11 +260,11 @@ class FieldBase:
         return ComposedField(lambda x: x ** int(n), (self,), character=self._character)
 
 
-def _is_number(x) -> bool:
+def _is_number(x: object) -> bool:
     return np.isscalar(x) and not isinstance(x, (str, bytes))
 
 
-def _elementwise(fn, *arrays) -> np.ndarray:
+def _elementwise(fn: Callable[..., object], *arrays: np.ndarray) -> np.ndarray:
     """fn applied element by element to object arrays of one shape."""
     out = np.empty(arrays[0].shape, dtype=object)
     for idx in np.ndindex(arrays[0].shape):
@@ -262,7 +272,8 @@ def _elementwise(fn, *arrays) -> np.ndarray:
     return out
 
 
-def _combine(fields, op, character):
+def _combine(fields: tuple[Field, Field], op: Callable[..., ArrayLike],
+             character: Character) -> Field:
     if all(isinstance(f, RadialField) for f in fields):
         a, b = fields
         return RadialField(a.interval, _elementwise(op, a._fs, b._fs),
@@ -270,7 +281,7 @@ def _combine(fields, op, character):
     return ComposedField(op, fields, character=character)
 
 
-def _scale(field, c):
+def _scale(field: Field, c: float | complex) -> Field:
     if isinstance(field, RadialField):
         return RadialField(field.interval, _elementwise(lambda f: f * c, field._fs),
                            character=field.character, rtol=field.rtol)
@@ -289,8 +300,10 @@ class RadialField(FieldBase):
 
     is_radial = True
 
-    def __init__(self, interval, function, *, character: Character = SCALAR,
-                 name: str | None = None, rtol: float = 1e-9) -> None:
+    def __init__(self, interval: tuple[float, float],
+                 function: LayerFunctionLike | Sequence | np.ndarray, *,
+                 character: Character = SCALAR, name: str | None = None,
+                 rtol: float = 1e-9) -> None:
         self._interval = _interval(interval)
         self._character = character
         self._name = name
@@ -325,20 +338,24 @@ class RadialField(FieldBase):
         return self._fs
 
     @property
-    def function(self):
+    def function(self) -> LayerFunction:
         """The one layer function of a rank-0 field."""
         if self._fs.shape:
             raise ValueError(f"{self!r} has {self._fs.size} components; use functions")
         return self._fs[()]
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         if not self._fs.shape:
             return self._fs[()](r)
         parts = [np.broadcast_to(self._fs[idx](r), r.shape)
                  for idx in np.ndindex(self._fs.shape)]
         return np.stack(parts, axis=-1).reshape(r.shape + self._fs.shape)
 
-    def _map(self, fn, *, character=None, interval=None, name=None):
+    def _map(self, fn: Callable[[LayerFunction], LayerFunction], *,
+             character: Character | None = None,
+             interval: tuple[float, float] | None = None,
+             name: str | None = None) -> "RadialField":
         fs = np.empty(self._fs.shape, dtype=object)
         for idx in np.ndindex(self._fs.shape):
             fs[idx] = fn(self._fs[idx])
@@ -350,7 +367,7 @@ class RadialField(FieldBase):
         """The nu-th radial derivative of every component; the character is kept."""
         return self._map(lambda f: f.derivative(nu=nu))
 
-    def integrate(self, a: float, b: float):
+    def integrate(self, a: float, b: float) -> float | complex | np.ndarray:
         """The signed integral from a to b: a float for rank 0, else an array."""
         if not self._fs.shape:
             return self._fs[()].integrate(a, b)
@@ -389,9 +406,9 @@ class AnalyticField(FieldBase):
     formula may return complex values.
     """
 
-    def __init__(self, interval, fn, *, character: Character = SCALAR,
-                 name: str | None = None, frame: str = "spherical",
-                 rtol: float = 1e-9) -> None:
+    def __init__(self, interval: tuple[float, float], fn: SphericalFunction, *,
+                 character: Character = SCALAR, name: str | None = None,
+                 frame: str = "spherical", rtol: float = 1e-9) -> None:
         if not callable(fn):
             raise TypeError(f"expected a callable, got {type(fn).__name__}")
         check_frame(frame)
@@ -403,7 +420,7 @@ class AnalyticField(FieldBase):
         self._rtol = float(rtol)
 
     @property
-    def fn(self):
+    def fn(self) -> SphericalFunction:
         """The formula of (r, theta, phi)."""
         return self._fn
 
@@ -412,7 +429,8 @@ class AnalyticField(FieldBase):
         """The frame the formula returns its components in."""
         return self._frame
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         raw = np.asarray(self._fn(r, theta, phi))
         vals = _to_stored(raw, r.shape, self._character, self)
         if self._frame == "cartesian" and self._character.rank:
@@ -445,7 +463,8 @@ class AnalyticField(FieldBase):
         return f"AnalyticField({nm}{self._character} on [{lo:g}, {hi:g}])"
 
 
-def _to_stored(raw, point_shape, character, owner):
+def _to_stored(raw: np.ndarray, point_shape: tuple[int, ...],
+               character: Character, owner: object) -> np.ndarray:
     """A formula's return value as stored components at every point."""
     rank = character.rank
     stored = stored_shape(character)
@@ -480,8 +499,8 @@ class ComposedField(FieldBase):
     never sampled or refitted.  Radial when every source is.
     """
 
-    def __init__(self, fn, sources, *, character: Character,
-                 name: str | None = None) -> None:
+    def __init__(self, fn: Callable[..., ArrayLike], sources: Iterable[Field], *,
+                 character: Character, name: str | None = None) -> None:
         if not callable(fn):
             raise TypeError(f"expected a callable, got {type(fn).__name__}")
         sources = tuple(sources)
@@ -506,14 +525,15 @@ class ComposedField(FieldBase):
         self.is_radial = all(getattr(s, "is_radial", False) for s in sources)
 
     @property
-    def fn(self):
+    def fn(self) -> Callable[..., ArrayLike]:
         return self._fn
 
     @property
-    def sources(self) -> tuple:
+    def sources(self) -> tuple[Field, ...]:
         return self._sources
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         args = [s.evaluate(r, theta, phi) for s in self._sources]
         raw = np.asarray(self._fn(*args))
         return _to_stored(raw, r.shape, self._character, self)
@@ -541,7 +561,8 @@ class ComposedField(FieldBase):
                 f"on [{lo:g}, {hi:g}])")
 
 
-def constant_field(value, interval, *, character: Character = SCALAR,
+def constant_field(value: ArrayLike, interval: tuple[float, float], *,
+                   character: Character = SCALAR,
                    name: str | None = None) -> RadialField:
     """The constant `value` (a number, or an array of the stored shape) as an
     exact radial field."""

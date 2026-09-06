@@ -38,15 +38,24 @@ manifest's `files` block says so in the form a C++ reader passes on.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
+from collections.abc import Mapping as MappingOf
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
+from ..character import Character
 from ..fields import stored_shape
-from ..mapping import IdentityMapping
+from ..mapping import IdentityMapping, Mapping
 from . import manifest
-from .spec import DELIVERIES
+from .spec import DELIVERIES, MeshResult
+
+if TYPE_CHECKING:
+    from ..model import Model
 
 __all__ = ["ExportResult", "export_mfem_mesh", "export_mfem",
            "MESH_READ_OPTIONS"]
@@ -61,7 +70,7 @@ MESH_READ_OPTIONS = {"generate_edges": 1, "refine": 0,
                      "fix_orientation": False}
 
 
-def _mfem():
+def _mfem() -> ModuleType:
     """PyMFEM, imported here and nowhere else in planetmodel."""
     try:
         import mfem.ser as mfem
@@ -87,12 +96,12 @@ class ExportResult:
     #: "physical" or "referential".
     delivery: str
     #: The manifest's `files` block.
-    files: dict
+    files: dict[str, Any]
     #: Element, boundary element and nodal dof counts, and the order.
-    counts: dict
+    counts: dict[str, int]
     _: KW_ONLY
     #: name -> the field's GridFunction, for the fields `export_mfem` wrote.
-    field_paths: dict = field(default_factory=dict)
+    field_paths: dict[str, Path] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         n = len(self.field_paths)
@@ -100,7 +109,7 @@ class ExportResult:
         return f"ExportResult({self.mesh_path.name}{fields}, {self.delivery} delivery)"
 
 
-def _load_reference_mesh(msh_path, card):
+def _load_reference_mesh(msh_path: str | Path, card: manifest.MeshManifest) -> Any:
     """The MSH the mesher wrote, with MFEM's own verdict on its orientation.
 
     A mesh whose nodes already carry the mapping is refused: its
@@ -132,12 +141,12 @@ def _load_reference_mesh(msh_path, card):
     return mesh
 
 
-def _mesh_order(mesh) -> int:
+def _mesh_order(mesh: Any) -> int:
     """The polynomial order of the mesh's own nodal space."""
     return int(mesh.GetNodes().FESpace().GetOrder(0))
 
 
-def _node_array(gf) -> np.ndarray:
+def _node_array(gf: Any) -> np.ndarray:
     """A vector GridFunction's values as (ndof, vdim), whatever the ordering."""
     mfem = _mfem()
     fes = gf.FESpace()
@@ -148,7 +157,7 @@ def _node_array(gf) -> np.ndarray:
     return data.reshape(-1, vdim)
 
 
-def _write_vector(gf, values) -> None:
+def _write_vector(gf: Any, values: ArrayLike) -> None:
     """The inverse of `_node_array`: (ndof, vdim) back into a GridFunction."""
     mfem = _mfem()
     fes = gf.FESpace()
@@ -159,7 +168,7 @@ def _write_vector(gf, values) -> None:
         data[:] = np.asarray(values, dtype=float).ravel()
 
 
-def _lifted(X) -> np.ndarray:
+def _lifted(X: ArrayLike) -> np.ndarray:
     """Points of shape (n, 2) or (n, 3) as (n, 3), a 2D mesh's in z = 0."""
     X = np.asarray(X, dtype=float)
     n, sdim = X.shape
@@ -168,7 +177,7 @@ def _lifted(X) -> np.ndarray:
     return X3
 
 
-def _displacement_at(mapping, X, *, scale: float) -> np.ndarray:
+def _displacement_at(mapping: Mapping, X: ArrayLike, *, scale: float) -> np.ndarray:
     """m(X) - X at nodal coordinates of shape (n, 2) or (n, 3).
 
     Two-dimensional points are lifted to z = 0 for the mapping, which
@@ -195,7 +204,8 @@ def _displacement_at(mapping, X, *, scale: float) -> np.ndarray:
     return u[:, :sdim]
 
 
-def _file_entry(name, path, fes, *, kind: str) -> dict:
+def _file_entry(name: str, path: str | Path, fes: Any, *,
+                kind: str) -> dict[str, Any]:
     """One `files.grid_functions` record: where it is and which space it lives in."""
     mfem = _mfem()
     ordering = ("byNODES" if fes.GetOrdering() == mfem.Ordering.byNODES
@@ -205,7 +215,8 @@ def _file_entry(name, path, fes, *, kind: str) -> dict:
             "ordering": ordering}
 
 
-def export_mfem_mesh(result, path_base, *, delivery=None) -> ExportResult:
+def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
+                     delivery: str | None = None) -> ExportResult:
     """Write an MFEM delivery of a built mesh: `.mesh`, the displacement
     in referential delivery, and the manifest with its `files` block.
 
@@ -267,7 +278,7 @@ def export_mfem_mesh(result, path_base, *, delivery=None) -> ExportResult:
                         delivery=delivery, files=files, counts=counts)
 
 
-def _dof_coordinates(mesh, fes) -> np.ndarray:
+def _dof_coordinates(mesh: Any, fes: Any) -> np.ndarray:
     """The coordinates of every dof of `fes`, shape (ndof, sdim).
 
     The mesh's own nodal GridFunction, read as a vector coefficient, is
@@ -289,7 +300,7 @@ def _dof_coordinates(mesh, fes) -> np.ndarray:
     return X
 
 
-def _dofs_by_attribute(mesh, fes) -> dict:
+def _dofs_by_attribute(mesh: Any, fes: Any) -> dict[int, np.ndarray]:
     """attribute -> the dofs of `fes` on the elements carrying it."""
     n = mesh.GetNE()
     attributes = np.fromiter((mesh.GetAttribute(e) for e in range(n)),
@@ -300,7 +311,7 @@ def _dofs_by_attribute(mesh, fes) -> dict:
             for a in np.unique(attributes)}
 
 
-def _clipped_into(X, interval) -> np.ndarray:
+def _clipped_into(X: ArrayLike, interval: tuple[float, float]) -> np.ndarray:
     """`X` pulled radially into `[lo, hi]`, direction untouched."""
     lo, hi = (float(x) for x in interval)
     r = np.linalg.norm(X, axis=-1)
@@ -308,7 +319,7 @@ def _clipped_into(X, interval) -> np.ndarray:
     return X * (np.clip(r, lo, hi) / safe)[..., None]
 
 
-def _check_model_sits_on(result, model) -> None:
+def _check_model_sits_on(result: MeshResult, model: Model) -> None:
     """Refuse a mesh not built from a geometry, or a model on another skeleton."""
     if result.geometry is None:
         raise ValueError(
@@ -324,7 +335,7 @@ def _check_model_sits_on(result, model) -> None:
             "mesh's own geometry")
 
 
-def _chosen_names(model, fields) -> tuple:
+def _chosen_names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
     """The names to write: every name the model holds, or those given."""
     if fields is None:
         return tuple(model.field_names())
@@ -337,7 +348,7 @@ def _chosen_names(model, fields) -> tuple:
     return names
 
 
-def _character_of(model, name):
+def _character_of(model: Model, name: str) -> Character:
     """The one character `name` has on every layer holding it."""
     layers = model.layers_with(name)
     characters = {model.layer(i)[name].character for i in layers}
@@ -348,7 +359,8 @@ def _character_of(model, name):
     return characters.pop()
 
 
-def _field_values(model, name, X, groups, *, vdim: int) -> np.ndarray:
+def _field_values(model: Model, name: str, X: np.ndarray,
+                  groups: MappingOf[int, np.ndarray], *, vdim: int) -> np.ndarray:
     """`name` at the dof coordinates `X`, (ndof, vdim), layer by layer.
 
     `groups` maps attribute -> dofs.  Attribute i + 1 is layer i of the
@@ -372,8 +384,9 @@ def _field_values(model, name, X, groups, *, vdim: int) -> np.ndarray:
     return values
 
 
-def export_mfem(result, path_base, *, model, fields=None, delivery=None,
-                order=None) -> ExportResult:
+def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
+                fields: Iterable[str] | None = None, delivery: str | None = None,
+                order: int | None = None) -> ExportResult:
     """Write an MFEM delivery of a built mesh with the fields of a model
     beside it: `<base>.mesh`, the displacement in referential delivery,
     one `<base>.<name>.gf` per field, and the manifest.

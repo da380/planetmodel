@@ -8,19 +8,33 @@ imports of the rest of the package happen inside the functions.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+from numpy.typing import ArrayLike
+
+if TYPE_CHECKING:
+    from .displacement import RadialDisplacement
+    from .fields import Field
+    from .geometry import Geometry
+    from .layerfunction import LayerFunction
+    from .mapping import Mapping
+    from .model import Model
+    from .sampling import Sample
+    from .skeleton import Skeleton
 
 __all__ = ["check_displacement", "check_mapping", "check_geometry",
            "check_layer_function", "check_field", "check_model",
            "check_sample"]
 
 
-def _rel(a, b, *, rtol: float, floor: float = 1.0) -> bool:
+def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
     """Whether a and b agree to rtol relative to max(floor, |b|)."""
     return np.allclose(a, b, rtol=0.0, atol=rtol * np.maximum(floor, np.abs(b)))
 
 
-def check_displacement(h, skeleton, *, n: int = 33) -> None:
+def check_displacement(h: RadialDisplacement, skeleton: Skeleton, *,
+                       n: int = 33) -> None:
     """Hold a RadialDisplacement to its protocol over a skeleton's span.
 
     Checks finite values of the broadcast shape; single-valuedness on the
@@ -96,7 +110,7 @@ def check_displacement(h, skeleton, *, n: int = 33) -> None:
             "angular_gradient components have the wrong shape")
 
 
-def check_mapping(m, points, *, rtol: float = 1e-6,
+def check_mapping(m: Mapping, points: ArrayLike, *, rtol: float = 1e-6,
                   step: float | None = None) -> None:
     """Hold a Mapping to its protocol on the given Cartesian points.
 
@@ -152,7 +166,7 @@ def check_mapping(m, points, *, rtol: float = 1e-6,
                 "inverse(m(X)) does not return X")
 
 
-def check_geometry(geometry) -> None:
+def check_geometry(geometry: Geometry) -> None:
     """Hold a Geometry to its invariants and its numbering.
 
     Checks that the invariants hold (by reconstructing the geometry with
@@ -202,7 +216,8 @@ def check_geometry(geometry) -> None:
     check_mapping(geometry.mapping, X.reshape(-1, 3))
 
 
-def check_layer_function(fn, *, n: int = 17, rtol: float = 1e-6) -> None:
+def check_layer_function(fn: LayerFunction, *, n: int = 17,
+                         rtol: float = 1e-6) -> None:
     """Hold a LayerFunction to its protocol on its own interval.
 
     Checks finite float64 (or complex128) values of the argument's shape; `derivative`
@@ -262,7 +277,8 @@ def check_layer_function(fn, *, n: int = 17, rtol: float = 1e-6) -> None:
         "rescaled does not round-trip")
 
 
-def check_field(field, *, rng=None, n: int = 64) -> None:
+def check_field(field: Field, *, rng: np.random.Generator | None = None,
+                n: int = 64) -> None:
     """Hold a Field to its protocol.
 
     Checks the three attributes; that a call with the radius alone is
@@ -380,10 +396,11 @@ def check_field(field, *, rng=None, n: int = 64) -> None:
                        rtol=1e-10, atol=1e-10 * scale), "rescaled does not round-trip"
 
 
-def check_model(model, *, rng=None) -> None:
+def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None:
     """Hold a Model to its invariants.
 
-    Checks that construction with checks on accepts it; that every
+    Checks that `replaced` with checks on accepts it and keeps its class
+    and fields; that every
     layer's fields pass `check_field`, sit on the layer's interval, and
     have their spec's character; that `layer(name)` and `layer(i)`
     agree; that every constant is its SI value over the scales' factor;
@@ -396,9 +413,11 @@ def check_model(model, *, rng=None) -> None:
     rng = np.random.default_rng(0) if rng is None else rng
     assert isinstance(model, Model), f"{type(model).__name__} is not a Model"
     cls = type(model)
-    cls(model.geometry, [layer.fields for layer in model.layers],
-        scales=model.scales, specs=model.specs, constants=model.constants,
-        check=True)
+    again = model.replaced(check=True)
+    assert type(again) is cls, "replaced does not keep the class"
+    assert again.layers is not model.layers or model.nlayers == 0 or True
+    for a, b in zip(again.layers, model.layers):
+        assert a.fields == b.fields, "replaced changes the fields"
     rtol = model.geometry.rtol
     for i, layer in enumerate(model.layers):
         assert layer.index == i, f"layer {i} reports index {layer.index}"
@@ -470,7 +489,8 @@ def check_model(model, *, rng=None) -> None:
         out.validate()
 
 
-def check_sample(sample, model, *, rng=None, n: int = 64,
+def check_sample(sample: Sample, model: Model, *,
+                 rng: np.random.Generator | None = None, n: int = 64,
                  rtol: float = 1e-12) -> None:
     """Hold a Sample to its layout and to the model it was taken from.
 

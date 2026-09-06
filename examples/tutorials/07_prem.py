@@ -1,12 +1,15 @@
 # %% [markdown]
 # # 7. PREM
 #
-# `prem()` is the Preliminary Reference Earth Model built from the Table I
+# `PREM` is the Preliminary Reference Earth Model built from the Table I
 # polynomials of Dziewonski and Anderson (1981): thirteen named layers,
-# every field an exact piecewise polynomial in SI, and no file read. This
-# tutorial asks it the questions a seismologist asks: values on both sides
-# of a discontinuity, which layers are fluid, the elastic moduli, gravity
-# and mass, nodal values on a radial mesh, and a sample on an angular grid.
+# every field an exact piecewise polynomial in SI, and no file read. It is
+# a model type: a class derived from `Model` with the elastic, gravity and
+# rheology behaviours as methods, each of which is one of the library's
+# free functions. This tutorial asks it the questions a seismologist asks:
+# values on both sides of a discontinuity, which layers are fluid, the
+# elastic moduli, gravity and mass, the isotropic and elastic versions,
+# nodal values on a radial mesh, and a sample on an angular grid.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -16,8 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import (RadialMesh, elastic_moduli, gauss_legendre, gravity,
-                         is_fluid, kappa_mu, mass, moduli, prem, sample, testing)
+from planetmodel import PREM, RadialMesh, gauss_legendre, moduli, sample, testing
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
@@ -26,12 +28,12 @@ FIGURES.mkdir(exist_ok=True)
 # ## The layers by name
 
 # %%
-model = prem()
+model = PREM()
 print(model)
 for layer in model.layers:
     lo, hi = layer.interval
     print(f"{layer.index:2d} {layer.name:24s} {lo / 1e3:7.1f} - {hi / 1e3:7.1f} km  "
-          f"{'fluid' if is_fluid(layer) else 'solid'}")
+          f"{'fluid' if model.is_fluid(layer.index) else 'solid'}")
 
 # %% [markdown]
 # A discontinuity is two layers asked separately. The CMB belongs to both
@@ -57,27 +59,45 @@ for name in ("rho", "vpv", "vsv"):
 lid = model.layer("lid")
 r80 = 6291e3 + 1.0
 print("vph/vpv in the lid:", lid["vph"](r80) / lid["vpv"](r80))
-A = moduli(lid)["A"]
+A = model.moduli("lid")["A"]
 print("A in the lid is a polynomial of degree", A.function.degree)
-C = elastic_moduli(lid)
+print("the method is the free function:", A(6300e3) == moduli(lid)["A"](6300e3))
+C = model.elastic_moduli("lid")
 print("Voigt matrix at 71 km depth, GPa, spherical frame:")
 print(np.round(C(6300e3, 0.3, 0.0) / 1e9, 1))
-kappa, mu = kappa_mu(model.layer("lower_mantle"))
+kappa, mu = model.kappa_mu("lower_mantle")
 print("kappa, mu at the top of the lower mantle (GPa):",
       kappa(5600e3) / 1e9, mu(5600e3) / 1e9)
+
+# %% [markdown]
+# ## Isotropic and elastic versions
+#
+# `isotropic()` replaces every layer's elastic description by its Voigt
+# average, exactly, keeping `rho` and the Q fields; `elastic()` drops the
+# rheology fields. Both are copies of the same class.
+
+# %%
+iso = model.isotropic()
+print("the lid now holds:", iso.layer("lid").names)
+print("its tensor is", iso.elastic_moduli("lid").symmetry.name,
+      "| mass unchanged:", np.isclose(iso.mass(), model.mass()))
+print("elastic PREM is viscoelastic nowhere:",
+      not any(model.elastic().is_viscoelastic(i) for i in range(model.nlayers)))
 
 # %% [markdown]
 # ## Gravity and mass
 #
 # `gravity` integrates `rho r^2` layer by layer through the layer
 # functions, so for PREM it is exact. `G` is the model's; after
-# `nondimensionalised()` it is one and the numbers are order one.
+# `nondimensionalised()` it is one and the numbers are order one, and the
+# copy is still a `PREM`.
 
 # %%
-print(f"mass: {mass(model):.4e} kg   surface g: {gravity(model, 6371e3):.4f} m/s^2   "
-      f"g at the CMB: {gravity(model, cmb):.4f}")
+print(f"mass: {model.mass():.4e} kg   surface g: {model.gravity(6371e3):.4f} m/s^2   "
+      f"g at the CMB: {model.gravity(cmb):.4f}")
 nd = model.nondimensionalised()
-print("non-dimensional: G =", nd.G, " mass =", mass(nd), " g(1) =", gravity(nd, 1.0))
+print("non-dimensional: G =", nd.G, " mass =", nd.mass(), " g(1) =", nd.gravity(1.0),
+      "|", type(nd).__name__)
 
 # %% [markdown]
 # ## On a radial mesh
@@ -138,7 +158,7 @@ for layer in model.layers:
 left.set_xlabel("r (km)"); left.set_ylabel("g/cm^3, km/s"); left.legend()
 left.set_title("PREM, one segment per layer")
 rr = np.linspace(0.0, 6371e3, 400)
-right.plot(rr / 1e3, gravity(model, rr))
+right.plot(rr / 1e3, model.gravity(rr))
 right.set_xlabel("r (km)"); right.set_ylabel("g (m/s^2)"); right.set_title("gravity")
 fig.tight_layout()
 out = FIGURES / "tutorial_07_prem.png"

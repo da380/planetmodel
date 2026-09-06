@@ -2,18 +2,19 @@
 # # 6. A model of your own
 #
 # A model is a geometry with a bag of fields on every layer, the scales
-# its numbers are in, and the specs that say what its names mean. There
-# is one class, `Model`, and no hierarchy: a named model is an instance,
-# and behaviour shared by groups of models is a free function of a layer
-# or a model. This tutorial builds one for a viscous planet, validates it,
-# converts its units, cuts it, and wraps a free function as a method.
+# its numbers are in, and the specs that say what its names mean. `Model`
+# is the one base and there is no hierarchy beneath it: a model type is a
+# class derived from `Model` alone, and the behaviour it exposes it gets
+# by wrapping the library's free functions of a layer or a model. This
+# tutorial builds a viscous planet, validates it, converts its units, cuts
+# it, and then makes it a model type of its own.
 
 # %%
 import numpy as np
 
 from planetmodel import (DENSITY, SCALAR, Dimensions, FieldSpec, Geometry, Model,
-                         RadialField, Skeleton, constant_field, gravity,
-                         polynomial_layer, testing)
+                         RadialField, SelfGravitating, Skeleton, constant_field,
+                         gravity, layer_method, polynomial_layer, testing)
 from planetmodel.units import unit_string
 
 # %% [markdown]
@@ -104,29 +105,51 @@ with_air = model.extended([6500e3], names=["atmosphere"])
 print("an empty shell holds:", with_air.layer("atmosphere").names)
 
 # %% [markdown]
-# ## Free functions, and a subclass that wraps them
+# ## Free functions, and a model type that wraps them
 #
-# Gravity is a function of a model that asks each layer for `rho`. A
-# subclass may wrap such functions as methods; the library does not.
+# Gravity is a function of a model that asks each layer for `rho`; the
+# elastic functions are functions of a layer. Both work on a bare `Model`.
+# A model type of your own is a class derived from `Model` alone that
+# exposes them as methods: a function of a model is a method as soon as
+# it is assigned in the class body, a function of a layer goes through
+# `layer_method`, which resolves an index or a name through `model.layer`,
+# and the shipped mixins (`Elastic`, `SelfGravitating`, `Viscoelastic`)
+# bundle the wrapped methods a kind of model exposes. Each mixin is a
+# class body of such assignments and nothing else, so the hierarchy stays
+# flat. Every copy goes through `Model.replaced`, a shallow copy, so the
+# constructor is yours to design and surgery keeps the class.
 
 # %%
 print("surface gravity:", gravity(model, 6371e3), "m/s^2")
 
 
-class ViscousPlanet(Model):
-    """A Model with the questions a convection code asks."""
-
-    def gravity(self, radii):
-        return gravity(self, radii)
-
-    def viscosity_contrast(self):
-        eta = self.layer("mantle")["viscosity"]
-        lo, hi = self.layer("mantle").interval
-        return eta(hi) / eta(lo)
+def viscosity_contrast(layer):
+    """The viscosity at the top of a layer over that at its bottom."""
+    eta = layer["viscosity"]
+    lo, hi = layer.interval
+    return eta(hi) / eta(lo)
 
 
-planet = ViscousPlanet(g, layers, specs=model.specs)
-print(type(planet.refined([5701e3])).__name__, "keeps its class through surgery")
-print("viscosity contrast:", planet.viscosity_contrast())
+class ViscousPlanet(SelfGravitating, Model):
+    """A model type with the questions a convection code asks."""
+
+    viscosity_contrast = layer_method(viscosity_contrast)
+
+    def __init__(self, viscosity, *, yield_stress=1e8):
+        mantle_fields = dict(layers[1])
+        mantle_fields["viscosity"] = constant_field(viscosity, mantle,
+                                                    name="viscosity")
+        mantle_fields["yield_stress"] = constant_field(yield_stress, mantle,
+                                                       name="yield_stress")
+        super().__init__(g, [layers[0], mantle_fields], specs=model.specs)
+
+
+planet = ViscousPlanet(1e22)
+print("surface gravity as a method:", planet.gravity(6371e3))
+print("mantle viscosity contrast:", planet.viscosity_contrast("mantle"))
+print("mass:", planet.mass(), "kg")
+cut = planet.refined([5701e3])
+print(type(cut).__name__, "keeps its class through surgery, with", cut.nlayers,
+      "layers")
 testing.check_model(planet)
 print("check_model passes")

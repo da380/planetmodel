@@ -20,9 +20,10 @@ unchanged: a geometry of radius 6.4e6 is meshed at radius 6.4e6.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any
 
 from ..geometry import Geometry, InterfaceInfo, LayerInfo
 from ..mapping import Mapping
@@ -112,7 +113,8 @@ class InterfaceSizing:
 #: A sizing rule: (interfaces of the computational domain, its outer
 #: radius) -> {interface index: InterfaceSizing}.  The interfaces are
 #: objects with `index`, `radius` and `name`.
-SizingRule = Callable[[Sequence[InterfaceInfo], float], dict]
+type SizingRule = Callable[[Sequence[InterfaceInfo], float],
+                           dict[int, InterfaceSizing]]
 
 
 @dataclass(frozen=True)
@@ -137,7 +139,8 @@ class AngularResolution:
     #: The decay width as a fraction of each interface's radius.
     fraction: float = 0.2
 
-    def __call__(self, interfaces, outer_radius: float) -> dict:
+    def __call__(self, interfaces: Sequence[InterfaceInfo],
+                 outer_radius: float) -> dict[int, InterfaceSizing]:
         r_ref = float(outer_radius) if self.r_ref is None else float(self.r_ref)
         out = {}
         for face in interfaces:
@@ -159,7 +162,8 @@ class UniformInterfaces:
     #: The distance over which the size grows from h_min to h_max.
     decay_width: float
 
-    def __call__(self, interfaces, outer_radius: float) -> dict:
+    def __call__(self, interfaces: Sequence[InterfaceInfo],
+                 outer_radius: float) -> dict[int, InterfaceSizing]:
         return {face.index: InterfaceSizing(self.h_min, self.h_max,
                                             self.decay_width)
                 for face in interfaces}
@@ -174,12 +178,13 @@ class PerInterface:
     """
 
     #: {interface name or index: InterfaceSizing}.
-    sizes_by: dict
+    sizes_by: dict[str | int, InterfaceSizing]
     _: KW_ONLY
     #: The rule for the interfaces `sizes_by` does not name.
     base: SizingRule | None = None
 
-    def __call__(self, interfaces, outer_radius: float) -> dict:
+    def __call__(self, interfaces: Sequence[InterfaceInfo],
+                 outer_radius: float) -> dict[int, InterfaceSizing]:
         out = (dict(self.base(interfaces, outer_radius))
                if self.base is not None else {})
         by_name = {f.name: f.index for f in interfaces if f.name}
@@ -232,7 +237,7 @@ class MeshSpec:
     #: False writes a failing mesh with the failures recorded in the manifest.
     validate: bool = True
     #: Copied into the manifest's provenance block.
-    meta: dict = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.geometry, Geometry):
@@ -326,11 +331,11 @@ class ValidationReport:
     #: radius asked for, in the mesh's lengths.
     max_interface_radius_error: float = 0.0
     #: The number of physical groups found, by "layers" and "interfaces".
-    group_counts: dict = field(default_factory=dict)
+    group_counts: dict[str, int] = field(default_factory=dict)
     #: Every failed check, in words.
-    failures: list = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
     #: Every warning, in words.
-    warnings: list = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -368,11 +373,11 @@ class MeshResult:
     #: The geometry the mesh was built from; None for an offset mesh.
     geometry: Geometry | None
     #: Element, node, layer and interface counts.
-    counts: dict
+    counts: dict[str, int]
     #: The checks the mesh passed or failed.
     validation: ValidationReport
     #: Seconds spent in each stage of the build.
-    timings: dict
+    timings: dict[str, float]
     _: KW_ONLY
     #: The spec the mesh was built from, if any.
     spec: MeshSpec | None = None

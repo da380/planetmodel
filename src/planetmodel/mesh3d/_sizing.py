@@ -9,14 +9,20 @@ is what a layered domain does not want.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import gmsh
 import numpy as np
+from numpy.typing import ArrayLike
+
+from ._tagging import Tagging
+from .spec import InterfaceSizing
 
 __all__ = ["apply_size_fields", "apply_mesh_options",
            "check_sizing_resolves_spans", "check_sizing_scale"]
 
 
-def apply_size_fields(tagging, sizes: dict) -> int:
+def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing]) -> int:
     """Build the background size field from per-interface sizings.
 
     `sizes` maps interface index to InterfaceSizing, in the lengths the
@@ -69,8 +75,10 @@ def apply_mesh_options(*, order: int, algorithm_2d: int, algorithm_3d: int,
     gmsh.option.setNumber("Mesh.Algorithm3D", int(algorithm_3d))
 
 
-def check_sizing_resolves_spans(boundaries, sizes, *, max_ratio: float = 10.0,
-                                strict: bool = True) -> list:
+def check_sizing_resolves_spans(boundaries: ArrayLike,
+                                sizes: Mapping[int, InterfaceSizing], *,
+                                max_ratio: float = 10.0,
+                                strict: bool = True) -> list[str]:
     """Refuse element sizes too coarse for the layers they must fill.
 
     A shell far thinner than the elements asked for cannot be
@@ -108,8 +116,8 @@ def check_sizing_resolves_spans(boundaries, sizes, *, max_ratio: float = 10.0,
     return problems
 
 
-def check_sizing_scale(outer_radius: float, sizes, *, floor: float = 1e-5,
-                       ceiling: float = 2.0) -> None:
+def check_sizing_scale(outer_radius: float, sizes: Mapping[int, InterfaceSizing], *,
+                       floor: float = 1e-5, ceiling: float = 2.0) -> None:
     """Catch a sizing given at the wrong scale before gmsh does.
 
     Sizing rules return lengths in the geometry's own units, the ones

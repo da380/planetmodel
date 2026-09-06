@@ -4,7 +4,7 @@ import pytest
 from scipy.integrate import fixed_quad, quad
 
 from planetmodel import Geometry, Skeleton
-from planetmodel.catalogue import homogeneous, layered, prem
+from planetmodel.catalogue import LayeredIsotropicElastic, PREM
 from planetmodel.character import DENSITY
 from planetmodel.fields import RadialField
 from planetmodel.mesh1d.gravity import gravity, mass
@@ -35,7 +35,7 @@ def gauss_gravity(model, radii, *, n=8, panels=4):
 
 
 def test_prem_gravity_matches_the_gauss_oracle_to_machine_precision():
-    m = prem()
+    m = PREM()
     r = np.concatenate(([0.0], np.linspace(1e5, 6371e3, 40), m.skeleton.boundaries))
     got = gravity(m, r)
     assert np.allclose(got, gauss_gravity(m, r), rtol=1e-13, atol=1e-13 * 10.0)
@@ -43,7 +43,7 @@ def test_prem_gravity_matches_the_gauss_oracle_to_machine_precision():
 
 
 def test_prem_mass_and_surface_gravity():
-    m = prem()
+    m = PREM()
     M = mass(m)
     assert np.isclose(M, 5.974e24, rtol=3e-4)
     assert np.isclose(gravity(m, 6371e3), G_SI * M / 6371e3 ** 2, rtol=1e-14)
@@ -52,14 +52,14 @@ def test_prem_mass_and_surface_gravity():
 
 
 def test_a_homogeneous_sphere_is_linear_in_r():
-    m = homogeneous(2.0, rho=3.0, vp=1.0, vs=0.5)
+    m = LayeredIsotropicElastic.homogeneous(2.0, rho=3.0, vp=1.0, vs=0.5)
     r = np.linspace(0.0, 2.0, 9)
     assert np.allclose(gravity(m, r), 4.0 * np.pi * G_SI * 3.0 * r / 3.0, rtol=1e-14)
     assert np.isclose(mass(m), 4.0 * np.pi * 3.0 * 8.0 / 3.0, rtol=1e-14)
 
 
 def test_a_hollow_model_has_no_mass_inside():
-    m = layered([0.5, 1.0], rho=[2.0], vp=[1.0], vs=[0.0])
+    m = LayeredIsotropicElastic([0.5, 1.0], rho=[2.0], vp=[1.0], vs=[0.0])
     assert gravity(m, 0.5) == 0.0
     assert np.isclose(mass(m), 4.0 * np.pi * 2.0 * (1.0 - 0.125) / 3.0, rtol=1e-14)
 
@@ -73,7 +73,7 @@ def test_an_analytic_density_integrates_by_quadrature():
 
 
 def test_non_dimensional_gravity_redimensionalises_exactly():
-    m = prem()
+    m = PREM()
     nd = m.nondimensionalised()
     r = np.linspace(0.1, 1.0, 7)
     back = gravity(nd, r) * nd.scales.factor(GRAVITY)
@@ -83,7 +83,7 @@ def test_non_dimensional_gravity_redimensionalises_exactly():
 
 
 def test_refusals():
-    m = prem()
+    m = PREM()
     with pytest.raises(ValueError, match="lie in the model"):
         gravity(m, 7e6)
     with pytest.raises(ValueError, match="outside the model"):

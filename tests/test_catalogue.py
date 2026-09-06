@@ -2,17 +2,19 @@
 import numpy as np
 import pytest
 
-from planetmodel.catalogue import PREM_RADIUS, homogeneous, layered, prem
+from planetmodel.catalogue import PREM_RADIUS, LayeredIsotropicElastic, PREM
 from planetmodel.character import DENSITY, SCALAR
 from planetmodel.layerfunction import PolynomialLayer
-from planetmodel.materials import elastic_moduli, is_fluid, moduli
+from planetmodel import testing
+from planetmodel.materials import elastic_moduli, is_fluid, kappa_mu, moduli
+from planetmodel.mesh1d.gravity import gravity, mass
 from planetmodel.testing import check_model
 from planetmodel.units import Scales
 
 
 @pytest.fixture(scope="module")
 def model():
-    return prem()
+    return PREM()
 
 
 def test_structure(model):
@@ -79,7 +81,7 @@ def test_fluid_layers_and_moduli(model):
 
 
 def test_oceanless(model):
-    dry = prem(ocean=False)
+    dry = PREM(ocean=False)
     assert dry.nlayers == 12 and dry.skeleton.boundaries[-1] == 6368e3
     assert dry.geometry.interfaces[-1].name == "surface"
     assert dry.layer(-1).name == "upper_crust"
@@ -97,23 +99,104 @@ def test_non_dimensional_prem(model):
 
 
 def test_simple_models():
-    h = homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0, name="ball")
+    h = LayeredIsotropicElastic.homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0, name="ball")
     assert h.nlayers == 1 and h.layer("ball")["rho"](0.3) == 3.0
     assert not is_fluid(h.layer(0))
-    m = layered([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[0.0, 1.0],
-                layer_names=["core", "shell"], interface_names=["cmb", "top"],
-                scales=Scales(length=1e6))
+    m = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                vs=[0.0, 1.0], layer_names=["core", "shell"],
+                                interface_names=["cmb", "top"],
+                                scales=Scales(length=1e6))
     assert is_fluid(m.layer("core")) and not is_fluid(m.layer("shell"))
     assert m.geometry.interface("top").radius == 1.0 and not m.scales.is_si
     assert elastic_moduli(m.layer("shell")).symmetry.name == "ISOTROPIC"
     with pytest.raises(ValueError, match="needs 2 values"):
-        layered([0.0, 0.5, 1.0], rho=[1.0], vp=[1.0, 1.0], vs=[0.0, 0.0])
+        LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[1.0], vp=[1.0, 1.0],
+                                vs=[0.0, 0.0])
 
 
 @pytest.mark.parametrize("make", [
-    prem, lambda: prem(ocean=False),
-    lambda: homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0),
-    lambda: layered([0.2, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[0.0, 1.0]),
+    PREM, lambda: PREM(ocean=False),
+    lambda: LayeredIsotropicElastic.homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0),
+    lambda: LayeredIsotropicElastic([0.2, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[0.0, 1.0]),
 ])
 def test_catalogue_models_pass_the_contract(make):
     check_model(make())
+
+
+# -- model types: the behaviours as methods, copies keeping the class --------
+
+def test_prem_exposes_the_free_functions_as_methods():
+    m = PREM()
+    assert m.is_fluid("outer_core") and not m.is_fluid("lower_mantle")
+    A = m.moduli("lid")["A"]
+    assert np.allclose(A(6300e3), moduli(m.layer("lid"))["A"](6300e3))
+    assert m.elastic_moduli(-1).symmetry.name == "VTI"      # by description
+    kappa, mu = m.kappa_mu(3)
+    assert np.allclose(mu(5000e3), kappa_mu(m.layer(3))[1](5000e3))
+    assert np.allclose(m.gravity(6371e3), gravity(m, 6371e3))
+    assert np.isclose(m.mass(), mass(m))
+    assert m.is_viscoelastic("lower_mantle")
+    assert PREM.moduli.__doc__ == moduli.__doc__
+
+
+def test_copies_keep_the_class_and_the_constructor_is_free():
+    m = PREM(ocean=False)
+    for out in (m.refined([5000e3]), m.truncated(6000e3), m.hollowed(1000e3),
+                m.nondimensionalised(), m.renamed(), m.without_field("qmu"),
+                m.replaced()):
+        assert type(out) is PREM
+        lo, hi = out.layer(0).interval
+        assert out.moduli(0)["A"](0.5 * (lo + hi)) > 0.0
+    with pytest.raises(TypeError):
+        PREM(m.geometry, [layer.fields for layer in m.layers])
+
+
+def test_frozen_keeps_the_class_and_elastic_drops_the_rheology():
+    m = PREM(ocean=False)
+    f = m.frozen(2 * np.pi / 43200.0)
+    assert type(f) is PREM and "omega" in f.constants
+    assert f.moduli("lower_mantle")["L"].dtype == np.complex128
+    e = m.elastic()
+    assert type(e) is PREM and not any(e.is_viscoelastic(i) for i in range(e.nlayers))
+    assert "qkappa" not in e.layer(0) and "qmu" not in e.layer(0)
+    assert np.allclose(e.moduli(3)["A"](5000e3), m.moduli(3)["A"](5000e3))
+    fe = f.elastic()
+    assert fe.moduli("lower_mantle")["L"].dtype == np.complex128
+
+
+def test_isotropic_is_the_voigt_average_and_keeps_the_rest():
+    m = PREM()
+    iso = m.isotropic()
+    assert type(iso) is PREM
+    lid = iso.layer("lid")
+    assert set(lid.names) == {"rho", "kappa", "mu", "qkappa", "qmu"}
+    kappa, mu = kappa_mu(m.layer("lid"))
+    assert np.allclose(lid["kappa"](6300e3), kappa(6300e3))
+    assert np.allclose(lid["mu"](6300e3), mu(6300e3))
+    assert iso.elastic_moduli("lid").symmetry.name == "ISOTROPIC"
+    assert iso.is_fluid("outer_core") and iso.is_fluid("ocean")
+    assert np.isclose(iso.mass(), m.mass())
+    testing.check_model(iso)
+    # a layer without an elastic description is left alone
+    shell = m.extended([6500e3]).isotropic()
+    assert shell.layer(-1).names == ()
+
+
+def test_a_model_type_of_ones_own_wraps_a_layer_function():
+    from planetmodel import Elastic, Model, layer_method
+
+    def shear_velocity(layer):
+        rho, mu = layer["rho"], kappa_mu(layer)[1]
+        return lambda r: np.sqrt(mu(r) / rho(r))
+
+    class Planet(Elastic, Model):
+        vs_of = layer_method(shear_velocity)
+
+    base = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                   vs=[0.0, 1.0])
+    p = Planet(base.geometry, [layer.fields for layer in base.layers])
+    assert np.isclose(p.vs_of(1)(0.7), 1.0)
+    assert np.isclose(p.vs_of(-1)(0.7), 1.0)
+    assert type(p.refined([0.25])) is Planet
+    assert p.refined([0.25]).is_fluid(0)

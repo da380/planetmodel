@@ -12,9 +12,11 @@ candidates and the choice belongs to the caller.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import KW_ONLY, dataclass
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["Location", "Skeleton", "CoarseningMap"]
 
@@ -44,7 +46,7 @@ class Location:
 class Skeleton:
     """Ordered shell boundaries; geometry only."""
 
-    def __init__(self, boundaries) -> None:
+    def __init__(self, boundaries: ArrayLike) -> None:
         """Validate and freeze a strictly increasing 1-d boundary array.
 
         The innermost boundary may be positive, giving a hollow skeleton.
@@ -145,7 +147,9 @@ class Skeleton:
 
     # -- surgery ------------------------------------------------------------
 
-    def coarsen(self, *, keep=None, drop=None) -> tuple["Skeleton", "CoarseningMap"]:
+    def coarsen(self, *, keep: Iterable[int] | None = None,
+                drop: Iterable[int] | None = None
+                ) -> tuple["Skeleton", "CoarseningMap"]:
         """A skeleton retaining a subset of the interior boundaries.
 
         Exactly one of `keep` or `drop` is given, indexing the interior
@@ -179,11 +183,11 @@ class Skeleton:
                 f"{n_inner} interior boundaries")
         return j
 
-    def refined(self, radii) -> "Skeleton":
+    def refined(self, radii: ArrayLike) -> "Skeleton":
         """A skeleton with extra interior boundaries inserted."""
         return self._with_radii(radii, "insert", lambda r: self._b[0] < r < self._b[-1])
 
-    def extended(self, radii) -> "Skeleton":
+    def extended(self, radii: ArrayLike) -> "Skeleton":
         """A skeleton with extra layers appended beyond the outer boundary."""
         return self._with_radii(radii, "append", lambda r: r > self._b[-1])
 
@@ -226,7 +230,8 @@ class Skeleton:
         kept = self._b[self._b > radius]
         return Skeleton(np.concatenate([[radius], kept]))
 
-    def _with_radii(self, radii, verb: str, ok) -> "Skeleton":
+    def _with_radii(self, radii: ArrayLike, verb: str,
+                    ok: Callable[[float], bool]) -> "Skeleton":
         """Merge extra radii into the boundary array, checking each one."""
         extra = np.atleast_1d(np.asarray(radii, dtype=float))
         for r in extra:
@@ -241,7 +246,7 @@ class Skeleton:
             raise ValueError(f"duplicate radii among {list(map(float, extra))}")
         return Skeleton(merged)
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Skeletons are equal iff their boundary arrays are identical."""
         return isinstance(other, Skeleton) and np.array_equal(self._b, other._b)
 

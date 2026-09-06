@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Iterator, Mapping
+from types import ModuleType
 
 import gmsh
 
@@ -26,8 +28,8 @@ def is_active() -> bool:
 
 @contextlib.contextmanager
 def session(*, name: str = "planetmodel", verbose: bool = False,
-            terminal: bool = False):
-    """A gmsh session that always finalizes.
+            terminal: bool = False) -> Iterator[ModuleType]:
+    """A gmsh session that always finalizes; yields `gmsh.model`.
 
     Nesting is refused rather than silently reusing the outer session:
     two callers sharing one global model is the confusion this exists
@@ -65,7 +67,7 @@ def _drain_log() -> None:
         pass
 
 
-def set_options(options: dict) -> None:
+def set_options(options: Mapping[str, float | str]) -> None:
     """Apply gmsh options, choosing setNumber or setString by value type."""
     for key, value in options.items():
         if isinstance(value, str):

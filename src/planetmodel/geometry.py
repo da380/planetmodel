@@ -24,16 +24,27 @@ is `rtol` times the skeleton's span.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass
 
 import numpy as np
+from numpy.typing import ArrayLike
 
+from .displacement import RadialDisplacement, SphericalFunction
 from .frames import cartesian_points
 from .mapping import (IdentityMapping, Mapping, RadialStretch, ScaledMapping,
-                      validity_lattice)
+                      SphericalSample, ValidityReport, validity_lattice)
 from .skeleton import CoarseningMap, Skeleton
 
-__all__ = ["Geometry", "LayerInfo", "InterfaceInfo"]
+__all__ = ["Geometry", "LayerInfo", "InterfaceInfo", "Names", "Renames"]
+
+#: Optional names for the layers or interfaces of a geometry, one per item
+#: in order, None where an item is unnamed; None for no names at all.
+type Names = Sequence[str | None] | None
+
+#: What `renamed` takes: a full sequence of names, or a dict from index or
+#: current name to the new name (None to unname).
+type Renames = Sequence[str | None] | dict[int | str, str | None] | None
 
 
 @dataclass(frozen=True)
@@ -62,7 +73,7 @@ class InterfaceInfo:
     name: str | None = None
 
 
-def _names(names, n: int, what: str) -> tuple[str | None, ...]:
+def _names(names: Names, n: int, what: str) -> tuple[str | None, ...]:
     """A tuple of n optional names, unique among those given."""
     if names is None:
         return (None,) * n
@@ -82,9 +93,9 @@ class Geometry:
     to satisfy them.
     """
 
-    def __init__(self, skeleton, *, mapping=None, layer_names=None,
-                 interface_names=None, rtol: float = 1e-9,
-                 check: bool = True) -> None:
+    def __init__(self, skeleton: Skeleton, *, mapping: Mapping | None = None,
+                 layer_names: Names = None, interface_names: Names = None,
+                 rtol: float = 1e-9, check: bool = True) -> None:
         if not isinstance(skeleton, Skeleton):
             raise TypeError(f"expected a Skeleton, got {type(skeleton).__name__}")
         self._sk = skeleton
@@ -153,7 +164,7 @@ class Geometry:
         return self._sk
 
     @property
-    def mapping(self):
+    def mapping(self) -> Mapping:
         return self._m
 
     @property
@@ -192,16 +203,16 @@ class Geometry:
                                        name=self._face_names[k]))
         return tuple(faces)
 
-    def layer(self, which) -> LayerInfo:
+    def layer(self, which: int | str) -> LayerInfo:
         """A layer by index (negatives count back) or by name."""
         return self.layers[self._resolve(which, self._layer_names, "layer")]
 
-    def interface(self, which) -> InterfaceInfo:
+    def interface(self, which: int | str) -> InterfaceInfo:
         """An interface by index (negatives count back) or by name."""
         return self.interfaces[self._resolve(which, self._face_names, "interface")]
 
     @staticmethod
-    def _resolve(which, names, what: str) -> int:
+    def _resolve(which: int | str, names: Sequence[str | None], what: str) -> int:
         if isinstance(which, str):
             if which not in names:
                 named = [s for s in names if s is not None]
@@ -219,7 +230,7 @@ class Geometry:
         """The radii where the mapping declares its gradient may jump."""
         return tuple(float(k) for k in getattr(self._m, "knots", ()))
 
-    def validity(self, *, sample=None):
+    def validity(self, *, sample: SphericalSample | None = None) -> ValidityReport:
         """The mapping's validity report on `sample`, or on the lattice."""
         lattice = validity_lattice(self._sk) if sample is None else sample
         if hasattr(self._m, "is_valid"):
@@ -228,8 +239,9 @@ class Geometry:
 
     # -- copies -------------------------------------------------------------
 
-    def _copy(self, *, skeleton=None, mapping=None, layer_names=None,
-              interface_names=None, check: bool = False) -> "Geometry":
+    def _copy(self, *, skeleton: Skeleton | None = None,
+              mapping: Mapping | None = None, layer_names: Names = None,
+              interface_names: Names = None, check: bool = False) -> "Geometry":
         return Geometry(
             self._sk if skeleton is None else skeleton,
             mapping=self._m if mapping is None else mapping,
@@ -238,7 +250,8 @@ class Geometry:
                              else interface_names),
             rtol=self._rtol, check=check)
 
-    def renamed(self, *, layers=None, interfaces=None) -> "Geometry":
+    def renamed(self, *, layers: Renames = None,
+                interfaces: Renames = None) -> "Geometry":
         """A copy with layer and interface names replaced.
 
         Each argument is a full sequence of names, or a mapping from
@@ -248,12 +261,12 @@ class Geometry:
             layer_names=_updated(self._layer_names, layers),
             interface_names=_updated(self._face_names, interfaces))
 
-    def with_mapping(self, mapping, *, check: bool = True) -> "Geometry":
+    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "Geometry":
         """A copy with another mapping, checked unless told otherwise."""
         return self._copy(mapping=mapping, check=check)
 
-    def stretched(self, h, *, name: str | None = None,
-                  check: bool = True) -> "Geometry":
+    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
+                  name: str | None = None, check: bool = True) -> "Geometry":
         """A copy whose mapping is the radial stretch driven by `h`.
 
         `h` is any radial displacement; the stretch's `rmax` is this
@@ -271,7 +284,7 @@ class Geometry:
 
     # -- surgery ------------------------------------------------------------
 
-    def refined(self, radii, *, names=None) -> "Geometry":
+    def refined(self, radii: ArrayLike, *, names: Names = None) -> "Geometry":
         """Interior boundaries inserted; the mapping is kept.
 
         A split layer loses its name; `names` name the new interfaces.
@@ -297,7 +310,7 @@ class Geometry:
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def truncated(self, radius, *, name=None) -> "Geometry":
+    def truncated(self, radius: float, *, name: str | None = None) -> "Geometry":
         """The geometry cut at `radius`; the mapping is kept.
 
         A cut on an existing boundary keeps that interface's name unless
@@ -315,7 +328,7 @@ class Geometry:
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def hollowed(self, radius, *, name=None) -> "Geometry":
+    def hollowed(self, radius: float, *, name: str | None = None) -> "Geometry":
         """The geometry cut at `radius` from below; the mapping is kept.
 
         The result is hollow, with the cut as its inner interface.  A cut
@@ -332,7 +345,8 @@ class Geometry:
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def extended(self, radii, *, names=None, interface_names=None) -> "Geometry":
+    def extended(self, radii: ArrayLike, *, names: Names = None,
+                 interface_names: Names = None) -> "Geometry":
         """Layers appended beyond the outer boundary; identity mapping only.
 
         `names` name the new layers, `interface_names` their outer
@@ -348,7 +362,9 @@ class Geometry:
             layer_names=self._layer_names + _names(names, n, "layer"),
             interface_names=self._face_names + _names(interface_names, n, "interface"))
 
-    def coarsened(self, *, keep=None, drop=None) -> tuple["Geometry", CoarseningMap]:
+    def coarsened(self, *, keep: Iterable[int] | None = None,
+                  drop: Iterable[int] | None = None
+                  ) -> tuple["Geometry", CoarseningMap]:
         """Interior boundaries removed; identity mapping only.
 
         A merged layer's name is None; kept interfaces keep theirs.
@@ -376,7 +392,7 @@ class Geometry:
         return f"Geometry({self._sk!r}, mapping={m})"
 
 
-def _updated(current, new):
+def _updated(current: tuple[str | None, ...], new: Renames) -> tuple[str | None, ...]:
     """Names after applying `new`: a full sequence, or a mapping of changes."""
     if new is None:
         return current
@@ -389,16 +405,16 @@ def _updated(current, new):
     return tuple(new)
 
 
-def _generic_validity(m, lattice):
+def _generic_validity(m: Mapping, lattice: SphericalSample) -> ValidityReport:
     """J > 0 on the lattice for a mapping without `is_valid`."""
     from .mapping import MappingBase
     class _Wrapped(MappingBase):
-        def __call__(self, X):
+        def __call__(self, X: ArrayLike) -> np.ndarray:
             return m(X)
 
-        def deformation_gradient(self, X):
+        def deformation_gradient(self, X: ArrayLike) -> np.ndarray:
             return m.deformation_gradient(X)
 
-        def jacobian(self, X):
+        def jacobian(self, X: ArrayLike) -> np.ndarray:
             return m.jacobian(X)
     return _Wrapped().is_valid(sample=lattice)

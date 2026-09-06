@@ -18,29 +18,33 @@ disagreement is raised rather than resolved.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import gmsh
 import numpy as np
 
 from ..geometry import InterfaceInfo
 from . import manifest
-from ._orient import orient_mesh, raise_order
+from ._orient import OrientationReport, orient_mesh, raise_order
 from ._session import session
 from ._sizing import apply_mesh_options, apply_size_fields, check_sizing_scale
 from ._tagging import Tagging, mean_radius_of_entity
 from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
 from .layered import policy_name
-from .spec import MeshResult
+from .spec import InterfaceSizing, MeshResult, SizingRule, ValidationReport
 
 __all__ = ["build_offset_mesh"]
 
 
-def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
-                      offset: float = 0.0, sizing=None, dimension: int = 3,
-                      order: int = 2, layer_names=("inclusion", "matrix"),
-                      interface_names=("inclusion_boundary", "surface"),
+def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: float,
+                      offset: float = 0.0, sizing: SizingRule | None = None,
+                      dimension: int = 3, order: int = 2,
+                      layer_names: Sequence[str] = ("inclusion", "matrix"),
+                      interface_names: Sequence[str] = ("inclusion_boundary",
+                                                        "surface"),
                       algorithm_2d: int = 6, algorithm_3d: int = 1,
                       validate: bool = True, verbose: bool = False
                       ) -> MeshResult:
@@ -151,7 +155,8 @@ def build_offset_mesh(path, *, inner_radius: float, outer_radius: float,
                       timings=timings)
 
 
-def _offset_geometry(a: float, b: float, d: float, dimension: int):
+def _offset_geometry(a: float, b: float, d: float, dimension: int
+                     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Two nested bodies, the inner one displaced, fragmented into one part.
 
     Identified by bounding-box half-width, which separates them
@@ -202,11 +207,12 @@ def _confirm_by_node_average(tagging: Tagging) -> tuple[float, ...]:
     return measured
 
 
-def _apply_groups(tagging: Tagging, layer_names, interface_names) -> dict:
+def _apply_groups(tagging: Tagging, layer_names: Sequence[str],
+                  interface_names: Sequence[str]) -> dict[str, dict[int, int]]:
     """Number both regions and both boundaries 1..2, innermost first."""
     d = tagging.dimension
     gmsh.model.removePhysicalGroups()
-    out = {"layers": {}, "interfaces": {}}
+    out: dict[str, dict[int, int]] = {"layers": {}, "interfaces": {}}
     for i, (cell, name) in enumerate(zip(tagging.cells, layer_names)):
         gmsh.model.addPhysicalGroup(d, [cell], i + 1)
         gmsh.model.setPhysicalName(d, i + 1, name)
@@ -218,9 +224,13 @@ def _apply_groups(tagging: Tagging, layer_names, interface_names) -> dict:
     return out
 
 
-def _build_manifest(*, dimension, order, a, b, d, sizes, measured, counts,
-                    report, curving, orientation, layer_names, interface_names,
-                    algorithm_2d, algorithm_3d, msh_path, gmsh_version, policy):
+def _build_manifest(*, dimension: int, order: int, a: float, b: float, d: float,
+                    sizes: Mapping[int, InterfaceSizing], measured: Sequence[float],
+                    counts: Mapping[str, int], report: ValidationReport,
+                    curving: Mapping[str, Any], orientation: OrientationReport,
+                    layer_names: Sequence[str], interface_names: Sequence[str],
+                    algorithm_2d: int, algorithm_3d: int, msh_path: Path,
+                    gmsh_version: str, policy: str) -> manifest.MeshManifest:
     """The same schema a layered mesh ships, saying what is true here.
 
     `r_inner` and `r_outer` are the spheres a region lies between, which

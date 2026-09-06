@@ -24,11 +24,21 @@ Nothing here depends on the rest of the package.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["spherical_frame", "spherical_coordinates", "cartesian_points",
            "rotate_slots", "rotation_subscripts", "MAX_RANK",
-           "VOIGT_PAIRS", "bond_matrix", "voigt_to_tensor", "tensor_to_voigt"]
+           "VOIGT_PAIRS", "bond_matrix", "voigt_to_tensor", "tensor_to_voigt",
+           "SphericalFunction"]
+
+#: A function of (r, theta, phi), given broadcast float arrays and returning
+#: something array-like at each point: a displacement, a formula, a relief's
+#: parent.  Every callable the library takes in spherical coordinates has
+#: this shape.
+type SphericalFunction = Callable[[np.ndarray, np.ndarray, np.ndarray], ArrayLike]
 
 #: Index letters for the output (lowercase) and contracted (uppercase)
 #: slots of `rotate_slots`; their length is the rank ceiling.
@@ -40,7 +50,7 @@ _IN = "ABCDEF"
 MAX_RANK = len(_OUT)
 
 
-def spherical_frame(theta, phi) -> np.ndarray:
+def spherical_frame(theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
     """The local orthonormal frame at (theta, phi), basis vectors as columns.
 
     R[..., :, 0] = e_r, R[..., :, 1] = e_theta, R[..., :, 2] = e_phi, in
@@ -57,7 +67,8 @@ def spherical_frame(theta, phi) -> np.ndarray:
     return np.stack([e_r, e_th, e_ph], axis=-1)
 
 
-def spherical_coordinates(X):
+def spherical_coordinates(X: ArrayLike
+                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Cartesian points -> (r, theta, phi, R), with R the frame there.
 
     X has shape (..., 3).  At the origin the direction is undefined and
@@ -77,7 +88,7 @@ def spherical_coordinates(X):
     return r, theta, phi, spherical_frame(theta, phi)
 
 
-def cartesian_points(r, theta, phi) -> np.ndarray:
+def cartesian_points(r: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
     """The Cartesian points X = r e_r(theta, phi), shape broadcast + (3,)."""
     r, theta, phi = np.broadcast_arrays(np.asarray(r, dtype=float),
                                         np.asarray(theta, dtype=float),
@@ -108,7 +119,7 @@ def rotation_subscripts(rank: int) -> str:
     return ",".join(terms) + "->..." + _OUT[:rank]
 
 
-def rotate_slots(values, M, rank: int) -> np.ndarray:
+def rotate_slots(values: ArrayLike, M: ArrayLike, rank: int) -> np.ndarray:
     """One factor of M on every slot: out_{i..} = M_{iA} ... T_{A..}.
 
     `values` has trailing shape (3,) * rank and `M` is (..., 3, 3), both
@@ -130,7 +141,7 @@ def rotate_slots(values, M, rank: int) -> np.ndarray:
 VOIGT_PAIRS = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
 
 
-def bond_matrix(R) -> np.ndarray:
+def bond_matrix(R: ArrayLike) -> np.ndarray:
     """The (6, 6) Bond matrix of an orthogonal R, shape R.shape[:-2] + (6, 6).
 
     A frame change with orthogonal R takes tensor components as
@@ -159,7 +170,7 @@ def bond_matrix(R) -> np.ndarray:
     return M
 
 
-def voigt_to_tensor(v, *, rank: int = 4) -> np.ndarray:
+def voigt_to_tensor(v: ArrayLike, *, rank: int = 4) -> np.ndarray:
     """Expand Voigt components to full ones: (..., 6, 6) -> (..., 3, 3, 3, 3)
     for rank 4, (..., 6) -> (..., 3, 3) for rank 2.
 
@@ -192,7 +203,7 @@ def voigt_to_tensor(v, *, rank: int = 4) -> np.ndarray:
     raise ValueError(f"only ranks 2 and 4 have a Voigt form, got {rank}")
 
 
-def tensor_to_voigt(t, *, rank: int = 4) -> np.ndarray:
+def tensor_to_voigt(t: ArrayLike, *, rank: int = 4) -> np.ndarray:
     """Reduce full components to Voigt by reading the six index pairs.
 
     The inverse of voigt_to_tensor on a tensor with the symmetries; on

@@ -50,9 +50,12 @@ axis over the physical nodes `r`; `to_field` wraps one as an
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable, Iterable, Sequence
 from math import comb
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
 from ..character import SCALAR, Character
@@ -61,14 +64,22 @@ from ..layerfunction import PolynomialLayer, constant_layer
 from ..mesh1d import Mesh1D
 from ..skeleton import Skeleton
 from .harmonics import real_harmonics
-from .operator import RadialOperatorFamily
+from .operator import RadialOperatorFamily, Robin
 
-__all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF"]
+if TYPE_CHECKING:
+    from ..geometry import Geometry
+    from ..model import Model
+
+__all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF", "Profile"]
+
+#: A parameter of a field that may vary with radius: a number, or a
+#: callable of the radius.
+type Profile = float | Callable[[np.ndarray], ArrayLike]
 
 
 # -- helpers ------------------------------------------------------------------
 
-def _as_fun(x):
+def _as_fun(x: Profile) -> Callable[[np.ndarray], np.ndarray]:
     """A scalar or callable of radius as a vectorised callable."""
     if callable(x):
         return lambda r: np.broadcast_to(np.asarray(x(r), dtype=float),
@@ -77,7 +88,8 @@ def _as_fun(x):
     return lambda r: np.full(np.shape(r), v)
 
 
-def _padded_mesh(r1: float, r2: float, nu: float, lam_fun, ngll: int,
+def _padded_mesh(r1: float, r2: float, nu: float,
+                 lam_fun: Callable[[np.ndarray], np.ndarray], ngll: int,
                  drmax: float | None, pad_factor: float) -> tuple[Mesh1D, float]:
     """The padded computational mesh for a physical interval [r1, r2]:
     each side padded by pad_factor sqrt(8 nu) lambda(boundary), the
@@ -120,7 +132,8 @@ def _truncated_modes(fam: RadialOperatorFamily, l: int, p: float,
     return fam.eig(l, theta_max=float(vals[k - 1]) * (1.0 + 1e-12))
 
 
-def _parse_robin_spec(robin, lam_fun, r1: float, r2: float):
+def _parse_robin_spec(robin: Robin | str, lam_fun: Callable[[np.ndarray], np.ndarray],
+                      r1: float, r2: float) -> Robin:
     """robin="auto" resolved into gamma = 1 / lambda at each boundary."""
     if isinstance(robin, str):
         if robin != "auto":
@@ -129,7 +142,7 @@ def _parse_robin_spec(robin, lam_fun, r1: float, r2: float):
     return robin
 
 
-def _ppoly(mesh: Mesh1D, nodal, elements: tuple[int, int]) -> PPoly:
+def _ppoly(mesh: Mesh1D, nodal: ArrayLike, elements: tuple[int, int]) -> PPoly:
     """The exact piecewise polynomial of nodal values with any trailing
     shape, over a half-open element range."""
     e0, e1 = elements
@@ -165,9 +178,10 @@ class RadialGRF:
     such vector into an exact `PolynomialLayer` on [r1, r2].
     """
 
-    def __init__(self, r1: float, r2: float, nu: float, lam, *, sigma=1.0,
-                 ngll: int = 5, drmax: float | None = None,
-                 pad_factor: float = 1.5, robin=None, tol: float = 1e-6) -> None:
+    def __init__(self, r1: float, r2: float, nu: float, lam: Profile, *,
+                 sigma: Profile = 1.0, ngll: int = 5, drmax: float | None = None,
+                 pad_factor: float = 1.5, robin: Robin | str = None,
+                 tol: float = 1e-6) -> None:
         r1, r2 = float(r1), float(r2)
         if not 0.0 <= r1 < r2:
             raise ValueError("need 0 <= r1 < r2")
@@ -215,7 +229,7 @@ class RadialGRF:
         B z with z standard normal, and the covariance is B B^T."""
         return self._B
 
-    def sample(self, *, rng=None, size: int | None = None) -> np.ndarray:
+    def sample(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
         """A sample (or `size` of them) at the physical nodes: shape
         (r.size,) or (size, r.size).  `rng` is anything
         `np.random.default_rng` accepts."""
@@ -232,7 +246,7 @@ class RadialGRF:
         """Marginal standard deviation at the nodes (exact by design)."""
         return self.sigma.copy()
 
-    def to_layer(self, values) -> PolynomialLayer:
+    def to_layer(self, values: ArrayLike) -> PolynomialLayer:
         """The exact `PolynomialLayer` on [r1, r2] of nodal values."""
         v = np.asarray(values, dtype=float)
         if v.shape != self.r.shape:
@@ -242,7 +256,7 @@ class RadialGRF:
         return PolynomialLayer(self.mesh.to_ppoly(full[self.mesh.gmap],
                                                   elements=self._elements))
 
-    def to_field(self, values, *, character: Character = SCALAR,
+    def to_field(self, values: ArrayLike, *, character: Character = SCALAR,
                  name: str | None = None) -> RadialField:
         """A sample as a `RadialField` on [r1, r2]."""
         return RadialField(self.interval, self.to_layer(values),
@@ -272,10 +286,12 @@ class SphericalGRF:
     truncated synthesis is exactly sigma(r).
     """
 
-    def __init__(self, r1: float, r2: float, nu: float, lam, *, sigma=1.0,
-                 lmax: int | None = None, lam_h=None, ngll: int = 5,
+    def __init__(self, r1: float, r2: float, nu: float, lam: Profile, *,
+                 sigma: Profile = 1.0, lmax: int | None = None,
+                 lam_h: Profile | None = None, ngll: int = 5,
                  drmax: float | None = None, pad_factor: float = 1.5,
-                 robin=None, tol: float = 1e-6, lmax_cap: int = 512) -> None:
+                 robin: Robin | str = None, tol: float = 1e-6,
+                 lmax_cap: int = 512) -> None:
         r1, r2 = float(r1), float(r2)
         if not 0.0 <= r1 < r2:
             raise ValueError("need 0 <= r1 < r2")
@@ -354,7 +370,7 @@ class SphericalGRF:
         functions of every order m of degree l are B_l z."""
         return self._scale[:, None] * self._B[l]
 
-    def sample(self, *, rng=None) -> np.ndarray:
+    def sample(self, *, rng: Any = None) -> np.ndarray:
         """One sample of the coefficient functions at the physical nodes:
         shape (2, lmax + 1, lmax + 1, r.size).  For a ball, coefficients
         of every l >= 1 vanish at r = 0."""
@@ -377,7 +393,7 @@ class SphericalGRF:
         """Pointwise standard deviation sigma(r) (exact by design)."""
         return self.sigma.copy()
 
-    def coefficient_functions(self, coeffs) -> PPoly:
+    def coefficient_functions(self, coeffs: ArrayLike) -> PPoly:
         """A coefficient sample as one `PPoly` of radius on [r1, r2] whose
         values have shape (2, lmax + 1, lmax + 1)."""
         c = np.asarray(coeffs, dtype=float)
@@ -388,14 +404,14 @@ class SphericalGRF:
         full[self._slice] = np.moveaxis(c, -1, 0)
         return _ppoly(self.mesh, full[self.mesh.gmap], self._elements)
 
-    def to_field(self, coeffs, *, character: Character = SCALAR,
+    def to_field(self, coeffs: ArrayLike, *, character: Character = SCALAR,
                  name: str | None = None) -> AnalyticField:
         """A coefficient sample as an `AnalyticField` on [r1, r2],
         synthesised from its harmonics at every point asked for."""
         pp = self.coefficient_functions(coeffs)
         L = self.lmax
 
-        def fn(r, theta, phi):
+        def fn(r: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
             r, theta, phi = np.broadcast_arrays(np.asarray(r, dtype=float),
                                                 np.asarray(theta, dtype=float),
                                                 np.asarray(phi, dtype=float))
@@ -429,9 +445,13 @@ class LayeredGRF:
     A Geometry or Model is accepted in place of a skeleton.
     """
 
-    def __init__(self, skeleton, nu, lam, *, sigma=1.0, layers=None,
-                 ngll: int = 5, drmax=None, pad_factor: float = 1.5,
-                 robin=None, tol: float = 1e-6, name: str | None = None) -> None:
+    def __init__(self, skeleton: Skeleton | Geometry | Model,
+                 nu: float | Sequence[float], lam: Profile | Sequence[Profile], *,
+                 sigma: Profile | Sequence[Profile] = 1.0,
+                 layers: Iterable[int] | None = None, ngll: int = 5,
+                 drmax: float | Sequence[float | None] | None = None,
+                 pad_factor: float = 1.5, robin: Robin | str = None,
+                 tol: float = 1e-6, name: str | None = None) -> None:
         sk = getattr(skeleton, "skeleton", skeleton)
         if not isinstance(sk, Skeleton):
             raise TypeError("expected a Skeleton, a Geometry or a Model")
@@ -444,7 +464,7 @@ class LayeredGRF:
             raise IndexError("layer index out of range")
         self.layers = idx
 
-        def per_layer(spec, i):
+        def per_layer(spec: Any, i: int) -> Any:
             if isinstance(spec, (list, tuple)):
                 if len(spec) != nl:
                     raise ValueError(f"per-layer sequences must have length {nl}")
@@ -462,7 +482,7 @@ class LayeredGRF:
         """The `RadialGRF` of layer i (KeyError if excluded)."""
         return self._grfs[i]
 
-    def sample(self, *, rng=None, character: Character = SCALAR
+    def sample(self, *, rng: Any = None, character: Character = SCALAR
                ) -> tuple[RadialField, ...]:
         """One sample as a `RadialField` per layer of the skeleton, zero
         on the excluded layers."""

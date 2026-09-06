@@ -17,12 +17,19 @@ Everything is numbers: the mesh knows nothing about units.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numpy.polynomial import Polynomial
+from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
 from ..skeleton import Skeleton
 from .gll import gll_points_weights, lagrange_derivative_matrix
+
+if TYPE_CHECKING:
+    from ..geometry import Geometry
+    from ..model import Model
 
 __all__ = ["Mesh1D", "RadialMesh"]
 
@@ -40,7 +47,7 @@ class Mesh1D:
     `deriv` (see `lagrange_derivative_matrix` for the index convention).
     """
 
-    def __init__(self, breakpoints, *, ngll: int = 5,
+    def __init__(self, breakpoints: ArrayLike, *, ngll: int = 5,
                  drmax: float | None = None) -> None:
         b = np.array(breakpoints, dtype=float)
         if b.ndim != 1 or b.size < 2:
@@ -91,7 +98,8 @@ class Mesh1D:
         i = int(np.searchsorted(self.left, x, side="right")) - 1
         return min(max(i, 0), self.nspec - 1)
 
-    def to_ppoly(self, nodal, *, elements: tuple[int, int] | None = None) -> PPoly:
+    def to_ppoly(self, nodal: ArrayLike, *,
+                 elements: tuple[int, int] | None = None) -> PPoly:
         """The exact piecewise-polynomial (scipy PPoly) view of nodal values.
 
         `nodal` has shape (nspec, ngll); `elements`, when given, is a
@@ -140,10 +148,10 @@ class RadialMesh(Mesh1D):
     accepted in place of a skeleton.
     """
 
-    def __init__(self, skeleton, *, ngll: int = 5,
+    def __init__(self, skeleton: Skeleton | Geometry, *, ngll: int = 5,
                  drmax: float | None = None, lmax: int | None = None,
                  rmin: float | None = None, rmax: float | None = None,
-                 edges=None, rtol: float = 1e-9) -> None:
+                 edges: ArrayLike | None = None, rtol: float = 1e-9) -> None:
         sk = getattr(skeleton, "skeleton", skeleton)
         if not isinstance(sk, Skeleton):
             raise TypeError(f"expected a Skeleton or a Geometry, got "
@@ -208,7 +216,7 @@ class RadialMesh(Mesh1D):
         """The first element of the sub-mesh for a degree-l solve."""
         return self.element_at(self.truncation_radius(l, eps=eps))
 
-    def nodal(self, model, name: str, *, nu: int = 0,
+    def nodal(self, model: Model, name: str, *, nu: int = 0,
               missing: str = "refuse") -> np.ndarray:
         """A radial field of a model at the nodes, per element: (nspec, ngll)
         for rank 0, with the stored components appended for higher rank.
@@ -248,7 +256,7 @@ class RadialMesh(Mesh1D):
             out[self.layer == i] = values
         return out
 
-    def nodal_gravity(self, model) -> np.ndarray:
+    def nodal_gravity(self, model: Model) -> np.ndarray:
         """The model's gravity at the nodes, per element, over the whole model."""
         from .gravity import gravity
         return gravity(model, self.r)

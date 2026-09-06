@@ -36,18 +36,20 @@ X in the frame at X, so it is a field like any other.
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .character import Character
-from .fields import FieldBase, _to_stored, check_frame
-from .frames import (cartesian_points, rotate_slots, spherical_coordinates,
-                     spherical_frame, tensor_to_voigt, voigt_to_tensor)
-from .mapping import ScaledMapping
+from .fields import Field, FieldBase, _to_stored, check_frame
+from .frames import (SphericalFunction, cartesian_points, rotate_slots,
+                     spherical_coordinates, spherical_frame, tensor_to_voigt,
+                     voigt_to_tensor)
+from .mapping import Mapping, ScaledMapping
 
 __all__ = ["push_forward", "pull_back", "full_components",
            "PushedForwardField", "PulledBackField"]
 
 
-def _as_values(values, rank: int, what: str) -> np.ndarray:
+def _as_values(values: ArrayLike, rank: int, what: str) -> np.ndarray:
     """`values` as an array with the trailing shape the rank demands.
 
     Real input becomes float64 and complex input stays complex.  A
@@ -70,13 +72,14 @@ def _as_values(values, rank: int, what: str) -> np.ndarray:
     return values
 
 
-def _weight_factor(J, rank: int) -> np.ndarray:
+def _weight_factor(J: ArrayLike, rank: int) -> np.ndarray:
     """J reshaped to divide or multiply a rank-n value slot-wise."""
     J = np.asarray(J, dtype=float)
     return J.reshape(J.shape + (1,) * rank)
 
 
-def push_forward(values, F, J, character: Character) -> np.ndarray:
+def push_forward(values: ArrayLike, F: ArrayLike, J: ArrayLike,
+                 character: Character) -> np.ndarray:
     """The physical values of a field of `character` from its referential ones.
 
     `values` has shape broadcast + (3,) * rank in full Cartesian
@@ -96,7 +99,8 @@ def push_forward(values, F, J, character: Character) -> np.ndarray:
     return out
 
 
-def pull_back(values, F, J, character: Character) -> np.ndarray:
+def pull_back(values: ArrayLike, F: ArrayLike, J: ArrayLike,
+              character: Character) -> np.ndarray:
     """The referential values from the physical ones at the same (F, J).
 
     The inverse of `push_forward`: F^-1 on every slot and J^+w,
@@ -115,7 +119,8 @@ def pull_back(values, F, J, character: Character) -> np.ndarray:
     return out
 
 
-def full_components(field, r, theta, phi, *, frame: str = "cartesian") -> np.ndarray:
+def full_components(field: Field, r: ArrayLike, theta: ArrayLike, phi: ArrayLike, *,
+                    frame: str = "cartesian") -> np.ndarray:
     """A field's values at full tensor rank, trailing shape (3,) * rank.
 
     The one place a Voigt-presenting field is expanded: a character with
@@ -129,7 +134,7 @@ def full_components(field, r, theta, phi, *, frame: str = "cartesian") -> np.nda
     return _as_values(values, char.rank, "full_components")
 
 
-def _reduce(values, character: Character) -> np.ndarray:
+def _reduce(values: np.ndarray, character: Character) -> np.ndarray:
     """Full components presented the way the character stores them."""
     if character.voigt_shape is not None:
         return tensor_to_voigt(values, rank=character.rank)
@@ -153,7 +158,8 @@ class PushedForwardField(FieldBase):
 
     is_radial = False
 
-    def __init__(self, field, mapping, *, name: str | None = None) -> None:
+    def __init__(self, field: Field, mapping: Mapping, *,
+                 name: str | None = None) -> None:
         self._source = field
         self._mapping = mapping
         self._interval = tuple(float(x) for x in field.interval)
@@ -163,16 +169,17 @@ class PushedForwardField(FieldBase):
         self._name = name if name is not None else (f"{src}_phys" if src else None)
 
     @property
-    def source(self):
+    def source(self) -> Field:
         """The referential field carried across."""
         return self._source
 
     @property
-    def mapping(self):
+    def mapping(self) -> Mapping:
         """The mapping it is carried across."""
         return self._mapping
 
-    def _physical(self, r, theta, phi):
+    def _physical(self, r: np.ndarray, theta: np.ndarray, phi: np.ndarray
+                  ) -> tuple[np.ndarray, np.ndarray]:
         """(full Cartesian components at m(X), the points m(X)) for reference
         coordinates already broadcast and checked."""
         X = cartesian_points(r, theta, phi)
@@ -181,14 +188,16 @@ class PushedForwardField(FieldBase):
         J = np.asarray(self._mapping.jacobian(X), dtype=float)
         return push_forward(vals, F, J, self._character), self._mapping(X)
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         out, x = self._physical(r, theta, phi)
         if self._character.rank:
             _, _, _, R = spherical_coordinates(x)
             out = rotate_slots(out, np.swapaxes(R, -1, -2), self._character.rank)
         return _reduce(out, self._character)
 
-    def evaluate(self, r, theta, phi, *, frame: str = "spherical"):
+    def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
+                 *, frame: str = "spherical") -> np.ndarray:
         """The physical tensor at m(X) for the reference point X = (r, theta, phi).
 
         In Cartesian components for `frame="cartesian"`, in the local
@@ -238,7 +247,8 @@ class PulledBackField(FieldBase):
 
     is_radial = False
 
-    def __init__(self, interval, physical, mapping, *, character: Character,
+    def __init__(self, interval: tuple[float, float], physical: SphericalFunction,
+                 mapping: Mapping, *, character: Character,
                  name: str | None = None, rtol: float = 1e-9) -> None:
         if not callable(physical):
             raise TypeError(f"expected a callable, got {type(physical).__name__}")
@@ -253,16 +263,17 @@ class PulledBackField(FieldBase):
         self._rtol = float(rtol)
 
     @property
-    def physical(self):
+    def physical(self) -> SphericalFunction:
         """The formula of the physical point's spherical coordinates."""
         return self._physical
 
     @property
-    def mapping(self):
+    def mapping(self) -> Mapping:
         """The mapping the physical values are pulled back through."""
         return self._mapping
 
-    def _values(self, r, theta, phi):
+    def _values(self, r: np.ndarray, theta: np.ndarray | None,
+                phi: np.ndarray | None) -> np.ndarray:
         rank = self._character.rank
         X = cartesian_points(r, theta, phi)
         rp, tp, pp, Rp = spherical_coordinates(self._mapping(X))

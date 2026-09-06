@@ -9,18 +9,23 @@ because its failure would otherwise be invisible.  The report lives in
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import gmsh
 import numpy as np
+from numpy.typing import ArrayLike
 
-from ._orient import element_quality, node_positions, outward_dots, signed_measures
-from ._tagging import mean_radius_of_entity
+from ._orient import (Centres, element_quality, node_positions, outward_dots,
+                      signed_measures)
+from ._tagging import Tagging, mean_radius_of_entity
 from .spec import QUALITY_FLOOR, ValidationReport
 
 __all__ = ["check_interface_radii", "validate_mesh"]
 
 
-def check_interface_radii(tagging, expected, *,
-                          tolerance: float | None = None) -> tuple:
+def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
+                          tolerance: float | None = None
+                          ) -> tuple[float, list[str]]:
     """Measure each tagged interface against the radius asked for.
 
     Returns (worst_error, failures).  The tolerance defaults to a
@@ -52,12 +57,13 @@ def check_interface_radii(tagging, expected, *,
     return worst, failures
 
 
-def validate_mesh(tagging, *, expected_radii, layer_names=(),
-                  interface_names=(),
+def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
+                  layer_names: Sequence[str | None] = (),
+                  interface_names: Sequence[str | None] = (),
                   radius_tolerance: float | None = None,
-                  radius_check: tuple | None = None,
+                  radius_check: tuple[float, list[str]] | None = None,
                   quality_warn: float = QUALITY_FLOOR,
-                  centres: dict | None = None) -> ValidationReport:
+                  centres: Centres | None = None) -> ValidationReport:
     """Check a finished mesh against what was asked for.
 
     `expected_radii` are the interface radii the mesh was built at.

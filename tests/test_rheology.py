@@ -2,22 +2,23 @@
 import numpy as np
 import pytest
 
-from planetmodel import (constant_field, frozen, frozen_moduli, homogeneous,
-                         is_viscoelastic, kappa_mu, moduli, prem, testing)
+from planetmodel import (constant_field, frozen, frozen_moduli, LayeredIsotropicElastic,
+                         is_viscoelastic, kappa_mu, moduli, PREM, testing)
 from planetmodel.units import FREQUENCY
 
 
 def test_is_viscoelastic():
-    model = prem(ocean=False)
+    model = PREM(ocean=False)
     assert all(is_viscoelastic(layer) for layer in model.layers)   # qkappa everywhere
-    plain = homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0)
+    plain = LayeredIsotropicElastic.homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0)
     assert not is_viscoelastic(plain.layer(0))
     assert frozen_moduli(plain.layer(0), 1.0, reference_omega=1.0)["A"].dtype == float
 
 
 def test_maxwell_layer_limits():
     rho, mu, a, eta = 5500.0, 1.0e11, 6371e3, 1e21
-    model = homogeneous(a, rho=rho, vp=8000.0, vs=np.sqrt(mu / rho))
+    model = LayeredIsotropicElastic.homogeneous(a, rho=rho, vp=8000.0,
+                                                vs=np.sqrt(mu / rho))
     model = model.with_field(0, "viscosity",
                              constant_field(eta, (0.0, a), name="viscosity"))
     layer = model.layer(0)
@@ -42,7 +43,7 @@ def test_maxwell_layer_limits():
 
 
 def test_constant_q_band_on_prem():
-    model = prem(ocean=False)
+    model = PREM(ocean=False)
     omega0 = 2.0 * np.pi
     layer = model.layer("lower_mantle")
     kappa, mu = kappa_mu(layer)
@@ -66,7 +67,7 @@ def test_constant_q_band_on_prem():
 
 
 def test_frozen_model():
-    model = prem(ocean=False)
+    model = PREM(ocean=False)
     omega = 2.0 * np.pi / 43200.0
     cold = frozen(model, omega)
     testing.check_model(cold)
@@ -83,7 +84,7 @@ def test_frozen_model():
     assert nd.constant("omega") == omega / 3.0
     assert np.isclose(nd.in_si().constant("omega"),
                       omega / 3.0 * nd.scales.factor(FREQUENCY))
-    plain = homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0)
+    plain = LayeredIsotropicElastic.homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0)
     same = frozen(plain, 3.0)
     assert same.constant("omega") == 3.0 and same.layer(0)["vp"].dtype == float
     assert "A" not in same.layer(0)

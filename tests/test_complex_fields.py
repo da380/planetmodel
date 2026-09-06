@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from planetmodel import (DENSITY, VECTOR, AnalyticField, ComposedField,
-                         NumericLayer, RadialField, RadialMesh, constant_field,
-                         gauss_legendre, layered, polynomial_layer, sample, testing)
+from planetmodel import (DENSITY, VECTOR, AnalyticField, ComposedField, NumericLayer,
+                         RadialField, RadialMesh, constant_field, gauss_legendre,
+                         LayeredIsotropicElastic, polynomial_layer, sample, testing)
 from planetmodel.layerfunction import as_scalar, as_values, constant_layer
 
 
@@ -57,7 +57,8 @@ def test_complex_fields():
 
 
 def test_complex_nodal_values_and_the_sampler():
-    model = layered([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[1.0, 1.0])
+    model = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 1.0])
     model = model.with_field(1, "mu", constant_field(1.0 + 0.1j, (0.5, 1.0),
                                                      character=DENSITY, name="mu"))
     model = model.with_field(0, "mu", constant_field(2.0, (0.0, 0.5),

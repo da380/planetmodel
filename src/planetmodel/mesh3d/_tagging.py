@@ -16,10 +16,12 @@ into a loud failure.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 
 import gmsh
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ._geometry import ConcentricGeometry, entity_radius, outer_face_of
 
@@ -65,7 +67,7 @@ def default_atol(r_outer: float) -> float:
     return max(10.0 * _OCC_BBOX_PAD, 1e-9 * float(r_outer))
 
 
-def identify(geometry: ConcentricGeometry, expected_radii, *,
+def identify(geometry: ConcentricGeometry, expected_radii: ArrayLike, *,
              atol: float | None = None) -> Tagging:
     """Match CAD entities to the radii they were built from.
 
@@ -134,7 +136,8 @@ def identify(geometry: ConcentricGeometry, expected_radii, *,
                    tuple(expected), hollow=geometry.hollow)
 
 
-def _mismatch(expected, measured, radius, hits, tol) -> str:
+def _mismatch(expected: Sequence[float], measured: Mapping[int, float],
+              radius: float | None, hits: Sequence[int], tol: float) -> str:
     """A failure message carrying both lists, since either may be at fault."""
     lines = [
         "cannot match CAD entities to the requested geometry "
@@ -152,8 +155,10 @@ def _mismatch(expected, measured, radius, hits, tol) -> str:
     return "\n".join(lines)
 
 
-def apply_physical_groups(tagging: Tagging, *, layer_names=(),
-                          interface_names=()) -> dict:
+def apply_physical_groups(tagging: Tagging, *,
+                          layer_names: Sequence[str | None] = (),
+                          interface_names: Sequence[str | None] = ()
+                          ) -> dict[str, dict[int, int]]:
     """Number the layers and interfaces 1..N from the centre outward.
 
     Physical group i of the mesh dimension is layer i counting out from

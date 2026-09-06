@@ -8,6 +8,7 @@ arbitrary points.
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.special import eval_legendre, roots_jacobi
 
 __all__ = ["gll_points_weights", "lagrange_derivative_matrix", "lagrange_basis"]
@@ -33,7 +34,7 @@ def gll_points_weights(ngll: int) -> tuple[np.ndarray, np.ndarray]:
     return x, w
 
 
-def lagrange_derivative_matrix(x) -> np.ndarray:
+def lagrange_derivative_matrix(x: ArrayLike) -> np.ndarray:
     """Derivative matrix D[k, i] = l_i'(x_k) on the GLL nodes x.
 
     Closed form for GLL nodes (e.g. Canuto et al. 1988): off the
@@ -57,7 +58,7 @@ def lagrange_derivative_matrix(x) -> np.ndarray:
     return D
 
 
-def lagrange_basis(nodes, x) -> np.ndarray:
+def lagrange_basis(nodes: ArrayLike, x: ArrayLike) -> np.ndarray:
     """Values L[j, i] = l_i(x_j) of the Lagrange basis at points x.
 
     Uses the second barycentric form for stability; points coinciding

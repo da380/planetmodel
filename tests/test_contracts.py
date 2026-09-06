@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from planetmodel import (CallableDisplacement, Geometry, IdentityMapping,
-                         RadialStretch, ScaledMapping, Skeleton, ZeroDisplacement,
-                         testing, validity_lattice)
+from planetmodel import (CallableDisplacement, Geometry, IdentityMapping, RadialStretch,
+                         ScaledMapping, Skeleton, ZeroDisplacement, testing,
+                         validity_lattice)
 from planetmodel.frames import cartesian_points
 
 SK = Skeleton([0.0, 0.3, 0.7, 1.0])
@@ -41,8 +41,8 @@ def test_geometries(sk, mapping):
 # ------------------------------------------------------------ stage-2 objects
 
 def test_catalogue_models_and_their_fields():
-    from planetmodel import gauss_legendre, prem, sample
-    m = prem()
+    from planetmodel import PREM, gauss_legendre, sample
+    m = PREM()
     testing.check_model(m)
     for layer in m.layers:
         for f in layer.fields.values():

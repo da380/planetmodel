@@ -47,16 +47,20 @@ band and carries no weights.
 """
 from __future__ import annotations
 
+from collections import abc
+from collections.abc import Iterable
 from dataclasses import KW_ONLY, dataclass
 from types import MappingProxyType
-from typing import Mapping
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.fft import next_fast_len
 
 from .character import Character
+from .fields import Field
 from .fields import stored_shape as _stored_shape
 from .frames import spherical_frame
+from .mapping import Mapping
 from .mesh1d.mesh import RadialMesh
 from .model import Model
 from .units import Dimensions, Scales
@@ -71,7 +75,7 @@ KINDS = ("gauss_legendre", "equiangular", "custom")
 MISSING = ("refuse", "nan")
 
 
-def _readonly(a, *, name: str) -> np.ndarray:
+def _readonly(a: ArrayLike, *, name: str) -> np.ndarray:
     """A read-only float64 1-d copy of a node array, or a ValueError."""
     a = np.array(a, dtype=float)
     if a.ndim != 1 or a.size == 0:
@@ -208,10 +212,10 @@ class Sample:
 
     radial: RadialMesh
     angular: AngularGrid
-    fields: Mapping[str, np.ndarray]
+    fields: abc.Mapping[str, np.ndarray]
     displacement: np.ndarray | None
-    characters: Mapping[str, Character]
-    dimensions: Mapping[str, Dimensions | None]
+    characters: abc.Mapping[str, Character]
+    dimensions: abc.Mapping[str, Dimensions | None]
     scales: Scales
     layer_names: tuple[str | None, ...]
 
@@ -259,8 +263,8 @@ class Sample:
 
 # -- the sampler ----------------------------------------------------------
 
-def _radial_mesh(model: Model, grid: AngularGrid, radial, ngll: int,
-                 drmax) -> RadialMesh:
+def _radial_mesh(model: Model, grid: AngularGrid, radial: RadialMesh | None,
+                 ngll: int, drmax: float | None) -> RadialMesh:
     """The caller's mesh, or one sized by `drmax`, or by the grid's band."""
     if radial is not None:
         if not isinstance(radial, RadialMesh):
@@ -283,7 +287,7 @@ def _radial_mesh(model: Model, grid: AngularGrid, radial, ngll: int,
     return RadialMesh(model.geometry, ngll=ngll, lmax=grid.lmax)
 
 
-def _names(model: Model, fields) -> tuple[str, ...]:
+def _names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
     """The names to sample: every common name, or the sequence given."""
     if fields is None:
         return model.common_names()
@@ -298,7 +302,8 @@ def _names(model: Model, fields) -> tuple[str, ...]:
     return names
 
 
-def _layer_fields(model: Model, name: str, layers, missing: str) -> dict:
+def _layer_fields(model: Model, name: str, layers: Iterable[int],
+                  missing: str) -> dict[int, Field | None]:
     """The field of `name` on each of `layers`, or None where allowed missing."""
     out = {}
     for L in layers:
@@ -316,7 +321,7 @@ def _layer_fields(model: Model, name: str, layers, missing: str) -> dict:
     return out
 
 
-def _expect(values, shape: tuple[int, ...], name: str) -> np.ndarray:
+def _expect(values: ArrayLike, shape: tuple[int, ...], name: str) -> np.ndarray:
     """A float64 array of exactly the promised shape."""
     if np.iscomplexobj(values):
         raise TypeError(f"{name!r} evaluated to complex values; a sample is real")
@@ -327,7 +332,9 @@ def _expect(values, shape: tuple[int, ...], name: str) -> np.ndarray:
     return values
 
 
-def _sample_field(name: str, per_layer: dict, r, node_layer, theta, phi):
+def _sample_field(name: str, per_layer: abc.Mapping[int, Field | None],
+                  r: np.ndarray, node_layer: np.ndarray, theta: np.ndarray,
+                  phi: np.ndarray) -> tuple[np.ndarray, Character]:
     """One field on the nodes, layer by layer, both sides of every jump.
 
     Direction-free when every layer's field is radial: then the stored
@@ -359,7 +366,8 @@ def _sample_field(name: str, per_layer: dict, r, node_layer, theta, phi):
     return out, char
 
 
-def _sample_displacement(mapping, r, theta, phi) -> np.ndarray:
+def _sample_displacement(mapping: Mapping, r: np.ndarray, theta: np.ndarray,
+                         phi: np.ndarray) -> np.ndarray:
     """R^T (m(X) - X) at every node: the shift's spherical components at X."""
     R = spherical_frame(theta[:, None], phi[None, :])    # (nt, np, 3, 3)
     X = r[:, None, None, None] * R[None, ..., :, 0]      # X = r e_r
@@ -376,8 +384,9 @@ def _sample_displacement(mapping, r, theta, phi) -> np.ndarray:
     return out
 
 
-def sample(model: Model, grid: AngularGrid, *, fields=None, radial=None,
-           ngll: int = 5, drmax=None, missing: str = "refuse") -> Sample:
+def sample(model: Model, grid: AngularGrid, *, fields: Iterable[str] | None = None,
+           radial: RadialMesh | None = None, ngll: int = 5,
+           drmax: float | None = None, missing: str = "refuse") -> Sample:
     """Evaluate a model's fields and its mapping's displacement on a grid.
 
     `grid` is the angular node set.  The radial one is `radial` when the

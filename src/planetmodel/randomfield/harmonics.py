@@ -18,12 +18,13 @@ the Condon-Shortley phase; it is removed here.
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.special import sph_harm_y
 
 __all__ = ["real_harmonics", "synthesise"]
 
 
-def real_harmonics(lmax: int, theta, phi) -> np.ndarray:
+def real_harmonics(lmax: int, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
     """The basis up to degree `lmax` at colatitudes `theta` and longitudes
     `phi` (broadcast together): shape (2, lmax + 1, lmax + 1) + points."""
     lmax = int(lmax)
@@ -47,7 +48,7 @@ def real_harmonics(lmax: int, theta, phi) -> np.ndarray:
     return out
 
 
-def synthesise(coeffs, theta, phi) -> np.ndarray:
+def synthesise(coeffs: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
     """sum_lm c_lm Y_lm(theta, phi) for coefficients of shape
     (2, lmax + 1, lmax + 1), or that shape followed by the points' shape
     when the coefficients vary from point to point."""

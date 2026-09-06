@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from planetmodel import RadialMesh
-from planetmodel.catalogue import prem
+from planetmodel.catalogue import PREM
 from planetmodel.character import VECTOR
 from planetmodel.fields import AnalyticField, RadialField
 from planetmodel.mesh1d.gravity import gravity
@@ -11,7 +11,7 @@ from planetmodel.mesh1d.gravity import gravity
 
 @pytest.fixture(scope="module")
 def model():
-    return prem()
+    return PREM()
 
 
 @pytest.fixture(scope="module")

@@ -11,15 +11,21 @@ inside its inner boundary.
 """
 from __future__ import annotations
 
-import numpy as np
+from typing import TYPE_CHECKING
 
-from ..fields import RadialField
+import numpy as np
+from numpy.typing import ArrayLike
+
+from ..fields import Field, RadialField
 from ..layerfunction import polynomial_layer
+
+if TYPE_CHECKING:
+    from ..model import Model
 
 __all__ = ["gravity", "mass"]
 
 
-def _shell_masses(model):
+def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
     """The mass of every layer and the `rho s^2` field of each."""
     fields, masses = [], []
     for layer in model.layers:
@@ -35,7 +41,7 @@ def _shell_masses(model):
     return fields, np.asarray(masses)
 
 
-def mass(model, *, radius: float | None = None) -> float:
+def mass(model: Model, *, radius: float | None = None) -> float:
     """The mass inside `radius`, the outer boundary by default."""
     b = model.skeleton.boundaries
     r = float(b[-1]) if radius is None else float(radius)
@@ -52,7 +58,7 @@ def mass(model, *, radius: float | None = None) -> float:
     return total
 
 
-def gravity(model, radii) -> np.ndarray:
+def gravity(model: Model, radii: ArrayLike) -> np.ndarray:
     """g(r) = G M(r) / r^2 at `radii`, in the model's units.
 
     `radii` broadcast to any shape and must lie in the model; g is zero

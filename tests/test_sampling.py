@@ -19,7 +19,7 @@ from scipy.fft import next_fast_len
 from scipy.special import lpmv
 
 from planetmodel import RadialMesh, Skeleton
-from planetmodel.catalogue import homogeneous, layered, prem
+from planetmodel.catalogue import LayeredIsotropicElastic, PREM
 from planetmodel.character import DENSITY, VECTOR
 from planetmodel.displacement import flattening
 from planetmodel.fields import AnalyticField
@@ -36,8 +36,9 @@ RHO = [13.0, 5.0, 3.0]
 
 
 def three_layers():
-    return layered(BOUNDS, rho=RHO, vp=[11.0, 8.0, 6.0], vs=[3.5, 0.0, 3.0],
-                   layer_names=["core", "shell", "crust"])
+    return LayeredIsotropicElastic(BOUNDS, rho=RHO, vp=[11.0, 8.0, 6.0],
+                                   vs=[3.5, 0.0, 3.0],
+                                   layer_names=["core", "shell", "crust"])
 
 
 def scalar_fn(r, t, p):
@@ -79,7 +80,7 @@ def angular(grid):
 
 @pytest.fixture(scope="module")
 def coarse_prem(grid):
-    m = prem()
+    m = PREM()
     return m, sample(m, grid, ngll=3, drmax=1e6)
 
 
@@ -215,7 +216,7 @@ def test_both_one_sided_values_survive_at_interfaces(plain):
 
 
 def test_homogeneous_model_samples_to_constants(grid):
-    m = homogeneous(A, rho=5.0, vp=8.0, vs=4.0, name="ball")
+    m = LayeredIsotropicElastic.homogeneous(A, rho=5.0, vp=8.0, vs=4.0, name="ball")
     s = sample(m, grid, drmax=0.5 * A)
     assert s.layer_names == ("ball",)
     assert np.all(s.fields["rho"] == 5.0) and np.all(s.fields["vs"] == 4.0)
@@ -354,7 +355,7 @@ def test_the_radial_mesh_is_used_as_given(grid):
 
 
 def test_a_partial_mesh_samples_the_layers_it_covers(grid):
-    m = prem()
+    m = PREM()
     solid = RadialMesh(m.geometry, ngll=3, drmax=1e6, rmin=4e6, rmax=6368e3)
     s = sample(m, grid, radial=solid, fields=["qmu"])
     assert np.all(np.isfinite(s.fields["qmu"]))
@@ -435,7 +436,8 @@ def test_check_sample_catches_a_writable_array_and_bad_metadata(plain):
     with pytest.raises(AssertionError, match="scales"):
         check_sample(dataclasses.replace(plain, scales=Scales.geophysical(A)), m)
     with pytest.raises(AssertionError, match="another skeleton"):
-        check_sample(plain, homogeneous(A, rho=1.0, vp=1.0, vs=1.0))
+        check_sample(plain,
+                     LayeredIsotropicElastic.homogeneous(A, rho=1.0, vp=1.0, vs=1.0))
 
 
 def test_check_sample_catches_a_filled_hole_and_a_vanished_value(coarse_prem, grid):

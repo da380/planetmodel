@@ -29,17 +29,22 @@ material's units.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.linalg import cho_solve_banded, cholesky_banded, solve_banded
 
-from .material import Material
+from .material import Material, NodalModuli
 
 __all__ = ["DegreeSystem"]
 
 COMPONENTS = ("U", "V", "phi")
 
 
-def _solid_local(l: int, r, rho, g, m, w, jac, D, G: float) -> np.ndarray:
+def _solid_local(l: int, r: np.ndarray, rho: np.ndarray, g: np.ndarray,
+                 m: NodalModuli, w: np.ndarray, jac: np.ndarray, D: np.ndarray,
+                 G: float) -> np.ndarray:
     """Local matrices of solid elements, shape (ne, 3n, 3n); dofs (U, V, phi)
     per node, node-major."""
     ne, n = r.shape
@@ -53,7 +58,7 @@ def _solid_local(l: int, r, rho, g, m, w, jac, D, G: float) -> np.ndarray:
     Wq = w[None, :] * jac[:, None]
     L = np.zeros((ne, 3 * n, 3 * n), dtype=dtype)
 
-    def quad(P, coef):
+    def quad(P: np.ndarray, coef: np.ndarray) -> np.ndarray:
         return np.einsum("eqi,eq,eqj->eij", P, coef * Wq, P)
 
     X = np.zeros((ne, n, 3 * n))
@@ -87,7 +92,9 @@ def _solid_local(l: int, r, rho, g, m, w, jac, D, G: float) -> np.ndarray:
     return L
 
 
-def _fluid_local(l: int, r, drho, g, w, jac, D, G: float) -> np.ndarray:
+def _fluid_local(l: int, r: np.ndarray, drho: np.ndarray, g: np.ndarray,
+                 w: np.ndarray, jac: np.ndarray, D: np.ndarray,
+                 G: float) -> np.ndarray:
     """Local matrices of fluid elements, shape (ne, 3n, 3n); only phi is live."""
     ne, n = r.shape
     k2 = l * (l + 1.0)
@@ -102,7 +109,7 @@ def _fluid_local(l: int, r, drho, g, w, jac, D, G: float) -> np.ndarray:
     return L
 
 
-def _stratification(r, drho, g) -> np.ndarray:
+def _stratification(r: np.ndarray, drho: np.ndarray, g: np.ndarray) -> np.ndarray:
     """r^2 (d rho / dr) / g, zero where g vanishes (the centre)."""
     out = np.zeros(np.shape(r))
     ok = g > 0.0
@@ -183,7 +190,7 @@ class DegreeSystem:
         fluid = mat.fluid[elements] & (l > 0)
         rows, cols, vals = [], [], []
 
-        def scatter(es, local):
+        def scatter(es: np.ndarray, local: np.ndarray) -> None:
             gd = self.dof[mesh.gmap[es]].reshape(len(es), -1)
             GA, GB = gd[:, :, None], gd[:, None, :]
             sel = (GA >= 0) & (GB >= 0) & (GA <= GB) & (local != 0.0)
@@ -229,7 +236,7 @@ class DegreeSystem:
                   np.concatenate(vals))
         return band
 
-    def _interfaces(self):
+    def _interfaces(self) -> Iterator[tuple[int, int, float, float, float, float]]:
         """(element below, node, r, g, rho_fluid, sign) at each fluid-solid
         interface of the active sub-mesh; the sign is + with the fluid below."""
         mat, mesh, e0 = self.material, self.mesh, self.first_element
@@ -294,7 +301,7 @@ class DegreeSystem:
 
     # -- solving ----------------------------------------------------------------
 
-    def solve(self, b) -> np.ndarray:
+    def solve(self, b: ArrayLike) -> np.ndarray:
         """x with A x = b, for b of shape (ndof,) or (ndof, k).
 
         The system is scaled symmetrically by its diagonal first, which
@@ -313,7 +320,8 @@ class DegreeSystem:
             x = self._solve_lu(b2)
         return x if b.ndim == 2 else x[:, 0]
 
-    def _solve_cholesky(self, b2):
+    def _solve_cholesky(self, b2: np.ndarray) -> np.ndarray | None:
+        """The Cholesky solve, or None when the factorisation is not available."""
         kd, band = self.kd, self.band
         if self._cholesky is None:
             d = band[kd].real
@@ -331,7 +339,7 @@ class DegreeSystem:
         c, s = self._cholesky
         return s[:, None] * cho_solve_banded((c, False), s[:, None] * b2)
 
-    def _solve_lu(self, b2):
+    def _solve_lu(self, b2: np.ndarray) -> np.ndarray:
         kd, band = self.kd, self.band
         n = band.shape[1]
         d = np.abs(band[kd])
@@ -352,7 +360,7 @@ class DegreeSystem:
         top = int(self.mesh.gmap[-1, -1])
         return int(self.dof[top, COMPONENTS.index(component)])
 
-    def expand(self, x) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def expand(self, x: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Nodal arrays (U, V, phi) of shape (nspec, ngll) from a solution
         vector: each element takes its own layer's values at a shared
         node, absent components and the sub-mesh below the first element

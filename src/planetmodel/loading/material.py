@@ -18,12 +18,20 @@ below it must be the model's.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+from numpy.typing import ArrayLike
 
+from ..fields import Field
 from ..materials import is_fluid, kappa_mu_from_moduli, moduli
 from ..mesh1d import RadialMesh
+from ..units import Scales
+
+if TYPE_CHECKING:
+    from ..model import Model
 
 __all__ = ["NodalModuli", "nodal_moduli", "Material"]
 
@@ -61,7 +69,7 @@ class NodalModuli:
             object.__setattr__(self, n, a)
 
     @classmethod
-    def isotropic(cls, kappa, mu) -> NodalModuli:
+    def isotropic(cls, kappa: ArrayLike, mu: ArrayLike) -> NodalModuli:
         """A = C = kappa + 4 mu / 3, F = kappa - 2 mu / 3, L = N = mu."""
         kappa = np.asarray(kappa)
         mu = np.asarray(mu)
@@ -85,7 +93,7 @@ class NodalModuli:
         return NodalModuli.isotropic(*self.kappa_mu())
 
 
-def _check_mesh(mesh, model) -> None:
+def _check_mesh(mesh: RadialMesh, model: Model) -> None:
     if not isinstance(mesh, RadialMesh):
         raise TypeError(f"expected a RadialMesh, got {type(mesh).__name__}")
     b = model.skeleton.boundaries
@@ -98,7 +106,7 @@ def _check_mesh(mesh, model) -> None:
             f"model [{b[0]:g}, {b[-1]:g}]; truncate the model, not the mesh")
 
 
-def _nodal(mesh, fields_by_layer: dict) -> np.ndarray:
+def _nodal(mesh: RadialMesh, fields_by_layer: Mapping[int, Field]) -> np.ndarray:
     """A field per layer index, evaluated on each element's own nodes;
     complex where any field is."""
     pieces = {i: field.evaluate(mesh.r[mesh.layer == i], 0.0, 0.0)
@@ -110,7 +118,7 @@ def _nodal(mesh, fields_by_layer: dict) -> np.ndarray:
     return out
 
 
-def nodal_moduli(mesh, model) -> NodalModuli:
+def nodal_moduli(mesh: RadialMesh, model: Model) -> NodalModuli:
     """The model's moduli A, C, F, L, N at the nodes of `mesh`.
 
     Each layer's moduli are what `planetmodel.moduli` reads from the
@@ -135,7 +143,7 @@ class Material:
     the model's units.
     """
 
-    def __init__(self, mesh, model) -> None:
+    def __init__(self, mesh: RadialMesh, model: Model) -> None:
         _check_mesh(mesh, model)
         self.mesh = mesh
         self.model = model
@@ -148,7 +156,7 @@ class Material:
         if self.fluid[-1]:
             raise ValueError(
                 "the surface of the model is fluid, so it cannot carry a load; "
-                "truncate the model at its solid surface (prem(ocean=False), "
+                "truncate the model at its solid surface (PREM(ocean=False), "
                 "or model.truncated(radius))")
         self.moduli = nodal_moduli(mesh, model)
         for a in (self.rho, self.drho, self.g, self.fluid):
@@ -165,7 +173,7 @@ class Material:
         return self.moduli.is_complex
 
     @property
-    def scales(self):
+    def scales(self) -> Scales:
         """The model's scales, carried to the Love numbers."""
         return self.model.scales
 

@@ -18,7 +18,9 @@ geometry's own checks are the whole guarantee.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import gmsh
 import numpy as np
@@ -27,16 +29,16 @@ from ..frames import cartesian_points
 from ..geometry import Geometry
 from ..mapping import validity_lattice
 from . import manifest
-from ._displace import apply_mapping
+from ._displace import PerturbationReport, apply_mapping
 from ._geometry import build_concentric
-from ._orient import orient_mesh, raise_order
+from ._orient import OrientationReport, orient_mesh, raise_order
 from ._session import session
 from ._sizing import (apply_mesh_options, apply_size_fields,
                       check_sizing_resolves_spans, check_sizing_scale)
 from ._tagging import apply_physical_groups, identify
 from ._validate import check_interface_radii, validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import MeshResult, MeshSpec
+from .spec import InterfaceSizing, MeshResult, MeshSpec, ValidationReport
 
 __all__ = ["build_layered_mesh", "require_mapping_on_shells", "policy_name"]
 
@@ -73,13 +75,13 @@ def require_mapping_on_shells(spec: MeshSpec) -> None:
             "displacement vanish on the outermost shell, or mesh without shells")
 
 
-def policy_name(rule) -> str:
+def policy_name(rule: object) -> str:
     """The name a manifest records for a sizing rule: its class, or the
     function's name."""
     return getattr(rule, "__name__", None) or type(rule).__name__
 
 
-def build_layered_mesh(spec: MeshSpec, path, *, verbose: bool = False
+def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = False
                        ) -> MeshResult:
     """Build, check and write the mesh a MeshSpec describes.
 
@@ -181,8 +183,11 @@ def build_layered_mesh(spec: MeshSpec, path, *, verbose: bool = False
                       timings=timings, spec=spec, mapping=mapping)
 
 
-def _build_manifest(spec, sizes, counts, report, curving, orientation,
-                    perturbation, msh_path, gmsh_version, *, moved: bool):
+def _build_manifest(spec: MeshSpec, sizes: Mapping[int, InterfaceSizing],
+                    counts: Mapping[str, int], report: ValidationReport,
+                    curving: Mapping[str, Any], orientation: OrientationReport,
+                    perturbation: PerturbationReport | None, msh_path: Path,
+                    gmsh_version: str, *, moved: bool) -> manifest.MeshManifest:
     """Assemble the manifest from what the build did."""
     domain = spec.domain
     b = domain.skeleton.boundaries

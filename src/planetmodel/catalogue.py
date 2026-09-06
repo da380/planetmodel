@@ -1,7 +1,14 @@
-"""Named models: PREM from its polynomials, and simple models for use
-and for testing.
+"""Named model types: PREM from its polynomials, and a simple layered
+model for use and for testing.
 
-`prem` is the Preliminary Reference Earth Model of Dziewonski and
+Each is a class derived from `Model` alone, with the elastic, gravity
+and rheology behaviours of `planetmodel.behaviours` mixed in, so
+`PREM().moduli("mantle")`, `PREM().gravity(r)` and `PREM().frozen(omega)`
+are the free functions of the library as methods.  Their constructors
+build the fields; every copy, surgery, conversion and freezing keeps
+the class.
+
+`PREM` is the Preliminary Reference Earth Model of Dziewonski and
 Anderson (1981, Phys. Earth Planet. Inter. 25, 297-356), built from the
 low-order polynomials in x = r / a of their Table I with a = 6371 km,
 so every field is an exact piecewise polynomial and evaluation,
@@ -12,13 +19,17 @@ velocity are isotropic and get vph = vpv, vsh = vsv and eta = 1 as
 exact constants; the fluid outer core and ocean hold no qmu; the
 elastic values are those at a reference period of 1 s.
 
-`homogeneous` and `layered` build isotropic models of constant exact
-layers from a few numbers, a fluid layer being one with vs = 0.
+`LayeredIsotropicElastic` builds an isotropic model of constant exact
+layers from a few numbers, a fluid layer being one with vs = 0; its
+`homogeneous` classmethod is the one-layer case.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 
+from .behaviours import Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
 from .fields import RadialField, constant_field
 from .geometry import Geometry
@@ -27,7 +38,7 @@ from .model import Model
 from .skeleton import Skeleton
 from .units import Scales
 
-__all__ = ["prem", "homogeneous", "layered", "PREM_RADIUS"]
+__all__ = ["PREM", "LayeredIsotropicElastic", "PREM_RADIUS"]
 
 #: The normalisation radius a of PREM's polynomials, metres.
 PREM_RADIUS = 6371e3
@@ -126,7 +137,8 @@ _PREM_SI = {"rho": 1e3, "vpv": 1e3, "vsv": 1e3, "vph": 1e3, "vsh": 1e3,
             "eta": 1.0, "qkappa": 1.0, "qmu": 1.0}
 
 
-def _prem_coefficients(name: str, region: dict) -> tuple[float, ...] | None:
+def _prem_coefficients(name: str, region: Mapping[str, tuple[float, ...]]
+                       ) -> tuple[float, ...] | None:
     """A column's coefficients in one region, the isotropic defaults filled
     in, or None where the region has no such field."""
     if name in region:
@@ -140,65 +152,73 @@ def _prem_coefficients(name: str, region: dict) -> tuple[float, ...] | None:
     return None
 
 
-def prem(*, ocean: bool = True) -> Model:
+class PREM(Elastic, SelfGravitating, Viscoelastic, Model):
     """PREM as an exact polynomial model in SI; see the module docstring.
 
     `ocean=False` drops the 3 km water layer, so the model ends at the
     top of the upper crust and that interface is the surface; the
     polynomials keep their normalisation radius.
     """
-    regions = _PREM_REGIONS[:-1] if not ocean else _PREM_REGIONS
-    boundaries = [lo for _, lo, _, _ in regions] + [regions[-1][2]]
-    names = [name for name, _, _, _ in regions]
-    faces = list(_PREM_INTERFACES[:len(regions)])
-    faces[-1] = "surface"
-    geometry = Geometry(Skeleton(boundaries), layer_names=names,
-                        interface_names=faces)
-    layers = []
-    for _, lo, hi, table in regions:
-        fields = {}
-        for name, si in _PREM_SI.items():
-            coeffs = _prem_coefficients(name, table)
-            if coeffs is None:
-                continue
-            fields[name] = RadialField(
-                (lo, hi),
-                polynomial_layer(np.asarray(coeffs) * si, (lo, hi),
-                                 scale=PREM_RADIUS),
-                character=DENSITY if name == "rho" else SCALAR,
-                name=name)
-        layers.append(fields)
-    return Model(geometry, layers, scales=Scales.SI)
+
+    def __init__(self, *, ocean: bool = True) -> None:
+        regions = _PREM_REGIONS[:-1] if not ocean else _PREM_REGIONS
+        boundaries = [lo for _, lo, _, _ in regions] + [regions[-1][2]]
+        names = [name for name, _, _, _ in regions]
+        faces = list(_PREM_INTERFACES[:len(regions)])
+        faces[-1] = "surface"
+        geometry = Geometry(Skeleton(boundaries), layer_names=names,
+                            interface_names=faces)
+        layers = []
+        for _, lo, hi, table in regions:
+            fields = {}
+            for name, si in _PREM_SI.items():
+                coeffs = _prem_coefficients(name, table)
+                if coeffs is None:
+                    continue
+                fields[name] = RadialField(
+                    (lo, hi),
+                    polynomial_layer(np.asarray(coeffs) * si, (lo, hi),
+                                     scale=PREM_RADIUS),
+                    character=DENSITY if name == "rho" else SCALAR,
+                    name=name)
+            layers.append(fields)
+        super().__init__(geometry, layers, scales=Scales.SI)
 
 
-def homogeneous(radius, *, rho, vp, vs, name: str | None = None,
-                scales: Scales = Scales.SI) -> Model:
-    """A uniform isotropic sphere of `radius`: constant rho, vp and vs."""
-    return layered([0.0, radius], rho=[rho], vp=[vp], vs=[vs],
-                   layer_names=None if name is None else [name], scales=scales)
-
-
-def layered(boundaries, *, rho, vp, vs, layer_names=None, interface_names=None,
-            scales: Scales = Scales.SI) -> Model:
+class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
     """An isotropic model of constant layers between `boundaries`.
 
     `boundaries` are the skeleton's, centre outward (an inner radius
     above zero gives a hollow model); `rho`, `vp` and `vs` give one
     value per layer, and a layer with vs = 0 is fluid.
     """
-    sk = Skeleton(boundaries)
-    values = {"rho": rho, "vp": vp, "vs": vs}
-    for key, seq in values.items():
-        if len(seq) != sk.nlayers:
-            raise ValueError(f"{key} needs {sk.nlayers} values, got {len(seq)}")
-    geometry = Geometry(sk, layer_names=layer_names,
-                        interface_names=interface_names)
-    layers = []
-    for i in range(sk.nlayers):
-        iv = sk.interval(i)
-        layers.append({
-            "rho": constant_field(rho[i], iv, character=DENSITY, name="rho"),
-            "vp": constant_field(vp[i], iv, name="vp"),
-            "vs": constant_field(vs[i], iv, name="vs"),
-        })
-    return Model(geometry, layers, scales=scales)
+
+    def __init__(self, boundaries: Sequence[float], *, rho: Sequence[float],
+                 vp: Sequence[float], vs: Sequence[float],
+                 layer_names: Sequence[str | None] | None = None,
+                 interface_names: Sequence[str | None] | None = None,
+                 scales: Scales = Scales.SI) -> None:
+        sk = Skeleton(boundaries)
+        values = {"rho": rho, "vp": vp, "vs": vs}
+        for key, seq in values.items():
+            if len(seq) != sk.nlayers:
+                raise ValueError(f"{key} needs {sk.nlayers} values, got {len(seq)}")
+        geometry = Geometry(sk, layer_names=layer_names,
+                            interface_names=interface_names)
+        layers = []
+        for i in range(sk.nlayers):
+            iv = sk.interval(i)
+            layers.append({
+                "rho": constant_field(rho[i], iv, character=DENSITY, name="rho"),
+                "vp": constant_field(vp[i], iv, name="vp"),
+                "vs": constant_field(vs[i], iv, name="vs"),
+            })
+        super().__init__(geometry, layers, scales=scales)
+
+    @classmethod
+    def homogeneous(cls, radius: float, *, rho: float, vp: float, vs: float,
+                    name: str | None = None,
+                    scales: Scales = Scales.SI) -> "LayeredIsotropicElastic":
+        """A uniform isotropic sphere of `radius`: constant rho, vp and vs."""
+        return cls([0.0, radius], rho=[rho], vp=[vp], vs=[vs],
+                   layer_names=None if name is None else [name], scales=scales)

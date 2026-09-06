@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import gmsh
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["ConcentricGeometry", "build_concentric", "entity_radius",
            "outer_face_of"]
@@ -51,7 +52,7 @@ def _add_ball(radius: float, dimension: int) -> int:
     return gmsh.model.occ.addDisk(0.0, 0.0, 0.0, radius, radius)
 
 
-def build_concentric(radii, *, dimension: int = 3) -> ConcentricGeometry:
+def build_concentric(radii: ArrayLike, *, dimension: int = 3) -> ConcentricGeometry:
     """Concentric shells from an increasing list of boundary radii.
 
     `radii` are the skeleton boundaries, innermost first, in the units

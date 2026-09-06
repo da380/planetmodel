@@ -14,8 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import (Skeleton, elastic_moduli, flattening, gravity, homogeneous,
-                         is_fluid, layer_linear, layered, mass, testing)
+from planetmodel import (Skeleton, elastic_moduli, flattening, gravity,
+                         LayeredIsotropicElastic, is_fluid, layer_linear, mass, testing)
 from planetmodel.frames import cartesian_points
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
@@ -25,12 +25,13 @@ FIGURES.mkdir(exist_ok=True)
 # ## A homogeneous sphere, and a layered one
 
 # %%
-ball = homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0, name="ball")
+ball = LayeredIsotropicElastic.homogeneous(1.0, rho=3.0, vp=2.0, vs=1.0, name="ball")
 print(ball, "| mass:", mass(ball), "| g(1):", gravity(ball, 1.0))
 print("moduli:", elastic_moduli(ball.layer("ball")).symmetry.name)
 
-earthlike = layered([0.0, 0.55, 1.0], rho=[11.0, 4.5], vp=[9.0, 11.0], vs=[0.0, 6.0],
-                    layer_names=["core", "mantle"], interface_names=["cmb", "surface"])
+earthlike = LayeredIsotropicElastic(
+    [0.0, 0.55, 1.0], rho=[11.0, 4.5], vp=[9.0, 11.0], vs=[0.0, 6.0],
+    layer_names=["core", "mantle"], interface_names=["cmb", "surface"])
 print(earthlike)
 print("fluid core:", is_fluid(earthlike.layer("core")),
       "| solid mantle:", not is_fluid(earthlike.layer("mantle")))

@@ -3,8 +3,8 @@ forms, convergence, the frozen viscoelastic path and the pyslfp file."""
 import numpy as np
 import pytest
 
-from planetmodel import (RadialMesh, constant_field, frozen, homogeneous, kappa_mu,
-                        layered, prem)
+from planetmodel import (RadialMesh, constant_field, frozen, LayeredIsotropicElastic,
+                         kappa_mu, PREM)
 from planetmodel.loading import (FORCINGS, DegreeSystem, LoveNumbers, Material,
                                  NodalModuli, love_numbers, nodal_moduli,
                                  read_love_numbers, solve_degree)
@@ -40,7 +40,7 @@ COLUMNS = ("h_u", "k_u", "h_phi", "k_phi", "h_t", "k_t")
 
 @pytest.fixture(scope="module")
 def model():
-    return prem(ocean=False)
+    return PREM(ocean=False)
 
 
 @pytest.fixture(scope="module")
@@ -72,15 +72,16 @@ def test_material(model, material):
 
 def test_material_refusals(model):
     with pytest.raises(ValueError, match="fluid"):
-        Material(RadialMesh(prem(), ngll=5, lmax=4), prem())
+        Material(RadialMesh(PREM(), ngll=5, lmax=4), PREM())
     with pytest.raises(ValueError, match="truncate the model"):
         Material(RadialMesh(model, ngll=5, drmax=500e3, rmax=6000e3), model)
     with pytest.raises(ValueError, match="different skeleton"):
-        Material(RadialMesh(prem(), ngll=5, lmax=4), model)
+        Material(RadialMesh(PREM(), ngll=5, lmax=4), model)
 
 
 def test_nodal_moduli_isotropic_and_voigt():
-    model = layered([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[0.0, 1.0])
+    model = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[0.0, 1.0])
     mesh = RadialMesh(model, ngll=4, drmax=0.25)
     m = nodal_moduli(mesh, model)
     top = mesh.layer == 1
@@ -231,8 +232,8 @@ def test_incompressible_homogeneous_sphere():
     h' = -(2n+1)/3 / (1 + mu_n), with mu_n = (2n^2+4n+3) mu / (n rho g a)."""
     rho, mu, a = 5500.0, 1.0e11, 6371e3
     kappa = 1e6 * mu
-    model = homogeneous(a, rho=rho, vp=np.sqrt((kappa + 4 * mu / 3) / rho),
-                        vs=np.sqrt(mu / rho))
+    model = LayeredIsotropicElastic.homogeneous(
+        a, rho=rho, vp=np.sqrt((kappa + 4 * mu / 3) / rho), vs=np.sqrt(mu / rho))
     love = love_numbers(Material(RadialMesh(model, ngll=6, lmax=8), model), 8)
     g = love.surface_gravity
     n = love.degree[2:].astype(float)
@@ -247,7 +248,8 @@ def test_incompressible_homogeneous_sphere():
 
 def test_maxwell_limits_of_a_frozen_model():
     rho, mu, a, eta = 5500.0, 1.0e11, 6371e3, 1e21
-    model = homogeneous(a, rho=rho, vp=8000.0, vs=np.sqrt(mu / rho))
+    model = LayeredIsotropicElastic.homogeneous(a, rho=rho, vp=8000.0,
+                                                vs=np.sqrt(mu / rho))
     model = model.with_field(0, "viscosity",
                              constant_field(eta, (0.0, a), name="viscosity"))
     mesh = RadialMesh(model, ngll=5, lmax=4)
@@ -273,7 +275,7 @@ def test_maxwell_limits_of_a_frozen_model():
     assert np.allclose(sol.evaluate(mesh.r[:, 1:-1])[2], sol.phi[:, 1:-1])
     with pytest.raises(ValueError, match="real"):
         mid.write("/dev/null")
-    nd = mid.converted(prem().nondimensionalised().scales)
+    nd = mid.converted(PREM().nondimensionalised().scales)
     assert nd.omega != mid.omega and np.isclose(nd.in_si().omega, mid.omega)
 
 
@@ -300,7 +302,7 @@ def test_pyslfp_file_round_trip(tmp_path, love):
         assert np.allclose(data[:, j + 1], getattr(love, name), rtol=1e-12)
         assert np.allclose(getattr(back, name), getattr(love, name), rtol=1e-12)
     assert back.lmax == 20 and np.all(np.isnan(back.l_u)) and back.scales == Scales.SI
-    nd = love.converted(prem().nondimensionalised().scales)
+    nd = love.converted(PREM().nondimensionalised().scales)
     nd.write(path)
     assert np.allclose(np.loadtxt(path), data, rtol=1e-12)
     partial = LoveNumbers(np.arange(1, 3), **{n: np.zeros(2) for n in

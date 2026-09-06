@@ -36,13 +36,20 @@ dimensionless.
 from __future__ import annotations
 
 from dataclasses import KW_ONLY, dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+from numpy.typing import ArrayLike
 
+from ..mesh1d import RadialMesh
 from ..mesh1d.gll import lagrange_basis
 from ..units import FREQUENCY, Dimensions, Scales
 from .assembly import DegreeSystem
 from .material import Material
+
+if TYPE_CHECKING:
+    from ..model import Model
 
 __all__ = ["FORCINGS", "DegreeSolution", "solve_degree", "LoveNumbers",
            "love_numbers", "read_love_numbers"]
@@ -77,7 +84,7 @@ class DegreeSolution:
 
     l: int
     forcing: str
-    mesh: object = field(repr=False)
+    mesh: RadialMesh = field(repr=False)
     U: np.ndarray = field(repr=False)
     V: np.ndarray = field(repr=False)
     phi: np.ndarray = field(repr=False)
@@ -87,7 +94,7 @@ class DegreeSolution:
         return (self.U[-1, -1].item(), self.V[-1, -1].item(),
                 self.phi[-1, -1].item())
 
-    def evaluate(self, radii) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def evaluate(self, radii: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(U, V, phi) at `radii`, each element's polynomial evaluated on
         its own interval; a radius on an element boundary takes the
         element above it."""
@@ -106,19 +113,20 @@ class DegreeSolution:
         return tuple(o.reshape(r.shape) for o in out)
 
 
-def _material(model_or_material, *, mesh, ngll, lmax) -> Material:
+def _material(model_or_material: Model | Material, *, mesh: RadialMesh | None,
+              ngll: int, lmax: int) -> Material:
     if isinstance(model_or_material, Material):
         if mesh is not None:
             raise ValueError("a Material already fixes the mesh")
         return model_or_material
     if mesh is None:
-        from ..mesh1d import RadialMesh
         mesh = RadialMesh(model_or_material, ngll=ngll, lmax=max(lmax, 1))
     return Material(mesh, model_or_material)
 
 
-def solve_degree(model_or_material, l: int, *, forcing: str = "load",
-                 mesh=None, ngll: int = 5, eps: float = 1e-8) -> DegreeSolution:
+def solve_degree(model_or_material: Model | Material, l: int, *,
+                 forcing: str = "load", mesh: RadialMesh | None = None,
+                 ngll: int = 5, eps: float = 1e-8) -> DegreeSolution:
     """The degree-l solution of a model, or of a ready `Material`, for
     one forcing of `FORCINGS`: a unit surface density through both
     channels, its traction-like or attraction piece alone, or a unit
@@ -197,14 +205,14 @@ class LoveNumbers:
         """k = k^u + k^phi, the potential response to a unit surface density."""
         return self.k_u + self.k_phi
 
-    def conventional(self) -> dict:
+    def conventional(self) -> dict[str, np.ndarray]:
         """The dimensionless load Love numbers h', l', k' by degree."""
         fac = (2.0 * self.degree + 1.0) / (4.0 * np.pi * self.G * self.radius)
         g = self.surface_gravity
         return {"h": self.h * g * fac, "l": self.l_load * g * fac,
                 "k": -self.k * fac - 1.0}
 
-    def tidal(self) -> dict:
+    def tidal(self) -> dict[str, np.ndarray]:
         """The geodetic tidal Love numbers k^T, h^T, l^T by degree."""
         g = self.surface_gravity
         return {"k": self.k_t.copy(), "h": -g * self.h_t, "l": -g * self.l_t}
@@ -243,7 +251,7 @@ class LoveNumbers:
     def in_si(self) -> LoveNumbers:
         return self.converted(Scales.SI)
 
-    def write(self, path) -> None:
+    def write(self, path: str | Path) -> None:
         """Write the pyslfp file: rows from degree 0 to lmax, columns
         l, h_u, k_u, h_phi, k_phi, h_t, k_t in SI.  Refused for complex
         numbers and for a table not starting at degree 0."""
@@ -266,7 +274,7 @@ class LoveNumbers:
                 f"{self.scales!r}{at})")
 
 
-def read_love_numbers(path) -> LoveNumbers:
+def read_love_numbers(path: str | Path) -> LoveNumbers:
     """A `LoveNumbers` in SI from a pyslfp file; the tangential numbers,
     which the file does not hold, are NaN, and the radius, gravity and
     G are those of the header when the file was written here, else
@@ -282,7 +290,8 @@ def read_love_numbers(path) -> LoveNumbers:
                        scales=Scales.SI, **cols)
 
 
-def love_numbers(model_or_material, lmax: int, *, mesh=None, ngll: int = 5,
+def love_numbers(model_or_material: Model | Material, lmax: int, *,
+                 mesh: RadialMesh | None = None, ngll: int = 5,
                  eps: float = 1e-8) -> LoveNumbers:
     """The Love numbers of a model, or of a ready `Material`, for every
     degree from 0 to `lmax`.

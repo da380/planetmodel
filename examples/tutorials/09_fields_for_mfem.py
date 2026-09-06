@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import elastic_moduli, flattening, layered, mass
+from planetmodel import elastic_moduli, flattening, LayeredIsotropicElastic, mass
 from planetmodel.mesh3d import (MeshSpec, UniformInterfaces, build_layered_mesh,
                                 export_mfem, manifest)
 
@@ -46,9 +46,10 @@ else:
 # have none, so their export is zero there.
 
 # %%
-model = layered([0.0, 0.19, 0.55, 1.0], rho=[13.0, 11.0, 4.5], vp=[11.0, 9.0, 11.0],
-                vs=[3.5, 0.0, 6.0], layer_names=["inner_core", "outer_core", "mantle"],
-                interface_names=["icb", "cmb", "surface"])
+model = LayeredIsotropicElastic(
+    [0.0, 0.19, 0.55, 1.0], rho=[13.0, 11.0, 4.5], vp=[11.0, 9.0, 11.0],
+    vs=[3.5, 0.0, 6.0], layer_names=["inner_core", "outer_core", "mantle"],
+    interface_names=["icb", "cmb", "surface"])
 moduli = elastic_moduli(model.layer("mantle"))
 model = model.with_field("mantle", "elastic_moduli", moduli)
 model = model.stretched(flattening(0.05, rmax=1.0))

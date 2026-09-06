@@ -9,7 +9,7 @@ import pytest
 from planetmodel.character import DENSITY, ELASTIC
 from planetmodel.fields import AnalyticField, constant_field
 from planetmodel.model import Model
-from planetmodel.catalogue import layered
+from planetmodel.catalogue import LayeredIsotropicElastic
 from planetmodel.units import G_SI, Scales
 from planetmodel.mesh3d import (MeshSpec, Shell, build_layered_mesh,
                                 build_offset_mesh, export_mfem,
@@ -267,8 +267,9 @@ def test_fields_are_chosen_by_name_and_the_order_can_differ(built, tmp_path):
 
 def test_a_model_in_other_scales_records_them(built, tmp_path):
     res, _ = built["hollow2"]
-    model = layered([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[1.0, 0.0],
-                    scales=Scales(length=1.0, mass=2.0, time=0.5))
+    model = LayeredIsotropicElastic([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0],
+                                    scales=Scales(length=1.0, mass=2.0, time=0.5))
     export = export_mfem(res, tmp_path / "scaled", model=model)
     m = sc.read(export.manifest_path).model
     assert m["scales"] == {"length": 1.0, "mass": 2.0, "time": 0.5}
@@ -280,10 +281,12 @@ def test_a_model_in_other_scales_records_them(built, tmp_path):
 
 def test_a_model_on_another_skeleton_is_refused(built, tmp_path):
     res, _ = built["full3"]
-    other = layered([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[1.0, 0.0])
+    other = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0])
     with pytest.raises(ValueError, match="skeleton"):
         export_mfem(res, tmp_path / "other", model=other)
-    hollow = layered([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[1.0, 0.0])
+    hollow = LayeredIsotropicElastic([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                     vs=[1.0, 0.0])
     with pytest.raises(ValueError, match="skeleton"):
         export_mfem(res, tmp_path / "hollow", model=hollow)
     assert not (tmp_path / "other.mesh").exists()
@@ -293,6 +296,7 @@ def test_an_offset_mesh_is_refused(tmp_path):
     res = build_offset_mesh(tmp_path / "offset", inner_radius=0.4,
                             outer_radius=1.0, offset=0.3, sizing=COARSE,
                             dimension=2)
-    model = layered([0.0, 0.4, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0], vs=[1.0, 0.0])
+    model = LayeredIsotropicElastic([0.0, 0.4, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0])
     with pytest.raises(ValueError, match="not built from a geometry"):
         export_mfem(res, tmp_path / "nope", model=model)

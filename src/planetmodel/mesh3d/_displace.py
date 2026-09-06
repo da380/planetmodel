@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import gmsh
 import numpy as np
 
+from ..mapping import Mapping
+
 __all__ = ["PerturbationReport", "apply_mapping"]
 
 
@@ -37,7 +39,7 @@ class PerturbationReport:
                 f"{self.max_displacement:.4g}, margin {self.validity_margin:.4g})")
 
 
-def apply_mapping(mapping, *, check: bool = True) -> PerturbationReport:
+def apply_mapping(mapping: Mapping, *, check: bool = True) -> PerturbationReport:
     """Move every node of the current mesh by `mapping`.
 
     The mapping acts on the node coordinates as they are: the mesh is

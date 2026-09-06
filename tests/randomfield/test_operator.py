@@ -5,7 +5,7 @@ import pytest
 from scipy.optimize import brentq
 from scipy.special import spherical_jn
 
-from planetmodel import RadialMesh, prem
+from planetmodel import RadialMesh, PREM
 from planetmodel.mesh1d import Mesh1D
 from planetmodel.randomfield import RadialOperatorFamily
 
@@ -118,7 +118,7 @@ def test_refusals():
 
 def test_family_on_radialmesh():
     """The family composes with a model's RadialMesh."""
-    mesh = RadialMesh(prem(ocean=False), ngll=5, lmax=4)
+    mesh = RadialMesh(PREM(ocean=False), ngll=5, lmax=4)
     fam = RadialOperatorFamily(mesh, kappa=(2.0e5) ** 2)   # 200 km scale
     th = fam.eigvalsh(2)
     assert th[0] > 1.0 - 1e-8 and np.all(np.diff(th) >= -1e-6)

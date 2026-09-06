@@ -19,16 +19,23 @@ and repairs what curving folded.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import KW_ONLY, dataclass
+from typing import Any
 
 import gmsh
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .spec import QUALITY_FLOOR
 
 __all__ = ["OrientationReport", "node_positions", "signed_measures",
            "outward_dots", "orient_cells", "orient_boundary", "orient_mesh",
-           "raise_order", "element_quality"]
+           "raise_order", "element_quality", "Centres"]
+
+#: The point each surface encloses, by entity tag, where it is not the
+#: origin: an offset inclusion encloses its own centre.
+type Centres = Mapping[int, ArrayLike]
 
 
 @dataclass(frozen=True)
@@ -52,14 +59,15 @@ class OrientationReport:
                 f"{self.faces_checked} flipped)")
 
 
-def node_positions() -> dict:
+def node_positions() -> dict[int, np.ndarray]:
     """Map node tag to position, for the whole mesh."""
     tags, coords, _ = gmsh.model.mesh.getNodes()
     xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
     return {int(t): xyz[i] for i, t in enumerate(tags)}
 
 
-def _corner_blocks(dim: int, tag: int, pos: dict):
+def _corner_blocks(dim: int, tag: int, pos: Mapping[int, np.ndarray]
+                   ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
     """Yield (element tags, corner coordinates) per element block.
 
     Only the first vertices of each element are read: for a simplex
@@ -78,7 +86,8 @@ def _corner_blocks(dim: int, tag: int, pos: dict):
         yield np.asarray(tags, dtype=np.int64), pts
 
 
-def signed_measures(dim: int, tag: int, pos: dict):
+def signed_measures(dim: int, tag: int, pos: Mapping[int, np.ndarray]
+                    ) -> tuple[np.ndarray, np.ndarray]:
     """(element tags, signed volume or area) for one entity."""
     all_tags, all_vals = [], []
     for tags, pts in _corner_blocks(dim, tag, pos):
@@ -99,7 +108,8 @@ def signed_measures(dim: int, tag: int, pos: dict):
     return np.concatenate(all_tags), np.concatenate(all_vals)
 
 
-def orient_cells(dimension: int, *, pos: dict | None = None) -> tuple[int, int]:
+def orient_cells(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None
+                 ) -> tuple[int, int]:
     """Give every top-dimensional element positive signed measure."""
     pos = node_positions() if pos is None else pos
     checked = flipped = 0
@@ -113,7 +123,8 @@ def orient_cells(dimension: int, *, pos: dict | None = None) -> tuple[int, int]:
     return checked, flipped
 
 
-def outward_dots(tag: int, pos: dict, *, centre=(0.0, 0.0, 0.0)):
+def outward_dots(tag: int, pos: Mapping[int, np.ndarray], *,
+                 centre: ArrayLike = (0.0, 0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
     """(element tags, normal . (centroid - centre)) for a 3D surface.
 
     Positive means the face normal points away from `centre`.  This is
@@ -133,8 +144,8 @@ def outward_dots(tag: int, pos: dict, *, centre=(0.0, 0.0, 0.0)):
     return np.concatenate(all_tags), np.concatenate(all_dots)
 
 
-def orient_boundary(dimension: int, *, pos: dict | None = None,
-                    centres: dict | None = None) -> tuple[int, int]:
+def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None,
+                    centres: Centres | None = None) -> tuple[int, int]:
     """Point every surface's normals away from the centre it encloses.
 
     `centres` maps a surface's entity tag to the point it encloses; the
@@ -156,7 +167,7 @@ def orient_boundary(dimension: int, *, pos: dict | None = None,
     return checked, flipped
 
 
-def orient_mesh(dimension: int, *, centres: dict | None = None
+def orient_mesh(dimension: int, *, centres: Centres | None = None
                 ) -> OrientationReport:
     """Repair cell and boundary orientation; call before raising the order."""
     pos = node_positions()
@@ -189,7 +200,7 @@ def element_quality(dimension: int) -> tuple[float, int, int]:
 
 
 def raise_order(dimension: int, order: int, *, optimize: bool = True,
-                quality_floor: float = QUALITY_FLOOR) -> dict:
+                quality_floor: float = QUALITY_FLOOR) -> dict[str, Any]:
     """Curve the mesh to `order`, then repair any element that folded or
     came out badly shaped.
 
