@@ -184,13 +184,13 @@ if plt is not None:
 
     ax = axes[1]
     km = radii / 1e3
-    ax.plot(km, U_load / abs(load2.surface[0]), label="U (load)")
-    ax.plot(km, V_load / abs(load2.surface[0]), label="V (load)")
-    ax.plot(km, U_tide / abs(tide2.surface[0]), "--", label="U (tide)")
-    ax.plot(km, phi_tide / abs(tide2.surface[2]), "--", label="phi (tide)")
+    ax.plot(U_load / abs(load2.surface[0]), km, label="U (load)")
+    ax.plot(V_load / abs(load2.surface[0]), km, label="V (load)")
+    ax.plot(U_tide / abs(tide2.surface[0]), km, "--", label="U (tide)")
+    ax.plot(phi_tide / abs(tide2.surface[2]), km, "--", label="phi (tide)")
     for b in (1221.5, 3480.0):
-        ax.axvline(b, color="0.8", lw=0.8)
-    ax.set_xlabel("radius [km]")
+        ax.axhline(b, color="0.85", lw=0.8, zorder=0.5)
+    ax.set_ylabel("radius [km]")
     ax.set_title("degree-2 solutions, scaled by their surface value")
     ax.legend()
 

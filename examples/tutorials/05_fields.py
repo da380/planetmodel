@@ -136,8 +136,12 @@ rho = RadialField(OC, rho_fn, character=DENSITY, name="rho")
 vp = RadialField(OC, vp_fn, name="vp")
 kappa = rho * vp**2
 print(kappa, "| radial:", kappa.is_radial, "| function:", kappa.function)
-print("radial field called with r alone:", rho(2000e3),
-      "| with all three:", rho(2000e3, 0.3, 1.0))
+print(
+    "radial field called with r alone:",
+    rho(2000e3),
+    "| with all three:",
+    rho(2000e3, 0.3, 1.0),
+)
 try:
     rho + vp
 except ValueError as exc:
@@ -194,16 +198,27 @@ print(
 # stays float64.
 
 # %%
-mu_r = RadialField(OC, polynomial_layer([1.0e11, -2.0e10], OC, scale=A),
-                   character=DENSITY, name="mu")
-mu_c = RadialField(OC, polynomial_layer([1.0e11 + 2.0e9j, -2.0e10], OC, scale=A),
-                   character=DENSITY, name="mu")
+mu_r = RadialField(
+    OC, polynomial_layer([1.0e11, -2.0e10], OC, scale=A), character=DENSITY, name="mu"
+)
+mu_c = RadialField(
+    OC,
+    polynomial_layer([1.0e11 + 2.0e9j, -2.0e10], OC, scale=A),
+    character=DENSITY,
+    name="mu",
+)
 print("real:", mu_r.dtype, "| complex:", mu_c.dtype)
-print("a real times a complex field:", (vp * mu_c).dtype,
-      "| a real times a real:", (vp * mu_r).dtype)
+print(
+    "a real times a complex field:",
+    (vp * mu_c).dtype,
+    "| a real times a real:",
+    (vp * mu_r).dtype,
+)
 print("complex value:", mu_c(2000e3), "| integral:", mu_c.integrate(*OC))
-print("a complex formula is a complex field:",
-      AnalyticField(OC, lambda r, t, p: r * np.exp(1j * p), name="phase").dtype)
+print(
+    "a complex formula is a complex field:",
+    AnalyticField(OC, lambda r, t, p: r * np.exp(1j * p), name="phase").dtype,
+)
 
 # %% [markdown]
 # ## Tensor fields and frames

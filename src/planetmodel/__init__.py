@@ -20,6 +20,7 @@ Modules reached by name, one level down:
   catalogue    PREM and LayeredIsotropicElastic, model types for use and testing
   sampling     a model on a radial mesh times an angular grid
   harmonics    real spherical harmonics; grid transforms via pyshtools (optional)
+  plotting     radial profiles drawn one way, radius upward (matplotlib, optional)
   mesh1d       radial spectral-element meshes (GLL), nodal values, gravity
   mesh3d       2D and 3D meshes via gmsh, and MFEM export
   loading      the loading and tidal problem on a radial mesh: Love numbers
@@ -45,7 +46,7 @@ from .mapping import (IdentityMapping, Mapping, MappingBase, MappingPerturbation
                       outer_radius_of, validity_lattice)
 from .materials import ElasticField, elastic_moduli, is_fluid, kappa_mu, moduli
 from .mesh1d import RadialMesh
-from .mesh1d.gravity import gravity, mass
+from .mesh1d.gravity import gravity, gravity_fields, mass
 from .model import Layer, Model
 from .pushforward import (PulledBackField, PushedForwardField, pull_back,
                           push_forward)
@@ -81,7 +82,7 @@ __all__ = [
     "flattening", "layer_linear",
     "AngularGrid", "Sample", "sample", "gauss_legendre", "equiangular",
     "real_harmonics", "synthesise", "synthesise_grid", "analyse_grid",
-    "gravity", "mass",
+    "gravity", "mass", "gravity_fields",
     "testing",
     "__version__",
 ]

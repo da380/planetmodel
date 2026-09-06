@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import materials, rheology
-from .mesh1d.gravity import gravity, mass
+from .mesh1d.gravity import gravity, gravity_fields, mass
 
 if TYPE_CHECKING:
     from .model import Model
@@ -81,10 +81,31 @@ class Elastic:
 
 
 class SelfGravitating:
-    """The gravity of a model with density on every layer."""
+    """The gravity and mass of a spherically symmetric model with a radial
+    density on every layer: the reference body's, computed on each call
+    and never stored, as numbers by `gravity` and `mass`, as one radial
+    field per layer by `gravity_fields`, and as a copy of the model
+    holding that field under the vocabulary name `g` by `with_gravity`.
+    A density that depends on direction is refused, and the geometry's
+    mapping does not enter (see `mesh1d.gravity`)."""
 
     gravity = gravity
     mass = mass
+    gravity_fields = gravity_fields
+
+    def with_gravity(self: Model, *, name: str = "g", replace: bool = False) -> Model:
+        """The model with its gravity attached to every layer as a radial
+        field under `name`, exact where the density is polynomial; a
+        layer already holding `name` is refused unless `replace`."""
+        fields = gravity_fields(self)
+        layers = []
+        for layer, field in zip(self.layers, fields):
+            if name in layer and not replace:
+                raise ValueError(
+                    f"layer {layer.index} ({layer.name!r}) already holds {name!r}; "
+                    "pass replace=True to replace it")
+            layers.append({**layer.fields, name: field})
+        return self.replaced(layers=layers)
 
 
 class Viscoelastic:

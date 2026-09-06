@@ -90,3 +90,63 @@ def test_refusals():
         mass(m, radius=7e6)
     with pytest.raises(KeyError, match="needs 'rho'"):
         gravity(m.without_field("rho", layers=[3]), 1e6)
+
+
+def test_a_density_that_depends_on_direction_is_refused():
+    from planetmodel import DENSITY, AnalyticField, PREM
+    m = PREM(ocean=False)
+    lid = m.layer("lid")
+    shaped = AnalyticField(lid.interval, lambda r, t, p: 3.3e3 * (1 + 0.01 * np.cos(t)),
+                           character=DENSITY, name="rho")
+    bumpy = m.with_field("lid", "rho", shaped, replace=True)
+    with pytest.raises(ValueError, match="depends on direction"):
+        bumpy.gravity(6300e3)
+    with pytest.raises(ValueError, match="depends on direction"):
+        bumpy.mass()
+
+
+def test_gravity_fields_agree_with_gravity_and_are_exact():
+    from planetmodel import gravity_fields, testing
+    m = PREM()
+    fields = gravity_fields(m)
+    assert len(fields) == m.nlayers and all(f.name == "g" for f in fields)
+    for layer, f in zip(m.layers, fields):
+        lo, hi = layer.interval
+        r = np.linspace(lo, hi, 9)
+        assert np.allclose(f(r), m.gravity(r), rtol=1e-13, atol=0.0)
+        h = 1e-3 * (hi - lo)
+        inner = r[1:-1]
+        fd = (m.gravity(inner + h) - m.gravity(inner - h)) / (2 * h)
+        assert np.allclose(f.derivative()(inner), fd, rtol=1e-5)
+        testing.check_field(f)
+    # continuous across the CMB, zero at the centre, the surface value
+    cmb = m.geometry.interface("cmb").radius
+    assert np.isclose(fields[1](cmb), fields[2](cmb), rtol=1e-13)
+    assert fields[0](0.0) == 0.0
+    assert np.isclose(fields[-1](6371e3), m.gravity(6371e3))
+    # with_gravity attaches them under the vocabulary name; the copy keeps
+    # its class and survives conversion
+    held = m.with_gravity()
+    assert type(held) is type(m)
+    assert all("g" in layer for layer in held.layers)
+    assert np.allclose(held.layer(3)["g"](5000e3), fields[3](5000e3))
+    with pytest.raises(ValueError, match="already holds"):
+        held.with_gravity()
+    assert "g" in held.with_gravity(replace=True).layer(0)
+    nd = held.nondimensionalised()
+    assert np.isclose(nd.layer(-1)["g"](1.0), nd.gravity(1.0), rtol=1e-12)
+    testing.check_model(held.truncated(6000e3))
+
+
+def test_gravity_fields_on_a_numeric_density():
+    from planetmodel import DENSITY, Geometry, Model, RadialField, Skeleton, gravity
+    from planetmodel import gravity_fields
+    sk = Skeleton([0.0, 0.5, 1.0])
+    rho = [RadialField(sk.interval(i), lambda r: 2.0 - np.exp(-r), character=DENSITY,
+                       name="rho") for i in range(2)]
+    m = Model(Geometry(sk), [{"rho": rho[0]}, {"rho": rho[1]}])
+    fields = gravity_fields(m)
+    r = np.array([0.1, 0.4, 0.5])
+    assert np.allclose(fields[0](r), gravity(m, r), rtol=1e-10)
+    assert np.allclose(fields[1](np.array([0.5, 0.9])), gravity(m, [0.5, 0.9]),
+                       rtol=1e-10)

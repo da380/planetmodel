@@ -90,7 +90,10 @@ print("elastic PREM is viscoelastic nowhere:",
 # `gravity` integrates `rho r^2` layer by layer through the layer
 # functions, so for PREM it is exact. `G` is the model's; after
 # `nondimensionalised()` it is one and the numbers are order one, and the
-# copy is still a `PREM`.
+# copy is still a `PREM`. `with_gravity()` is the model with the same
+# gravity attached to every layer as a radial field under the vocabulary
+# name `g`, exact for PREM, so it is held, differentiated, sampled and
+# drawn like any other field.
 
 # %%
 print(f"mass: {model.mass():.4e} kg   surface g: {model.gravity(6371e3):.4f} m/s^2   "
@@ -98,6 +101,10 @@ print(f"mass: {model.mass():.4e} kg   surface g: {model.gravity(6371e3):.4f} m/s
 nd = model.nondimensionalised()
 print("non-dimensional: G =", nd.G, " mass =", nd.mass(), " g(1) =", nd.gravity(1.0),
       "|", type(nd).__name__)
+with_g = model.with_gravity()
+g_mantle = with_g.layer("lower_mantle")["g"]
+print("g as a field: the lower mantle holds", with_g.layer("lower_mantle").names)
+print("dg/dr at 4000 km:", g_mantle.derivative()(4000e3), "1/s^2")
 
 # %% [markdown]
 # ## On a radial mesh
@@ -136,6 +143,11 @@ print("check_sample passes")
 
 # %% [markdown]
 # ## A picture
+#
+# `planetmodel.plotting` draws every profile of a spherically symmetric
+# model one way: radius on the vertical axis increasing upward, one
+# segment per layer, and a line joining the two sides of each
+# discontinuity.
 
 # %%
 try:
@@ -146,20 +158,16 @@ except ImportError:
     print("matplotlib is not installed; no figure")
     raise SystemExit(0)
 
-fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4))
-for layer in model.layers:
-    lo, hi = layer.interval
-    r = np.linspace(lo, hi, 60)
-    km = r / 1e3
-    first = layer.index == 0
-    left.plot(km, layer["rho"](r) / 1e3, "k", lw=1.2, label="rho" if first else None)
-    left.plot(km, layer["vpv"](r) / 1e3, "C0", lw=1.2, label="vpv" if first else None)
-    left.plot(km, layer["vsv"](r) / 1e3, "C3", lw=1.2, label="vsv" if first else None)
-left.set_xlabel("r (km)"); left.set_ylabel("g/cm^3, km/s"); left.legend()
+from planetmodel.plotting import radial_profile  # noqa: E402
+
+fig, (left, right) = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
+for name, color in (("rho", "k"), ("vpv", "C0"), ("vsv", "C3")):
+    radial_profile(left, with_g, name, scale=1e-3, value_scale=1e-3, color=color,
+                   lw=1.2)
+left.set_xlabel("g/cm^3, km/s"); left.set_ylabel("r (km)"); left.legend()
 left.set_title("PREM, one segment per layer")
-rr = np.linspace(0.0, 6371e3, 400)
-right.plot(rr / 1e3, model.gravity(rr))
-right.set_xlabel("r (km)"); right.set_ylabel("g (m/s^2)"); right.set_title("gravity")
+radial_profile(right, with_g, "g", scale=1e-3, lw=1.2)
+right.set_xlabel("g (m/s^2)"); right.set_title("gravity")
 fig.tight_layout()
 out = FIGURES / "tutorial_07_prem.png"
 fig.savefig(out, dpi=120)

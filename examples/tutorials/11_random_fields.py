@@ -148,21 +148,21 @@ if plt is not None:
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
     ax = axes[0, 0]
     for s in samples:
-        ax.plot(grf.r / 1e3, s, lw=0.8)
+        ax.plot(s, grf.r / 1e3, lw=0.8)
     sig = 0.02 * grf.r / a
-    ax.plot(grf.r / 1e3, 2 * sig, "k--", lw=0.8)
-    ax.plot(grf.r / 1e3, -2 * sig, "k--", lw=0.8)
-    ax.set_xlabel("radius [km]")
+    ax.plot(2 * sig, grf.r / 1e3, "k--", lw=0.8)
+    ax.plot(-2 * sig, grf.r / 1e3, "k--", lw=0.8)
+    ax.set_ylabel("radius [km]")
     ax.set_title("radial samples inside the 2 sigma envelope")
 
     ax = axes[0, 1]
-    fine = np.linspace(0.0, a, 3000)
-    for m, style, label in ((model, "0.6", "PREM"),
+    from planetmodel.plotting import radial_profile
+    for m, color, label in ((model, "0.6", "PREM"),
                             (perturbed, "C0", "perturbed mantle")):
-        vals = np.array([m.layer(m.skeleton.locate(x).layer)["rho"](x) for x in fine])
-        ax.plot(fine / 1e3, vals, color=style, lw=0.9, label=label)
-    ax.set_xlabel("radius [km]")
-    ax.set_ylabel("density [kg/m^3]")
+        radial_profile(ax, m, "rho", scale=1e-3, n=400, color=color, lw=0.9,
+                       label=label)
+    ax.set_xlabel("density [kg/m^3]")
+    ax.set_ylabel("radius [km]")
     ax.legend()
 
     ax = axes[1, 0]
