@@ -2,11 +2,13 @@
 model for use and for testing.
 
 Each is a class derived from `Model` alone, with the elastic, gravity
-and rheology behaviours of `planetmodel.behaviours` mixed in, so
-`PREM().moduli("mantle")`, `PREM().gravity(r)` and `PREM().frozen(omega)`
-are the free functions of the library as methods.  Their constructors
-build the fields; every copy, surgery, conversion and freezing keeps
-the class.
+and rheology behaviours of `planetmodel.behaviours` mixed in: every
+layer holds the five Love moduli A, C, F, L, N as exact fields beside
+the velocities it was built from, `PREM().moduli_at("lower_mantle",
+omega)` gives them dispersed by the constant-Q band, `PREM().gravity(r)`
+and `PREM().frozen(omega)` are the free functions of the library as
+methods.  Their constructors build the fields; every copy, surgery,
+conversion and freezing keeps the class.
 
 `PREM` is the Preliminary Reference Earth Model of Dziewonski and
 Anderson (1981, Phys. Earth Planet. Inter. 25, 297-356), built from the
@@ -22,6 +24,12 @@ elastic values are those at a reference period of 1 s.
 `LayeredIsotropicElastic` builds an isotropic model of constant exact
 layers from a few numbers, a fluid layer being one with vs = 0; its
 `homogeneous` classmethod is the one-layer case.
+
+`MineosModel` is the model of a mineos deck, PREM's own tabulation
+(`examples/data/prem.200`) or any other: the table's columns become the
+base fields by interpolation (`planetmodel.deck`), the header names
+the core layers and sets the reference period of the constant-Q band,
+and the mixins add the rest.
 """
 from __future__ import annotations
 
@@ -29,16 +37,21 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 
-from .behaviours import Elastic, SelfGravitating, Viscoelastic
+import os
+
+from .behaviours import ConstantQ, Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
+from .deck import (MINEOS, Deck, Tabulated, deck_knots, deck_layers, mineos_names,
+                   read_deck)
 from .fields import RadialField, constant_field
 from .geometry import Geometry
 from .layerfunction import polynomial_layer
 from .model import Model
 from .skeleton import Skeleton
-from .units import Scales
+from .units import FREQUENCY, Scales
+from .vocabulary import Constant
 
-__all__ = ["PREM", "LayeredIsotropicElastic", "PREM_RADIUS"]
+__all__ = ["PREM", "LayeredIsotropicElastic", "MineosModel", "PREM_RADIUS"]
 
 #: The normalisation radius a of PREM's polynomials, metres.
 PREM_RADIUS = 6371e3
@@ -152,7 +165,7 @@ def _prem_coefficients(name: str, region: Mapping[str, tuple[float, ...]]
     return None
 
 
-class PREM(Elastic, SelfGravitating, Viscoelastic, Model):
+class PREM(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Model):
     """PREM as an exact polynomial model in SI; see the module docstring.
 
     `ocean=False` drops the 3 km water layer, so the model ends at the
@@ -222,3 +235,37 @@ class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
         """A uniform isotropic sphere of `radius`: constant rho, vp and vs."""
         return cls([0.0, radius], rho=[rho], vp=[vp], vs=[vs],
                    layer_names=None if name is None else [name], scales=scales)
+
+
+class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, Model):
+    """The model of a mineos deck: `r rho vpv vsv qkappa qmu vph vsh eta`
+    in SI, or the six-column isotropic form, under three header lines.
+
+    The columns are interpolated layer by layer by `kind` (see
+    `planetmodel.deck.KINDS`); a `qmu` of zero on a layer marks no shear
+    loss and is kept as read.  The header's `nic` and `noc` name the
+    inner and outer core and their boundaries, its `tref`, in seconds,
+    becomes the constant `omega_ref` that `moduli_at` and `frozen`
+    disperse about, and its title is the model's `name`.  The deck is
+    kept as `deck`, its knots per layer as `knots` and its header as
+    `header`, so `to_deck` writes the model back out.
+    """
+
+    def __init__(self, source: str | os.PathLike[str] | Deck, *,
+                 kind: str = "cubic", scales: Scales = Scales.SI) -> None:
+        deck = source if isinstance(source, Deck) else read_deck(source, MINEOS)
+        skeleton, layers = deck_layers(deck, kind=kind)
+        layer_names, interface_names = mineos_names(deck)
+        geometry = Geometry(skeleton, layer_names=layer_names,
+                            interface_names=interface_names)
+        constants = {}
+        tref = float(deck.header.get("tref", 0.0))
+        if tref > 0.0:
+            constants["omega_ref"] = Constant(
+                2.0 * np.pi / tref, FREQUENCY,
+                meaning="reference angular frequency of the deck's elastic values")
+        self.deck = deck
+        self.knots = deck_knots(deck)
+        self.header = deck.header
+        self.name = str(deck.header.get("name", "")) or None
+        super().__init__(geometry, layers, scales=scales, constants=constants)

@@ -27,8 +27,9 @@ layer holding none of the three is elastic and left alone.
 the complex moduli of every viscoelastic layer stored under A, C, F, L,
 N, which `moduli` reads before anything else, and the frequency
 recorded as the constant `omega`.  Frequencies are in the model's
-units; `reference_omega` defaults to 2 pi rad/s, a period of one
-second, which is PREM's.
+units; the reference frequency of the band is the model's constant
+`omega_ref` where it declares one, else 2 pi rad/s, a period of one
+second, which is PREM's (`reference_omega`).
 """
 from __future__ import annotations
 
@@ -46,7 +47,8 @@ from .vocabulary import Constant
 if TYPE_CHECKING:
     from .model import Model
 
-__all__ = ["is_viscoelastic", "frozen_moduli", "frozen"]
+__all__ = ["is_viscoelastic", "frozen_moduli", "dispersive_moduli", "frozen",
+           "reference_omega", "RHEOLOGY_NAMES"]
 
 RHEOLOGY_NAMES = ("viscosity", "qmu", "qkappa")
 
@@ -86,13 +88,33 @@ def frozen_moduli(layer: LayerLike, omega: float, *,
                   reference_omega: float) -> dict[str, Field]:
     """The complex moduli A, C, F, L, N of a viscoelastic layer at `omega`
     as fields, from its rheology fields and its elastic moduli; an
-    elastic layer's moduli come back unchanged."""
+    elastic layer's moduli come back unchanged.  A viscosity makes the
+    shear a Maxwell body; otherwise the Q fields make the constant-Q
+    band of `dispersive_moduli`."""
+    return _shifted_moduli(layer, omega, reference_omega, maxwell=True)
+
+
+def dispersive_moduli(layer: LayerLike, omega: float, *,
+                      reference_omega: float) -> dict[str, Field]:
+    """The complex moduli A, C, F, L, N of a layer at `omega` under the
+    constant-Q absorption band alone: kappa dispersed by `qkappa` and mu
+    by `qmu` about `reference_omega`, whichever of the two the layer
+    holds, a viscosity ignored.  A layer holding neither Q comes back
+    with its static moduli."""
+    return _shifted_moduli(layer, omega, reference_omega, maxwell=False)
+
+
+def _shifted_moduli(layer: LayerLike, omega: float, reference_omega: float, *,
+                    maxwell: bool) -> dict[str, Field]:
+    """The five at `omega`, kappa and mu shifted by their rheologies and
+    recombined through the Voigt rule so that the anisotropy stays real."""
     base = moduli(layer)
-    if not is_viscoelastic(layer):
+    names = RHEOLOGY_NAMES if maxwell else ("qmu", "qkappa")
+    if not any(n in layer for n in names):
         return base
     kappa, mu = kappa_mu(layer)
     dmu = dkappa = None
-    if "viscosity" in layer:
+    if maxwell and "viscosity" in layer:
         dmu = _maxwell_shift(mu, layer["viscosity"], omega)
     elif "qmu" in layer:
         dmu = _band_shift(mu, layer["qmu"], omega, reference_omega)
@@ -109,18 +131,29 @@ def frozen_moduli(layer: LayerLike, omega: float, *,
                                          ("N", base["N"] + dmu))}
 
 
+def reference_omega(model: Model) -> float:
+    """The reference angular frequency of the constant-Q band in the
+    model's units: the constant `omega_ref` where the model declares
+    one (a deck's header period, say), else 2 pi rad/s, a period of one
+    second, which is PREM's."""
+    if "omega_ref" in model.constants:
+        return float(model.constant("omega_ref"))
+    return 2.0 * np.pi / model.scales.factor(FREQUENCY)
+
+
 def frozen(model: Model, omega: float, *,
            reference_omega: float | None = None) -> Model:
     """The model frozen at angular frequency `omega`: every viscoelastic
     layer carries its complex moduli under A, C, F, L, N, and the
     constant `omega` records the frequency.  A model with no
-    viscoelastic layer comes back as a copy with the constant alone."""
+    viscoelastic layer comes back as a copy with the constant alone.
+    `reference_omega` defaults to the model's, see `reference_omega`."""
     omega = float(omega)
     if not omega > 0.0:
         raise ValueError(f"omega must be positive, got {omega:g}")
     factor = model.scales.factor(FREQUENCY)
     if reference_omega is None:
-        reference_omega = 2.0 * np.pi / factor
+        reference_omega = globals()["reference_omega"](model)
     reference_omega = float(reference_omega)
     if not reference_omega > 0.0:
         raise ValueError(f"reference_omega must be positive, got {reference_omega:g}")

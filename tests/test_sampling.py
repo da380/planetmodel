@@ -175,7 +175,7 @@ def test_sample_shapes_and_marks(plain, grid):
     s = plain
     nnode = s.radial.nspec * s.radial.ngll
     assert isinstance(s, Sample) and s.nnode == nnode
-    assert list(s.fields) == ["rho", "vp", "vs"]
+    assert list(s.fields) == ["rho", "vp", "vs", "A", "C", "F", "L", "N"]
     for name in s.fields:
         assert s.fields[name].shape == (nnode,)
         assert s.is_radial(name) and s.stored_shape(name) == ()

@@ -87,7 +87,7 @@ def test_frozen_model():
     plain = LayeredIsotropicElastic.homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0)
     same = frozen(plain, 3.0)
     assert same.constant("omega") == 3.0 and same.layer(0)["vp"].dtype == float
-    assert "A" not in same.layer(0)
+    assert same.layer(0)["A"].dtype == float
     with pytest.raises(ValueError):
         frozen(model, 0.0)
     with pytest.raises(ValueError):

@@ -360,6 +360,18 @@ def _vanishes(field: Field) -> bool:
     return not np.any(np.asarray(values))
 
 
+def _agree(f: Field, g: Field, *, rtol: float = 1e-10) -> bool:
+    """Whether two rank-0 fields agree throughout their interval, at nine
+    radii, relative to the larger magnitude of the two."""
+    lo, hi = f.interval
+    r = np.linspace(lo, hi, 9)
+    radial = getattr(f, "is_radial", False) and getattr(g, "is_radial", False)
+    a = np.asarray(f(r) if radial else f(r, 1.0, 0.5))
+    b = np.asarray(g(r) if radial else g(r, 1.0, 0.5))
+    scale = max(float(np.max(np.abs(a))), float(np.max(np.abs(b))), 1e-300)
+    return bool(np.all(np.abs(a - b) <= rtol * scale))
+
+
 def is_fluid(layer: LayerLike) -> bool:
     """Whether every shear-bearing field the layer holds, among
     `SHEAR_NAMES`, vanishes throughout it; a layer holding none of them
@@ -375,10 +387,12 @@ def is_fluid(layer: LayerLike) -> bool:
 def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
     """The symmetry a layer states and its independent moduli as fields.
 
-    The five moduli when held; else kappa and mu; else rho with the five
-    transversely isotropic velocities; else rho with vp and vs, which
-    are isotropic; a layer holding none of these, or holding its tensor
-    directly under `elastic_moduli`, is refused with KeyError.
+    The five moduli when held, read as ISOTROPIC where A = C, L = N and
+    F = A - 2L throughout the layer to a relative 1e-10 at nine radii,
+    and as VTI otherwise; else kappa and mu; else rho with the
+    five transversely isotropic velocities; else rho with vp and vs,
+    which are isotropic; a layer holding none of these, or holding its
+    tensor directly under `elastic_moduli`, is refused with KeyError.
     """
     vti = MODULI_NAMES[Symmetry.VTI]
     iso = MODULI_NAMES[Symmetry.ISOTROPIC]
@@ -389,7 +403,13 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
             "'elastic_moduli'; the five transversely isotropic moduli are not "
             "read from a tensor, ask elastic_moduli for the tensor itself")
     if all(n in layer for n in vti):
-        return Symmetry.VTI, {n: layer[n] for n in vti}
+        five = {n: layer[n] for n in vti}
+        A, C, F, L, N = (five[n] for n in vti)
+        if _agree(A, C) and _agree(L, N) and _agree(F, A - 2.0 * L):
+            kappa, mu = kappa_mu_from_moduli(**five)
+            return Symmetry.ISOTROPIC, {"kappa": _named(kappa, "kappa"),
+                                        "mu": _named(mu, "mu")}
+        return Symmetry.VTI, five
     if all(n in layer for n in iso):
         return Symmetry.ISOTROPIC, {n: layer[n] for n in iso}
     if "rho" in layer and all(n in layer for n in _TI_VELOCITIES):
@@ -410,8 +430,12 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
 
 def moduli(layer: LayerLike) -> dict[str, Field]:
     """The transversely isotropic moduli A, C, F, L, N of a layer as
-    rank-0 fields, from whatever it holds (see `elastic_moduli`); exact
-    on polynomial layers.  A layer holding a general tensor is refused."""
+    rank-0 fields: the layer's own where it holds the five, else built
+    from whatever it holds (see `elastic_moduli`), exact on polynomial
+    layers.  A layer holding a general tensor is refused."""
+    vti = MODULI_NAMES[Symmetry.VTI]
+    if all(n in layer for n in vti):
+        return {n: layer[n] for n in vti}
     symmetry, fields = _independent_moduli(layer)
     if symmetry is Symmetry.ISOTROPIC:
         fields = _vti_from_isotropic(fields["kappa"], fields["mu"])
@@ -423,9 +447,10 @@ def elastic_moduli(layer: LayerLike) -> Field:
 
     The layer's own `elastic_moduli` field where it holds one, whatever
     its symmetry; otherwise an `ElasticField` built from the fields it
-    holds: ISOTROPIC when it holds kappa and mu or rho with vp and vs,
-    VTI when it holds the five moduli or rho with vpv, vph, vsv, vsh and
-    eta; refused with KeyError otherwise.
+    holds: ISOTROPIC when the medium is, whether it holds kappa and mu,
+    rho with vp and vs, or five moduli that satisfy the isotropic
+    relations throughout; VTI otherwise; refused with KeyError where it
+    holds no elastic description.
     """
     if "elastic_moduli" in layer:
         return layer["elastic_moduli"]

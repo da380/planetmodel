@@ -9,7 +9,8 @@
 # free functions. This tutorial asks it the questions a seismologist asks:
 # values on both sides of a discontinuity, which layers are fluid, the
 # elastic moduli, gravity and mass, the isotropic and elastic versions,
-# nodal values on a radial mesh, and a sample on an angular grid.
+# the Love moduli at a frequency, nodal values on a radial mesh, and a
+# sample on an angular grid.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -50,18 +51,25 @@ for name in ("rho", "vpv", "vsv"):
 # ## Transverse isotropy, and the moduli
 #
 # Between 80 and 220 km depth PREM is transversely isotropic; elsewhere
-# `vph = vpv`, `vsh = vsv` and `eta = 1` as exact constants. `moduli`
-# reads whatever a layer holds and gives `A, C, F, L, N` as fields of
-# weight 1, exact polynomials here; `elastic_moduli` is the Voigt matrix
-# field, and `kappa_mu` the Voigt averages.
+# `vph = vpv`, `vsh = vsv` and `eta = 1` as exact constants. The table
+# gives velocities, and the `Elastic` mixin completes the description on
+# construction: every layer holds the Love moduli `A, C, F, L, N` as
+# fields of weight 1 beside the velocities, exact polynomials here. The
+# methods read those fields: `moduli(which)` is the five, `elastic_moduli`
+# the Voigt matrix field, `kappa_mu` the Voigt averages, and the free
+# functions of `planetmodel.materials` do the same on any layer.
 
 # %%
 lid = model.layer("lid")
+print("the lid holds:", lid.names)
 r80 = 6291e3 + 1.0
 print("vph/vpv in the lid:", lid["vph"](r80) / lid["vpv"](r80))
-A = model.moduli("lid")["A"]
-print("A in the lid is a polynomial of degree", A.function.degree)
-print("the method is the free function:", A(6300e3) == moduli(lid)["A"](6300e3))
+A = lid["A"]
+print("A in the lid is a polynomial of degree", A.function.degree,
+      "| A = rho vph^2:", A(r80) == lid["rho"](r80) * lid["vph"](r80) ** 2)
+print("the method reads the field:", model.moduli("lid")["A"] is A,
+      "| the free function too:", moduli(lid)["A"] is A)
+print("the outer core's L is exactly zero:", model.layer("outer_core")["L"].function)
 C = model.elastic_moduli("lid")
 print("Voigt matrix at 71 km depth, GPa, spherical frame:")
 print(np.round(C(6300e3, 0.3, 0.0) / 1e9, 1))
@@ -83,6 +91,44 @@ print("its tensor is", iso.elastic_moduli("lid").symmetry.name,
       "| mass unchanged:", np.isclose(iso.mass(), model.mass()))
 print("elastic PREM is viscoelastic nowhere:",
       not any(model.elastic().is_viscoelastic(i) for i in range(model.nlayers)))
+
+# %% [markdown]
+# ## The Love moduli at a frequency
+#
+# PREM's elastic values are those at a period of one second, and its Q
+# fields say how they disperse. Two mixins give the frequency dependence.
+# `ConstantQ` reads the logarithmic dispersion relation off the Q fields
+# without touching the model: `moduli_at(which, omega)` is a layer's five
+# at angular frequency `omega` as complex fields, about the reference
+# frequency `reference_omega()`, one second by default, and
+# `elastic_moduli_at` the tensor. `Viscoelastic` is the general
+# machinery for any linear rheology: `frozen(omega)` is the model at that
+# frequency, every viscoelastic layer carrying complex `A, C, F, L, N`
+# (constant Q from the Q fields, Maxwell from a viscosity) with the
+# frequency recorded as the constant `omega`, still a `PREM`, so Love
+# numbers follow through `planetmodel.loading`.
+
+# %%
+lm = model.layer("lower_mantle")
+r0 = 5000e3
+omega_tide = 2 * np.pi / 43200.0                    # a semidiurnal tide
+print("reference omega:", model.reference_omega(), "rad/s (a period of 1 s)")
+for label, T in (("100 s", 100.0), ("12 h", 43200.0)):
+    L = model.moduli_at("lower_mantle", 2 * np.pi / T)["L"](r0)
+    print(f"L at 1371 km depth, {label:6s}: {L / 1e9:.4f} GPa   "
+          f"Im L / L_1s = {L.imag / lm['L'](r0):.2e}",
+          f"= 1/Q_mu = {1 / lm['qmu'](r0):.2e}")
+softening = model.moduli_at("lower_mantle", omega_tide)["L"](r0).real / lm["L"](r0) - 1
+print(f"softening from 1 s to 12 h: {100 * softening:.2f} %")
+tensor_tide = model.elastic_moduli_at("lower_mantle", omega_tide)
+print("the model is untouched:", lm["L"].dtype,
+      "| the tensor at 12 h:", tensor_tide.dtype)
+tide = model.frozen(omega_tide)
+print("frozen:", type(tide).__name__, "at omega =", tide.constant("omega"),
+      "| its L is the ConstantQ one:",
+      np.isclose(tide.layer("lower_mantle")["L"](r0),
+                 model.moduli_at("lower_mantle", omega_tide)["L"](r0)))
+print("a fluid layer's L stays zero:", tide.layer("outer_core")["L"](2000e3))
 
 # %% [markdown]
 # ## Gravity and mass
@@ -160,14 +206,24 @@ except ImportError:
 
 from planetmodel.plotting import radial_profile  # noqa: E402
 
-fig, (left, right) = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
+fig, (left, middle, right) = plt.subplots(1, 3, figsize=(14, 6))
 for name, color in (("rho", "k"), ("vpv", "C0"), ("vsv", "C3")):
     radial_profile(left, with_g, name, scale=1e-3, value_scale=1e-3, color=color,
                    lw=1.2)
 left.set_xlabel("g/cm^3, km/s"); left.set_ylabel("r (km)"); left.legend()
 left.set_title("PREM, one segment per layer")
-radial_profile(right, with_g, "g", scale=1e-3, lw=1.2)
-right.set_xlabel("g (m/s^2)"); right.set_title("gravity")
+radial_profile(middle, with_g, "g", scale=1e-3, lw=1.2)
+middle.set_xlabel("g (m/s^2)"); middle.set_title("gravity")
+# the shear modulus at one radius against period: the constant-Q band
+periods = np.logspace(0.0, 6.0, 60)
+Ls = np.array([model.moduli_at("lower_mantle", 2 * np.pi / T)["L"](r0)
+               for T in periods])
+right.semilogx(periods, (Ls.real / lm["L"](r0) - 1) * 100, "C0",
+               label="Re L / L_1s - 1 (%)")
+right.semilogx(periods, 100 * Ls.imag / Ls.real, "C3", label="100 Im L / Re L")
+right.axvline(43200.0, color="0.85", lw=0.8, zorder=0.5)
+right.set_xlabel("period (s)"); right.set_title("L at 1371 km depth, constant Q")
+right.legend()
 fig.tight_layout()
 out = FIGURES / "tutorial_07_prem.png"
 fig.savefig(out, dpi=120)

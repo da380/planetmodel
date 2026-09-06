@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from planetmodel import (RadialMesh, constant_field, frozen, LayeredIsotropicElastic,
-                         kappa_mu, PREM)
+                         PREM)
 from planetmodel.loading import (FORCINGS, DegreeSystem, LoveNumbers, Material,
                                  NodalModuli, love_numbers, nodal_moduli,
                                  read_love_numbers, solve_degree)
@@ -194,13 +194,9 @@ def test_degree_system(material):
 
 
 def test_ti_differs_from_voigt(model):
-    """A model holding kappa and mu beside its velocities is read as isotropic."""
+    """The isotropic re-description by the Voigt average is read as isotropic."""
     mesh = RadialMesh(model, ngll=5, lmax=8)
-    iso = model
-    for layer in model.layers:
-        kappa, mu = kappa_mu(layer)
-        iso = iso.with_field(layer.index, "kappa", kappa)
-        iso = iso.with_field(layer.index, "mu", mu)
+    iso = model.isotropic()
     ti = solve_degree(Material(mesh, model), 8).surface[0]
     voigt = solve_degree(Material(mesh, iso), 8).surface[0]
     assert 1e-3 < abs(ti - voigt) / abs(voigt) < 2e-2

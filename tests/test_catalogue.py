@@ -24,7 +24,8 @@ def test_structure(model):
     assert faces[:2] == ["icb", "cmb"] and faces[-1] == "surface"
     assert model.geometry.interface("cmb").radius == 3480e3
     assert model.geometry.interface("moho").radius == 6346.6e3
-    assert model.common_names() == ("rho", "vpv", "vsv", "vph", "vsh", "eta", "qkappa")
+    assert model.common_names() == ("rho", "vpv", "vsv", "vph", "vsh", "eta", "qkappa",
+                                    "A", "C", "F", "L", "N")
     assert model.layers_with("qmu") == tuple(i for i in range(13) if i not in (1, 12))
     assert model.spec("rho").character == DENSITY
     assert model.spec("vpv").character == SCALAR
@@ -131,7 +132,7 @@ def test_prem_exposes_the_free_functions_as_methods():
     assert m.is_fluid("outer_core") and not m.is_fluid("lower_mantle")
     A = m.moduli("lid")["A"]
     assert np.allclose(A(6300e3), moduli(m.layer("lid"))["A"](6300e3))
-    assert m.elastic_moduli(-1).symmetry.name == "VTI"      # by description
+    assert m.elastic_moduli(-1).symmetry.name == "ISOTROPIC"   # read off the five
     kappa, mu = m.kappa_mu(3)
     assert np.allclose(mu(5000e3), kappa_mu(m.layer(3))[1](5000e3))
     assert np.allclose(m.gravity(6371e3), gravity(m, 6371e3))
@@ -170,7 +171,12 @@ def test_isotropic_is_the_voigt_average_and_keeps_the_rest():
     iso = m.isotropic()
     assert type(iso) is PREM
     lid = iso.layer("lid")
-    assert set(lid.names) == {"rho", "kappa", "mu", "qkappa", "qmu"}
+    assert set(lid.names) == {"rho", "kappa", "mu", "qkappa", "qmu", "A", "C", "F", "L",
+                              "N", "vp", "vs"}
+    r = 6300e3
+    assert np.isclose(lid["vs"](r), np.sqrt(lid["mu"](r) / lid["rho"](r)))
+    assert np.allclose(lid["A"](6300e3),
+                       lid["kappa"](6300e3) + 4 * lid["mu"](6300e3) / 3)
     kappa, mu = kappa_mu(m.layer("lid"))
     assert np.allclose(lid["kappa"](6300e3), kappa(6300e3))
     assert np.allclose(lid["mu"](6300e3), mu(6300e3))
@@ -200,3 +206,97 @@ def test_a_model_type_of_ones_own_wraps_a_layer_function():
     assert np.isclose(p.vs_of(-1)(0.7), 1.0)
     assert type(p.refined([0.25])) is Planet
     assert p.refined([0.25]).is_fluid(0)
+
+
+def test_elastic_models_hold_the_five_as_exact_fields():
+    m = PREM()
+    for layer in m.layers:
+        for n in ("A", "C", "F", "L", "N"):
+            assert n in layer and layer[n].name == n
+            assert isinstance(layer[n].function, PolynomialLayer)
+    lid = m.layer("lid")
+    r = 6300e3
+    assert np.isclose(lid["A"](r), lid["rho"](r) * lid["vph"](r) ** 2, rtol=1e-14)
+    assert np.isclose(lid["F"](r), lid["eta"](r) * (lid["A"](r) - 2 * lid["L"](r)),
+                      rtol=1e-14)
+    # the fluid outer core has L = N = 0 exactly, and is fluid by the five
+    oc = m.layer("outer_core")
+    assert oc["L"].function.is_zero() and oc["N"].function.is_zero()
+    assert m.is_fluid("outer_core")
+    # an isotropic layer's five satisfy the isotropic relations and are read so
+    assert m.elastic_moduli("lower_mantle").symmetry.name == "ISOTROPIC"
+    assert m.elastic_moduli("lid").symmetry.name == "VTI"
+    # the five survive copies and are re-read, not recomputed, by moduli()
+    cut = m.truncated(6000e3)
+    assert cut.moduli(3)["A"] is cut.layer(3)["A"]
+    # a model type without Elastic holds no five; with_moduli adds them by hand
+    from planetmodel import Geometry, Model, with_moduli
+    bare = Model(Geometry(m.skeleton), [layer.fields for layer in m.layers])
+    assert "A" in bare.layer(0)
+    fields = {k: f for k, f in m.layer(0).fields.items() if k not in "ACFLN"}
+    assert "A" not in fields and "A" in with_moduli(fields)
+    assert with_moduli(fields)["A"](1000e3) == m.layer(0)["A"](1000e3)
+
+
+def test_constant_q_moduli_at_a_frequency():
+    m = PREM(ocean=False)
+    omega = 2 * np.pi / 43200.0
+    five = m.moduli_at("lower_mantle", omega)
+    frozen_five = m.frozen(omega).moduli("lower_mantle")
+    r = 5000e3
+    for n in ("A", "C", "F", "L", "N"):
+        assert five[n].dtype == np.complex128
+        assert np.isclose(five[n](r), frozen_five[n](r))
+    L = five["L"](r)
+    static_L = m.layer("lower_mantle")["L"](r)
+    assert np.isclose(L.imag / static_L, 1 / m.layer("lower_mantle")["qmu"](r))
+    assert np.isclose(m.reference_omega(), 2 * np.pi)
+    assert np.isclose(m.nondimensionalised().reference_omega() * m.scales.time
+                      / m.nondimensionalised().scales.time, 2 * np.pi)
+    # at the reference frequency the real part is the static modulus
+    at_ref = m.moduli_at("lower_mantle", m.reference_omega())["L"](r)
+    assert np.isclose(at_ref.real, m.layer("lower_mantle")["L"](r))
+    tensor = m.elastic_moduli_at("lower_mantle", omega)
+    assert tensor.dtype == np.complex128 and tensor.symmetry.name == "VTI"
+    # the model itself is untouched
+    assert m.layer("lower_mantle")["L"].dtype == np.float64
+
+
+def test_elastic_completes_the_description_in_both_directions():
+    from planetmodel import (DENSITY, Elastic, Geometry, Model, Skeleton,
+                             constant_field, with_velocities)
+    sk = Skeleton([0.0, 0.5, 1.0])
+    iv0, iv1 = sk.interval(0), sk.interval(1)
+
+    class FromModuli(Elastic, Model):
+        def __init__(self):
+            layers = [
+                {"rho": constant_field(2.0, iv0, character=DENSITY, name="rho"),
+                 "kappa": constant_field(3.0, iv0, character=DENSITY, name="kappa"),
+                 "mu": constant_field(0.0, iv0, character=DENSITY, name="mu")},
+                {"rho": constant_field(1.0, iv1, character=DENSITY, name="rho"),
+                 "A": constant_field(4.0, iv1, character=DENSITY, name="A"),
+                 "C": constant_field(3.0, iv1, character=DENSITY, name="C"),
+                 "F": constant_field(1.0, iv1, character=DENSITY, name="F"),
+                 "L": constant_field(1.0, iv1, character=DENSITY, name="L"),
+                 "N": constant_field(1.5, iv1, character=DENSITY, name="N")},
+            ]
+            super().__init__(Geometry(sk), layers)
+
+    m = FromModuli()
+    core, shell = m.layer(0), m.layer(1)
+    # kappa, mu -> the five, then vp, vs since the five are isotropic
+    assert set(core.names) == {"rho", "kappa", "mu", "A", "C", "F", "L", "N",
+                               "vp", "vs"}
+    assert core["A"](0.2) == 3.0 and core["vp"](0.2) == np.sqrt(3.0 / 2.0)
+    assert core["vs"](0.2) == 0.0 and m.is_fluid(0)
+    # the five -> the TI velocities
+    assert set(shell.names) == {"rho", "A", "C", "F", "L", "N",
+                                "vpv", "vph", "vsv", "vsh", "eta"}
+    assert np.isclose(shell["vpv"](0.7), np.sqrt(3.0)) and shell["vph"](0.7) == 2.0
+    assert np.isclose(shell["eta"](0.7), 1.0 / (4.0 - 2.0))
+    assert m.elastic_moduli(1).symmetry.name == "VTI"
+    testing.check_model(m)
+    # a bare mapping through the free function, and a no-op where complete
+    assert "vp" in with_velocities(dict(core.fields))
+    assert with_velocities(dict(shell.fields)) == dict(shell.fields)

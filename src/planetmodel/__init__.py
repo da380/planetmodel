@@ -17,7 +17,8 @@ Modules reached by name, one level down:
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   behaviours   the free functions as methods: `layer_method` and the mixins
-  catalogue    PREM and LayeredIsotropicElastic, model types for use and testing
+  catalogue    PREM, LayeredIsotropicElastic and MineosModel, model types
+  deck         tabulated models: decks, their formats, fields by interpolation
   sampling     a model on a radial mesh times an angular grid
   harmonics    real spherical harmonics; grid transforms via pyshtools (optional)
   plotting     radial profiles drawn one way, radius upward (matplotlib, optional)
@@ -27,10 +28,13 @@ Modules reached by name, one level down:
   randomfield  Matern random fields on balls, annuli and layers
   testing      the executable contracts, `check_field` and its kin
 """
-from .behaviours import Elastic, SelfGravitating, Viscoelastic, layer_method
-from .catalogue import PREM, LayeredIsotropicElastic
+from .behaviours import (ConstantQ, Elastic, SelfGravitating, Viscoelastic,
+                         layer_method, with_moduli, with_velocities)
+from .catalogue import PREM, LayeredIsotropicElastic, MineosModel
 from .character import (DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character,
                         Symmetry)
+from .deck import (MINEOS, Deck, DeckFormat, Tabulated, deck_layers, read_deck,
+                   write_deck)
 from .displacement import (CallableDisplacement, RadialDisplacement,
                            ZeroDisplacement, as_displacement, flattening,
                            layer_linear)
@@ -50,7 +54,8 @@ from .mesh1d.gravity import gravity, gravity_fields, mass
 from .model import Layer, Model
 from .pushforward import (PulledBackField, PushedForwardField, pull_back,
                           push_forward)
-from .rheology import frozen, frozen_moduli, is_viscoelastic
+from .rheology import (dispersive_moduli, frozen, frozen_moduli, is_viscoelastic,
+                       reference_omega)
 from .sampling import AngularGrid, Sample, equiangular, gauss_legendre, sample
 from .skeleton import CoarseningMap, Location, Skeleton
 from .units import EARTH_MEAN_DENSITY, G_SI, Dimensions, Scales
@@ -73,12 +78,16 @@ __all__ = [
     "Field", "FieldBase", "RadialField", "AnalyticField", "ComposedField",
     "constant_field",
     "ElasticField", "is_fluid", "moduli", "elastic_moduli", "kappa_mu",
-    "is_viscoelastic", "frozen_moduli", "frozen",
+    "is_viscoelastic", "frozen_moduli", "dispersive_moduli", "frozen",
+    "reference_omega",
     "push_forward", "pull_back", "PushedForwardField", "PulledBackField",
     "Dimensions", "Scales", "G_SI", "EARTH_MEAN_DENSITY",
     "FieldSpec", "Constant", "VOCABULARY", "CONSTANTS",
-    "Layer", "Model", "layer_method", "Elastic", "SelfGravitating", "Viscoelastic",
-    "PREM", "LayeredIsotropicElastic",
+    "Layer", "Model", "layer_method", "with_moduli", "with_velocities",
+    "Elastic", "ConstantQ", "SelfGravitating", "Viscoelastic",
+    "PREM", "LayeredIsotropicElastic", "MineosModel",
+    "Deck", "DeckFormat", "MINEOS", "read_deck", "write_deck", "deck_layers",
+    "Tabulated",
     "flattening", "layer_linear",
     "AngularGrid", "Sample", "sample", "gauss_legendre", "equiangular",
     "real_harmonics", "synthesise", "synthesise_grid", "analyse_grid",
