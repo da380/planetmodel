@@ -60,13 +60,13 @@ def model_on(geometry) -> Model:
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
-    """Every case built referentially, once, with its model."""
+    """Every case built once, with its model."""
     root = tmp_path_factory.mktemp("built")
     out = {}
     for name, (dimension, make, order, shells) in CASES.items():
         geometry = make()
         spec = MeshSpec(geometry, COARSE, dimension=dimension, order=order,
-                        shells=shells, delivery="referential")
+                        shells=shells)
         out[name] = (build_layered_mesh(spec, root / name), model_on(geometry))
     return out
 
@@ -82,7 +82,7 @@ def exported(built, tmp_path_factory):
 
 def load(export):
     """The mesh a consumer loads, constructed the way the manifest says."""
-    o = export.files["mesh_read_options"]
+    o = export.read_options
     assert o == MESH_READ_OPTIONS
     return mfem.Mesh(str(export.mesh_path), o["generate_edges"], o["refine"],
                      o["fix_orientation"])
@@ -146,8 +146,7 @@ def test_every_field_reads_back_at_the_dof_coordinates(built, exported, name):
     card = sc.read(export.manifest_path)
     assert set(export.field_paths) == set(model.field_names()) == \
         {"rho", "elastic_moduli", "foo"}
-    entries = {e["name"]: e for e in card.files["grid_functions"]
-               if e["kind"] == "field"}
+    entries = {e["name"]: e for e in card.fields if e["name"] != "displacement"}
     assert set(entries) == set(export.field_paths)
     for field_name, path in export.field_paths.items():
         assert path.exists() and entries[field_name]["file"] == path.name
@@ -197,56 +196,50 @@ def test_a_physical_delivery_writes_the_same_referential_values(
         assert np.array_equal(read_back(load(ref), ref.field_paths[name]),
                               read_back(load(phys), phys.field_paths[name]))
     # the nodes moved all the same
-    assert sc.read(phys.manifest_path).mapping["applied_to_nodes"] is True
+    assert sc.read(phys.manifest_path).mesh["nodes"] == "physical"
 
 
-def test_the_model_block_round_trips(exported, built):
+def test_the_fields_scales_and_constants_round_trip(exported, built):
     res, model = built["shells3"]
     export = exported["shells3"]
     card = sc.read(export.manifest_path)
     sc.validate_structure(card)
-    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/3"
-    m = card.model
-    assert m["class"] == "Model"
-    assert m["scales"] == {"length": 1.0, "mass": 1.0, "time": 1.0}
-    assert m["constants"] == {"G": G_SI}
-    by_name = {e["name"]: e for e in m["fields"]}
-    assert list(by_name) == list(model.field_names())
-    assert by_name["rho"] == {"name": "rho", "rank": 0, "weight": 1,
-                              "voigt": False, "unit": "kg m-3",
-                              "layers": [1, 2, 3]}
-    assert by_name["elastic_moduli"] == {
-        "name": "elastic_moduli", "rank": 4, "weight": 1, "voigt": True,
-        "unit": "kg m-1 s-2", "layers": [2, 3]}
-    assert by_name["foo"]["unit"] == "unknown" and by_name["foo"]["layers"] == [3]
+    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/4"
+    assert card.scales == {"length": 1.0, "mass": 1.0, "time": 1.0}
+    assert card.constants == {"G": G_SI}
+    assert [e["name"] for e in card.fields] == \
+        ["displacement"] + list(model.field_names())
+    rho = card.field_record("rho")
+    assert rho == {"name": "rho", "file": export.field_paths["rho"].name,
+                   "fe_space": "L2_3D_P2", "vdim": 1, "ordering": "byNODES",
+                   "rank": 0, "weight": 1, "voigt": False, "unit": "kg m-3",
+                   "layers": [1, 2, 3]}
+    elastic = card.field_record("elastic_moduli")
+    assert (elastic["rank"], elastic["weight"], elastic["voigt"]) == (4, 1, True)
+    assert elastic["unit"] == "kg m-1 s-2" and elastic["layers"] == [2, 3]
+    assert elastic["vdim"] == 36
+    foo = card.field_record("foo")
+    assert foo["unit"] == "unknown" and foo["layers"] == [3]
+    # the displacement is a field like the others, on every layer, in metres
+    u = card.field_record("displacement")
+    assert card.mesh["displacement"] == "displacement"
+    assert u["file"] == export.displacement_path.name
+    assert (u["rank"], u["weight"], u["voigt"]) == (1, 0, False)
+    assert u["unit"] == "m" and u["layers"] == [1, 2, 3, 4]
     assert card.shell_attributes == (4,)
-    kinds = [e["kind"] for e in card.files["grid_functions"]]
-    assert kinds == ["displacement", "field", "field", "field"]
-    assert export.files == card.files
     text = card.describe()
-    assert "model       Model, scales length 1, mass 1, time 1, constants G " in text
-    assert "    rho             rank 0 weight 1        kg m-3      layers [1, 2, 3]" \
-        in text.splitlines()
-    assert "elastic_moduli  rank 4 weight 1 Voigt  kg m-1 s-2  layers [2, 3]" in text
+    assert "scales      length 1, mass 1, time 1, constants G " in text
+    assert "rank 0 weight 1        kg m-3      layers [1, 2, 3]" in text
+    assert "rank 4 weight 1 Voigt  kg m-1 s-2  layers [2, 3]" in text
     assert repr(export) == "ExportResult(shells3.mesh, 3 fields, referential delivery)"
-    # a manifest without the block is still valid, a broken block is named
-    bare = copy.deepcopy(card)
-    bare.model = None
-    sc.validate_structure(bare)
-    assert "  model  " not in bare.describe()
-    for key, value in (("class", 3), ("scales", {"length": 1.0}),
-                       ("constants", {"G": "big"}), ("fields", [{"name": "rho"}])):
-        bad = copy.deepcopy(card)
-        bad.model[key] = value
-        with pytest.raises(ValueError, match="malformed manifest: .*model"):
-            sc.validate_structure(bad)
+    # a broken record is named
     bad = copy.deepcopy(card)
-    bad.model["fields"][0]["layers"] = [0]
-    with pytest.raises(ValueError, match=r"model.fields\[0\].layers"):
+    bad.fields[1]["layers"] = [0]
+    with pytest.raises(ValueError, match=r"fields\[1\].layers"):
         sc.validate_structure(bad)
     bad = copy.deepcopy(card)
-    bad.files["grid_functions"] = bad.files["grid_functions"][:1]
-    with pytest.raises(ValueError, match="holds no field grid function"):
+    bad.constants["G"] = "big"
+    with pytest.raises(ValueError, match="constants.G"):
         sc.validate_structure(bad)
 
 
@@ -255,8 +248,7 @@ def test_fields_are_chosen_by_name_and_the_order_can_differ(built, tmp_path):
     export = export_mfem(res, tmp_path / "rho", model=model, fields=["rho"],
                          order=0)
     assert list(export.field_paths) == ["rho"]
-    assert [e["name"] for e in sc.read(export.manifest_path).model["fields"]] == \
-        ["rho"]
+    assert [e["name"] for e in sc.read(export.manifest_path).fields] == ["rho"]
     mesh = load(export)
     gf = mfem.GridFunction(mesh, str(export.field_paths["rho"]))
     assert gf.FESpace().FEColl().Name() == "L2_2D_P0"
@@ -271,10 +263,10 @@ def test_a_model_in_other_scales_records_them(built, tmp_path):
                                     vs=[1.0, 0.0],
                                     scales=Scales(length=1.0, mass=2.0, time=0.5))
     export = export_mfem(res, tmp_path / "scaled", model=model)
-    m = sc.read(export.manifest_path).model
-    assert m["scales"] == {"length": 1.0, "mass": 2.0, "time": 0.5}
-    assert m["constants"]["G"] == pytest.approx(G_SI / (0.5 * 4.0))
-    assert {e["unit"] for e in m["fields"]} == {"1"}
+    card = sc.read(export.manifest_path)
+    assert card.scales == {"length": 1.0, "mass": 2.0, "time": 0.5}
+    assert card.constants["G"] == pytest.approx(G_SI / (0.5 * 4.0))
+    assert {e["unit"] for e in card.fields} == {"1"}
     mesh = load(export)
     assert set(np.unique(read_back(mesh, export.field_paths["rho"]))) == {1.0, 2.0}
 

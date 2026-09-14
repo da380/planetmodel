@@ -34,9 +34,7 @@ def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
     the wrong layer.  A non-finite expected radius marks a boundary
     that is not concentric and has nothing to be checked against.
 
-    This is a property of the reference geometry, so for a physical
-    delivery it runs before the nodes are displaced: afterwards the
-    interfaces are supposed to be away from these radii.
+    This is a property of the reference geometry, which the mesh is.
     """
     expected = np.asarray(expected, dtype=float)
     if tolerance is None:
@@ -61,16 +59,12 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
                   layer_names: Sequence[str | None] = (),
                   interface_names: Sequence[str | None] = (),
                   radius_tolerance: float | None = None,
-                  radius_check: tuple[float, list[str]] | None = None,
                   quality_warn: float = QUALITY_FLOOR,
                   centres: Centres | None = None) -> ValidationReport:
     """Check a finished mesh against what was asked for.
 
     `expected_radii` are the interface radii the mesh was built at.
-    `radius_check` is a (worst_error, failures) pair from
-    `check_interface_radii` measured before the nodes were displaced;
-    without it the radii are measured here, which is correct only while
-    the mesh is still the reference one.  `centres` maps a surface's
+    `centres` maps a surface's
     entity tag to the point it encloses, for surfaces not centred on
     the origin.
     """
@@ -100,9 +94,8 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
                     f"{what[:-1]} {i + 1} is named {got!r}, expected {want!r}")
 
     # -- interfaces sit where the geometry puts them -----------------------
-    if radius_check is None:
-        radius_check = check_interface_radii(tagging, expected,
-                                             tolerance=radius_tolerance)
+    radius_check = check_interface_radii(tagging, expected,
+                                         tolerance=radius_tolerance)
     rep.max_interface_radius_error = float(radius_check[0])
     rep.failures.extend(radius_check[1])
 

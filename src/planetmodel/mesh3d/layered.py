@@ -2,25 +2,29 @@
 
 The computational domain is the geometry followed by its shells, and
 its numbers are the mesh's numbers: every radius and every element
-size reaches gmsh as the geometry gives it, and the mapping acts on
-the mesh's coordinates as they are.  Then CAD, tagging, sizing, meshing
-at order 1, orientation, curving; then, for a physical delivery of a
-non-identity mapping, the node displacement; then validation; and only
-then anything is written.  A mesh that fails its checks and exists
-anyway looks finished, so nothing reaches disk before validation.
+size reaches gmsh as the geometry gives it.  The mesh is always the
+reference one, concentric spheres with the geometry's names as
+attributes: gmsh meshes the skeleton and nothing else, and the
+geometry's mapping is applied later, at the MFEM export, where a
+displacement is a vector in the mesh's own nodal space.  Then CAD,
+tagging, sizing, meshing at order 1, orientation, curving, validation,
+and only then anything is written.  A mesh that fails its checks and
+exists anyway looks finished, so nothing reaches disk before
+validation.
 
 With shells and a non-identity mapping the mapping must be defined and
 orientation-preserving out to the outer boundary of the computational
-domain and the identity on that boundary, both checked on a lattice
-before any meshing and refused by name otherwise.  Without shells the
-geometry's own checks are the whole guarantee.
+domain, checked on a lattice before any meshing and refused by name
+otherwise; without shells the geometry's own checks are the whole
+guarantee.  The outer boundary of the domain is a boundary like any
+other and may carry topography, unless the spec asks for a spherical
+one, in which case the mapping must be the identity there: the case of
+a buffer added so that a far-field condition can be applied on a sphere.
 """
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import gmsh
 import numpy as np
@@ -29,50 +33,61 @@ from ..frames import cartesian_points
 from ..geometry import Geometry
 from ..mapping import validity_lattice
 from . import manifest
-from ._displace import PerturbationReport, apply_mapping
 from ._geometry import build_concentric
-from ._orient import OrientationReport, orient_mesh, raise_order
+from ._orient import orient_mesh, raise_order
 from ._session import session
 from ._sizing import (apply_mesh_options, apply_size_fields,
                       check_sizing_resolves_spans, check_sizing_scale)
 from ._tagging import apply_physical_groups, identify
-from ._validate import check_interface_radii, validate_mesh
+from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import InterfaceSizing, MeshResult, MeshSpec, ValidationReport
+from .spec import MeshResult, MeshSpec
 
-__all__ = ["build_layered_mesh", "require_mapping_on_shells", "policy_name"]
+__all__ = ["build_layered_mesh", "require_mapping_on_shells",
+           "require_spherical_outer_boundary", "policy_name"]
 
 
 def require_mapping_on_shells(spec: MeshSpec) -> None:
-    """Refuse a mapping that is not defined on the shells or moves their edge.
+    """Refuse a mapping that is not defined on the shells.
 
     The computational domain under the geometry's mapping must satisfy
-    every invariant of a Geometry (knots on boundaries, orientation
+    every invariant of a Geometry: knots on boundaries, orientation
     preserved on the validity lattice, continuity across every interior
-    boundary), and the mapping must be the identity on the outer
-    boundary to `geometry.rtol` times that radius.
+    boundary, the geometry's own outer boundary included.
     """
     g = spec.geometry
     domain = spec.domain
-    outer = spec.outer_radius
     try:
         Geometry(domain.skeleton, mapping=g.mapping, rtol=g.rtol, check=True)
     except (ValueError, TypeError) as exc:
         raise ValueError(
             "with shells the mapping must be defined and orientation-preserving "
-            f"on the whole computational domain, out to r = {outer:g}: {exc}"
+            f"on the whole computational domain, out to r = {spec.outer_radius:g}: "
+            f"{exc}"
         ) from exc
-    _, theta, phi = validity_lattice(domain.skeleton)
+
+
+def require_spherical_outer_boundary(spec: MeshSpec) -> None:
+    """Refuse a mapping that moves the outer boundary of the domain.
+
+    The mapping must be the identity on the outer boundary of the
+    computational domain to `geometry.rtol` times that radius, checked
+    on the validity lattice's angles.
+    """
+    g = spec.geometry
+    outer = spec.outer_radius
+    _, theta, phi = validity_lattice(spec.domain.skeleton)
     X = cartesian_points(outer, theta, phi)
     gap = float(np.max(np.linalg.norm(np.asarray(g.mapping(X), dtype=float) - X,
                                       axis=-1)))
     tol = g.rtol * outer
     if gap > tol:
         raise ValueError(
-            "with shells the mapping must be the identity on the outer boundary "
-            f"of the computational domain at r = {outer:g}, and it moves points "
-            f"there by up to {gap:.3g} (tolerance {tol:.3g}); make the "
-            "displacement vanish on the outermost shell, or mesh without shells")
+            "a spherical outer boundary was asked for, so the mapping must be the "
+            f"identity on the outer boundary of the computational domain at r = "
+            f"{outer:g}, and it moves points there by up to {gap:.3g} (tolerance "
+            f"{tol:.3g}); make the displacement vanish there, or mesh with "
+            "outer_boundary='free'")
 
 
 def policy_name(rule: object) -> str:
@@ -96,8 +111,9 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
     domain = spec.domain
     if spec.shells and not geometry.is_identity:
         require_mapping_on_shells(spec)
+    if spec.outer_boundary == "spherical" and not geometry.is_identity:
+        require_spherical_outer_boundary(spec)
     mapping = domain.mapping
-    moved = spec.delivery == "physical" and not domain.is_identity
     timings["resolve"] = clock() - t0
 
     d = spec.dimension
@@ -130,37 +146,22 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
         timings["mesh"] = clock() - t0
 
         t0 = clock()
-        orientation = orient_mesh(d)
-        curving = raise_order(d, spec.order)
+        orient_mesh(d)
+        raise_order(d, spec.order)
         timings["orient"] = clock() - t0
-
-        perturbation = None
-        radius_check = None
-        if moved:
-            t0 = clock()
-            # The radius check is a property of the reference geometry, so
-            # it is measured before the nodes carry the mapping.
-            radius_check = check_interface_radii(tagging, interface_radii)
-            perturbation = apply_mapping(mapping)
-            timings["perturb"] = clock() - t0
 
         t0 = clock()
         report = validate_mesh(
             tagging, expected_radii=interface_radii,
-            layer_names=layer_names, interface_names=interface_names,
-            radius_check=radius_check)
+            layer_names=layer_names, interface_names=interface_names)
         if spec.validate:
             report.raise_if_failed()
         timings["validate"] = clock() - t0
 
         t0 = clock()
         counts = element_counts(dimension=d)
-        # Read inside the session: gmsh answers nothing once finalized.
-        gmsh_version = gmsh.option.getString("General.Version")
         msh_path = manifest.beside(path, ".msh")
-        card = _build_manifest(spec, sizes, counts, report, curving,
-                               orientation, perturbation, msh_path,
-                               gmsh_version, moved=moved)
+        card = _build_manifest(spec, msh_path)
         # The manifest is checked and written before the mesh: a mesh on
         # disk with no manifest, or with one that disagrees, looks finished.
         manifest.validate_against(card, layer_count=domain.nlayers,
@@ -183,12 +184,8 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
                       timings=timings, spec=spec, mapping=mapping)
 
 
-def _build_manifest(spec: MeshSpec, sizes: Mapping[int, InterfaceSizing],
-                    counts: Mapping[str, int], report: ValidationReport,
-                    curving: Mapping[str, Any], orientation: OrientationReport,
-                    perturbation: PerturbationReport | None, msh_path: Path,
-                    gmsh_version: str, *, moved: bool) -> manifest.MeshManifest:
-    """Assemble the manifest from what the build did."""
+def _build_manifest(spec: MeshSpec, msh_path: Path) -> manifest.MeshManifest:
+    """The manifest of the mesh: its skeleton, its file, the spec's meta."""
     domain = spec.domain
     b = domain.skeleton.boundaries
     n_geometry = spec.geometry.nlayers
@@ -198,23 +195,8 @@ def _build_manifest(spec: MeshSpec, sizes: Mapping[int, InterfaceSizing],
         in_geometry=i < n_geometry)
         for i, lay in enumerate(domain.layers)]
     interfaces = [manifest.InterfaceEntry.from_interface(
-        face, attribute=k + 1, mean_radius=face.radius)
+        face, attribute=k + 1, radius=face.radius)
         for k, face in enumerate(domain.interfaces)]
-
     return manifest.MeshManifest.from_build(
-        geometry=manifest.geometry_block(
-            outer_radius=b[-1], inner_radius=b[0], n_layers=domain.nlayers,
-            n_shells=len(spec.shells)),
-        mesh=manifest.mesh_block(
-            dimension=spec.dimension, order=spec.order,
-            gmsh_version=gmsh_version, algorithm_2d=spec.algorithm_2d,
-            algorithm_3d=spec.algorithm_3d, counts=counts, curving=curving),
-        delivery=spec.delivery, layers=layers, interfaces=interfaces,
-        mapping=manifest.mapping_block(domain.mapping, knots=domain.knots(),
-                                       applied_to_nodes=moved),
-        sizing=manifest.sizing_block(policy=policy_name(spec.sizing),
-                                     sizes=sizes),
-        validation=manifest.validation_block(report, orientation),
-        provenance=manifest.provenance_block(
-            mesh_file=msh_path.name, perturbation=perturbation,
-            meta=spec.meta))
+        mesh=manifest.mesh_block(msh_path, format="msh", nodes="reference"),
+        layers=layers, interfaces=interfaces, meta=spec.meta)

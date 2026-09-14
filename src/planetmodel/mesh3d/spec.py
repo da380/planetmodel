@@ -2,7 +2,9 @@
 
 A MeshSpec is the whole description of a wanted mesh: the geometry, the
 sizing of every interface, the shells appended outside the geometry,
-the dimension and element order, and the delivery.  The computational
+the dimension and element order, and what the mapping may do to the
+outer boundary.  The mesh built from it is always the reference one;
+the mapping is applied at the MFEM export.  The computational
 domain is the geometry's layers followed by the shells, numbered from
 the centre; `MeshSpec.domain` is that domain as a Geometry under the
 geometry's own mapping, and is what the builder meshes.
@@ -31,12 +33,19 @@ from ..mapping import Mapping
 __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "PerInterface", "MeshSpec", "MeshResult",
-    "ValidationReport", "DELIVERIES", "QUALITY_FLOOR",
+    "ValidationReport", "DELIVERIES", "OUTER_BOUNDARIES", "QUALITY_FLOOR",
 ]
 
-#: The two deliveries: nodes moved by the mapping, or the reference mesh
-#: with the mapping recorded for the consumer to apply.
+#: The two deliveries of the MFEM export: the nodes moved by the mapping,
+#: or the reference mesh with the displacement written beside it as a
+#: field for the consumer to apply.
 DELIVERIES = ("physical", "referential")
+
+#: What the mapping may do to the outer boundary of the computational
+#: domain: "free" lets it carry topography like any other boundary;
+#: "spherical" requires the mapping to be the identity there, so that
+#: a far-field condition can be applied on a sphere.
+OUTER_BOUNDARIES = ("free", "spherical")
 
 #: The minSICN below which an element is poorly shaped: the level at
 #: which `raise_order` runs gmsh's high-order optimiser and at which
@@ -227,16 +236,16 @@ class MeshSpec:
     order: int = 2
     #: Shells appended outside the geometry, innermost first.
     shells: Sequence[Shell] = ()
-    #: "physical": the nodes are moved by the mapping; "referential": the
-    #: mesh stays spherical and the mapping is recorded.
-    delivery: str = "physical"
+    #: "free": the outer boundary of the computational domain may carry
+    #: topography; "spherical": the mapping must be the identity on it.
+    outer_boundary: str = "free"
     #: gmsh's Mesh.Algorithm.
     algorithm_2d: int = 6
     #: gmsh's Mesh.Algorithm3D.
     algorithm_3d: int = 1
-    #: False writes a failing mesh with the failures recorded in the manifest.
+    #: False writes a failing mesh; the failures are on the result's report.
     validate: bool = True
-    #: Copied into the manifest's provenance block.
+    #: Copied into the manifest's `meta` block, for the consumer's own use.
     meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -249,9 +258,10 @@ class MeshSpec:
             raise ValueError(f"dimension must be 2 or 3, got {self.dimension}")
         if not 1 <= self.order <= 3:
             raise ValueError(f"element order must be 1..3, got {self.order}")
-        if self.delivery not in DELIVERIES:
+        if self.outer_boundary not in OUTER_BOUNDARIES:
             raise ValueError(
-                f"delivery must be one of {DELIVERIES}, got {self.delivery!r}")
+                f"outer_boundary must be one of {OUTER_BOUNDARIES}, "
+                f"got {self.outer_boundary!r}")
         object.__setattr__(self, "shells", tuple(self.shells))
         for shell in self.shells:
             if not isinstance(shell, Shell):
@@ -359,11 +369,11 @@ class ValidationReport:
 class MeshResult:
     """What a build produced.
 
-    `mapping` is the geometry's own mapping, which acts on the mesh's
-    coordinates as they are and is what the exporter applies to the
-    nodes it reads back; it is None for a mesh that was not built from
-    a geometry.  The keyword fields have defaults so a MeshResult
-    written by hand still constructs.
+    The mesh on disk is the reference mesh.  `mapping` is the geometry's
+    own mapping, which acts on the mesh's coordinates as they are and is
+    what the exporter applies to the nodes it reads back; it is None
+    for a mesh that was not built from a geometry.  The keyword fields
+    have defaults so a MeshResult written by hand still constructs.
     """
 
     #: The MSH 2.2 file.

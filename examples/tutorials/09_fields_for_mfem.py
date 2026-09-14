@@ -6,8 +6,9 @@
 # GridFunction per field: an L2 (discontinuous) space whose values at the
 # reference mesh's degrees of freedom are the field's Cartesian components
 # in the model's units, evaluated layer by layer, so a discontinuity across
-# an interface is carried exactly. The manifest gains a `model` block
-# saying what each file holds and in what units.
+# an interface is carried exactly. The manifest lists each field beside
+# the displacement, with its character, unit and layers, and records the
+# model's scales and constants so that every value has its units.
 #
 # A coarse mesh of a small layered model is built here; PREM's thin crust
 # needs an Earth-scale mesh, which `scripts/mfem_cross_check.py` does.
@@ -59,34 +60,40 @@ print("mass:", mass(model))
 # %% [markdown]
 # ## Mesh, then export with fields
 #
-# The mesh is built on the geometry as in tutorial 4, without a shell this
-# time since the flattening does not vanish outside the planet.
-# `export_mfem` takes the build's result and the model, which must
-# sit on the same skeleton. `fields=None` writes every name the model
-# holds; `rho` is a scalar, `elastic_moduli` a Voigt (6, 6) matrix stored
-# with `vdim = 36`.
+# The mesh is built on the model's geometry as in tutorial 4, without a
+# buffer this time, and exported in the other delivery: `referential`
+# leaves the mesh spherical and hands the displacement `m(X) - X` to the
+# solver as a vector field on the mesh's nodes, so that the solver applies
+# the mapping itself. That is the natural delivery once fields travel too, since a
+# field's values are referential, the model's own field at the reference
+# point, whichever shape the mesh is drawn in. `export_mfem` takes the
+# build's result and the model, which must sit on the same skeleton.
+# `fields=None` writes every name the model holds; `rho` is a scalar,
+# `elastic_moduli` a Voigt (6, 6) matrix stored with `vdim = 36`.
 
 # %%
 spec = MeshSpec(model.geometry, UniformInterfaces(0.15, 0.3, 0.3), dimension=3,
-                order=2, delivery="referential")
+                order=2)
 result = build_layered_mesh(spec, workdir / "planet")
 print(result)
 exported = export_mfem(result, workdir / "planet_ref", model=model,
-                       fields=["rho", "vs", "elastic_moduli"])
+                       fields=["rho", "vs", "elastic_moduli"],
+                       delivery="referential")
 print(exported)
 for name, path in exported.field_paths.items():
     print(f"  {name:16s} -> {path.name}")
 
 # %% [markdown]
-# ## The manifest's model block
+# ## The manifest's fields
 
 # %%
 card = manifest.read(exported.manifest_path)
 print("schema:", card.schema)
-print("class:", card.model["class"], "| scales:", card.model["scales"])
-for entry in card.model["fields"]:
-    print(f"  {entry['name']:16s} rank {entry['rank']} weight {entry['weight']} "
-          f"unit {entry['unit']:8s} on attributes {entry['layers']}")
+print("scales:", card.scales, "| constants:", card.constants)
+for entry in card.fields:
+    print(f"  {entry['name']:16s} {entry['file']:28s} rank {entry['rank']} "
+          f"weight {entry['weight']} unit {entry['unit']:10s} "
+          f"on attributes {entry['layers']}")
 
 # %% [markdown]
 # ## Reading a field back
@@ -103,7 +110,7 @@ try:
 except ImportError:
     print("PyMFEM is not installed; stopping here")
     raise SystemExit(0)
-opts = card.files["mesh_read_options"]
+opts = card.mesh["read_options"]
 mesh = mfem.Mesh(str(exported.mesh_path), opts["generate_edges"], opts["refine"],
                  opts["fix_orientation"])
 rho_gf = mfem.GridFunction(mesh, str(exported.field_paths["rho"]))

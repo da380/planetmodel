@@ -49,8 +49,8 @@ def flattening(amplitude=0.05):
 def confined_flattening(amplitude=0.05, *, top=1.0, ramp=0.2):
     """The same flattening tapered to zero at r = top, with kinks declared.
 
-    Zero on and above r = top, so it is the identity on the outer
-    boundary of a domain whose shells begin there.
+    Zero on and above r = top, so it is the identity on every boundary
+    from r = top outward, shells included.
     """
     def h(r, theta, phi):
         taper = np.clip((top - r) / ramp, 0.0, 1.0)

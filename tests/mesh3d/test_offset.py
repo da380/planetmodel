@@ -30,23 +30,21 @@ def test_an_offset_ball_builds_and_validates(offset3):
 def test_the_offset_manifest_says_what_it_knows(offset3):
     card = sc.read(offset3.manifest_path)
     sc.validate_against(card, layer_count=2, interface_count=2)
-    assert card.delivery == "physical"
-    assert card.geometry["kind"] == "two_sphere"
-    assert card.geometry["inclusion_radius"] == pytest.approx(0.4)
-    assert card.geometry["offset"] == pytest.approx(0.3)
-    assert card.geometry["outer_radius"] == 1.0
-    assert card.geometry["n_layers"] == 2
+    assert card.mesh["nodes"] == "reference" and card.mesh["format"] == "msh"
+    assert card.meta["kind"] == "two_sphere"
+    assert card.meta["inclusion_radius"] == pytest.approx(0.4)
+    assert card.meta["offset"] == pytest.approx(0.3)
+    assert card.outer_radius == 1.0
+    assert len(card.layers) == 2
     assert [lay["name"] for lay in card.layers] == ["inclusion", "matrix"]
     assert all(lay["in_geometry"] for lay in card.layers)
     assert [f["name"] for f in card.interfaces] == ["inclusion_boundary", "surface"]
     assert [f["between_layers"] for f in card.interfaces] == [[0, 1], [1, -1]]
-    assert card.mapping["kind"] == "IdentityMapping"
-    assert card.mapping["applied_to_nodes"] is False
     # the inclusion's node-average radius is about the origin, so it
     # exceeds its own radius by the offset
-    inner = card.interfaces[0]["mean_radius"]
+    inner = card.interfaces[0]["radius"]
     assert 0.4 < inner < 0.4 + 0.3
-    assert card.interfaces[1]["mean_radius"] == pytest.approx(1.0, abs=1e-3)
+    assert card.interfaces[1]["radius"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_the_inclusion_sits_where_it_was_put(offset3):
@@ -65,8 +63,7 @@ def test_a_disc_builds_in_two_dimensions(offset, tmp_path):
                             offset=offset, sizing=COARSE, dimension=2)
     assert res.validation.ok
     card = sc.read(res.manifest_path)
-    assert card.geometry["kind"] == "two_disc"
-    assert card.mesh["dimension"] == 2
+    assert card.meta["kind"] == "two_disc"
     with session(name="nodes"):
         gmsh.merge(str(res.msh_path))
         (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, 1)
@@ -82,11 +79,10 @@ def test_an_offset_mesh_keeps_the_numbers_it_was_given(tmp_path):
                             dimension=2, order=1)
     assert res.validation.ok
     card = sc.read(res.manifest_path)
-    assert card.geometry["inclusion_radius"] == 2.0
-    assert card.geometry["offset"] == 1.5
-    assert card.geometry["outer_radius"] == 5.0
+    assert card.meta["inclusion_radius"] == 2.0
+    assert card.meta["offset"] == 1.5
+    assert card.outer_radius == 5.0
     assert card.layers[1]["r_outer"] == 5.0
-    assert card.sizing["per_interface"][0]["size"] == 0.75
     with session(name="nodes"):
         gmsh.merge(str(res.msh_path))
         _, coords, _ = gmsh.model.mesh.getNodes()

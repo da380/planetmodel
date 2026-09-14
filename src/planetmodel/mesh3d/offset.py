@@ -18,23 +18,21 @@ disagreement is raised rather than resolved.
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import gmsh
 import numpy as np
 
 from ..geometry import InterfaceInfo
 from . import manifest
-from ._orient import OrientationReport, orient_mesh, raise_order
+from ._orient import orient_mesh, raise_order
 from ._session import session
 from ._sizing import apply_mesh_options, apply_size_fields, check_sizing_scale
 from ._tagging import Tagging, mean_radius_of_entity
 from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .layered import policy_name
-from .spec import InterfaceSizing, MeshResult, SizingRule, ValidationReport
+from .spec import MeshResult, SizingRule
 
 __all__ = ["build_offset_mesh"]
 
@@ -104,8 +102,8 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
         centres = {tagging.faces[0]: centre}
 
         t0 = clock()
-        orientation = orient_mesh(dimension, centres=centres)
-        curving = raise_order(dimension, order)
+        orient_mesh(dimension, centres=centres)
+        raise_order(dimension, order)
         timings["orient"] = clock() - t0
 
         measured = _confirm_by_node_average(tagging)
@@ -125,16 +123,11 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
 
         t0 = clock()
         counts = element_counts(dimension=dimension)
-        gmsh_version = gmsh.option.getString("General.Version")
         msh_path = manifest.beside(path, ".msh")
         card = _build_manifest(
-            dimension=dimension, order=order, a=a, b=b, d=d, sizes=sizes,
-            measured=measured, counts=counts,
-            report=report, curving=curving, orientation=orientation,
+            dimension=dimension, a=a, b=b, d=d, measured=measured,
             layer_names=layer_names, interface_names=interface_names,
-            algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
-            msh_path=msh_path, gmsh_version=gmsh_version,
-            policy=policy_name(sizing))
+            msh_path=msh_path)
         manifest.validate_against(card, layer_count=2, interface_count=2,
                                   groups={k: list(v) for k, v in groups.items()})
         manifest_path = manifest.write(path, card)
@@ -224,18 +217,15 @@ def _apply_groups(tagging: Tagging, layer_names: Sequence[str],
     return out
 
 
-def _build_manifest(*, dimension: int, order: int, a: float, b: float, d: float,
-                    sizes: Mapping[int, InterfaceSizing], measured: Sequence[float],
-                    counts: Mapping[str, int], report: ValidationReport,
-                    curving: Mapping[str, Any], orientation: OrientationReport,
-                    layer_names: Sequence[str], interface_names: Sequence[str],
-                    algorithm_2d: int, algorithm_3d: int, msh_path: Path,
-                    gmsh_version: str, policy: str) -> manifest.MeshManifest:
+def _build_manifest(*, dimension: int, a: float, b: float, d: float,
+                    measured: Sequence[float], layer_names: Sequence[str],
+                    interface_names: Sequence[str], msh_path: Path
+                    ) -> manifest.MeshManifest:
     """The same schema a layered mesh ships, saying what is true here.
 
     `r_inner` and `r_outer` are the spheres a region lies between, which
     for a displaced inclusion describes its size and not its position;
-    `geometry.offset` says where it is.
+    the inclusion's radius and offset are recorded under `meta`.
     """
     kind = "two_sphere" if dimension == 3 else "two_disc"
     layers = [
@@ -246,20 +236,11 @@ def _build_manifest(*, dimension: int, order: int, a: float, b: float, d: float,
     ]
     interfaces = [
         manifest.InterfaceEntry(attribute=i + 1, name=interface_names[i],
-                                mean_radius=float(measured[i]),
+                                radius=float(measured[i]),
                                 between_layers=[i, i + 1 if i == 0 else -1])
         for i in (0, 1)
     ]
     return manifest.MeshManifest.from_build(
-        geometry=manifest.geometry_block(
-            outer_radius=b, inner_radius=0.0, n_layers=2, kind=kind,
-            inclusion_radius=a, offset=d),
-        mesh=manifest.mesh_block(
-            dimension=dimension, order=order, gmsh_version=gmsh_version,
-            algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
-            counts=counts, curving=curving),
-        delivery="physical", layers=layers, interfaces=interfaces,
-        mapping=manifest.mapping_block(None, applied_to_nodes=False),
-        sizing=manifest.sizing_block(policy=policy, sizes=sizes),
-        validation=manifest.validation_block(report, orientation),
-        provenance=manifest.provenance_block(mesh_file=msh_path.name))
+        mesh=manifest.mesh_block(msh_path, format="msh", nodes="reference"),
+        layers=layers, interfaces=interfaces,
+        meta={"kind": kind, "inclusion_radius": float(a), "offset": float(d)})

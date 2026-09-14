@@ -1,6 +1,5 @@
 """The MFEM export: 2D and 3D, hollow and full, both deliveries, and an
 offset mesh, each read back the way the manifest says."""
-import dataclasses
 
 import numpy as np
 import pytest
@@ -8,7 +7,8 @@ import pytest
 from planetmodel.mesh3d import (MeshSpec, Shell, build_layered_mesh,
                                 build_offset_mesh, export_mfem_mesh,
                                 manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array
+from planetmodel.mesh3d.export import (MESH_READ_OPTIONS, _node_array,
+                                       jacobian_report)
 
 from conftest import COARSE, confined_flattening, flattening, full_geometry, \
     hollow_geometry
@@ -30,12 +30,12 @@ CASES = {
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
-    """Every case built referentially, once."""
+    """Every case built once."""
     root = tmp_path_factory.mktemp("built")
     out = {}
     for name, (dimension, make, order, shells) in CASES.items():
         spec = MeshSpec(make(), COARSE, dimension=dimension, order=order,
-                        shells=shells, delivery="referential")
+                        shells=shells)
         out[name] = build_layered_mesh(spec, root / name)
     out["offset3"] = build_offset_mesh(root / "offset3", inner_radius=0.4,
                                        outer_radius=1.0, offset=0.3, sizing=COARSE)
@@ -55,7 +55,7 @@ def exported(built, tmp_path_factory):
 
 def load(export):
     """The mesh a consumer loads, constructed the way the manifest says."""
-    o = export.files["mesh_read_options"]
+    o = export.read_options
     assert o == MESH_READ_OPTIONS
     return mfem.Mesh(str(export.mesh_path), o["generate_edges"], o["refine"],
                      o["fix_orientation"])
@@ -79,31 +79,38 @@ def test_mfem_reads_every_export_back_clean(built, exported, name, delivery):
     assert mesh.CheckElementOrientation(False) == 0
     assert mesh.CheckBdrElementOrientation(False) == 0
     card = sc.read(export.manifest_path)
-    assert mesh.Dimension() == card.mesh["dimension"]
-    assert mesh.SpaceDimension() == card.mesh["dimension"]
+    assert mesh.Dimension() == mesh.SpaceDimension() == res.spec.dimension \
+        if res.spec is not None else True
     assert list(mesh.attributes.ToList()) == list(range(1, len(card.layers) + 1))
     assert list(mesh.bdr_attributes.ToList()) == \
         list(range(1, len(card.interfaces) + 1))
-    assert mesh.GetNE() + mesh.GetNBE() == card.mesh["n_elements"]
     assert export.counts["elements"] == mesh.GetNE()
     assert export.counts["nodes"] == mesh.GetNodes().FESpace().GetNDofs()
-    assert card.delivery == delivery
-    assert card.files["mesh"] == export.mesh_path.name
+    assert card.mesh["file"] == export.mesh_path.name
+    assert card.mesh["format"] == "mfem"
+    assert card.mesh["read_options"] == export.read_options == MESH_READ_OPTIONS
     identity = res.mapping is None or res.mapping.is_identity
-    assert card.mapping["applied_to_nodes"] is (delivery == "physical"
-                                                and not identity)
+    assert card.mesh["nodes"] == ("physical" if delivery == "physical"
+                                  and not identity else "reference")
+    assert card.scales is None and card.constants == {}
+    assert export.quality["negative_jacobians"] == 0
+    assert 0.0 < export.quality["min_ratio"] <= 1.0
     if delivery == "referential":
         assert export.displacement_path.exists()
-        (entry,) = card.files["grid_functions"]
-        assert entry["kind"] == "displacement" and entry["name"] == "displacement"
+        assert card.mesh["displacement"] == "displacement"
+        (entry,) = card.fields
+        assert entry["name"] == "displacement"
         assert entry["file"] == export.displacement_path.name
         assert entry["vdim"] == mesh.SpaceDimension()
         assert entry["fe_space"] == mesh.GetNodes().FESpace().FEColl().Name()
+        assert (entry["rank"], entry["weight"], entry["voigt"]) == (1, 0, False)
+        assert entry["unit"] == "1"
+        assert entry["layers"] == list(range(1, len(card.layers) + 1))
         gf = mfem.GridFunction(mesh, str(export.displacement_path))
         assert gf.Size() == mesh.GetNodes().Size()
     else:
         assert export.displacement_path is None
-        assert card.files["grid_functions"] == []
+        assert card.mesh["displacement"] is None and card.fields == []
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -162,30 +169,29 @@ def test_a_straight_sided_mesh_exports_too(exported):
     assert export.counts["order"] == 1
     mesh = load(export)
     assert mesh.GetNodes() is not None
-    (entry,) = export.files["grid_functions"]
+    (entry,) = sc.read(export.manifest_path).fields
     assert entry["fe_space"] == "H1_2D_P1"
 
 
-def test_a_mesh_already_displaced_is_refused(built, tmp_path):
-    res = built["full2"]
-    card = sc.read(res.manifest_path)
-    card.mapping["applied_to_nodes"] = True
-    moved = dataclasses.replace(res, manifest_path=sc.write(tmp_path / "moved", card))
-    with pytest.raises(ValueError, match="physical mesh"):
-        export_mfem_mesh(moved, tmp_path / "nope")
-    with pytest.raises(ValueError, match="delivery must be"):
-        export_mfem_mesh(res, tmp_path / "bad", delivery="halfway")
-
-
-def test_the_default_delivery_is_the_builds(built, tmp_path):
+def test_the_default_delivery_is_physical(built, tmp_path):
     export = export_mfem_mesh(built["hollow2"], tmp_path / "default")
-    assert export.delivery == "referential"
-    assert export.displacement_path is not None
+    assert export.delivery == "physical"
+    assert export.displacement_path is None
+    with pytest.raises(ValueError, match="delivery must be"):
+        export_mfem_mesh(built["hollow2"], tmp_path / "bad", delivery="halfway")
 
 
-def test_a_physically_built_mesh_is_refused(tmp_path):
-    spec = MeshSpec(full_geometry().with_mapping(flattening(0.05)), COARSE,
-                    dimension=2, delivery="physical")
-    res = build_layered_mesh(spec, tmp_path / "phys")
-    with pytest.raises(ValueError, match="physical mesh"):
-        export_mfem_mesh(res, tmp_path / "out")
+def test_a_mapping_that_folds_the_mesh_is_refused_at_export(tmp_path):
+    """A flattening of 3 turns the poles inside out; the geometry's own
+    check is bypassed so that the exporter's Jacobian check is what
+    catches it (in the equatorial plane alone it would only expand)."""
+    g = full_geometry().with_mapping(flattening(3.0), check=False)
+    res = build_layered_mesh(MeshSpec(g, COARSE, dimension=3), tmp_path / "fold")
+    assert res.validation.ok
+    with pytest.raises(ValueError, match="folds .* element"):
+        export_mfem_mesh(res, tmp_path / "nope", delivery="physical")
+    assert not (tmp_path / "nope.mesh").exists()
+    # the reference mesh with the displacement beside it is still written
+    ref = export_mfem_mesh(res, tmp_path / "ref", delivery="referential")
+    assert ref.quality["negative_jacobians"] == 0
+    assert jacobian_report(load(ref))["negative_jacobians"] == 0

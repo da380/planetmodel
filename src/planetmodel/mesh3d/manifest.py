@@ -2,73 +2,71 @@
 
 A mesh file carries numbered attributes and nothing else.  Which number
 is which layer, which boundary is which interface, where each sits,
-whether the nodes have already been displaced: none of that survives
-into the mesh file, so it travels alongside in a manifest, and this
-module is the single definition of its shape.  The typed entries say
-what a layer and an interface record carry, the block builders say what
-every other block holds, `MeshManifest.from_build` assembles a manifest
-from them and `validate_structure` checks a file against the same
-definitions.
+whether the nodes have already been displaced, and which files beside
+the mesh hold which fields: none of that survives into the mesh file,
+so it travels alongside in a manifest, and this module is the single
+definition of its shape.  A consumer reads the manifest, opens the mesh
+the way it says, and knows where to look for every field and what each
+one means.
 
-The schema is `planetmodel.mesh.manifest/3`, with these blocks:
+The schema is `planetmodel.mesh.manifest/4`, with these blocks:
 
-  geometry     outer_radius, inner_radius, n_layers
-  mesh         dimension, element_order, gmsh_version, msh_version,
-               algorithm_2d, algorithm_3d, n_nodes, n_elements,
-               high_order_optimised, date
-  delivery     "physical" or "referential"
-  layers[]     attribute, name, r_inner, r_outer, in_geometry
-  interfaces[] attribute, name, mean_radius, between_layers
-  mapping      kind, repr, knots, applied_to_nodes
-  sizing       policy, per_interface[]
-  validation   the counts and warnings of the mesh checks
-  provenance   planetmodel_version, mesh_file, perturbation, meta
-  files        null until the MFEM export writes it
-  model        null until fields of a model are exported beside the mesh
+  mesh          file, format ("msh" or "mfem"), nodes ("reference" or
+                "physical"), read_options, displacement
+  layers[]      attribute, name, r_inner, r_outer, in_geometry
+  interfaces[]  attribute, name, radius, between_layers
+  fields[]      name, file, fe_space, vdim, ordering, rank, weight,
+                voigt, unit, layers
+  scales        length, mass, time in SI; null until a model is exported
+  constants     the model's constants in its units; empty until then
+  meta          whatever the spec's `meta` carried
 
-Every length is in the geometry's own numbers, the ones the mesh file
-holds: the mesher neither scales nor normalises, so a radius in the
-manifest is a radius in the mesh.  Layers are numbered by `attribute`
-1..N from the centre and `between_layers` gives 0-based layer indices
-with -1 for the outside.  The `model` block is the one place units are
-spoken of: it records the scales the exported values are in, the
-constants in those units, and for every exported field its character,
-its unit string and the attributes of the layers that hold it.  Flat
-and boring on purpose: a C++ reader will parse it, nested objects only
-where the nesting carries meaning, no polymorphism, every number a
-number.
+The layers and interfaces are the skeleton the mesh was built on, in
+the mesh's own lengths: the mesher neither scales nor normalises, so a
+radius here is a radius in the mesh.  Layers are numbered by
+`attribute` 1..N from the centre and `between_layers` gives 0-based
+layer indices with -1 for the outside.  A field is a file beside the
+mesh, a finite-element space to read it into, a character (`rank`,
+`weight`, `voigt`), a unit and the attributes of the layers on which
+its values mean anything.  The displacement m(X) - X is a field like
+any other, a vector on every layer; `mesh.displacement` names it where
+one was written, and `mesh.nodes` says whether the mesh's coordinates
+are reference coordinates or already carry it.  Flat and boring on
+purpose: a C++ reader will parse it, nested objects only where the
+nesting carries meaning, no polymorphism, every number a number.
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import KW_ONLY, asdict, dataclass, field, fields as _fields
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 
-from ..units import unit_string
-from .spec import DELIVERIES, InterfaceSizing, ValidationReport
+from ..units import Dimensions, Scales, unit_string
 
 if TYPE_CHECKING:
+    from ..character import Character
     from ..geometry import InterfaceInfo, LayerInfo
     from ..model import Model
-    from ._displace import PerturbationReport
-    from ._orient import OrientationReport
 
-__all__ = ["SCHEMA", "MeshManifest", "LayerEntry", "InterfaceEntry",
-           "write", "read", "file_digest", "beside", "planetmodel_version",
-           "geometry_block", "mesh_block", "mapping_block", "sizing_block",
-           "validation_block", "provenance_block", "model_block",
+__all__ = ["SCHEMA", "FORMATS", "NODES", "MeshManifest", "LayerEntry",
+           "InterfaceEntry", "FieldEntry", "write", "read", "beside",
+           "mesh_block", "scales_block", "constants_block",
            "validate_structure", "validate_against"]
 
 #: Bump only for an incompatible change; consumers check it.
-SCHEMA = "planetmodel.mesh.manifest/3"
+SCHEMA = "planetmodel.mesh.manifest/4"
 
 #: The MSH format version the mesher writes and MFEM's reader wants.
 MSH_VERSION = 2.2
+
+#: The mesh file formats a manifest may sit beside.
+FORMATS = ("msh", "mfem")
+
+#: What the mesh's node coordinates are: reference coordinates, or the
+#: physical ones of a mesh whose nodes were displaced by a mapping.
+NODES = ("reference", "physical")
 
 
 def beside(path: str | Path, suffix: str) -> Path:
@@ -79,27 +77,9 @@ def beside(path: str | Path, suffix: str) -> Path:
     `run.v1.json`.
     """
     path = Path(path)
-    if path.suffix in (".msh", ".json", ".mesh"):
+    if path.suffix in (".msh", ".mesh", ".json"):
         path = path.with_suffix("")
     return path.with_name(path.name + suffix)
-
-
-def planetmodel_version() -> str:
-    """The library version a manifest records as its provenance."""
-    from .. import __version__
-    return __version__
-
-
-def file_digest(path: str | Path) -> str | None:
-    """The sha256 of a file, or None if it is not there to hash."""
-    path = Path(path)
-    if not path.is_file():
-        return None
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 # ------------------------------------------------------------ the entries
@@ -112,9 +92,9 @@ class LayerEntry:
     attribute: int
     #: The layer's name; `layer_<attribute>` where none was given.
     name: str
-    #: The inner radius, in the geometry's lengths.
+    #: The inner radius, in the mesh's lengths.
     r_inner: float
-    #: The outer radius, in the geometry's lengths.
+    #: The outer radius, in the mesh's lengths.
     r_outer: float
     #: Whether the layer belongs to the geometry (True) or is a shell (False).
     in_geometry: bool
@@ -142,20 +122,59 @@ class InterfaceEntry:
     attribute: int
     #: The interface's name; `interface_<attribute>` where none was given.
     name: str
-    #: The mean radius, in the geometry's lengths.
-    mean_radius: float
+    #: The radius, in the mesh's lengths.
+    radius: float
     #: [layer below, layer above], 0-based, -1 outside.
     between_layers: list
 
     @classmethod
     def from_interface(cls, face: InterfaceInfo, *, attribute: int,
-                       mean_radius: float) -> "InterfaceEntry":
-        """The record of an InterfaceInfo at the given mean radius."""
+                       radius: float) -> "InterfaceEntry":
+        """The record of an InterfaceInfo at the given radius."""
         below, above = face.between
         return cls(attribute=int(attribute),
                    name=face.name or f"interface_{attribute}",
-                   mean_radius=float(mean_radius),
+                   radius=float(radius),
                    between_layers=[int(below), int(above)])
+
+
+@dataclass
+class FieldEntry:
+    """One `fields[]` record: a file beside the mesh and what it holds.
+
+    `file`, `fe_space`, `vdim` and `ordering` are what a consumer builds
+    the space from before it opens the file; `rank`, `weight` and
+    `voigt` are the field's character, `unit` its unit string under the
+    manifest's scales ("1" where no SI scale is declared, "unknown" for
+    a name without dimensions), and `layers` the attributes of the
+    layers on which its values mean anything: elsewhere the file holds
+    zeros.
+    """
+
+    name: str
+    file: str
+    fe_space: str
+    vdim: int
+    ordering: str
+    rank: int
+    weight: int
+    voigt: bool
+    unit: str
+    layers: list
+
+    @classmethod
+    def from_field(cls, name: str, file: str | Path, *, fe_space: str, vdim: int,
+                   ordering: str, character: Character,
+                   dimensions: Dimensions | None, si: bool,
+                   layers: Iterable[int]) -> "FieldEntry":
+        """The record of a field of `character` and `dimensions` written
+        to `file` in the given space, on the given layer attributes."""
+        return cls(name=str(name), file=Path(file).name, fe_space=str(fe_space),
+                   vdim=int(vdim), ordering=str(ordering),
+                   rank=int(character.rank), weight=int(character.weight),
+                   voigt=character.voigt_shape is not None,
+                   unit=unit_string(dimensions, si=si),
+                   layers=[int(a) for a in layers])
 
 
 #: The JSON types each annotated Python type may hold.
@@ -172,134 +191,33 @@ def _entry_types(cls: type) -> dict[str, tuple[type, ...]]:
 
 # ------------------------------------------------------------ the blocks
 
-def geometry_block(*, outer_radius: float, inner_radius: float, n_layers: int,
-                   **extra: Any) -> dict[str, Any]:
-    """The `geometry` record: the domain's extent, in the geometry's own
-    numbers, and its layer count.
-
-    `extra` adds what a particular builder knows beyond the schema's
-    required keys; any length among them is in the same numbers.
+def mesh_block(file: str | Path, *, format: str, nodes: str,
+               read_options: Mapping[str, Any] | None = None,
+               displacement: str | None = None) -> dict[str, Any]:
+    """The `mesh` record: the file, its format, what its coordinates are,
+    the options a consumer must open it with (for MFEM, the `mfem::Mesh`
+    constructor arguments the dof numbering of the fields was written
+    under), and the name of the displacement field where one was written.
     """
-    return {"outer_radius": float(outer_radius),
-            "inner_radius": float(inner_radius), "n_layers": int(n_layers),
-            **extra}
+    if format not in FORMATS:
+        raise ValueError(f"format must be one of {FORMATS}, got {format!r}")
+    if nodes not in NODES:
+        raise ValueError(f"nodes must be one of {NODES}, got {nodes!r}")
+    return {"file": Path(file).name, "format": str(format), "nodes": str(nodes),
+            "read_options": dict(read_options or {}),
+            "displacement": None if displacement is None else str(displacement)}
 
 
-def mesh_block(*, dimension: int, order: int, gmsh_version: str,
-               algorithm_2d: int, algorithm_3d: int, counts: Mapping[str, int],
-               curving: Mapping[str, Any]) -> dict[str, Any]:
-    """The `mesh` record: what gmsh was asked for and what it produced."""
-    return {
-        "dimension": int(dimension),
-        "element_order": int(order),
-        "gmsh_version": str(gmsh_version),
-        "msh_version": MSH_VERSION,
-        "algorithm_2d": int(algorithm_2d),
-        "algorithm_3d": int(algorithm_3d),
-        "n_nodes": int(counts.get("nodes", 0)),
-        "n_elements": int(counts.get("elements", 0)),
-        "high_order_optimised": bool(curving.get("optimized")),
-    }
+def scales_block(scales: Scales) -> dict[str, float]:
+    """The `scales` record: what one stored unit of length, mass and time
+    is in SI, so that every field value and constant is in those units."""
+    return {"length": float(scales.length), "mass": float(scales.mass),
+            "time": float(scales.time)}
 
 
-def mapping_block(mapping: object, *, knots: Iterable[float] = (),
-                  applied_to_nodes: bool) -> dict[str, Any]:
-    """The `mapping` record: the mapping's class and repr, its knots, and
-    whether the nodes already carry it.
-
-    `mapping` None stands for the identity.  `knots` are the radii where
-    the mapping's gradient may jump.
-    """
-    if mapping is None:
-        from ..mapping import IdentityMapping
-        mapping = IdentityMapping()
-    return {"kind": type(mapping).__name__, "repr": repr(mapping),
-            "knots": [float(k) for k in knots],
-            "applied_to_nodes": bool(applied_to_nodes)}
-
-
-def sizing_block(*, policy: str,
-                 sizes: Mapping[int, InterfaceSizing]) -> dict[str, Any]:
-    """The `sizing` record: the rule by name and what it gave each interface."""
-    return {
-        "policy": str(policy),
-        "per_interface": [
-            {"attribute": i + 1, "size": float(s.size),
-             "far_size": float(s.far_size),
-             "decay_width": float(s.decay_width)}
-            for i, s in sorted(sizes.items())],
-    }
-
-
-def validation_block(report: ValidationReport,
-                     orientation: OrientationReport) -> dict[str, Any]:
-    """The `validation` record, from the mesh checks and the orientation repair."""
-    return {
-        "negative_jacobians": int(report.negative_jacobians),
-        "min_sicn": float(report.min_sicn),
-        "wrong_orientation": int(report.negative_cells + report.inward_faces),
-        "faces_reoriented": int(orientation.faces_flipped),
-        "max_interface_radius_error": float(report.max_interface_radius_error),
-        "warnings": list(report.warnings),
-        "failures": list(getattr(report, "failures", ())),
-    }
-
-
-def provenance_block(*, mesh_file: str,
-                     perturbation: PerturbationReport | None = None,
-                     meta: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The `provenance` record: version, mesh file, what the displacement
-    did, and the spec's `meta` copied in."""
-    block = {"planetmodel_version": planetmodel_version(),
-             "mesh_file": str(mesh_file)}
-    block["perturbation"] = (None if perturbation is None else {
-        "nodes": int(perturbation.nodes),
-        "max_displacement": float(perturbation.max_displacement),
-        "validity_margin": _finite(perturbation.validity_margin)})
-    block["meta"] = dict(meta or {})
-    return block
-
-
-def _finite(value: float) -> float | None:
-    """A number, or None where there is no number to report."""
-    return float(value) if math.isfinite(value) else None
-
-
-def model_block(model: Model, *,
-                holders: Mapping[str, Sequence[int]]) -> dict[str, Any]:
-    """The `model` record: what the exported field values mean.
-
-    `class` is the model's class name; `scales` says what one stored
-    unit of length, mass and time is in SI, so every value in the
-    grid functions and every constant here is in the model's own
-    units; `fields[]` has one record per exported name, in the order of
-    `holders`, with the field's character as `rank`, `weight` and
-    `voigt`, its `unit` string (from the dimensions of the name's spec,
-    "unknown" for a name without one, "1" throughout a model that is
-    not in SI), and `layers`, the attributes of the layers holding it.
-    `holders` maps each exported name to those attributes.
-    """
-    scales = model.scales
-    si = scales.is_si
-    fields = []
-    for name, attributes in holders.items():
-        character = model.layer(model.layers_with(name)[0])[name].character
-        spec = model.spec(name)
-        fields.append({
-            "name": str(name),
-            "rank": int(character.rank),
-            "weight": int(character.weight),
-            "voigt": bool(character.voigt_shape is not None),
-            "unit": unit_string(None if spec is None else spec.dimensions, si=si),
-            "layers": [int(a) for a in attributes],
-        })
-    return {
-        "class": type(model).__name__,
-        "scales": {"length": float(scales.length), "mass": float(scales.mass),
-                   "time": float(scales.time)},
-        "constants": {str(k): float(model.constant(k)) for k in model.constants},
-        "fields": fields,
-    }
+def constants_block(model: Model) -> dict[str, float]:
+    """The `constants` record: the model's constants, in its units."""
+    return {str(k): float(model.constant(k)) for k in model.constants}
 
 
 # ---------------------------------------------------------- the manifest
@@ -309,42 +227,32 @@ class MeshManifest:
     """Everything a consumer needs that the mesh file cannot carry."""
 
     _: KW_ONLY
-    geometry: dict[str, Any] = field(default_factory=dict)
+    #: The mesh file and how to open it; see `mesh_block`.
     mesh: dict[str, Any] = field(default_factory=dict)
-    delivery: str = "physical"
     layers: list[dict[str, Any]] = field(default_factory=list)
     interfaces: list[dict[str, Any]] = field(default_factory=list)
-    mapping: dict[str, Any] = field(default_factory=dict)
-    sizing: dict[str, Any] = field(default_factory=dict)
-    validation: dict[str, Any] = field(default_factory=dict)
-    provenance: dict[str, Any] = field(default_factory=dict)
-    #: The MFEM delivery, or None for a bare mesh: which files were
-    #: written, how the mesh must be constructed for their dof numbering
-    #: to hold, and one record per GridFunction.  Written by the export.
-    files: dict[str, Any] | None = None
-    #: What the exported field values mean, or None where no fields were
-    #: exported: the model's class, scales, constants and one record per
-    #: field.  Written by the field export; see `model_block`.
-    model: dict[str, Any] | None = None
+    #: One record per field written beside the mesh; see `FieldEntry`.
+    fields: list[dict[str, Any]] = field(default_factory=list)
+    #: The scales the field values are in, or None until a model is exported.
+    scales: dict[str, float] | None = None
+    #: The model's constants in its units; empty until a model is exported.
+    constants: dict[str, float] = field(default_factory=dict)
+    #: The spec's `meta`, copied through.
+    meta: dict[str, Any] = field(default_factory=dict)
     schema: str = SCHEMA
 
     @classmethod
-    def from_build(cls, *, geometry: Mapping[str, Any], mesh: Mapping[str, Any],
-                   delivery: str, layers: Sequence[LayerEntry],
+    def from_build(cls, *, mesh: Mapping[str, Any], layers: Sequence[LayerEntry],
                    interfaces: Sequence[InterfaceEntry],
-                   mapping: Mapping[str, Any], sizing: Mapping[str, Any],
-                   validation: Mapping[str, Any],
-                   provenance: Mapping[str, Any]) -> "MeshManifest":
-        """A manifest from typed entries and the blocks the builders make.
+                   meta: Mapping[str, Any] | None = None) -> "MeshManifest":
+        """A manifest from the mesh block and the typed entries.
 
         The one place a manifest is assembled, so a key cannot drift
         between builders and the schema is described once.
         """
-        card = cls(geometry=dict(geometry), mesh=dict(mesh), delivery=delivery,
-                   layers=[asdict(e) for e in layers],
+        card = cls(mesh=dict(mesh), layers=[asdict(e) for e in layers],
                    interfaces=[asdict(e) for e in interfaces],
-                   mapping=dict(mapping), sizing=dict(sizing),
-                   validation=dict(validation), provenance=dict(provenance))
+                   meta=dict(meta or {}))
         validate_structure(card)
         return card
 
@@ -366,30 +274,46 @@ class MeshManifest:
             f"no interface named {name!r}; interfaces are "
             f"{[e.get('name') for e in self.interfaces]}")
 
+    def field_record(self, name: str) -> dict[str, Any]:
+        """The record of a named field."""
+        for entry in self.fields:
+            if entry.get("name") == name:
+                return entry
+        raise KeyError(
+            f"no field named {name!r}; fields are "
+            f"{[e.get('name') for e in self.fields]}")
+
     @property
     def shell_attributes(self) -> tuple[int, ...]:
         """Attributes of the layers outside the geometry: the shells."""
         return tuple(int(e["attribute"]) for e in self.layers
                      if not e.get("in_geometry", True))
 
+    @property
+    def inner_radius(self) -> float:
+        """The inner radius of the mesh: zero for a full one."""
+        return float(self.layers[0]["r_inner"])
+
+    @property
+    def outer_radius(self) -> float:
+        """The outer radius of the mesh, shells included."""
+        return float(self.layers[-1]["r_outer"])
+
     def describe(self) -> str:
         """A readable multi-line summary of the manifest.
 
-        The schema and the delivery, the geometry block, one line per
-        layer and per interface, the mapping, the validation verdict,
-        the files block where the MFEM export wrote one and the model
-        block where fields were exported.  Every length is in the
-        geometry's own numbers.
+        The schema, the mesh line, one line per layer, per interface
+        and per field, and the scales and constants where a model was
+        exported.  Every length is in the mesh's own numbers.
         """
-        lines = [f"{self.schema}", f"  delivery    {self.delivery}",
-                 "  geometry    " + _pairs(self.geometry)]
         m = self.mesh
-        if m:
-            lines.append(
-                f"  mesh        {m.get('dimension', '?')}D, order "
-                f"{m.get('element_order', '?')}, {m.get('n_elements', '?')} "
-                f"elements, {m.get('n_nodes', '?')} nodes, gmsh "
-                f"{m.get('gmsh_version', '?')}")
+        options = _pairs(m.get("read_options", {}))
+        lines = [f"{self.schema}",
+                 f"  mesh        {m.get('file', '?')} ({m.get('format', '?')}), "
+                 f"{m.get('nodes', '?')} nodes"
+                 + (f", read options {options}" if options else "")
+                 + (f", displacement {m['displacement']}"
+                    if m.get("displacement") else "")]
         lines.append("  layers")
         rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
                  f"[{_num(e.get('r_inner'))}, {_num(e.get('r_outer'))}]",
@@ -398,59 +322,36 @@ class MeshManifest:
         lines.extend(_table(rows))
         lines.append("  interfaces")
         rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
-                 f"mean radius {_num(e.get('mean_radius'))}",
+                 f"radius {_num(e.get('radius'))}",
                  f"between layers {list(e.get('between_layers', []))}")
                 for e in self.interfaces]
         lines.extend(_table(rows))
-        mp = self.mapping
-        knots = ", ".join(_num(k) for k in mp.get("knots", ()))
-        lines.append(
-            f"  mapping     {mp.get('kind', '?')}, applied to nodes "
-            f"{mp.get('applied_to_nodes', '?')}, knots [{knots}]")
-        v = self.validation
-        if v:
-            failures = v.get("failures", [])
-            ok = (not failures and not v.get("negative_jacobians")
-                  and not v.get("wrong_orientation")
-                  and v.get("min_sicn", 0.0) > 0.0)
-            warns = v.get("warnings", [])
-            lines.append(
-                f"  validation  {'ok' if ok else 'FAILED'}, minSICN "
-                f"{_num(v.get('min_sicn'))}, "
-                + (f"{len(warns)} warning(s)" if warns else "no warnings"))
-            lines.extend(f"    - FAILED: {w}" for w in failures)
-            lines.extend(f"    - {w}" for w in warns)
-        f = self.files
-        if f is not None:
-            lines.append(
-                f"  files       mesh {f.get('mesh', '?')}, read options "
-                + _pairs(f.get("mesh_read_options", {})))
-            for gf in f.get("grid_functions", []):
-                lines.append(
-                    f"    {gf.get('kind', '?')}  {gf.get('name', '?')}  "
-                    f"{gf.get('file', '?')}  {gf.get('fe_space', '?')} "
-                    f"vdim {gf.get('vdim', '?')} {gf.get('ordering', '?')}")
-        m = self.model
-        if m is not None:
-            lines.append(
-                f"  model       {m.get('class', '?')}, scales "
-                + _pairs(m.get("scales", {})) + ", constants "
-                + _pairs(m.get("constants", {})))
-            rows = [(str(e.get("name", "?")),
+        if self.fields:
+            lines.append("  fields")
+            rows = [(str(e.get("name", "?")), str(e.get("file", "?")),
+                     f"{e.get('fe_space', '?')} vdim {e.get('vdim', '?')} "
+                     f"{e.get('ordering', '?')}",
                      f"rank {e.get('rank', '?')} weight {e.get('weight', '?')}"
                      + (" Voigt" if e.get("voigt") else ""),
                      str(e.get("unit", "?")),
                      f"layers {list(e.get('layers', []))}")
-                    for e in m.get("fields", [])]
+                    for e in self.fields]
             lines.extend(_table(rows, numbered=False))
+        if self.scales is not None:
+            lines.append("  scales      " + _pairs(self.scales)
+                         + (", constants " + _pairs(self.constants)
+                            if self.constants else ""))
+        if self.meta:
+            lines.append("  meta        " + _pairs(self.meta))
         return "\n".join(lines)
 
     def __str__(self) -> str:
         return self.describe()
 
     def __repr__(self) -> str:
-        return (f"MeshManifest({self.schema}, {self.delivery}, "
-                f"{len(self.layers)} layers, {len(self.interfaces)} interfaces)")
+        return (f"MeshManifest({self.schema}, {self.mesh.get('file', '?')}, "
+                f"{len(self.layers)} layers, {len(self.interfaces)} interfaces, "
+                f"{len(self.fields)} fields)")
 
 
 def _num(value: object) -> str:
@@ -482,13 +383,11 @@ def write(path: str | Path, manifest: MeshManifest) -> Path:
     """Write the manifest beside its mesh, and return the path."""
     path = beside(path, ".json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = asdict(manifest)
-    data.setdefault("mesh", {}).setdefault(
-        "date", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     with open(path, "w") as fh:
         # allow_nan=False: a strict parser cannot read NaN or Infinity, so
         # a manifest carrying one fails here, where the cause is known.
-        json.dump(data, fh, indent=2, sort_keys=False, allow_nan=False)
+        json.dump(asdict(manifest), fh, indent=2, sort_keys=False,
+                  allow_nan=False)
         fh.write("\n")
     return path
 
@@ -510,43 +409,13 @@ def read(path: str | Path) -> MeshManifest:
 
 # ------------------------------------------------------------ the checks
 
-#: What every block must carry, and as what: {block: {key: JSON types}}.
-_BLOCKS = {
-    "geometry": {"outer_radius": (int, float), "inner_radius": (int, float),
-                 "n_layers": (int,)},
-    "mesh": {"dimension": (int,), "element_order": (int,),
-             "gmsh_version": (str,), "msh_version": (int, float),
-             "algorithm_2d": (int,), "algorithm_3d": (int,),
-             "n_nodes": (int,), "n_elements": (int,),
-             "high_order_optimised": (bool,)},
-    "mapping": {"kind": (str,), "repr": (str,), "knots": (list,),
-                "applied_to_nodes": (bool,)},
-    "sizing": {"policy": (str,), "per_interface": (list,)},
-    "validation": {"negative_jacobians": (int,), "min_sicn": (int, float),
-                   "wrong_orientation": (int,), "faces_reoriented": (int,),
-                   "max_interface_radius_error": (int, float),
-                   "warnings": (list,)},
-    "provenance": {"planetmodel_version": (str,), "mesh_file": (str,),
-                   "perturbation": (dict, type(None)), "meta": (dict,)},
-}
+#: What the `mesh` block must carry, and as what.
+_MESH_FIELDS = {"file": (str,), "format": (str,), "nodes": (str,),
+                "read_options": (dict,), "displacement": (str, type(None))}
 
-#: What every `sizing.per_interface` record carries.
-_SIZING_FIELDS = {"attribute": (int,), "size": (int, float),
-                  "far_size": (int, float), "decay_width": (int, float)}
-
-#: What every `files.grid_functions` record carries.  A consumer reads
-#: these to build the space before it opens the file.
-_GF_FIELDS = {"kind": (str,), "name": (str,), "file": (str,),
-              "fe_space": (str,), "vdim": (int,), "ordering": (str,)}
-
-#: What the `model` block carries, and what each of its `fields[]`
-#: records carries.
-_MODEL_FIELDS = {"class": (str,), "scales": (dict,), "constants": (dict,),
-                 "fields": (list,)}
-_MODEL_SCALES = {"length": (int, float), "mass": (int, float),
-                 "time": (int, float)}
-_MODEL_FIELD_ENTRY = {"name": (str,), "rank": (int,), "weight": (int,),
-                      "voigt": (bool,), "unit": (str,), "layers": (list,)}
+#: What the `scales` block carries where there is one.
+_SCALES_FIELDS = {"length": (int, float), "mass": (int, float),
+                  "time": (int, float)}
 
 
 def _typed(value: object, kinds: tuple[type, ...]) -> bool:
@@ -581,45 +450,32 @@ def validate_structure(manifest: MeshManifest) -> None:
     def fail(msg: str) -> NoReturn:
         raise ValueError(f"malformed manifest: {msg}")
 
-    if manifest.delivery not in DELIVERIES:
-        fail(f"delivery {manifest.delivery!r} is not one of {DELIVERIES}")
-    for name, types in _BLOCKS.items():
-        _check_record(getattr(manifest, name), types, name, fail)
-    if manifest.mesh["dimension"] not in (2, 3):
-        fail(f"mesh.dimension is {manifest.mesh['dimension']}, not 2 or 3")
-    if not all(_typed(k, (int, float)) for k in manifest.mapping["knots"]):
-        fail("mapping.knots must be a list of numbers")
-    for i, entry in enumerate(manifest.sizing["per_interface"]):
-        _check_record(entry, _SIZING_FIELDS, f"sizing.per_interface[{i}]", fail)
-    if not all(isinstance(w, str) for w in manifest.validation["warnings"]):
-        fail("validation.warnings must be a list of strings")
-    if not all(isinstance(w, str) for w in manifest.validation.get("failures", [])):
-        fail("validation.failures must be a list of strings")
+    m = manifest.mesh
+    _check_record(m, _MESH_FIELDS, "mesh", fail)
+    if m["format"] not in FORMATS:
+        fail(f"mesh.format {m['format']!r} is not one of {FORMATS}")
+    if m["nodes"] not in NODES:
+        fail(f"mesh.nodes {m['nodes']!r} is not one of {NODES}")
 
     for what, entries, cls in (("layers", manifest.layers, LayerEntry),
                                ("interfaces", manifest.interfaces,
-                                InterfaceEntry)):
+                                InterfaceEntry),
+                               ("fields", manifest.fields, FieldEntry)):
         if not isinstance(entries, list):
             fail(f"{what} must be a list of objects")
         types = _entry_types(cls)
         for i, e in enumerate(entries):
             _check_record(e, types, f"{what}[{i}]", fail)
 
-    n_layers = manifest.geometry["n_layers"]
-    if len(manifest.layers) != n_layers:
-        fail(f"geometry.n_layers is {n_layers} but {len(manifest.layers)} "
-             "layers are listed")
+    n_layers = len(manifest.layers)
+    if not n_layers:
+        fail("no layers are listed")
     for i, lay in enumerate(manifest.layers):
         if lay["attribute"] != i + 1:
             fail(f"layers[{i}].attribute is {lay['attribute']}, expected {i + 1}")
         if i and lay["r_inner"] != manifest.layers[i - 1]["r_outer"]:
             fail(f"layers[{i}] starts at {lay['r_inner']} but the "
                  f"layer below ends at {manifest.layers[i - 1]['r_outer']}")
-    if manifest.layers:
-        if manifest.layers[0]["r_inner"] != manifest.geometry["inner_radius"]:
-            fail("layers[0].r_inner disagrees with geometry.inner_radius")
-        if manifest.layers[-1]["r_outer"] != manifest.geometry["outer_radius"]:
-            fail("the last layer's r_outer disagrees with geometry.outer_radius")
 
     n_faces = len(manifest.interfaces)
     if n_faces not in (n_layers, n_layers + 1):
@@ -635,54 +491,27 @@ def validate_structure(manifest: MeshManifest) -> None:
         if list(face["between_layers"]) != want:
             fail(f"interfaces[{i}].between_layers is "
                  f"{face['between_layers']}, expected {want}")
-    _check_files(manifest.files, fail)
-    _check_model(manifest.model, manifest.files, n_layers, fail)
 
-
-def _check_files(files: object, fail: Fail) -> None:
-    """The MFEM delivery's `files` block, or nothing where none was written."""
-    if files is None:
-        return
-    if not isinstance(files, dict):
-        fail(f"files is {type(files).__name__}, not an object")
-    if not isinstance(files.get("mesh"), str):
-        fail(f"files.mesh is {files.get('mesh')!r}, not a mesh file name")
-    options = files.get("mesh_read_options")
-    if not isinstance(options, dict) or "refine" not in options:
-        fail("files.mesh_read_options must give the mfem::Mesh constructor "
-             "arguments the dof numbering was written under")
-    entries = files.get("grid_functions")
-    if not isinstance(entries, list):
-        fail("files.grid_functions must be a list of objects")
-    for i, e in enumerate(entries):
-        _check_record(e, _GF_FIELDS, f"files.grid_functions[{i}]", fail)
-
-
-def _check_model(model: object, files: Mapping[str, Any] | None, n_layers: int,
-                 fail: Fail) -> None:
-    """The field export's `model` block, or nothing where none was written.
-
-    Every field record names a grid function of kind "field" in `files`
-    and lies on attributes the mesh has.
-    """
-    if model is None:
-        return
-    _check_record(model, _MODEL_FIELDS, "model", fail)
-    _check_record(model["scales"], _MODEL_SCALES, "model.scales", fail)
-    for key, value in model["constants"].items():
-        if not _typed(value, (int, float)):
-            fail(f"model.constants.{key} is {value!r}, not a number")
-    written = {e.get("name") for e in (files or {}).get("grid_functions", [])
-               if e.get("kind") == "field"}
-    for i, e in enumerate(model["fields"]):
-        where = f"model.fields[{i}]"
-        _check_record(e, _MODEL_FIELD_ENTRY, where, fail)
+    names = [e["name"] for e in manifest.fields]
+    if len(set(names)) != len(names):
+        fail(f"field names repeat: {names}")
+    for i, e in enumerate(manifest.fields):
         if not all(_typed(a, (int,)) and 1 <= a <= n_layers for a in e["layers"]):
-            fail(f"{where}.layers is {e['layers']}, not attributes in "
+            fail(f"fields[{i}].layers is {e['layers']}, not attributes in "
                  f"1..{n_layers}")
-        if e["name"] not in written:
-            fail(f"{where} names {e['name']!r}, which files.grid_functions "
-                 "holds no field grid function for")
+    if m["displacement"] is not None and m["displacement"] not in names:
+        fail(f"mesh.displacement names {m['displacement']!r}, which fields "
+             "holds no record for")
+
+    if manifest.scales is not None:
+        _check_record(manifest.scales, _SCALES_FIELDS, "scales", fail)
+    if not isinstance(manifest.constants, dict):
+        fail("constants must be an object")
+    for key, value in manifest.constants.items():
+        if not _typed(value, (int, float)):
+            fail(f"constants.{key} is {value!r}, not a number")
+    if not isinstance(manifest.meta, dict):
+        fail("meta must be an object")
 
 
 def validate_against(manifest: MeshManifest, *, layer_count: int,

@@ -1,7 +1,7 @@
 # %% [markdown]
 # # 3. A radial mesh
 #
-# A one-dimensional spectral-element mesh is the other way a skeleton is
+# A one-dimensional spectral-element mesh is one way a skeleton is
 # handed to a solver: a chain of elements along the radius, each carrying
 # Gauss-Lobatto-Legendre (GLL) nodes, with every skeleton boundary an
 # element boundary so that no element straddles a discontinuity. The mesh
@@ -89,8 +89,12 @@ r = np.array([0.1, 0.3, 0.5, 0.549, 0.551, 0.7, 0.9])
 exact = np.where(r < 0.55, core(r), mantle(r))
 print("P(r)  :", np.round(P(r), 4))
 print("exact :", np.round(exact, 4))
-print("integral over the mantle:", P.integrate(0.55, 0.99),
-      "| exact:", 5.5 * 0.44 - (0.99**2 - 0.55**2))
+print(
+    "integral over the mantle:",
+    P.integrate(0.55, 0.99),
+    "| exact:",
+    5.5 * 0.44 - (0.99**2 - 0.55**2),
+)
 
 # %% [markdown]
 # ## Truncation for a degree-l solve
@@ -104,8 +108,10 @@ print("integral over the mantle:", P.integrate(0.55, 0.99),
 fine = RadialMesh(sk, ngll=5, lmax=64)
 print(fine)
 for l in (2, 8, 32, 64):
-    print(f"l = {l:3d}: start at r = {fine.truncation_radius(l):.3f}, "
-          f"element {fine.start_element(l)} of {fine.nspec}")
+    print(
+        f"l = {l:3d}: start at r = {fine.truncation_radius(l):.3f}, "
+        f"element {fine.start_element(l)} of {fine.nspec}"
+    )
 
 # %% [markdown]
 # ## A picture
@@ -116,19 +122,22 @@ for l in (2, 8, 32, 64):
 # %%
 try:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 except ImportError:
     print("matplotlib is not installed; no figure")
     raise SystemExit(0)
 
-fig, (top, bottom) = plt.subplots(2, 1, figsize=(9, 5), sharex=True,
-                                  gridspec_kw={"height_ratios": [1, 2]})
+fig, (top, bottom) = plt.subplots(
+    2, 1, figsize=(9, 5), sharex=True, gridspec_kw={"height_ratios": [1, 2]}
+)
 colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 for e in range(mesh.nspec):
     c = colours[mesh.layer[e] % len(colours)]
-    top.plot([mesh.left[e], mesh.right[e]], [0, 0], color=c, lw=6,
-             solid_capstyle="butt")
+    top.plot(
+        [mesh.left[e], mesh.right[e]], [0, 0], color=c, lw=6, solid_capstyle="butt"
+    )
     top.plot(mesh.r[e], np.zeros(mesh.ngll), "k.", ms=3)
 for b in sk.boundaries:
     top.axvline(b, color="0.6", lw=0.8)

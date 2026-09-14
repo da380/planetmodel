@@ -5,9 +5,7 @@ import pytest
 
 import gmsh
 
-from planetmodel import IdentityMapping
 from planetmodel.mesh3d import InterfaceSizing
-from planetmodel.mesh3d._displace import apply_mapping
 from planetmodel.mesh3d._geometry import (ConcentricGeometry, build_concentric,
                                           entity_radius, outer_face_of)
 from planetmodel.mesh3d._orient import (element_quality, node_positions,
@@ -22,7 +20,6 @@ from planetmodel.mesh3d._tagging import (apply_physical_groups, default_atol,
 from planetmodel.mesh3d._validate import check_interface_radii, validate_mesh
 from planetmodel.mesh3d._writer import element_counts, read_groups, write_msh
 
-from conftest import flattening
 
 pytestmark = pytest.mark.gmsh
 
@@ -315,33 +312,6 @@ def test_raise_order_leaves_every_element_valid(order):
         assert negative_cells(3) == 0 and inward_faces() == 0
         with pytest.raises(ValueError, match="at least 1"):
             raise_order(3, 0)
-
-
-# ---------------------------------------------------------- displacement
-
-def test_apply_mapping_moves_every_node_and_reports():
-    with session(name="move"):
-        build_and_mesh(FULL, 3)
-        _, before, _ = gmsh.model.mesh.getNodes()
-        X = before.reshape(-1, 3)
-        report = apply_mapping(flattening(0.05))
-        _, after, _ = gmsh.model.mesh.getNodes()
-        x = after.reshape(-1, 3)
-        assert report.nodes == X.shape[0]
-        assert report.max_displacement == pytest.approx(0.05, rel=0.05)
-        assert report.validity_margin > 0.0
-        assert np.allclose(x, flattening(0.05)(X))
-        assert apply_mapping(IdentityMapping()).max_displacement == 0.0
-
-
-def test_a_folding_mapping_is_refused_before_any_node_moves():
-    with session(name="fold"):
-        build_and_mesh(FULL, 3)
-        _, before, _ = gmsh.model.mesh.getNodes()
-        with pytest.raises(ValueError, match="orientation-preserving"):
-            apply_mapping(flattening(3.0))
-        _, after, _ = gmsh.model.mesh.getNodes()
-        assert np.array_equal(before, after)
 
 
 # ------------------------------------------------------------ validation

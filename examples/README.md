@@ -11,7 +11,7 @@ tutorial keeps go under `figures/`, which is gitignored.
 | `01_skeleton_and_geometry.py` | a skeleton, its surgery, a geometry with names, hollow geometries, scaling |
 | `02_an_analytic_mapping.py` | a radial stretch from an analytic displacement, `F` and `J`, validity, kinks, a non-radial mapping |
 | `03_a_radial_mesh.py` | the GLL reference element, a radial mesh over a skeleton, per-element nodes, the exact polynomial view, truncation by degree, a figure (uses the `plot` extra when present) |
-| `04_a_mesh_for_mfem.py` | a 2D and a 3D mesh of a geometry with a buffer shell, the manifest, export to MFEM; the files are kept under `figures/tutorial_04_meshes/` for gmsh and glvis, or discarded with `--temp` (needs the `meshing` and `mfem` extras) |
+| `04_a_mesh_for_mfem.py` | a mesh of a skeleton and its manifest, then topography through a mapping as a physical mesh, then a buffer shell with the topography tapered across it, each delivered to MFEM; the files are kept under `figures/tutorial_04_meshes/` for gmsh and glvis, or discarded with `--temp` (needs the `meshing` and `mfem` extras) |
 | `05_fields.py` | fields as functions of position on one layer, radial fields as the exact special case, the algebra, real and complex dtypes, tensors and frames, push-forward, a figure |
 | `06_a_model_of_your_own.py` | a model from scratch: geometry, fields, specs and constants, validation, conversion of units, surgery, a model type of your own, a figure |
 | `07_prem.py` | PREM from its polynomials: layers, moduli, gravity, nodal values on a radial mesh, a figure |

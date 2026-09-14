@@ -81,15 +81,16 @@ def test_mesh_spec_validates():
         MeshSpec(g, COARSE, dimension=1)
     with pytest.raises(ValueError, match="element order"):
         MeshSpec(g, COARSE, order=4)
-    with pytest.raises(ValueError, match="delivery must be"):
-        MeshSpec(g, COARSE, delivery="halfway")
+    with pytest.raises(ValueError, match="outer_boundary must be"):
+        MeshSpec(g, COARSE, outer_boundary="round")
     with pytest.raises(TypeError, match="divisor"):
         MeshSpec(g, COARSE, divisor=2.0)
 
 
 def test_mesh_spec_is_frozen_with_defaults():
     spec = MeshSpec(full_geometry(), COARSE)
-    assert (spec.dimension, spec.order, spec.delivery) == (3, 2, "physical")
+    assert (spec.dimension, spec.order) == (3, 2)
+    assert spec.outer_boundary == "free"
     assert spec.shells == () and spec.meta == {} and spec.validate
     with pytest.raises(dataclasses.FrozenInstanceError):
         spec.order = 3

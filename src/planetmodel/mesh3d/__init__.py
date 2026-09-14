@@ -1,9 +1,11 @@
 """mesh3d: 2D and 3D meshes of layered geometries, via gmsh.
 
-A MeshSpec describes what is wanted, `build_layered_mesh` produces it
-and a MeshResult says what was written; `build_offset_mesh` makes the
-two-body benchmark geometries, `export_mfem_mesh` turns either into an
-MFEM delivery and `export_mfem` adds the fields of a model to a layered
+A MeshSpec describes what is wanted, `build_layered_mesh` produces the
+reference mesh of it through gmsh and a MeshResult says what was
+written; `build_offset_mesh` makes the two-body benchmark geometries.
+`export_mfem_mesh` turns either into an MFEM delivery, where the
+geometry's mapping is applied, moving the nodes or written beside them
+as a field, and `export_mfem` adds the fields of a model to a layered
 one.  The manifest that travels with every mesh is `manifest`.
 Geometry construction, tagging, sizing fields, orientation repair and
 gmsh session management are private: consumers depend on the mesh and

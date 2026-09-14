@@ -16,7 +16,8 @@ from planetmodel.mesh3d import (InterfaceSizing, MeshSpec, Shell,
                                 manifest as sc)
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._writer import read_groups
-from planetmodel.mesh3d.layered import require_mapping_on_shells
+from planetmodel.mesh3d.layered import (require_mapping_on_shells,
+                                        require_spherical_outer_boundary)
 
 from conftest import COARSE, confined_flattening, flattening, full_geometry, \
     hollow_geometry
@@ -80,16 +81,16 @@ def test_identity_builds_produce_a_checked_mesh_and_manifest(build, dimension,
 def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
     res = build(dimension, hollow, shells)
     card = sc.read(res.manifest_path)
-    assert card.schema == sc.SCHEMA and card.delivery == "physical"
+    assert card.schema == sc.SCHEMA
     sc.validate_against(card, layer_count=res.counts["layers"],
                         interface_count=res.counts["interfaces"])
-    assert card.mesh["dimension"] == dimension and card.mesh["element_order"] == 2
-    assert card.mesh["n_elements"] == res.counts["elements"]
-    assert "divisor" not in card.geometry
-    assert card.geometry["outer_radius"] == pytest.approx(1.25 if shells else 1.0)
-    assert card.geometry["inner_radius"] == pytest.approx(0.5 if hollow else 0.0)
-    assert card.geometry["n_layers"] == res.counts["layers"]
-    assert card.geometry["n_shells"] == int(shells)
+    assert card.mesh == {"file": res.msh_path.name, "format": "msh",
+                         "nodes": "reference", "read_options": {},
+                         "displacement": None}
+    assert card.outer_radius == pytest.approx(1.25 if shells else 1.0)
+    assert card.inner_radius == pytest.approx(0.5 if hollow else 0.0)
+    assert len(card.layers) == res.counts["layers"]
+    assert len(card.shell_attributes) == int(shells)
     flags = [lay["in_geometry"] for lay in card.layers]
     assert flags == [True] * (2 if hollow else 3) + [False] * int(shells)
     assert card.shell_attributes == ((res.counts["layers"],) if shells else ())
@@ -103,13 +104,8 @@ def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
     first = 1 if hollow else 0
     assert between == [[k - first, k + 1 - first if k + 1 - first < n else -1]
                        for k in range(len(between))]
-    assert card.mapping["kind"] == "IdentityMapping"
-    assert card.mapping["applied_to_nodes"] is False
-    assert card.mapping["knots"] == []
-    assert card.sizing["policy"] == "UniformInterfaces"
-    assert card.provenance["perturbation"] is None
-    assert card.provenance["mesh_file"] == res.msh_path.name
-    assert card.files is None
+    assert card.fields == [] and card.scales is None and card.constants == {}
+    assert card.meta == {}
 
 
 def test_the_mesh_is_msh_2_2_with_names_intact(build):
@@ -143,65 +139,51 @@ def test_unnamed_layers_get_default_names(tmp_path):
 
 # ------------------------------------------------------------ the mapping
 
-@pytest.fixture(scope="module")
-def deformed(tmp_path_factory):
-    """The flattened geometry, built physically and referentially in 3D."""
-    root = tmp_path_factory.mktemp("deformed")
+def test_the_mesher_leaves_the_nodes_on_the_reference_spheres(tmp_path):
+    """The mapping is carried on the result, never applied by gmsh."""
     g = full_geometry().with_mapping(flattening(0.05))
-    return {d: build_layered_mesh(MeshSpec(g, COARSE, delivery=d), root / d)
-            for d in ("physical", "referential")}
-
-
-def test_the_physical_delivery_moves_the_nodes(deformed):
-    res = deformed["physical"]
+    res = build_layered_mesh(MeshSpec(g, COARSE), tmp_path / "deformed")
     assert res.validation.ok
     card = sc.read(res.manifest_path)
-    assert card.delivery == "physical"
-    assert card.mapping["kind"] == "RadialStretch"
-    assert "flattening" in card.mapping["repr"]
-    assert card.mapping["applied_to_nodes"] is True
-    p = card.provenance["perturbation"]
-    assert p["nodes"] == res.counts["nodes"]
-    assert p["max_displacement"] == pytest.approx(0.05, rel=0.05)
-    assert p["validity_margin"] > 0.0
-    assert "perturb" in res.timings
-    # the surface nodes carry the flattening: radii spread over 1 -+ 0.05
-    r = node_radii(res.msh_path)
-    assert r.max() == pytest.approx(1.025, abs=2e-3)
-    assert r.min() == pytest.approx(0.0, abs=1e-12)
-    # the interfaces were checked at their reference radii
-    assert res.validation.max_interface_radius_error < 1e-3
-
-
-def test_the_referential_delivery_leaves_the_nodes_alone(deformed):
-    res = deformed["referential"]
-    card = sc.read(res.manifest_path)
-    assert card.delivery == "referential"
-    assert card.mapping["applied_to_nodes"] is False
-    assert card.provenance["perturbation"] is None
+    assert card.mesh["nodes"] == "reference"
+    assert "perturb" not in res.timings
     assert node_radii(res.msh_path).max() == pytest.approx(1.0, abs=1e-6)
+    assert res.validation.max_interface_radius_error < 1e-3
     assert res.mapping is res.geometry.mapping
 
 
-def test_two_dimensions_take_the_same_mapping(tmp_path):
+def test_two_dimensions_carry_the_same_mapping(tmp_path):
     g = full_geometry().with_mapping(flattening(0.05))
     res = build_layered_mesh(MeshSpec(g, COARSE, dimension=2), tmp_path / "disc")
     assert res.validation.ok
-    # in the plane theta = pi/2, P2 = -1/2, so every node moves out by 2.5 %
-    r = node_radii(res.msh_path)
-    assert r.max() == pytest.approx(1.025, abs=1e-6)
+    assert res.mapping is g.mapping
+    assert node_radii(res.msh_path).max() == pytest.approx(1.0, abs=1e-6)
 
 
-def test_a_mapping_that_moves_the_outer_boundary_is_refused_with_shells(tmp_path):
+def test_a_mapping_may_move_the_outer_boundary_of_the_shells(tmp_path):
+    """The outer boundary carries topography unless a spherical one is asked for."""
     g = full_geometry().with_mapping(flattening(0.05))
     spec = MeshSpec(g, COARSE, shells=[Shell(ratio=0.2)])
+    require_mapping_on_shells(spec)
+    res = build_layered_mesh(spec, tmp_path / "free")
+    assert res.validation.ok
+    assert sc.read(res.manifest_path).outer_radius == pytest.approx(1.2)
+
+
+def test_a_spherical_outer_boundary_refuses_a_mapping_that_moves_it(tmp_path):
+    g = full_geometry().with_mapping(flattening(0.05))
+    spec = MeshSpec(g, COARSE, shells=[Shell(ratio=0.2)], outer_boundary="spherical")
     path = tmp_path / "refused"
     with pytest.raises(ValueError, match="identity on the outer boundary"):
         build_layered_mesh(spec, path)
     assert not path.with_suffix(".msh").exists()
     assert not path.with_suffix(".json").exists()
     with pytest.raises(ValueError, match="identity on the outer boundary"):
-        require_mapping_on_shells(spec)
+        require_spherical_outer_boundary(spec)
+    # the rule is about the domain's outer boundary, shells or not
+    with pytest.raises(ValueError, match="identity on the outer boundary"):
+        build_layered_mesh(MeshSpec(g, COARSE, outer_boundary="spherical"),
+                           tmp_path / "refused_too")
 
 
 def test_a_mapping_undefined_on_the_shells_is_refused(tmp_path):
@@ -219,19 +201,13 @@ def test_a_mapping_undefined_on_the_shells_is_refused(tmp_path):
 
 def test_a_displacement_confined_to_the_geometry_is_accepted_with_shells(tmp_path):
     g = full_geometry().with_mapping(confined_flattening(0.05))
-    spec = MeshSpec(g, COARSE, shells=[Shell(ratio=0.2)], delivery="physical")
+    spec = MeshSpec(g, COARSE, shells=[Shell(ratio=0.2)],
+                    outer_boundary="spherical")
     res = build_layered_mesh(spec, tmp_path / "confined")
     assert res.validation.ok
     card = sc.read(res.manifest_path)
-    assert card.geometry["outer_radius"] == pytest.approx(1.2)
-    assert card.mapping["applied_to_nodes"] is True
-    assert card.mapping["knots"] == pytest.approx([0.8, 1.0])
-    # the outer boundary of the shell stays a sphere of radius 1.2
-    r = node_radii(res.msh_path)
-    assert r.max() == pytest.approx(1.2, abs=1e-9)
-    # the displacement is largest at the Moho's poles: 0.05 * 0.8
-    p = card.provenance["perturbation"]
-    assert p["max_displacement"] == pytest.approx(0.04, rel=0.05)
+    assert card.outer_radius == pytest.approx(1.2)
+    assert card.mesh["nodes"] == "reference"
 
 
 # ------------------------------------------------- the geometry's numbers
@@ -248,13 +224,11 @@ def test_the_geometry_is_meshed_in_its_own_numbers(tmp_path):
     assert res.validation.ok, res.validation.failures
     assert res.mapping is g.mapping
     card = sc.read(res.manifest_path)
-    assert card.geometry["outer_radius"] == a
-    assert card.geometry["inner_radius"] == 0.0
+    assert card.outer_radius == a
+    assert card.inner_radius == 0.0
     assert [lay["r_outer"] for lay in card.layers] == [3.48e6, 5.7e6, a]
-    assert [f["mean_radius"] for f in card.interfaces] == [3.48e6, 5.7e6, a]
-    assert card.sizing["per_interface"][0] == {
-        "attribute": 1, "size": 1.5e6, "far_size": 3e6, "decay_width": 3e6}
-    assert card.validation["max_interface_radius_error"] < 1e-3 * a
+    assert [f["radius"] for f in card.interfaces] == [3.48e6, 5.7e6, a]
+    assert res.validation.max_interface_radius_error < 1e-3 * a
     r = node_radii(res.msh_path)
     assert r.max() == pytest.approx(a, rel=1e-9)
     assert r.min() < 1.5e6                      # the core is meshed, not a hole
@@ -284,7 +258,7 @@ def test_sizing_at_the_wrong_scale_is_refused(tmp_path):
         build_layered_mesh(MeshSpec(full_geometry(), tiny), tmp_path / "tiny")
 
 
-def test_meta_and_a_function_rule_reach_the_manifest(tmp_path):
+def test_meta_reaches_the_manifest_and_a_function_rule_builds(tmp_path):
     def coarse(interfaces, outer_radius):
         return {f.index: InterfaceSizing(0.15, 0.3, 0.3) for f in interfaces}
 
@@ -292,10 +266,8 @@ def test_meta_and_a_function_rule_reach_the_manifest(tmp_path):
                     meta={"run": "a", "seed": 3})
     res = build_layered_mesh(spec, tmp_path / "meta")
     data = json.loads(res.manifest_path.read_text())
-    assert data["provenance"]["meta"] == {"run": "a", "seed": 3}
-    assert data["sizing"]["policy"] == "coarse"
-    assert data["mesh"]["element_order"] == 1
-    assert data["mesh"]["high_order_optimised"] is False
+    assert data["meta"] == {"run": "a", "seed": 3}
+    assert res.validation.ok
 
 
 @pytest.mark.parametrize("order", [1, 3])
@@ -303,4 +275,4 @@ def test_other_element_orders_build(order, tmp_path):
     spec = MeshSpec(hollow_geometry(), COARSE, dimension=2, order=order)
     res = build_layered_mesh(spec, tmp_path / f"o{order}")
     assert res.validation.ok
-    assert sc.read(res.manifest_path).mesh["element_order"] == order
+    assert res.spec.order == order

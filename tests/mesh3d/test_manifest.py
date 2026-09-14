@@ -6,91 +6,120 @@ import json
 
 import pytest
 
-from planetmodel import IdentityMapping, RadialStretch, ZeroDisplacement
-from planetmodel.mesh3d import InterfaceSizing, ValidationReport, manifest as sc
-from planetmodel.mesh3d._orient import OrientationReport
-from planetmodel.mesh3d.spec import QUALITY_FLOOR
+from planetmodel import LayeredIsotropicElastic, Scales
+from planetmodel.character import DENSITY, VECTOR
+from planetmodel.units import DENSITY as DENSITY_DIMS, G_SI, LENGTH
+from planetmodel.mesh3d import manifest as sc
 
 from conftest import full_geometry, hollow_geometry
 
 pytestmark = pytest.mark.gmsh
 
 
-def card_for(geometry, *, hollow_inner=None, files=None, delivery="physical"):
+def card_for(geometry, *, mesh=None, meta=None):
     """A manifest assembled by hand from a geometry, without a mesh."""
     b = geometry.skeleton.boundaries
     layers = [sc.LayerEntry.from_layer(lay, attribute=i + 1, r_inner=b[i],
                                        r_outer=b[i + 1], in_geometry=True)
               for i, lay in enumerate(geometry.layers)]
-    faces = [sc.InterfaceEntry.from_interface(f, attribute=k + 1,
-                                              mean_radius=f.radius)
+    faces = [sc.InterfaceEntry.from_interface(f, attribute=k + 1, radius=f.radius)
              for k, f in enumerate(geometry.interfaces)]
-    sizes = {k: InterfaceSizing(0.1, 0.2, 0.3) for k in range(len(faces))}
-    report = ValidationReport(dimension=3, min_sicn=0.4)
-    card = sc.MeshManifest.from_build(
-        geometry=sc.geometry_block(outer_radius=b[-1], inner_radius=b[0],
-                                   n_layers=len(layers)),
-        mesh=sc.mesh_block(dimension=3, order=2, gmsh_version="4.15",
-                           algorithm_2d=6, algorithm_3d=1,
-                           counts={"nodes": 10, "elements": 4},
-                           curving={"optimized": False}),
-        delivery=delivery, layers=layers, interfaces=faces,
-        mapping=sc.mapping_block(None, applied_to_nodes=False),
-        sizing=sc.sizing_block(policy="UniformInterfaces", sizes=sizes),
-        validation=sc.validation_block(report, OrientationReport()),
-        provenance=sc.provenance_block(mesh_file="m.msh", meta={"run": 1}))
-    card.files = files
+    mesh = mesh or sc.mesh_block("m.msh", format="msh", nodes="reference")
+    return sc.MeshManifest.from_build(mesh=mesh, layers=layers, interfaces=faces,
+                                      meta=meta)
+
+
+READ_OPTIONS = {"generate_edges": 1, "refine": 0, "fix_orientation": False}
+
+
+def displacement_entry(n_layers):
+    return sc.FieldEntry.from_field(
+        "displacement", "m.displacement.gf", fe_space="H1_3D_P2", vdim=3,
+        ordering="byNODES", character=VECTOR, dimensions=LENGTH, si=False,
+        layers=range(1, n_layers + 1))
+
+
+def exported_card(geometry, *, with_field=True):
+    """A manifest as the MFEM export leaves it, with a displacement and a field."""
+    n = geometry.nlayers
+    card = card_for(geometry)
+    card.mesh = sc.mesh_block("m.mesh", format="mfem", nodes="reference",
+                              read_options=READ_OPTIONS, displacement="displacement")
+    card.fields = [dataclasses.asdict(displacement_entry(n))]
+    if with_field:
+        rho = sc.FieldEntry.from_field(
+            "rho", "m.rho.gf", fe_space="L2_3D_P2", vdim=1, ordering="byNODES",
+            character=DENSITY, dimensions=DENSITY_DIMS, si=True,
+            layers=range(1, n + 1))
+        card.fields.append(dataclasses.asdict(rho))
+        card.scales = sc.scales_block(Scales.SI)
+        card.constants = {"G": G_SI}
+    sc.validate_structure(card)
     return card
-
-
-FILES = {"mesh": "m.mesh", "mesh_read_options": {"generate_edges": 1, "refine": 0,
-                                                 "fix_orientation": False},
-         "grid_functions": [{"kind": "displacement", "name": "displacement",
-                             "file": "m.displacement.gf", "fe_space": "H1_3D_P2",
-                             "vdim": 3, "ordering": "byNODES"}]}
 
 
 # ------------------------------------------------------------- assembly
 
-def test_from_build_assembles_every_block():
-    card = card_for(full_geometry(), files=FILES)
-    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/3"
-    assert card.geometry == {"outer_radius": 1.0, "inner_radius": 0.0,
-                             "n_layers": 3}
+def test_from_build_assembles_the_skeleton_and_the_mesh():
+    card = card_for(full_geometry(), meta={"run": 1})
+    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/4"
+    assert card.mesh == {"file": "m.msh", "format": "msh", "nodes": "reference",
+                         "read_options": {}, "displacement": None}
     assert [lay["name"] for lay in card.layers] == ["core", "mantle", "crust"]
     assert card.layers[0]["in_geometry"] is True
     assert [f["between_layers"] for f in card.interfaces] == [[0, 1], [1, 2], [2, -1]]
-    assert card.mapping == {"kind": "IdentityMapping", "repr": "IdentityMapping()",
-                            "knots": [], "applied_to_nodes": False}
-    assert card.sizing["policy"] == "UniformInterfaces"
-    assert card.sizing["per_interface"][1] == {
-        "attribute": 2, "size": 0.1, "far_size": 0.2, "decay_width": 0.3}
-    assert card.validation["min_sicn"] == 0.4 and card.validation["warnings"] == []
-    assert card.provenance["meta"] == {"run": 1}
-    assert card.provenance["perturbation"] is None
-    assert card.provenance["planetmodel_version"] == sc.planetmodel_version()
-    assert card.mesh["msh_version"] == 2.2 and card.mesh["n_elements"] == 4
+    assert [f["radius"] for f in card.interfaces] == [0.4, 0.8, 1.0]
+    assert card.fields == [] and card.scales is None and card.constants == {}
+    assert card.meta == {"run": 1}
+    assert (card.inner_radius, card.outer_radius) == (0.0, 1.0)
     assert card.layer_attribute("mantle") == 2
     assert card.interface_attribute("surface") == 3
     assert card.shell_attributes == ()
     with pytest.raises(KeyError, match="no interface named"):
         card.interface_attribute("ocean")
+    with pytest.raises(KeyError, match="no field named"):
+        card.field_record("rho")
 
 
 def test_a_hollow_geometry_has_one_more_interface_than_layers():
     card = card_for(hollow_geometry())
-    assert card.geometry["inner_radius"] == 0.5
+    assert card.inner_radius == 0.5
     assert [f["between_layers"] for f in card.interfaces] == [[-1, 0], [0, 1], [1, -1]]
     assert [f["name"] for f in card.interfaces] == ["inner", "mid", "outer"]
 
 
-def test_mapping_block_records_class_repr_and_knots():
-    m = RadialStretch(ZeroDisplacement(), rmax=1.0)
-    block = sc.mapping_block(m, knots=[0.5], applied_to_nodes=True)
-    assert block["kind"] == "RadialStretch" and block["repr"] == repr(m)
-    assert block["knots"] == [0.5] and block["applied_to_nodes"] is True
-    assert sc.mapping_block(IdentityMapping(), applied_to_nodes=False)["kind"] == \
-        "IdentityMapping"
+def test_mesh_block_refuses_unknown_formats_and_nodes():
+    block = sc.mesh_block("dir/m.mesh", format="mfem", nodes="physical",
+                          read_options=READ_OPTIONS)
+    assert block["file"] == "m.mesh" and block["read_options"] == READ_OPTIONS
+    with pytest.raises(ValueError, match="format must be"):
+        sc.mesh_block("m.vtk", format="vtk", nodes="reference")
+    with pytest.raises(ValueError, match="nodes must be"):
+        sc.mesh_block("m.msh", format="msh", nodes="moved")
+
+
+def test_field_entries_carry_character_unit_and_layers():
+    e = displacement_entry(3)
+    assert dataclasses.asdict(e) == {
+        "name": "displacement", "file": "m.displacement.gf",
+        "fe_space": "H1_3D_P2", "vdim": 3, "ordering": "byNODES", "rank": 1,
+        "weight": 0, "voigt": False, "unit": "1", "layers": [1, 2, 3]}
+    rho = sc.FieldEntry.from_field(
+        "rho", "d/m.rho.gf", fe_space="L2_3D_P2", vdim=1, ordering="byNODES",
+        character=DENSITY, dimensions=DENSITY_DIMS, si=True, layers=[1, 2])
+    assert rho.file == "m.rho.gf" and rho.unit == "kg m-3" and rho.weight == 1
+    assert sc.FieldEntry.from_field(
+        "foo", "m.foo.gf", fe_space="L2_3D_P2", vdim=1, ordering="byNODES",
+        character=DENSITY, dimensions=None, si=True, layers=[1]).unit == "unknown"
+
+
+def test_scales_and_constants_blocks_come_from_the_model():
+    model = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0],
+                                    scales=Scales(length=1.0, mass=2.0, time=0.5))
+    assert sc.scales_block(model.scales) == {"length": 1.0, "mass": 2.0,
+                                             "time": 0.5}
+    assert sc.constants_block(model) == {"G": pytest.approx(G_SI / (0.5 * 4.0))}
 
 
 def test_default_names_reach_the_entries():
@@ -103,18 +132,16 @@ def test_default_names_reach_the_entries():
 # ------------------------------------------------------------ round trip
 
 def test_write_read_round_trip_and_beside(tmp_path):
-    card = card_for(full_geometry(), files=FILES, delivery="referential")
+    card = exported_card(full_geometry())
     path = sc.write(tmp_path / "run.v1.5", card)
     assert path.name == "run.v1.5.json"
     assert sc.beside(tmp_path / "a.msh", ".json").name == "a.json"
     assert sc.beside(tmp_path / "a.mesh", ".displacement.gf").name == \
         "a.displacement.gf"
     back = sc.read(path)
-    assert dataclasses.asdict(back) == dataclasses.asdict(card) | {
-        "mesh": card.mesh | {"date": back.mesh["date"]}}
-    assert back.delivery == "referential" and back.files == FILES
-    assert sc.file_digest(path) == sc.file_digest(path)
-    assert sc.file_digest(tmp_path / "missing") is None
+    assert dataclasses.asdict(back) == dataclasses.asdict(card)
+    assert back.mesh["displacement"] == "displacement"
+    assert back.field_record("rho")["unit"] == "kg m-3"
 
 
 def test_read_rejects_a_foreign_schema(tmp_path):
@@ -126,7 +153,7 @@ def test_read_rejects_a_foreign_schema(tmp_path):
 
 def test_write_refuses_nan(tmp_path):
     card = card_for(full_geometry())
-    card.validation["min_sicn"] = float("nan")
+    card.layers[0]["r_outer"] = float("nan")
     with pytest.raises(ValueError):
         sc.write(tmp_path / "nan", card)
 
@@ -145,42 +172,32 @@ def broken(card, block, key, value):
 
 
 BREAKAGES = [
-    ("geometry", "outer_radius", "one"),
-    ("geometry", "n_layers", 2.5),
-    ("geometry", None, []),
-    ("mesh", "dimension", 4),
-    ("mesh", "element_order", "2"),
-    ("mesh", "high_order_optimised", 1),
-    ("mesh", "gmsh_version", 4.15),
-    ("mapping", "kind", None),
-    ("mapping", "knots", [0.5, "x"]),
-    ("mapping", "applied_to_nodes", 0),
-    ("sizing", "policy", 3),
-    ("sizing", "per_interface", [{"attribute": 1}]),
-    ("validation", "negative_jacobians", 0.0),
-    ("validation", "warnings", ["ok", 3]),
-    ("provenance", "mesh_file", None),
-    ("provenance", "meta", []),
-    ("provenance", "perturbation", "none"),
-    ("delivery", None, "halfway"),
-    ("files", None, {"mesh": "m.mesh"}),
-    ("files", None, {"mesh": "m.mesh", "mesh_read_options": {},
-                     "grid_functions": []}),
-    ("files", None, {"mesh": "m.mesh", "mesh_read_options": {"refine": 0},
-                     "grid_functions": [{"name": "u"}]}),
+    ("mesh", "file", None),
+    ("mesh", "format", "vtk"),
+    ("mesh", "nodes", "moved"),
+    ("mesh", "read_options", []),
+    ("mesh", "displacement", "u"),
+    ("mesh", None, []),
+    ("fields", None, "rho"),
+    ("fields", None, [{"name": "rho"}]),
+    ("scales", None, {"length": 1.0}),
+    ("scales", "mass", "two"),
+    ("constants", None, []),
+    ("constants", "G", "big"),
+    ("meta", None, []),
 ]
 
 
 @pytest.mark.parametrize("block,key,value", BREAKAGES)
 def test_validate_structure_names_the_broken_key(block, key, value):
-    card = card_for(full_geometry(), files=FILES)
+    card = exported_card(full_geometry())
     sc.validate_structure(card)
     with pytest.raises(ValueError, match=f"malformed manifest: .*{block}"):
         sc.validate_structure(broken(card, block, key, value))
 
 
 def test_validate_structure_checks_the_entries_and_their_consistency():
-    card = card_for(full_geometry())
+    card = exported_card(full_geometry())
     bad = copy.deepcopy(card)
     bad.layers[1]["r_inner"] = "0.4"
     with pytest.raises(ValueError, match=r"layers\[1\].r_inner"):
@@ -206,16 +223,24 @@ def test_validate_structure_checks_the_entries_and_their_consistency():
     with pytest.raises(ValueError, match="2 interfaces for 3 layers"):
         sc.validate_structure(bad)
     bad = copy.deepcopy(card)
-    bad.geometry["n_layers"] = 2
-    with pytest.raises(ValueError, match="n_layers is 2"):
-        sc.validate_structure(bad)
-    bad = copy.deepcopy(card)
-    bad.geometry["outer_radius"] = 1.5
-    with pytest.raises(ValueError, match="outer_radius"):
-        sc.validate_structure(bad)
-    bad = copy.deepcopy(card)
     bad.layers = "layers"
     with pytest.raises(ValueError, match="list of objects"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.layers = []
+    with pytest.raises(ValueError, match="no layers"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.fields[1]["layers"] = [0]
+    with pytest.raises(ValueError, match=r"fields\[1\].layers"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.fields[1]["name"] = "displacement"
+    with pytest.raises(ValueError, match="field names repeat"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.fields.pop(0)
+    with pytest.raises(ValueError, match="mesh.displacement names"):
         sc.validate_structure(bad)
 
 
@@ -237,45 +262,39 @@ def test_the_json_is_flat_numbers_and_strings(tmp_path):
     path = sc.write(tmp_path / "flat", card_for(hollow_geometry()))
     data = json.loads(path.read_text())
     assert data["schema"] == sc.SCHEMA
+    assert set(data) == {"schema", "mesh", "layers", "interfaces", "fields",
+                         "scales", "constants", "meta"}
     assert isinstance(data["layers"][0]["r_inner"], float)
-    assert data["files"] is None
-    assert data["validation"]["min_sicn"] >= QUALITY_FLOOR
-    assert not any(k.endswith("_nd") for block in data.values()
-                   if isinstance(block, dict) for k in block)
+    assert data["fields"] == [] and data["scales"] is None
 
 
 # ------------------------------------------------------------- describe
 
 def test_describe_is_a_readable_summary_and_str():
-    card = card_for(hollow_geometry(), files=FILES, delivery="referential")
-    card.mapping = sc.mapping_block(RadialStretch(ZeroDisplacement(), rmax=1.0),
-                                    knots=[0.8], applied_to_nodes=False)
-    card.validation["warnings"] = ["worst element quality is minSICN 0.4"]
+    card = exported_card(hollow_geometry())
+    card.meta = {"run": 1}
     text = card.describe()
     assert str(card) == text
     lines = text.splitlines()
     assert lines[0] == sc.SCHEMA
-    assert "delivery    referential" in text
-    assert "outer_radius 1, inner_radius 0.5, n_layers 2" in text
-    assert "3D, order 2, 4 elements, 10 nodes, gmsh 4.15" in text
+    assert "mesh        m.mesh (mfem), reference nodes, read options " \
+        "generate_edges 1, refine 0, fix_orientation False, displacement " \
+        "displacement" in text
     assert "    1  lower  [0.5, 0.8]  in geometry" in lines
     assert "    2  upper  [0.8, 1]    in geometry" in lines
-    assert "    1  inner  mean radius 0.5  between layers [-1, 0]" in lines
-    assert "    3  outer  mean radius 1    between layers [1, -1]" in lines
-    assert "mapping     RadialStretch, applied to nodes False, knots [0.8]" in text
-    assert "validation  ok, minSICN 0.4, 1 warning(s)" in text
-    assert "    - worst element quality is minSICN 0.4" in text
-    assert "files       mesh m.mesh, read options generate_edges 1, refine 0, " \
-        "fix_orientation False" in text
-    assert "displacement  displacement  m.displacement.gf  H1_3D_P2 vdim 3 " \
-        "byNODES" in text
-    assert "_nd" not in text
-    # a bare mesh has no files block, a failing one says so
+    assert "    1  inner  radius 0.5  between layers [-1, 0]" in lines
+    assert "    3  outer  radius 1    between layers [1, -1]" in lines
+    assert "    displacement  m.displacement.gf  H1_3D_P2 vdim 3 byNODES  " \
+        "rank 1 weight 0  1       layers [1, 2]" in lines
+    assert "    rho           m.rho.gf           L2_3D_P2 vdim 1 byNODES  " \
+        "rank 0 weight 1  kg m-3  layers [1, 2]" in lines
+    assert "scales      length 1, mass 1, time 1, constants G 6.6743e-11" in text
+    assert "meta        run 1" in text
+    # a bare mesh lists no fields and no scales
     bare = card_for(full_geometry())
-    assert "files" not in bare.describe() and "no warnings" in bare.describe()
-    bare.validation["negative_jacobians"] = 2
-    assert "validation  FAILED" in bare.describe()
+    assert "fields" not in bare.describe() and "scales" not in bare.describe()
+    assert "mesh        m.msh (msh), reference nodes" in bare.describe()
     # repr stays one line
     assert repr(card) == \
-        "MeshManifest(planetmodel.mesh.manifest/3, referential, 2 layers, " \
-        "3 interfaces)"
+        "MeshManifest(planetmodel.mesh.manifest/4, m.mesh, 2 layers, " \
+        "3 interfaces, 2 fields)"
