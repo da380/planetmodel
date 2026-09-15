@@ -28,70 +28,181 @@ Modules reached by name, one level down:
   randomfield  Matern random fields on balls, annuli and layers
   testing      the executable contracts, `check_field` and its kin
 """
-from .behaviours import (ConstantQ, Elastic, SelfGravitating, Viscoelastic,
-                         layer_method, with_moduli, with_velocities)
+
+from .behaviours import (
+    ConstantQ,
+    Elastic,
+    SelfGravitating,
+    Viscoelastic,
+    layer_method,
+    with_moduli,
+    with_velocities,
+)
 from .catalogue import PREM, LayeredIsotropicElastic, MineosModel
-from .character import (DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character,
-                        Symmetry)
-from .deck import (MINEOS, Deck, DeckFormat, Tabulated, deck_layers, read_deck,
-                   write_deck)
-from .displacement import (CallableDisplacement, RadialDisplacement,
-                           ZeroDisplacement, as_displacement, flattening,
-                           layer_linear)
-from .fields import (AnalyticField, ComposedField, Field, FieldBase, RadialField,
-                     constant_field)
+from .character import DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character, Symmetry
+from .deck import (
+    MINEOS,
+    Deck,
+    DeckFormat,
+    Tabulated,
+    deck_layers,
+    read_deck,
+    write_deck,
+)
+from .displacement import (
+    CallableDisplacement,
+    RadialDisplacement,
+    ZeroDisplacement,
+    as_displacement,
+    flattening,
+    layer_linear,
+)
+from .fields import (
+    AnalyticField,
+    ComposedField,
+    Field,
+    FieldBase,
+    RadialField,
+    constant_field,
+)
 from .geometry import Geometry, InterfaceInfo, LayerInfo
 from .harmonics import analyse_grid, real_harmonics, synthesise, synthesise_grid
-from .layerfunction import (LayerFunction, NumericLayer, PolynomialLayer,
-                            as_layer_function, constant_layer, polynomial_fit,
-                            polynomial_layer)
-from .mapping import (IdentityMapping, Mapping, MappingBase, MappingPerturbation,
-                      RadialStretch, ScaledMapping, ValidityReport,
-                      outer_radius_of, validity_lattice)
+from .layerfunction import (
+    LayerFunction,
+    NumericLayer,
+    PolynomialLayer,
+    as_layer_function,
+    constant_layer,
+    polynomial_fit,
+    polynomial_layer,
+)
+from .mapping import (
+    IdentityMapping,
+    Mapping,
+    MappingBase,
+    MappingPerturbation,
+    RadialStretch,
+    ScaledMapping,
+    ValidityReport,
+    outer_radius_of,
+    validity_lattice,
+)
 from .materials import ElasticField, elastic_moduli, is_fluid, kappa_mu, moduli
 from .mesh1d import RadialMesh
 from .mesh1d.gravity import gravity, gravity_fields, mass
 from .model import Layer, Model
-from .pushforward import (PulledBackField, PushedForwardField, pull_back,
-                          push_forward)
-from .rheology import (dispersive_moduli, frozen, frozen_moduli, is_viscoelastic,
-                       reference_omega)
+from .pushforward import PulledBackField, PushedForwardField, pull_back, push_forward
+from .rheology import (
+    dispersive_moduli,
+    frozen,
+    frozen_moduli,
+    is_viscoelastic,
+    reference_omega,
+)
 from .sampling import AngularGrid, Sample, equiangular, gauss_legendre, sample
 from .skeleton import CoarseningMap, Location, Skeleton
 from .units import EARTH_MEAN_DENSITY, G_SI, Dimensions, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec
 from . import testing  # noqa: F401
 
-__version__ = "1.0.0.dev1"
+__version__ = "1.0.0"
 
 __all__ = [
-    "Skeleton", "Location", "CoarseningMap",
-    "Geometry", "LayerInfo", "InterfaceInfo",
-    "Mapping", "MappingBase", "IdentityMapping", "RadialStretch", "ScaledMapping",
-    "ValidityReport", "MappingPerturbation", "validity_lattice", "outer_radius_of",
-    "RadialDisplacement", "ZeroDisplacement", "CallableDisplacement",
+    "Skeleton",
+    "Location",
+    "CoarseningMap",
+    "Geometry",
+    "LayerInfo",
+    "InterfaceInfo",
+    "Mapping",
+    "MappingBase",
+    "IdentityMapping",
+    "RadialStretch",
+    "ScaledMapping",
+    "ValidityReport",
+    "MappingPerturbation",
+    "validity_lattice",
+    "outer_radius_of",
+    "RadialDisplacement",
+    "ZeroDisplacement",
+    "CallableDisplacement",
     "as_displacement",
     "RadialMesh",
-    "Character", "SCALAR", "DENSITY", "VECTOR", "STRESS", "ELASTIC", "Symmetry",
-    "LayerFunction", "PolynomialLayer", "NumericLayer", "as_layer_function",
-    "polynomial_layer", "constant_layer", "polynomial_fit",
-    "Field", "FieldBase", "RadialField", "AnalyticField", "ComposedField",
+    "Character",
+    "SCALAR",
+    "DENSITY",
+    "VECTOR",
+    "STRESS",
+    "ELASTIC",
+    "Symmetry",
+    "LayerFunction",
+    "PolynomialLayer",
+    "NumericLayer",
+    "as_layer_function",
+    "polynomial_layer",
+    "constant_layer",
+    "polynomial_fit",
+    "Field",
+    "FieldBase",
+    "RadialField",
+    "AnalyticField",
+    "ComposedField",
     "constant_field",
-    "ElasticField", "is_fluid", "moduli", "elastic_moduli", "kappa_mu",
-    "is_viscoelastic", "frozen_moduli", "dispersive_moduli", "frozen",
+    "ElasticField",
+    "is_fluid",
+    "moduli",
+    "elastic_moduli",
+    "kappa_mu",
+    "is_viscoelastic",
+    "frozen_moduli",
+    "dispersive_moduli",
+    "frozen",
     "reference_omega",
-    "push_forward", "pull_back", "PushedForwardField", "PulledBackField",
-    "Dimensions", "Scales", "G_SI", "EARTH_MEAN_DENSITY",
-    "FieldSpec", "Constant", "VOCABULARY", "CONSTANTS",
-    "Layer", "Model", "layer_method", "with_moduli", "with_velocities",
-    "Elastic", "ConstantQ", "SelfGravitating", "Viscoelastic",
-    "PREM", "LayeredIsotropicElastic", "MineosModel",
-    "Deck", "DeckFormat", "MINEOS", "read_deck", "write_deck", "deck_layers",
+    "push_forward",
+    "pull_back",
+    "PushedForwardField",
+    "PulledBackField",
+    "Dimensions",
+    "Scales",
+    "G_SI",
+    "EARTH_MEAN_DENSITY",
+    "FieldSpec",
+    "Constant",
+    "VOCABULARY",
+    "CONSTANTS",
+    "Layer",
+    "Model",
+    "layer_method",
+    "with_moduli",
+    "with_velocities",
+    "Elastic",
+    "ConstantQ",
+    "SelfGravitating",
+    "Viscoelastic",
+    "PREM",
+    "LayeredIsotropicElastic",
+    "MineosModel",
+    "Deck",
+    "DeckFormat",
+    "MINEOS",
+    "read_deck",
+    "write_deck",
+    "deck_layers",
     "Tabulated",
-    "flattening", "layer_linear",
-    "AngularGrid", "Sample", "sample", "gauss_legendre", "equiangular",
-    "real_harmonics", "synthesise", "synthesise_grid", "analyse_grid",
-    "gravity", "mass", "gravity_fields",
+    "flattening",
+    "layer_linear",
+    "AngularGrid",
+    "Sample",
+    "sample",
+    "gauss_legendre",
+    "equiangular",
+    "real_harmonics",
+    "synthesise",
+    "synthesise_grid",
+    "analyse_grid",
+    "gravity",
+    "mass",
+    "gravity_fields",
     "testing",
     "__version__",
 ]
