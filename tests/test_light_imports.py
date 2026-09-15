@@ -6,7 +6,7 @@ import sys
 def test_import_is_light():
     code = (
         "import sys, planetmodel\n"
-        "heavy = [m for m in ('matplotlib', 'gmsh', 'netCDF4', 'mfem')"
+        "heavy = [m for m in ('matplotlib', 'gmsh', 'netCDF4', 'mfem', 'pyshtools')"
         " if m in sys.modules]\n"
         "assert not heavy, heavy\n"
     )

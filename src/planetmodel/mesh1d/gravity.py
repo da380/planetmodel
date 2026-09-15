@@ -44,7 +44,7 @@ def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
                 "direction; gravity here is that of a spherically symmetric "
                 "density and reads radial fields only")
         lo, hi = layer.interval
-        s2 = RadialField((lo, hi), polynomial_layer([0.0, 0.0, 1.0], (lo, hi)))
+        s2 = RadialField((lo, hi), polynomial_layer((lo, hi), [0.0, 0.0, 1.0]))
         f = layer["rho"] * s2
         fields.append(f)
         masses.append(4.0 * np.pi * float(f.integrate(lo, hi)))
@@ -147,6 +147,6 @@ def gravity_fields(model: Model) -> tuple[RadialField, ...]:
             return np.where(r > 0.0, G * (4.0 * np.pi * rho(r) - 2.0 * M / safe ** 3),
                             centre)
 
-        out.append(RadialField((lo, hi), NumericLayer(g_of, (lo, hi), derivative=dg_dr),
+        out.append(RadialField((lo, hi), NumericLayer((lo, hi), g_of, derivative=dg_dr),
                                name="g"))
     return tuple(out)

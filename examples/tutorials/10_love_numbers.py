@@ -198,7 +198,7 @@ visco = model
 for layer in model.layers:
     if layer.interval[0] >= 3480e3:
         visco = visco.with_field(layer.index, "viscosity",
-                                 constant_field(1e21, layer.interval, name="viscosity"))
+                                 constant_field(layer.interval, 1e21, name="viscosity"))
 small = RadialMesh(visco, ngll=5, lmax=8)
 periods = np.logspace(2, 13, 45)               # seconds: minutes to 300 kyr
 k2 = np.empty(periods.size, dtype=complex)

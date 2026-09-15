@@ -19,14 +19,14 @@ IV = (1.0, 2.0)
 
 def _poly(seed, n=4, interval=IV):
     rng = np.random.default_rng(seed)
-    return polynomial_layer(rng.normal(size=n), interval, scale=interval[1])
+    return polynomial_layer(interval, rng.normal(size=n), scale=interval[1])
 
 
 # ------------------------------------------------------------- construction
 
 def test_polynomial_layer_is_the_prem_form():
     a = 6371e3
-    f = polynomial_layer([13.0885, 0.0, -8.8381], (0.0, 1221.5e3), scale=a)
+    f = polynomial_layer((0.0, 1221.5e3), [13.0885, 0.0, -8.8381], scale=a)
     r = np.linspace(0.0, 1221.5e3, 7)
     assert np.allclose(f(r), 13.0885 - 8.8381 * (r / a) ** 2, rtol=1e-14)
     assert f.degree == 2 and f.interval == (0.0, 1221.5e3)
@@ -34,46 +34,46 @@ def test_polynomial_layer_is_the_prem_form():
 
 def test_polynomial_layer_refusals():
     with pytest.raises(ValueError, match="increase"):
-        polynomial_layer([1.0], (2.0, 1.0))
+        polynomial_layer((2.0, 1.0), [1.0])
     with pytest.raises(ValueError, match="coefficient"):
-        polynomial_layer([], IV)
+        polynomial_layer(IV, [])
     with pytest.raises(ValueError, match="scale"):
-        polynomial_layer([1.0], IV, scale=0.0)
+        polynomial_layer(IV, [1.0], scale=0.0)
     with pytest.raises(TypeError, match="PPoly"):
-        PolynomialLayer(lambda r: r)
+        PolynomialLayer(IV, lambda r: r)
 
 
 def test_constant_layer_is_exact_and_flat():
-    c = constant_layer(2.5, IV)
+    c = constant_layer(IV, 2.5)
     assert c.degree == 0 and np.all(c(np.linspace(*IV, 9)) == 2.5)
     assert c.derivative().is_zero() and not c.is_zero()
-    assert constant_layer(0.0, IV).is_zero()
+    assert constant_layer(IV, 0.0).is_zero()
 
 
 def test_spline_and_ppoly_are_accepted():
     x = np.linspace(0.0, 4.0, 5)
     s = CubicSpline(x, np.sin(x))
-    f = as_layer_function(s, (0.0, 4.0))
+    f = as_layer_function((0.0, 4.0), s)
     assert isinstance(f, PolynomialLayer)
     assert np.allclose(f(np.linspace(0, 4, 33)), s(np.linspace(0, 4, 33)))
-    g = PolynomialLayer(PPoly(s.c, s.x))
+    g = PolynomialLayer((0.0, 4.0), PPoly(s.c, s.x))
     assert g.interval == (0.0, 4.0)
 
 
 def test_as_layer_function_adapts_everything():
     f = _poly(0)
-    assert as_layer_function(f, IV) is f
-    assert as_layer_function(f, (0.5, 3.0)).interval == (0.5, 3.0)
-    assert isinstance(as_layer_function(3.0, IV), PolynomialLayer)
-    n = as_layer_function(np.sin, IV)
+    assert as_layer_function(IV, f) is f
+    assert as_layer_function((0.5, 3.0), f).interval == (0.5, 3.0)
+    assert isinstance(as_layer_function(IV, 3.0), PolynomialLayer)
+    n = as_layer_function(IV, np.sin)
     assert isinstance(n, NumericLayer) and n.fn is np.sin
     with pytest.raises(TypeError, match="callable"):
-        as_layer_function("rho", IV)
+        as_layer_function(IV, "rho")
 
 
 def test_protocol_is_structural():
     assert isinstance(_poly(0), LayerFunction)
-    assert isinstance(NumericLayer(np.sin, IV), LayerFunction)
+    assert isinstance(NumericLayer(IV, np.sin), LayerFunction)
     assert not isinstance(np.sin, LayerFunction)
 
 
@@ -92,8 +92,8 @@ def test_products_and_sums_are_pointwise_exact(seed):
 
 
 def test_product_degree_is_the_sum_of_degrees():
-    f = polynomial_layer([0.0, 0.0, 0.0, 1.0], IV)
-    g = polynomial_layer([0.0, 0.0, 1.0], IV)
+    f = polynomial_layer(IV, [0.0, 0.0, 0.0, 1.0])
+    g = polynomial_layer(IV, [0.0, 0.0, 1.0])
     fg = f * g
     assert fg.degree == 5
     r = np.linspace(*IV, 101)
@@ -114,8 +114,8 @@ def test_scalar_arithmetic_stays_polynomial():
 
 def test_mismatched_breakpoints_are_refined_to_the_union_exactly():
     x5, x7 = np.linspace(0.0, 4.0, 5), np.linspace(0.0, 4.0, 7)
-    a = PolynomialLayer(CubicSpline(x5, np.sin(x5)))
-    b = PolynomialLayer(CubicSpline(x7, np.exp(-x7)))
+    a = PolynomialLayer((0.0, 4.0), CubicSpline(x5, np.sin(x5)))
+    b = PolynomialLayer((0.0, 4.0), CubicSpline(x7, np.exp(-x7)))
     r = np.linspace(0.0, 4.0, 777)
     ab = a * b
     assert isinstance(ab, PolynomialLayer)
@@ -124,15 +124,15 @@ def test_mismatched_breakpoints_are_refined_to_the_union_exactly():
 
 
 def test_product_integral_matches_quadrature():
-    f = polynomial_layer([1.0, 2.0, -0.5], (0.5, 3.0))
-    g = polynomial_layer([0.0, 1.5, 0.25], (0.5, 3.0))
+    f = polynomial_layer((0.5, 3.0), [1.0, 2.0, -0.5])
+    g = polynomial_layer((0.5, 3.0), [0.0, 1.5, 0.25])
     fine = np.linspace(0.5, 3.0, 200001)
     want = np.trapezoid(f(fine) * g(fine), fine)
     assert abs((f * g).integrate(0.5, 3.0) - want) < 1e-9 * abs(want)
 
 
 def test_derivative_and_integral_are_exact():
-    f = polynomial_layer([1.0, 2.0, 3.0], IV)             # 1 + 2r + 3r^2
+    f = polynomial_layer(IV, [1.0, 2.0, 3.0])             # 1 + 2r + 3r^2
     r = np.linspace(*IV, 11)
     assert np.allclose(f.derivative()(r), 2.0 + 6.0 * r, rtol=1e-14)
     assert np.allclose(f.derivative(nu=2)(r), 6.0, rtol=1e-14)
@@ -185,20 +185,20 @@ def test_rescaled_is_exact_and_round_trips():
 
 
 def test_rescaled_zero_stays_zero():
-    assert constant_layer(0.0, IV).rescaled(k=3.0, v=2.0).is_zero()
+    assert constant_layer(IV, 0.0).rescaled(k=3.0, v=2.0).is_zero()
 
 
 # ------------------------------------------------------- beyond the interval
 
 def test_on_interval_continues_the_polynomial():
-    f = polynomial_layer([0.0, 1.0], IV)                  # r
+    f = polynomial_layer(IV, [0.0, 1.0])                  # r
     g = f.on_interval(0.0, 5.0)
     assert g.interval == (0.0, 5.0) and g(4.0) == 4.0 and g(0.0) == 0.0
     assert f(np.array([0.0, 5.0])).tolist() == [0.0, 5.0]   # continues silently too
 
 
 def test_numeric_on_interval_keeps_the_callable():
-    n = NumericLayer(np.sin, IV)
+    n = NumericLayer(IV, np.sin)
     m = n.on_interval(0.0, 3.0)
     assert m.fn is np.sin and m.interval == (0.0, 3.0)
 
@@ -206,24 +206,24 @@ def test_numeric_on_interval_keeps_the_callable():
 # ------------------------------------------------------------- the numeric kind
 
 def test_numeric_layer_calculus_is_honest():
-    n = NumericLayer(np.sin, (0.1, 3.0))
+    n = NumericLayer((0.1, 3.0), np.sin)
     r = np.linspace(0.2, 2.9, 40)
     assert np.allclose(n.derivative()(r), np.cos(r), atol=1e-6)
     assert np.allclose(n.derivative(nu=2)(r), -np.sin(r), atol=1e-3)
     assert abs(n.integrate(0.0, np.pi) - 2.0) < 1e-8
-    exact = NumericLayer(np.sin, (0.1, 3.0), derivative=np.cos)
+    exact = NumericLayer((0.1, 3.0), np.sin, derivative=np.cos)
     assert np.allclose(exact.derivative()(r), np.cos(r), rtol=1e-15)
 
 
 def test_numeric_layer_broadcasts_a_constant_callable():
-    n = NumericLayer(lambda r: 2.0, IV)
+    n = NumericLayer(IV, lambda r: 2.0)
     assert n(np.linspace(*IV, 5)).shape == (5,)
     assert n(1.5).shape == ()
 
 
 def test_mixed_arithmetic_is_pointwise_exact_and_numeric():
     f = _poly(5, interval=(0.5, 2.0))
-    g = NumericLayer(np.sin, (0.5, 2.0))
+    g = NumericLayer((0.5, 2.0), np.sin)
     r = np.linspace(0.6, 1.9, 40)
     for h, want in ((f + 2.0 * g, f(r) + 2.0 * np.sin(r)),
                     (g + f, f(r) + np.sin(r)),
@@ -240,7 +240,7 @@ def test_mixed_arithmetic_is_pointwise_exact_and_numeric():
 
 
 def test_numeric_rescaled_is_v_f_of_r_over_k():
-    n = NumericLayer(np.sin, (0.1, 3.0), derivative=np.cos)
+    n = NumericLayer((0.1, 3.0), np.sin, derivative=np.cos)
     g = n.rescaled(k=2.0, v=3.0)
     r = np.linspace(0.2, 2.9, 20)
     assert np.allclose(g(2.0 * r), 3.0 * np.sin(r))
@@ -252,17 +252,17 @@ def test_numeric_rescaled_is_v_f_of_r_over_k():
 
 def test_polynomial_fit_recovers_a_polynomial_exactly():
     f = _poly(6)
-    g = polynomial_fit(f, IV, degree=3)
+    g = polynomial_fit(IV, f, degree=3)
     assert np.allclose(g.ppoly.c, f.ppoly.c, rtol=1e-12, atol=1e-12)
 
 
 def test_polynomial_fit_of_a_smooth_function_converges():
     r = np.linspace(*IV, 101)
-    errors = [np.max(np.abs(polynomial_fit(np.exp, IV, degree=d)(r) - np.exp(r)))
+    errors = [np.max(np.abs(polynomial_fit(IV, np.exp, degree=d)(r) - np.exp(r)))
               for d in (2, 4, 8)]
     assert errors[0] > errors[1] > errors[2] and errors[2] < 1e-8
     with pytest.raises(ValueError, match="more points"):
-        polynomial_fit(np.exp, IV, degree=3, n=3)
+        polynomial_fit(IV, np.exp, degree=3, n=3)
 
 
 # ---------------------------------------------------------------- contracts
@@ -273,9 +273,9 @@ def test_same_interval_is_relative():
 
 
 @pytest.mark.parametrize("fn", [
-    _poly(7), constant_layer(1.0, IV), _poly(8) * _poly(9),
-    NumericLayer(np.exp, IV), NumericLayer(np.exp, IV, derivative=np.exp),
-    _poly(7) + NumericLayer(np.exp, IV), polynomial_fit(np.exp, IV, degree=6),
+    _poly(7), constant_layer(IV, 1.0), _poly(8) * _poly(9),
+    NumericLayer(IV, np.exp), NumericLayer(IV, np.exp, derivative=np.exp),
+    _poly(7) + NumericLayer(IV, np.exp), polynomial_fit(IV, np.exp, degree=6),
 ])
 def test_shipped_layer_functions_pass_the_contract(fn):
     check_layer_function(fn)

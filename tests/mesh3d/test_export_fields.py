@@ -50,10 +50,10 @@ def model_on(geometry) -> Model:
             + 0.05 * np.cos(t), character=DENSITY, name="rho")}
         if lay.index > 0:
             fields["elastic_moduli"] = constant_field(
-                (lay.index + 1.0) * np.eye(6), iv, character=ELASTIC,
+                iv, (lay.index + 1.0) * np.eye(6), character=ELASTIC,
                 name="elastic_moduli")
         if lay.index == geometry.nlayers - 1:
-            fields["foo"] = constant_field(2.0, iv, name="foo")
+            fields["foo"] = constant_field(iv, 2.0, name="foo")
         layers.append(fields)
     return Model(geometry, layers)
 

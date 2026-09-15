@@ -234,10 +234,13 @@ def read_deck(source: str | os.PathLike[str] | Iterable[str],
 def write_deck(path: str | os.PathLike[str], deck: Deck, format: DeckFormat) -> Path:
     """Write a deck in a format: its header lines, then one row per knot,
     radius first and the format's columns in order.  A column the deck
-    lacks is refused; an absent value is written as nan."""
-    names = format.names(len(deck.columns)) if not isinstance(format.columns, Mapping) \
-        else next((c for c in format.columns.values() if set(c) <= set(deck.columns)),
-                  None)
+    lacks is refused, a column the format does not name is not written,
+    and an absent value is written as nan."""
+    if isinstance(format.columns, Mapping):
+        names = next((c for c in format.columns.values()
+                      if set(c) <= set(deck.columns)), None)
+    else:
+        names = tuple(format.columns)
     if names is None or any(n not in deck for n in names):
         raise ValueError(f"a {format.name} deck needs columns {format.columns}; the "
                          f"deck has {list(deck.columns)}")
@@ -343,7 +346,7 @@ def _interpolant(r: np.ndarray, y: np.ndarray, kind: str) -> PolynomialLayer:
         ppoly = PchipInterpolator(r, y)
     else:
         ppoly = Akima1DInterpolator(r, y)
-    return PolynomialLayer(ppoly, interval=(float(r[0]), float(r[-1])))
+    return PolynomialLayer((float(r[0]), float(r[-1])), ppoly)
 
 
 def deck_layers(deck: Deck, *, kind: str = "cubic",
@@ -442,4 +445,3 @@ def deck_knots(deck: Deck) -> tuple[np.ndarray, ...]:
         k.setflags(write=False)
         out.append(k)
     return tuple(out)
-

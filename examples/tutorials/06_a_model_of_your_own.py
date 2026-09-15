@@ -57,17 +57,17 @@ g = Geometry(sk, layer_names=["core", "mantle"], interface_names=["cmb", "surfac
 core, mantle = sk.interval(0), sk.interval(1)
 
 layers = [
-    {"rho": constant_field(11e3, core, character=DENSITY, name="rho")},
+    {"rho": constant_field(core, 11e3, character=DENSITY, name="rho")},
     {
         "rho": RadialField(
             mantle,
-            polynomial_layer([7.9565, -6.4761, 5.5283, -3.0807], mantle, scale=6371e3)
+            polynomial_layer(mantle, [7.9565, -6.4761, 5.5283, -3.0807], scale=6371e3)
             * 1e3,
             character=DENSITY,
             name="rho",
         ),
-        "viscosity": constant_field(1e21, mantle, name="viscosity"),
-        "yield_stress": constant_field(1e8, mantle, name="yield_stress"),
+        "viscosity": constant_field(mantle, 1e21, name="viscosity"),
+        "yield_stress": constant_field(mantle, 1e8, name="yield_stress"),
     },
 ]
 
@@ -105,11 +105,11 @@ print("common to every layer:", model.common_names())
 
 # %%
 try:
-    model.with_field("core", "rho", constant_field(11e3, core), replace=True)
+    model.with_field("core", "rho", constant_field(core, 11e3), replace=True)
 except ValueError as exc:
     print("refused:", exc)
 try:
-    model.with_field("core", "viscosity", constant_field(1e20, mantle))
+    model.with_field("core", "viscosity", constant_field(mantle, 1e20))
 except ValueError as exc:
     print("refused:", exc)
 
@@ -232,14 +232,14 @@ class ViscousPlanet(SelfGravitating, Model):
             sk, layer_names=["core", "mantle"], interface_names=["cmb", "surface"]
         )
         core, mantle = sk.interval(0), sk.interval(1)
-        rho_mantle = polynomial_layer(mantle_density, mantle, scale=radius) * 1e3
+        rho_mantle = polynomial_layer(mantle, mantle_density, scale=radius) * 1e3
         layers = [
-            {"rho": constant_field(core_density, core, character=DENSITY, name="rho")},
+            {"rho": constant_field(core, core_density, character=DENSITY, name="rho")},
             {
                 "rho": RadialField(mantle, rho_mantle, character=DENSITY, name="rho"),
-                "viscosity": constant_field(viscosity, mantle, name="viscosity"),
+                "viscosity": constant_field(mantle, viscosity, name="viscosity"),
                 "yield_stress": constant_field(
-                    yield_stress, mantle, name="yield_stress"
+                    mantle, yield_stress, name="yield_stress"
                 ),
             },
         ]

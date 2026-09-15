@@ -33,11 +33,10 @@ and the mixins add the rest.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 
 import numpy as np
-
-import os
 
 from .behaviours import ConstantQ, Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
@@ -190,12 +189,13 @@ class PREM(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Model):
                     continue
                 fields[name] = RadialField(
                     (lo, hi),
-                    polynomial_layer(np.asarray(coeffs) * si, (lo, hi),
+                    polynomial_layer((lo, hi), np.asarray(coeffs) * si,
                                      scale=PREM_RADIUS),
                     character=DENSITY if name == "rho" else SCALAR,
                     name=name)
             layers.append(fields)
-        super().__init__(geometry, layers, scales=Scales.SI)
+        super().__init__(geometry, layers, scales=Scales.SI,
+                         name="PREM" if ocean else "PREM (no ocean)")
 
 
 class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
@@ -203,14 +203,15 @@ class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
 
     `boundaries` are the skeleton's, centre outward (an inner radius
     above zero gives a hollow model); `rho`, `vp` and `vs` give one
-    value per layer, and a layer with vs = 0 is fluid.
+    value per layer, and a layer with vs = 0 is fluid.  `name` is the
+    model's.
     """
 
     def __init__(self, boundaries: Sequence[float], *, rho: Sequence[float],
                  vp: Sequence[float], vs: Sequence[float],
                  layer_names: Sequence[str | None] | None = None,
                  interface_names: Sequence[str | None] | None = None,
-                 scales: Scales = Scales.SI) -> None:
+                 scales: Scales = Scales.SI, name: str | None = None) -> None:
         sk = Skeleton(boundaries)
         values = {"rho": rho, "vp": vp, "vs": vs}
         for key, seq in values.items():
@@ -222,19 +223,21 @@ class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
         for i in range(sk.nlayers):
             iv = sk.interval(i)
             layers.append({
-                "rho": constant_field(rho[i], iv, character=DENSITY, name="rho"),
-                "vp": constant_field(vp[i], iv, name="vp"),
-                "vs": constant_field(vs[i], iv, name="vs"),
+                "rho": constant_field(iv, rho[i], character=DENSITY, name="rho"),
+                "vp": constant_field(iv, vp[i], name="vp"),
+                "vs": constant_field(iv, vs[i], name="vs"),
             })
-        super().__init__(geometry, layers, scales=scales)
+        super().__init__(geometry, layers, scales=scales, name=name)
 
     @classmethod
     def homogeneous(cls, radius: float, *, rho: float, vp: float, vs: float,
                     name: str | None = None,
                     scales: Scales = Scales.SI) -> "LayeredIsotropicElastic":
-        """A uniform isotropic sphere of `radius`: constant rho, vp and vs."""
+        """A uniform isotropic sphere of `radius`: constant rho, vp and vs;
+        `name` names the model and its one layer."""
         return cls([0.0, radius], rho=[rho], vp=[vp], vs=[vs],
-                   layer_names=None if name is None else [name], scales=scales)
+                   layer_names=None if name is None else [name], scales=scales,
+                   name=name)
 
 
 class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, Model):
@@ -246,7 +249,7 @@ class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, 
     loss and is kept as read.  The header's `nic` and `noc` name the
     inner and outer core and their boundaries, its `tref`, in seconds,
     becomes the constant `omega_ref` that `moduli_at` and `frozen`
-    disperse about, and its title is the model's `name`.  The deck is
+    disperse about, and its title is the model's name.  The deck is
     kept as `deck`, its knots per layer as `knots` and its header as
     `header`, so `to_deck` writes the model back out.
     """
@@ -267,5 +270,5 @@ class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, 
         self.deck = deck
         self.knots = deck_knots(deck)
         self.header = deck.header
-        self.name = str(deck.header.get("name", "")) or None
-        super().__init__(geometry, layers, scales=scales, constants=constants)
+        super().__init__(geometry, layers, scales=scales, constants=constants,
+                         name=str(deck.header.get("name", "")) or None)

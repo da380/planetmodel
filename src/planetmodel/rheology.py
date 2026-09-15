@@ -40,7 +40,7 @@ from numpy.typing import ArrayLike
 
 from .character import DENSITY
 from .fields import ComposedField, Field
-from .materials import LayerLike, _named, kappa_mu, moduli
+from .materials import LayerLike, kappa_mu, moduli, named
 from .units import FREQUENCY
 from .vocabulary import Constant
 
@@ -126,7 +126,7 @@ def _shifted_moduli(layer: LayerLike, omega: float, reference_omega: float, *,
     A = base["A"] + dkappa + (4.0 / 3.0) * dmu
     C = base["C"] + dkappa + (4.0 / 3.0) * dmu
     F = base["F"] + dkappa - (2.0 / 3.0) * dmu
-    return {k: _named(f, k) for k, f in (("A", A), ("C", C), ("F", F),
+    return {k: named(f, k) for k, f in (("A", A), ("C", C), ("F", F),
                                          ("L", base["L"] + dmu),
                                          ("N", base["N"] + dmu))}
 
@@ -141,6 +141,10 @@ def reference_omega(model: Model) -> float:
     return 2.0 * np.pi / model.scales.factor(FREQUENCY)
 
 
+#: `reference_omega` under a name the parameter of `frozen` does not shadow.
+_model_reference_omega = reference_omega
+
+
 def frozen(model: Model, omega: float, *,
            reference_omega: float | None = None) -> Model:
     """The model frozen at angular frequency `omega`: every viscoelastic
@@ -153,7 +157,7 @@ def frozen(model: Model, omega: float, *,
         raise ValueError(f"omega must be positive, got {omega:g}")
     factor = model.scales.factor(FREQUENCY)
     if reference_omega is None:
-        reference_omega = globals()["reference_omega"](model)
+        reference_omega = _model_reference_omega(model)
     reference_omega = float(reference_omega)
     if not reference_omega > 0.0:
         raise ValueError(f"reference_omega must be positive, got {reference_omega:g}")

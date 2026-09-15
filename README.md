@@ -5,19 +5,18 @@ geometry that places it in the physical world through one continuous
 mapping, fields on each layer, and the meshes that hand a model to a
 solver.
 
-The library is being rebuilt in stages, and the tree currently holds the
-first two: the skeleton, the geometry and its mappings, a radial
-spectral-element mesh, a 2D and 3D mesher with export to MFEM; and
-fields on one interval, the model with its units, PREM from its
-polynomials, gravity, sampling, and the export of a model's fields to
-MFEM. Two sub-packages consume the radial mesh: `planetmodel.loading`
+The library covers the skeleton, the geometry and its mappings; fields
+on one interval with an exact polynomial algebra; the model with its
+units, named model types (PREM from its polynomials, simple layered
+models, any mineos deck) and the mixins that complete them with moduli,
+velocities, gravity and linear rheologies; a radial spectral-element
+mesh; 2D and 3D meshes via gmsh with a manifest and export to MFEM; and
+two sub-packages that consume the radial mesh: `planetmodel.loading`
 solves the loading and tidal problem and gives Love numbers, and
 `planetmodel.randomfield` draws Matern random fields on balls, annuli
-and layers. Readers, files and time-dependent rheology follow. The
-previous version is kept under `archive/v0.5/` for reference and is not
-imported.
+and layers. A netCDF file for 3D models is next.
 
-## The ideas so far
+## The ideas
 
 **A skeleton.** A strictly increasing list of boundary radii, possibly
 starting above zero for a shell. It answers geometric questions
@@ -41,13 +40,17 @@ spherical frame or in Cartesian ones. A discontinuity is two layers
 asked separately. Radial fields sit on layer functions whose algebra is
 exact on polynomials, so PREM's moduli `rho v^2` are exact polynomials;
 analytic formulas, pointwise compositions, and fields pushed forward
-through a mapping are fields too.
+through a mapping are fields too. A field may be complex-valued, which
+is what a model frozen at a frequency holds.
 
 **One model class.** A geometry with a bag of fields on every layer.
 What a name means comes from the shipped vocabulary or the specs a model
-is given; a named model such as `prem()` is an instance, and behaviour
-shared by groups of models (fluidity, the elastic moduli, gravity) is a
-free function of a layer or a model.
+is given. A model type (`PREM`, `LayeredIsotropicElastic`, `MineosModel`,
+or your own) is a class derived from `Model` alone; the mixins of
+`planetmodel.behaviours` add the shared derivations as methods, written
+once as free functions: the Love moduli beside the velocities, the
+elastic tensor and its Voigt average, gravity, and the constant-Q and
+Maxwell rheologies frozen at a frequency.
 
 **Units in one place.** The model's `Scales` say what one stored unit
 is in SI, and `converted` re-expresses the whole model by name, exactly
@@ -73,6 +76,7 @@ the same call.
 pip install planetmodel                     # numpy and scipy only
 pip install 'planetmodel[meshing]'          # 2D and 3D meshes via gmsh
 pip install 'planetmodel[mfem]'             # export to MFEM (PyMFEM)
+pip install 'planetmodel[harmonics]'        # grid transforms via pyshtools and ducc0
 pip install 'planetmodel[plot]'             # matplotlib, for the figures
 pip install 'planetmodel[notebook]'         # ipykernel, to run tutorials cell by cell
 ```
@@ -84,14 +88,14 @@ planetmodel`.
 
 ```python
 import numpy as np
-from planetmodel import RadialMesh, elastic_moduli, flattening, gravity, is_fluid, prem
+from planetmodel import PREM, RadialMesh, flattening, gravity
 
-m = prem()                                                  # exact polynomials, SI
+m = PREM()                                                  # exact polynomials, SI
 oc, mantle = m.layer("outer_core"), m.layer("lowermost_mantle")
 cmb = m.geometry.interface("cmb").radius
-print(oc["rho"](cmb), mantle["rho"](cmb), is_fluid(oc))     # both sides, fluidity
-print(elastic_moduli(mantle)(cmb, 0.3, 0.0)[:3, :3] / 1e9)  # Voigt matrix, GPa
-print(gravity(m, [cmb, 6371e3]))                            # from the fields, exact
+print(oc["rho"](cmb), mantle["rho"](cmb), m.is_fluid("outer_core"))  # both sides
+print(m.elastic_moduli("lowermost_mantle")(cmb, 0.3, 0.0)[:3, :3] / 1e9)  # Voigt, GPa
+print(gravity(m, [cmb, 6371e3]), m.moduli_at("lower_mantle", 2 * np.pi / 3600)["L"](5e6))
 
 nd = m.nondimensionalised().stretched(flattening(1 / 300, rmax=1.0))
 mesh = RadialMesh(nd, ngll=5, drmax=0.05)
@@ -100,16 +104,19 @@ print(nd.G, mesh.nodal(nd, "rho").shape, nd.geometry.validity())
 
 ## Where to go next
 
-- `examples/tutorials/`: eleven walkthroughs, from a skeleton to Love
-  numbers and random fields, each a `# %%` script that runs headless.
-- `docs/formats/mesh_manifest.md`: the manifest beside every mesh, from
-  the consumer's side.
+- `examples/tutorials/`: twelve walkthroughs, from a skeleton to Love
+  numbers, random fields and deck files, each a `# %%` script that runs
+  headless.
+- `src/planetmodel/mesh3d/manifest.py`: the manifest beside every mesh,
+  its schema described from the consumer's side.
+- `CONTRIBUTING.md`: the development setup, the hooks, the test
+  selections and how a release is made.
 
 ## Tests
 
 ```
-poetry run pytest -m "not gmsh and not slow" -q     # the fast suite
-poetry run pytest -m "not slow" -q                  # with gmsh and MFEM
+poetry run pytest                                   # the fast suite
+poetry run pytest -m "not slow"                     # with gmsh and MFEM
 poetry run ruff check .
 ```
 

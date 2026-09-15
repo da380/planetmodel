@@ -22,9 +22,9 @@ def geometry():
 
 def fields(i, *, extra=()):
     iv = SK.interval(i)
-    out = {"rho": RadialField(iv, polynomial_layer([2.0 + i, -0.5], iv),
+    out = {"rho": RadialField(iv, polynomial_layer(iv, [2.0 + i, -0.5]),
                               character=DENSITY, name="rho"),
-           "vs": constant_field(0.0 if i == 0 else 1.0, iv, name="vs")}
+           "vs": constant_field(iv, 0.0 if i == 0 else 1.0, name="vs")}
     for name, f in extra:
         out[name] = f
     return out
@@ -62,7 +62,7 @@ def test_refusals_by_name():
     with pytest.raises(ValueError, match="lives on"):
         Model(geometry(), [fields(0), bad])
     wrong = fields(1)
-    wrong["rho"] = constant_field(1.0, SK.interval(1))            # SCALAR, not DENSITY
+    wrong["rho"] = constant_field(SK.interval(1), 1.0)            # SCALAR, not DENSITY
     with pytest.raises(ValueError, match="spec says"):
         Model(geometry(), [fields(0), wrong])
     notfield = fields(1)
@@ -79,18 +79,18 @@ def test_refusals_by_name():
 def test_names_outside_the_vocabulary():
     iv = SK.interval(1)
     m = Model(geometry(), [fields(0), fields(1, extra=[
-        ("visc", constant_field(1e21, iv, name="visc"))])])
+        ("visc", constant_field(iv, 1e21, name="visc"))])])
     assert m.spec("visc") is None and m.spec("rho").character == DENSITY
     with pytest.raises(ValueError, match="no dimensions"):
         m.converted(Scales(length=2.0))
     spec = FieldSpec(SCALAR, MASS / LENGTH / TIME)
     m2 = Model(geometry(), [fields(0), fields(1, extra=[
-        ("visc", constant_field(1e21, iv, name="visc"))])], specs={"visc": spec})
+        ("visc", constant_field(iv, 1e21, name="visc"))])], specs={"visc": spec})
     assert m2.spec("visc") is spec
     assert m2.converted(Scales(length=2.0)).layer(1)["visc"](0.4) == 1e21 / 0.5
     with pytest.raises(ValueError, match="spec says"):
         Model(geometry(), [fields(0), fields(1, extra=[
-            ("visc", constant_field([1.0, 0.0, 0.0], iv, character=VECTOR))])],
+            ("visc", constant_field(iv, [1.0, 0.0, 0.0], character=VECTOR))])],
               specs={"visc": spec})
 
 
@@ -110,7 +110,7 @@ def test_constants_in_the_models_units():
 
 def test_with_and_without_field():
     m = model()
-    mu = constant_field(3.0, SK.interval(1), character=Character(0, 1), name="mu")
+    mu = constant_field(SK.interval(1), 3.0, character=Character(0, 1), name="mu")
     m2 = m.with_field("mantle", "mu", mu)
     assert "mu" in m2.layer(1) and "mu" not in m2.layer(0)
     assert "mu" not in m.layer(1)
@@ -167,7 +167,7 @@ def test_extended_shells_hold_what_they_are_given():
     assert empty.common_names() == ()
     ext = m.extended([1.2, 1.5], fields="extrapolate", names=["a", "b"])
     assert ext.layer("b")["rho"](1.4) == m.layer(1)["rho"].on_interval(1.2, 1.5)(1.4)
-    given = m.extended([1.2], fields=[{"rho": constant_field(0.5, (1.0, 1.2),
+    given = m.extended([1.2], fields=[{"rho": constant_field((1.0, 1.2), 0.5,
                                                              character=DENSITY)}])
     assert given.layer(2)["rho"](1.1) == 0.5
     with pytest.raises(ValueError, match="fields for 2 shells"):
@@ -237,3 +237,20 @@ def test_a_subclass_keeps_its_class_through_surgery():
     assert isinstance(m.refined([0.7]), Mine) and isinstance(m.in_si(), Mine)
     assert m.density_at(0.7) == m.layer(1)["rho"](0.7)
     check_model(m)
+
+
+def test_a_model_may_be_named_and_the_name_survives_every_copy():
+    from planetmodel import PREM, LayeredIsotropicElastic
+
+    m = LayeredIsotropicElastic([0.0, 1.0], rho=[1.0], vp=[2.0], vs=[1.0])
+    assert m.name is None and "layers" in repr(m)
+    named = m.named("ball")
+    assert named.name == "ball" and type(named) is type(m)
+    assert named.refined([0.5]).name == "ball"
+    assert named.nondimensionalised().name == "ball"
+    assert named.replaced(name="other").name == "other"
+    assert named.named(None).name is None
+    assert "'ball'" in repr(named)
+    assert PREM().name == "PREM" and PREM(ocean=False).name == "PREM (no ocean)"
+    assert LayeredIsotropicElastic.homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0,
+                                               name="one").name == "one"

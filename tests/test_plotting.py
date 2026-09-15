@@ -57,7 +57,7 @@ def test_refusals():
     m = LayeredIsotropicElastic([0.0, 1.0], rho=[1.0], vp=[1.0], vs=[1.0])
     fig, ax = plt.subplots()
     with pytest.raises(TypeError, match="complex"):
-        profile(ax, [constant_field(1.0 + 1j, (0.0, 1.0))])
+        profile(ax, [constant_field((0.0, 1.0), 1.0 + 1j)])
     with pytest.raises(ValueError, match="radial field of rank 0"):
         profile(ax, [m.elastic_moduli(0)])
     plt.close(fig)

@@ -14,13 +14,13 @@ A = 6371e3
 
 
 def rho():
-    return RadialField(IV, polynomial_layer([12.5815, -1.2638, -3.6426, -5.5281],
-                                            IV, scale=A), character=DENSITY, name="rho")
+    return RadialField(IV, polynomial_layer(IV, [12.5815, -1.2638, -3.6426, -5.5281],
+                                            scale=A), character=DENSITY, name="rho")
 
 
 def vp():
-    return RadialField(IV, polynomial_layer([11.0487, -4.0362, 4.8023, -13.5732],
-                                            IV, scale=A), name="vp")
+    return RadialField(IV, polynomial_layer(IV, [11.0487, -4.0362, 4.8023, -13.5732],
+                                            scale=A), name="vp")
 
 
 def r_in(n=50):
@@ -59,7 +59,7 @@ def test_both_ends_are_reached_exactly():
 
 
 def test_radial_vector_components_are_spherical_and_rotate():
-    v = RadialField(IV, [polynomial_layer([1.0], IV), 0.0, 2.0], character=VECTOR)
+    v = RadialField(IV, [polynomial_layer(IV, [1.0]), 0.0, 2.0], character=VECTOR)
     th, ph = 0.7, 1.1
     s = v(2e6, th, ph)
     assert s.tolist() == [1.0, 0.0, 2.0]
@@ -223,12 +223,12 @@ def test_composed_field_is_pointwise_and_never_sampled():
 # -------------------------------------------------------------- constants
 
 def test_constant_field():
-    c = constant_field(3.0, IV, name="c")
+    c = constant_field(IV, 3.0, name="c")
     assert c(r_in()).tolist() == [3.0] * 50 and c.function.is_zero() is False
-    e = constant_field(np.eye(6), IV, character=ELASTIC)
+    e = constant_field(IV, np.eye(6), character=ELASTIC)
     assert e(2e6, 0.1, 0.2).shape == (6, 6)
     with pytest.raises(ValueError, match="shape"):
-        constant_field(1.0, IV, character=VECTOR)
+        constant_field(IV, 1.0, character=VECTOR)
 
 
 # -------------------------------------------------------------- contracts
@@ -236,17 +236,17 @@ def test_constant_field():
 def _voigt_rank4():
     C = np.random.default_rng(1).normal(size=(6, 6))
     C = C + C.T
-    return [[polynomial_layer([C[i, j], 0.1 * C[i, j]], IV, scale=A) for j in range(6)]
+    return [[polynomial_layer(IV, [C[i, j], 0.1 * C[i, j]], scale=A) for j in range(6)]
             for i in range(6)]
 
 
 @pytest.mark.parametrize("field", [
     rho(), vp(), rho() * vp() ** 2,
     RadialField(IV, lambda r: np.sin(r / A), name="numeric"),
-    RadialField(IV, [polynomial_layer([1.0, 1.0], IV, scale=A), 0.0, 2.0],
+    RadialField(IV, [polynomial_layer(IV, [1.0, 1.0], scale=A), 0.0, 2.0],
                 character=VECTOR),
     RadialField(IV, _voigt_rank4(), character=ELASTIC),
-    constant_field(np.array([1.0, 2.0, 3.0, 0, 0, 0]), IV, character=STRESS),
+    constant_field(IV, np.array([1.0, 2.0, 3.0, 0, 0, 0]), character=STRESS),
     AnalyticField(IV, lambda r, t, p: r * np.cos(t)),
     AnalyticField(IV, lambda r, t, p: np.stack([r, np.sin(t), np.cos(p)], axis=-1),
                   character=VECTOR),
@@ -265,3 +265,20 @@ def test_shipped_fields_pass_the_contract(field):
 def test_protocol_is_structural():
     assert isinstance(rho(), Field)
     assert not isinstance(np.sin, Field)
+
+
+def test_a_number_adds_as_a_rank_0_weight_0_constant():
+    delta = RadialField(IV, polynomial_layer(IV, [0.0, 1.0]), name="delta")
+    r = np.linspace(*IV, 7)
+    for f in (1 + delta, delta + 1, 1.0 + delta, np.float64(1) + delta):
+        assert isinstance(f, RadialField) and f.character == SCALAR
+        assert np.allclose(f(r), 1.0 + r)
+    assert np.allclose((delta - 2)(r), r - 2.0)
+    assert np.allclose((2 - delta)(r), 2.0 - r)
+    assert np.allclose((1j + delta)(r), 1j + r)
+    rho = RadialField(IV, polynomial_layer(IV, [1.0]), character=DENSITY)
+    with pytest.raises(ValueError, match="cannot add"):
+        rho + 1
+    with pytest.raises(ValueError, match="cannot add"):
+        1 - rho
+    assert np.allclose((rho * (1 + delta))(r), 1.0 + r)

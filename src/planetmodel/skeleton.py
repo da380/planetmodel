@@ -147,9 +147,9 @@ class Skeleton:
 
     # -- surgery ------------------------------------------------------------
 
-    def coarsen(self, *, keep: Iterable[int] | None = None,
-                drop: Iterable[int] | None = None
-                ) -> tuple["Skeleton", "CoarseningMap"]:
+    def coarsened(self, *, keep: Iterable[int] | None = None,
+                  drop: Iterable[int] | None = None
+                  ) -> tuple["Skeleton", "CoarseningMap"]:
         """A skeleton retaining a subset of the interior boundaries.
 
         Exactly one of `keep` or `drop` is given, indexing the interior

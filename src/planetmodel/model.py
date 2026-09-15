@@ -125,15 +125,17 @@ class Model:
     `layers` is one mapping of name to field per geometry layer, empty
     where a layer has no material.  `specs` gives a `FieldSpec` for
     names outside the vocabulary (or overriding it) and `constants` a
-    `Constant` beyond the shipped ones.  `check=False` skips validation
-    for fields already known to fit.
+    `Constant` beyond the shipped ones.  `name` is what the model is
+    called, in its repr and in the files that write it; it survives
+    every copy.  `check=False` skips validation for fields already
+    known to fit.
     """
 
     def __init__(self, geometry: Geometry, layers: Iterable[abc.Mapping[str, Field]],
                  *, scales: Scales = Scales.SI,
                  specs: abc.Mapping[str, FieldSpec] | None = None,
                  constants: abc.Mapping[str, Constant] | None = None,
-                 check: bool = True) -> None:
+                 name: str | None = None, check: bool = True) -> None:
         if not isinstance(geometry, Geometry):
             raise TypeError(f"expected a Geometry, got {type(geometry).__name__}")
         layers = [dict(m) for m in layers]
@@ -145,6 +147,7 @@ class Model:
             raise TypeError(f"expected Scales, got {type(scales).__name__}")
         self._geometry = geometry
         self._scales = scales
+        self._name = None if name is None else str(name)
         self._specs = MappingProxyType({**VOCABULARY, **dict(specs or {})})
         self._constants = MappingProxyType({**CONSTANTS, **dict(constants or {})})
         self._layers = tuple(Layer(info, fields)
@@ -192,6 +195,11 @@ class Model:
     @property
     def scales(self) -> Scales:
         return self._scales
+
+    @property
+    def name(self) -> str | None:
+        """What the model is called, or None."""
+        return self._name
 
     @property
     def nlayers(self) -> int:
@@ -257,14 +265,15 @@ class Model:
                  scales: Scales | None = None,
                  specs: abc.Mapping[str, FieldSpec] | None = None,
                  constants: abc.Mapping[str, Constant] | None = None,
-                 check: bool = True) -> "Model":
+                 name: str | None = None, check: bool = True) -> "Model":
         """A shallow copy with the given parts replaced, validated unless
         `check=False`: the one path every copy of a model takes.
 
         `layers` is one mapping of name to field per layer of the (new)
         geometry; `specs` and `constants` replace the model's own
         tables, the vocabulary and the shipped constants being merged in
-        again.  The class and every other instance attribute are kept.
+        again.  The class and every other instance attribute are kept,
+        the name included unless `name` gives another.
         """
         out = copy.copy(self)
         if geometry is not None:
@@ -288,8 +297,16 @@ class Model:
             out._specs = MappingProxyType({**VOCABULARY, **dict(specs)})
         if constants is not None:
             out._constants = MappingProxyType({**CONSTANTS, **dict(constants)})
+        if name is not None:
+            out._name = str(name)
         if check:
             out.validate()
+        return out
+
+    def named(self, name: str | None) -> "Model":
+        """A copy called `name`; None unnames it."""
+        out = self.replaced(check=False)
+        out._name = None if name is None else str(name)
         return out
 
     def with_field(self, which: int | str, name: str, field: Field, *,
@@ -449,5 +466,6 @@ class Model:
 
     def __repr__(self) -> str:
         names = ", ".join(self.field_names())
-        return (f"{type(self).__name__}({self.nlayers} layers, fields [{names}], "
-                f"scales={self._scales!r})")
+        called = f"{self._name!r}, " if self._name is not None else ""
+        return (f"{type(self).__name__}({called}{self.nlayers} layers, "
+                f"fields [{names}], scales={self._scales!r})")

@@ -415,7 +415,6 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
     cls = type(model)
     again = model.replaced(check=True)
     assert type(again) is cls, "replaced does not keep the class"
-    assert again.layers is not model.layers or model.nlayers == 0 or True
     for a, b in zip(again.layers, model.layers):
         assert a.fields == b.fields, "replaced changes the fields"
     rtol = model.geometry.rtol

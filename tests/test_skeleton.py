@@ -101,22 +101,22 @@ def test_hollowed(sk):
         Skeleton([0.5, 1.0]).hollowed(0.2)
 
 
-def test_coarsen(sk):
-    coarse, cmap = sk.coarsen(drop=[0])
+def test_coarsened(sk):
+    coarse, cmap = sk.coarsened(drop=[0])
     assert np.array_equal(coarse.boundaries, [0.0, 2.0, 3.0])
     assert isinstance(cmap, CoarseningMap)
     assert cmap.layers == ((0, 1), (2,))
     assert cmap.kept_interfaces == (1,)
     assert cmap.dropped_interfaces == (0,)
     assert cmap.fine_layer(0.5) == 0 and cmap.fine_layer(1.0) == 1
-    same, _ = sk.coarsen(keep=[1])
+    same, _ = sk.coarsened(keep=[1])
     assert same == coarse
-    _, both = sk.coarsen(keep=[-1, 0])
+    _, both = sk.coarsened(keep=[-1, 0])
     assert both.coarse == sk
     with pytest.raises(ValueError, match="exactly one"):
-        sk.coarsen()
+        sk.coarsened()
     with pytest.raises(IndexError):
-        sk.coarsen(drop=[2])
+        sk.coarsened(drop=[2])
 
 
 def test_equality_and_repr(sk):

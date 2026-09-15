@@ -118,13 +118,14 @@ class PolynomialLayer:
     """A piecewise polynomial on one interval, exact in every operation.
 
     Wraps a scipy `PPoly` whose pieces are local polynomials in
-    (r - x[i]) stored highest degree first.  The interval may be given
-    separately from the breakpoints, in which case the end pieces
-    continue beyond them; by default it is the breakpoint range.
+    (r - x[i]) stored highest degree first.  The interval is given
+    separately from the breakpoints, the end pieces continuing beyond
+    them where it is wider; `as_layer_function` takes the breakpoint
+    range where none is meant.
     """
 
-    def __init__(self, ppoly: PPoly | BSpline, *,
-                 interval: tuple[float, float] | None = None) -> None:
+    def __init__(self, interval: tuple[float, float],
+                 ppoly: PPoly | BSpline) -> None:
         if isinstance(ppoly, BSpline):
             ppoly = PPoly.from_spline(ppoly)
         if not isinstance(ppoly, PPoly):
@@ -132,8 +133,7 @@ class PolynomialLayer:
         c = as_values(ppoly.c)
         x = np.asarray(ppoly.x, dtype=float)
         self._p = PPoly(c, x, extrapolate=True)
-        self._interval = (_interval(interval) if interval is not None
-                          else (float(x[0]), float(x[-1])))
+        self._interval = _interval(interval)
 
     @property
     def interval(self) -> tuple[float, float]:
@@ -156,7 +156,7 @@ class PolynomialLayer:
             raise ValueError("nu must be non-negative")
         if nu == 0:
             return self
-        return PolynomialLayer(self._p.derivative(nu), interval=self._interval)
+        return PolynomialLayer(self._interval, self._p.derivative(nu))
 
     def integrate(self, a: float, b: float) -> float | complex:
         """The signed integral from a to b, exact."""
@@ -164,7 +164,7 @@ class PolynomialLayer:
 
     def on_interval(self, lo: float, hi: float) -> "PolynomialLayer":
         """The same polynomial on [lo, hi]: the end pieces continue."""
-        return PolynomialLayer(self._p, interval=(lo, hi))
+        return PolynomialLayer((lo, hi), self._p)
 
     def rescaled(self, *, k: float, v: float) -> "PolynomialLayer":
         """v f(r / k) on the interval scaled by k, one multiply per coefficient."""
@@ -174,7 +174,7 @@ class PolynomialLayer:
         powers = self.degree - np.arange(self.degree + 1)
         c = self._p.c * (v / k ** powers)[:, None]
         lo, hi = self._interval
-        return PolynomialLayer(PPoly(c, self._p.x * k), interval=(k * lo, k * hi))
+        return PolynomialLayer((k * lo, k * hi), PPoly(c, self._p.x * k))
 
     def is_zero(self) -> bool:
         """Whether every coefficient is exactly zero."""
@@ -193,18 +193,18 @@ class PolynomialLayer:
         if isinstance(other, PolynomialLayer):
             interval = _require_same_interval(self, other)
             x, a, b = self._aligned(other)
-            return PolynomialLayer(PPoly(op(a, b), x), interval=interval)
+            return PolynomialLayer(interval, PPoly(op(a, b), x))
         if _is_number(other):
             c = np.array(self._p.c)
-            return PolynomialLayer(PPoly(op(c, as_scalar(other)), self._p.x),
-                                   interval=self._interval)
+            return PolynomialLayer(self._interval,
+                                   PPoly(op(c, as_scalar(other)), self._p.x))
         if _is_layer_function(other):
             return NotImplemented
         return NotImplemented
 
     def __add__(self, other: LayerFunction | float | complex) -> "PolynomialLayer":
         if _is_number(other):
-            return self._combine(constant_layer(other, self._interval), _add_c)
+            return self._combine(constant_layer(self._interval, other), _add_c)
         return self._combine(other, _add_c)
 
     __radd__ = __add__
@@ -218,16 +218,16 @@ class PolynomialLayer:
         return (-self) + other
 
     def __neg__(self) -> "PolynomialLayer":
-        return PolynomialLayer(PPoly(-self._p.c, self._p.x), interval=self._interval)
+        return PolynomialLayer(self._interval, PPoly(-self._p.c, self._p.x))
 
     def __mul__(self, other: LayerFunction | float | complex) -> "PolynomialLayer":
         if isinstance(other, PolynomialLayer):
             interval = _require_same_interval(self, other)
             x, a, b = self._aligned(other)
-            return PolynomialLayer(PPoly(_mul_c(a, b), x), interval=interval)
+            return PolynomialLayer(interval, PPoly(_mul_c(a, b), x))
         if _is_number(other):
-            return PolynomialLayer(PPoly(self._p.c * as_scalar(other), self._p.x),
-                                   interval=self._interval)
+            return PolynomialLayer(self._interval,
+                                   PPoly(self._p.c * as_scalar(other), self._p.x))
         return NotImplemented
 
     __rmul__ = __mul__
@@ -238,13 +238,13 @@ class PolynomialLayer:
             return self * (1.0 / as_scalar(other))
         if isinstance(other, PolynomialLayer):
             interval = _require_same_interval(self, other)
-            return NumericLayer(lambda r: self(r) / other(r), interval)
+            return NumericLayer(interval, lambda r: self(r) / other(r))
         return NotImplemented
 
     def __pow__(self, n: int) -> "PolynomialLayer":
         if not isinstance(n, (int, np.integer)) or n < 0:
             raise ValueError("a polynomial layer is raised to a non-negative integer")
-        out = constant_layer(1.0, self._interval)
+        out = constant_layer(self._interval, 1.0)
         for _ in range(int(n)):
             out = out * self
         return out
@@ -311,8 +311,8 @@ class NumericLayer:
     anything gives another `NumericLayer`.
     """
 
-    def __init__(self, fn: Callable[[np.ndarray], ArrayLike],
-                 interval: tuple[float, float], *,
+    def __init__(self, interval: tuple[float, float],
+                 fn: Callable[[np.ndarray], ArrayLike], *,
                  derivative: Callable[[np.ndarray], ArrayLike] | None = None,
                  dstep: float = 1e-6) -> None:
         if not callable(fn):
@@ -342,13 +342,14 @@ class NumericLayer:
         if nu == 0:
             return self
         if self._d is not None:
-            first = NumericLayer(self._d, self._interval, dstep=self._dstep)
+            first = NumericLayer(self._interval, self._d, dstep=self._dstep)
         else:
             h = self._dstep * (self._interval[1] - self._interval[0])
             fn = self._fn
-            first = NumericLayer(lambda r: (as_values(fn(r + h))
+            first = NumericLayer(self._interval,
+                                 lambda r: (as_values(fn(r + h))
                                             - as_values(fn(r - h))) / (2.0 * h),
-                                 self._interval, dstep=self._dstep)
+                                 dstep=self._dstep)
         return first.derivative(nu=nu - 1)
 
     def integrate(self, a: float, b: float) -> float | complex:
@@ -367,7 +368,7 @@ class NumericLayer:
 
     def on_interval(self, lo: float, hi: float) -> "NumericLayer":
         """The same callable on [lo, hi]."""
-        return NumericLayer(self._fn, (lo, hi), derivative=self._d, dstep=self._dstep)
+        return NumericLayer((lo, hi), self._fn, derivative=self._d, dstep=self._dstep)
 
     def rescaled(self, *, k: float, v: float) -> "NumericLayer":
         k, v = float(k), float(v)
@@ -376,8 +377,8 @@ class NumericLayer:
         fn, d = self._fn, self._d
         lo, hi = self._interval
         return NumericLayer(
-            lambda r: v * as_values(fn(np.asarray(r, dtype=float) / k)),
             (k * lo, k * hi),
+            lambda r: v * as_values(fn(np.asarray(r, dtype=float) / k)),
             derivative=(None if d is None else
                         lambda r: (v / k) * as_values(
                             d(np.asarray(r, dtype=float) / k))),
@@ -387,13 +388,13 @@ class NumericLayer:
                 ) -> "NumericLayer | NotImplementedType":
         if _is_number(other):
             c = as_scalar(other)
-            return NumericLayer(lambda r: op(self(r), c), self._interval,
+            return NumericLayer(self._interval, lambda r: op(self(r), c),
                                 dstep=self._dstep)
         if _is_layer_function(other):
             interval = _require_same_interval(self, other)
             return NumericLayer(
-                lambda r: op(self(r), as_values(other(r))),
-                interval, dstep=self._dstep)
+                interval,
+                lambda r: op(self(r), as_values(other(r))), dstep=self._dstep)
         return NotImplemented
 
     def __add__(self, other: LayerFunction | float | complex) -> "NumericLayer":
@@ -408,7 +409,7 @@ class NumericLayer:
         return (-self) + other
 
     def __neg__(self) -> "NumericLayer":
-        return NumericLayer(lambda r: -self(r), self._interval, dstep=self._dstep)
+        return NumericLayer(self._interval, lambda r: -self(r), dstep=self._dstep)
 
     def __mul__(self, other: LayerFunction | float | complex) -> "NumericLayer":
         return self._binary(other, np.multiply)
@@ -421,14 +422,14 @@ class NumericLayer:
     def __rtruediv__(self, other: float | complex) -> "NumericLayer":
         if _is_number(other):
             c = float(other)
-            return NumericLayer(lambda r: c / self(r), self._interval,
+            return NumericLayer(self._interval, lambda r: c / self(r),
                                 dstep=self._dstep)
         return NotImplemented
 
     def __pow__(self, n: int) -> "NumericLayer":
         if not isinstance(n, (int, np.integer)) or n < 0:
             raise ValueError("a layer function is raised to a non-negative integer")
-        return NumericLayer(lambda r: self(r) ** int(n), self._interval,
+        return NumericLayer(self._interval, lambda r: self(r) ** int(n),
                             dstep=self._dstep)
 
     def __repr__(self) -> str:
@@ -436,28 +437,28 @@ class NumericLayer:
         return f"NumericLayer({self._fn!r} on [{lo:g}, {hi:g}])"
 
 
-def as_layer_function(fn: LayerFunctionLike,
-                      interval: tuple[float, float]) -> LayerFunction:
+def as_layer_function(interval: tuple[float, float],
+                      fn: LayerFunctionLike) -> LayerFunction:
     """Adapt `fn` to the protocol on `interval`.
 
     A layer function is returned as it is when its interval is the one
     given, and re-stated on it otherwise; a `PPoly` or `BSpline` becomes
     a `PolynomialLayer`, a number a constant, any other callable a
-    `NumericLayer`.
+    `NumericLayer`.  Every constructor here takes the interval first.
     """
     interval = _interval(interval)
     if _is_layer_function(fn):
         return fn if same_interval(fn.interval, interval) else fn.on_interval(*interval)
     if isinstance(fn, (PPoly, BSpline)):
-        return PolynomialLayer(fn, interval=interval)
+        return PolynomialLayer(interval, fn)
     if _is_number(fn):
-        return constant_layer(fn, interval)
+        return constant_layer(interval, fn)
     if callable(fn):
-        return NumericLayer(fn, interval)
+        return NumericLayer(interval, fn)
     raise TypeError(f"expected a callable, got {type(fn).__name__}")
 
 
-def polynomial_layer(coeffs: ArrayLike, interval: tuple[float, float], *,
+def polynomial_layer(interval: tuple[float, float], coeffs: ArrayLike, *,
                      scale: float = 1.0) -> PolynomialLayer:
     """sum_k c_k (r / scale)^k on `interval`, as one exact piece in r."""
     lo, hi = _interval(interval)
@@ -471,17 +472,17 @@ def polynomial_layer(coeffs: ArrayLike, interval: tuple[float, float], *,
     local = p(Polynomial([lo, 1.0]))                         # in (r - lo)
     coef = np.zeros(c.size, dtype=c.dtype)
     coef[:local.coef.size] = local.coef
-    return PolynomialLayer(PPoly(coef[::-1][:, None], [lo, hi]))
+    return PolynomialLayer((lo, hi), PPoly(coef[::-1][:, None], [lo, hi]))
 
 
-def constant_layer(value: float | complex,
-                   interval: tuple[float, float]) -> PolynomialLayer:
+def constant_layer(interval: tuple[float, float],
+                   value: float | complex) -> PolynomialLayer:
     """The constant `value` on `interval`, as an exact polynomial."""
-    return polynomial_layer([as_scalar(value)], interval)
+    return polynomial_layer(interval, [as_scalar(value)])
 
 
-def polynomial_fit(fn: Callable[[np.ndarray], ArrayLike],
-                   interval: tuple[float, float], *, degree: int,
+def polynomial_fit(interval: tuple[float, float],
+                   fn: Callable[[np.ndarray], ArrayLike], *, degree: int,
                    n: int | None = None) -> PolynomialLayer:
     """The least-squares polynomial of `degree` through `fn` on `interval`.
 
@@ -499,4 +500,4 @@ def polynomial_fit(fn: Callable[[np.ndarray], ArrayLike],
     r = 0.5 * (lo + hi) + 0.5 * (hi - lo) * t
     y = as_values(fn(r))
     p = Polynomial.fit(r, y, degree, domain=[lo, hi]).convert()
-    return polynomial_layer(p.coef, (lo, hi))
+    return polynomial_layer((lo, hi), p.coef)

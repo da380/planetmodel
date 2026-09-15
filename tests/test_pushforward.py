@@ -140,7 +140,7 @@ ELASTIC_VOIGT = (lambda M: 0.5 * (M + M.T) + 6.0 * np.eye(6))(
 
 
 def elastic():
-    return constant_field(ELASTIC_VOIGT, IV, character=ELASTIC, name="c")
+    return constant_field(IV, ELASTIC_VOIGT, character=ELASTIC, name="c")
 
 
 def stress():

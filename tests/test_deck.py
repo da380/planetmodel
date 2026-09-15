@@ -208,6 +208,10 @@ def test_to_deck_and_write_deck_round_trip(mineos, deck, tmp_path):
         mineos.refined([2000e3]).to_deck()
     with pytest.raises(ValueError, match="needs columns"):
         write_deck(tmp_path / "bad", Deck([0.0, 1.0], {"rho": [1.0, 1.0]}), MINEOS)
+    # a format naming a subset of the deck's columns writes that subset
+    rho_only = DeckFormat(("rho",), name="rho")
+    path = write_deck(tmp_path / "rho.deck", back, rho_only)
+    assert read_deck(path, rho_only).names == ("rho",)
 
 
 def test_a_custom_format_and_a_model_type_of_ones_own(tmp_path):

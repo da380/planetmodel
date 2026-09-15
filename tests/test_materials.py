@@ -34,7 +34,7 @@ LVZ_POLY = {"rho": [2.6910, 0.6924], "vpv": [0.8317, 7.2180],
 
 def layer_of(interval, polys):
     """A dict layer of exact radial fields; rho has weight 1."""
-    return {n: RadialField(interval, polynomial_layer(c, interval, scale=A_PREM),
+    return {n: RadialField(interval, polynomial_layer(interval, c, scale=A_PREM),
                            character=DENSITY if n == "rho" else SCALAR, name=n)
             for n, c in polys.items()}
 
@@ -362,14 +362,14 @@ def test_elastic_field_refusals():
     v = RadialField(LM, [1.0, 0.0, 0.0], character=VECTOR)
     with pytest.raises(ValueError, match="rank"):
         ElasticField(ISO, {"kappa": k, "mu": v})
-    other = constant_field(1.0, OC, character=DENSITY)
+    other = constant_field(OC, 1.0, character=DENSITY)
     with pytest.raises(ValueError, match="different intervals"):
         ElasticField(ISO, {"kappa": k, "mu": other})
 
 
 def test_moduli_may_be_analytic():
     a = AnalyticField(LM, lambda r, t, p: 1e11 * (1 + 0.1 * np.cos(t)))
-    b = constant_field(5e10, LM)
+    b = constant_field(LM, 5e10)
     e = ElasticField(ISO, {"kappa": a, "mu": b})
     assert not e.is_radial
     r = np.linspace(*LM, 5)
@@ -407,8 +407,8 @@ def test_is_fluid_reads_the_shear_fields():
     assert is_fluid(lay) is False                 # vsv still bears shear
     lay["vsv"] = RadialField(LVZ, 0.0)
     assert is_fluid(lay) is True
-    assert is_fluid({"L": RadialField(OC, 0.0), "N": constant_field(0.0, OC)})
-    assert not is_fluid({"mu": constant_field(1.0, OC)})
+    assert is_fluid({"L": RadialField(OC, 0.0), "N": constant_field(OC, 0.0)})
+    assert not is_fluid({"mu": constant_field(OC, 1.0)})
 
 
 def test_is_fluid_samples_where_there_are_no_coefficients():
@@ -499,11 +499,11 @@ def test_moduli_from_rho_vp_vs_are_isotropic():
 
 def test_the_five_moduli_win_over_the_velocities():
     lay = layer_of(LVZ, LVZ_POLY)
-    lay.update({k: constant_field(float(i + 1), LVZ, character=DENSITY)
+    lay.update({k: constant_field(LVZ, float(i + 1), character=DENSITY)
                 for i, k in enumerate("ACFLN")})
     assert moduli(lay)["N"] is lay["N"]
     iso = layer_of(LM, LM_POLY)
-    iso["kappa"], iso["mu"] = constant_field(2.0, LM), constant_field(1.0, LM)
+    iso["kappa"], iso["mu"] = constant_field(LM, 2.0), constant_field(LM, 1.0)
     assert elastic_moduli(iso).moduli["mu"] is iso["mu"]
 
 

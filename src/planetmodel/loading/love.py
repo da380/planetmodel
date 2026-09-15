@@ -31,7 +31,8 @@ satisfies k^u + k^phi = -4 pi G a.
 The pyslfp file is plain text, one row per degree from 0 with columns
 l, h_u, k_u, h_phi, k_phi, h_t, k_t in SI: h per unit surface density
 in m^3 kg^-1, k likewise in m^4 kg^-1 s^-2, h_t in s^2 m^-1 and k_t
-dimensionless.
+dimensionless.  Its comment lines name the columns and record the
+body's radius, surface gravity and G, which the reader takes back.
 """
 from __future__ import annotations
 
@@ -70,6 +71,10 @@ _DIMENSIONS = {
     "k_t": Dimensions(),
 }
 _COLUMNS = ("h_u", "k_u", "h_phi", "k_phi", "h_t", "k_t")
+
+#: The comment line of the pyslfp file recording the body the numbers
+#: belong to, in SI; `read_love_numbers` reads it back where present.
+_BODY_LINE = "body radius {radius:.15e} surface_gravity {g:.15e} G {G:.15e}"
 
 
 @dataclass(frozen=True)
@@ -264,7 +269,8 @@ class LoveNumbers:
         header = ("elastic Love numbers, SI, physical-potential sign convention\n"
                   "l  h_u  k_u  h_phi  k_phi  h_t  k_t\n"
                   "load columns per unit surface density, tidal columns per unit "
-                  "external potential (r/a)^l, degree 1 in the centre-of-mass frame")
+                  "external potential (r/a)^l, degree 1 in the centre-of-mass frame\n"
+                  + _BODY_LINE.format(radius=si.radius, g=si.surface_gravity, G=si.G))
         np.savetxt(path, cols, fmt=["%6d"] + ["%+.15e"] * 6, header=header)
 
     def __repr__(self) -> str:
@@ -272,6 +278,22 @@ class LoveNumbers:
         at = "" if self.omega is None else f", omega={self.omega:g}"
         return (f"LoveNumbers({kind}degrees {int(self.degree[0])}..{self.lmax}, "
                 f"{self.scales!r}{at})")
+
+
+def _body_from_header(path: str | Path) -> dict[str, float]:
+    """The radius, surface gravity and G recorded in a file's comment
+    lines by `write`, or NaN for each where the file carries no such line."""
+    out = {"radius": np.nan, "surface_gravity": np.nan, "G": np.nan}
+    with open(path) as fh:
+        for line in fh:
+            if not line.startswith("#"):
+                break
+            tokens = line[1:].split()
+            if tokens[:1] == ["body"] and len(tokens) == 7:
+                out["radius"] = float(tokens[2])
+                out["surface_gravity"] = float(tokens[4])
+                out["G"] = float(tokens[6])
+    return out
 
 
 def read_love_numbers(path: str | Path) -> LoveNumbers:
@@ -286,8 +308,7 @@ def read_love_numbers(path: str | Path) -> LoveNumbers:
     nan = np.full(n, np.nan)
     cols = {name: data[:, j + 1] for j, name in enumerate(_COLUMNS)}
     return LoveNumbers(data[:, 0].astype(int), l_u=nan, l_phi=nan, l_t=nan,
-                       radius=np.nan, surface_gravity=np.nan, G=np.nan,
-                       scales=Scales.SI, **cols)
+                       scales=Scales.SI, **_body_from_header(path), **cols)
 
 
 def love_numbers(model_or_material: Model | Material, lmax: int, *,

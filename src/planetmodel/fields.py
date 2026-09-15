@@ -26,10 +26,13 @@ stored component and is exact when they are polynomial.
 pointwise function of other fields, the one escape from the algebra
 below, which is: `+` and `-` between fields of one character on one
 interval, `*` and `/` between fields of rank 0 (weights add and
-subtract), `**` of a rank-0 weight-0 field, and scaling by a number.
-When every operand is radial the result is a `RadialField` on the
-combined layer functions, exact when they are polynomial; otherwise it
-is a `ComposedField`.
+subtract), `**` of a rank-0 weight-0 field, scaling by a number, and
+`+` and `-` with a number, which stands for the constant field of rank
+0 and weight 0 on the interval, so that `1 + delta` is a field and
+`rho + 1` is refused like any sum across characters.  When every
+operand is radial the result is a `RadialField` on the combined layer
+functions, exact when they are polynomial; otherwise it is a
+`ComposedField`.
 """
 from __future__ import annotations
 
@@ -47,7 +50,7 @@ from .layerfunction import (LayerFunction, LayerFunctionLike, as_layer_function,
 
 __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "ComposedField", "constant_field", "FRAMES", "check_frame",
-           "stored_shape"]
+           "stored_shape", "to_stored"]
 
 #: The frames a field can present its components in.
 FRAMES = ("spherical", "cartesian")
@@ -205,8 +208,18 @@ class FieldBase:
                 f"fields on different intervals cannot be combined: "
                 f"{self._interval} and {other.interval}")
 
-    def __add__(self, other: Field) -> Field:
-        if not isinstance(other, Field):
+    def _term(self, other: object) -> Field | None:
+        """`other` as a field to add or subtract: itself, or a number as
+        the rank-0 weight-0 constant on this interval; None otherwise."""
+        if isinstance(other, Field):
+            return other
+        if _is_number(other):
+            return constant_field(self._interval, as_scalar(other))
+        return None
+
+    def __add__(self, other: Field | float | complex) -> Field:
+        other = self._term(other)
+        if other is None:
             return NotImplemented
         self._same_interval(other)
         if other.character != self._character:
@@ -214,8 +227,11 @@ class FieldBase:
                 f"cannot add a {other.character} field to a {self._character} one")
         return _combine((self, other), np.add, self._character)
 
-    def __sub__(self, other: Field) -> Field:
-        if not isinstance(other, Field):
+    __radd__ = __add__
+
+    def __sub__(self, other: Field | float | complex) -> Field:
+        other = self._term(other)
+        if other is None:
             return NotImplemented
         self._same_interval(other)
         if other.character != self._character:
@@ -223,6 +239,11 @@ class FieldBase:
                 f"cannot subtract a {other.character} field from a "
                 f"{self._character} one")
         return _combine((self, other), np.subtract, self._character)
+
+    def __rsub__(self, other: float | complex) -> Field:
+        if not _is_number(other):
+            return NotImplemented
+        return (-self) + other
 
     def __neg__(self) -> Field:
         return _scale(self, -1.0)
@@ -316,16 +337,16 @@ class RadialField(FieldBase):
                     f"a {character} radial field has components of shape "
                     f"{shape}, got {function.shape}")
             for idx in np.ndindex(shape):
-                fs[idx] = as_layer_function(function[idx], self._interval)
+                fs[idx] = as_layer_function(self._interval, function[idx])
         elif shape == ():
-            fs[()] = as_layer_function(function, self._interval)
+            fs[()] = as_layer_function(self._interval, function)
         else:
             try:
                 for idx in np.ndindex(shape):
                     item = function
                     for i in idx:
                         item = item[i]
-                    fs[idx] = as_layer_function(item, self._interval)
+                    fs[idx] = as_layer_function(self._interval, item)
             except (TypeError, IndexError):
                 raise ValueError(
                     f"a {character} radial field takes its components as a "
@@ -371,10 +392,8 @@ class RadialField(FieldBase):
         """The signed integral from a to b: a float for rank 0, else an array."""
         if not self._fs.shape:
             return self._fs[()].integrate(a, b)
-        out = np.empty(self._fs.shape)
-        for idx in np.ndindex(self._fs.shape):
-            out[idx] = self._fs[idx].integrate(a, b)
-        return out
+        parts = [self._fs[idx].integrate(a, b) for idx in np.ndindex(self._fs.shape)]
+        return np.array(parts).reshape(self._fs.shape)
 
     def on_interval(self, lo: float, hi: float) -> "RadialField":
         """The same layer functions re-stated on [lo, hi], by their own rule."""
@@ -432,7 +451,7 @@ class AnalyticField(FieldBase):
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
         raw = np.asarray(self._fn(r, theta, phi))
-        vals = _to_stored(raw, r.shape, self._character, self)
+        vals = to_stored(raw, r.shape, self._character, self)
         if self._frame == "cartesian" and self._character.rank:
             R = spherical_frame(theta, phi)
             vals = _rotate(vals, np.swapaxes(R, -1, -2), self._character)
@@ -463,7 +482,7 @@ class AnalyticField(FieldBase):
         return f"AnalyticField({nm}{self._character} on [{lo:g}, {hi:g}])"
 
 
-def _to_stored(raw: np.ndarray, point_shape: tuple[int, ...],
+def to_stored(raw: np.ndarray, point_shape: tuple[int, ...],
                character: Character, owner: object) -> np.ndarray:
     """A formula's return value as stored components at every point."""
     rank = character.rank
@@ -536,7 +555,7 @@ class ComposedField(FieldBase):
                 phi: np.ndarray | None) -> np.ndarray:
         args = [s.evaluate(r, theta, phi) for s in self._sources]
         raw = np.asarray(self._fn(*args))
-        return _to_stored(raw, r.shape, self._character, self)
+        return to_stored(raw, r.shape, self._character, self)
 
     def on_interval(self, lo: float, hi: float) -> "ComposedField":
         return ComposedField(self._fn, [s.on_interval(lo, hi) for s in self._sources],
@@ -561,7 +580,7 @@ class ComposedField(FieldBase):
                 f"on [{lo:g}, {hi:g}])")
 
 
-def constant_field(value: ArrayLike, interval: tuple[float, float], *,
+def constant_field(interval: tuple[float, float], value: ArrayLike, *,
                    character: Character = SCALAR,
                    name: str | None = None) -> RadialField:
     """The constant `value` (a number, or an array of the stored shape) as an
@@ -572,9 +591,9 @@ def constant_field(value: ArrayLike, interval: tuple[float, float], *,
     if v.shape != shape:
         raise ValueError(f"a {character} constant has shape {shape}, got {v.shape}")
     if shape == ():
-        return RadialField((lo, hi), constant_layer(as_scalar(v), (lo, hi)),
+        return RadialField((lo, hi), constant_layer((lo, hi), as_scalar(v)),
                            character=character, name=name)
     fs = np.empty(shape, dtype=object)
     for idx in np.ndindex(shape):
-        fs[idx] = constant_layer(as_scalar(v[idx]), (lo, hi))
+        fs[idx] = constant_layer((lo, hi), as_scalar(v[idx]))
     return RadialField((lo, hi), fs, character=character, name=name)

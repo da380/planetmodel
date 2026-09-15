@@ -161,10 +161,10 @@ print("mass of the radial core: ", shell_mass(rho_simple), "kg")
 print("stored by the field above:", rho_simple.function)
 
 rho_poly = polynomial_layer(
-    np.array([12.5815, -1.2638, -3.6426, -5.5281]) * 1e3, OC, scale=A
+    OC, np.array([12.5815, -1.2638, -3.6426, -5.5281]) * 1e3, scale=A
 )
 vp_poly = polynomial_layer(
-    np.array([11.0487, -4.0362, 4.8023, -13.5732]) * 1e3, OC, scale=A
+    OC, np.array([11.0487, -4.0362, 4.8023, -13.5732]) * 1e3, scale=A
 )
 rho = RadialField(OC, rho_poly, character=DENSITY, name="rho")
 vp = RadialField(OC, vp_poly, name="vp")
@@ -275,7 +275,7 @@ print("continued past the CMB:", wider(3500e3))
 # %%
 slowness = ComposedField(lambda v: 1.0 / v, (vp,), character=SCALAR, name="slowness")
 print(slowness, "| radial:", slowness.is_radial)
-fit = RadialField(OC, polynomial_fit(slowness, OC, degree=3), name="fit")
+fit = RadialField(OC, polynomial_fit(OC, slowness, degree=3), name="fit")
 rr = np.linspace(*OC, 200)
 print(
     "max residual of the cubic fit:",
@@ -299,11 +299,11 @@ print(
 
 # %%
 mu_r = RadialField(
-    OC, polynomial_layer([1.0e11, -2.0e10], OC, scale=A), character=DENSITY, name="mu"
+    OC, polynomial_layer(OC, [1.0e11, -2.0e10], scale=A), character=DENSITY, name="mu"
 )
 mu_c = RadialField(
     OC,
-    polynomial_layer([1.0e11 + 2.0e9j, -2.0e10], OC, scale=A),
+    polynomial_layer(OC, [1.0e11 + 2.0e9j, -2.0e10], scale=A),
     character=DENSITY,
     name="mu",
 )

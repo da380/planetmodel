@@ -7,12 +7,16 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 authors = [
     {name = "David Al-Attar",email = "da380@cam.ac.uk"}
 ]
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.5,<3",
@@ -20,7 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-repository = "https://github.com/da380/planetmodel"
+Homepage = "https://github.com/da380/planetmodel"
+Repository = "https://github.com/da380/planetmodel"
 
 [project.optional-dependencies]
 meshing = ["gmsh>=4.13"]
@@ -34,6 +39,8 @@ harmonics = ["pyshtools (>=4.14)", "ducc0 (>=0.41)"]
 dev = [
     "pytest>=9",
     "ruff>=0.6",
+    "pre-commit (>=4)",
+    "pytest-cov (>=6)",
 ]
 
 [tool.poetry]
@@ -47,6 +54,10 @@ build-backend = "poetry.core.masonry.api"
 testpaths = ["tests"]
 pythonpath = ["src"]
 norecursedirs = ["archive", ".*", "build", "dist"]
+# The fast suite is the default: it needs numpy and scipy alone, and the
+# `plot` and `harmonics` extras where installed.  `-m "not slow"` adds the
+# gmsh unit geometries and the MFEM exports, `-m ""` everything.
+addopts = "-m 'not gmsh and not mfem and not slow'"
 markers = [
     "slow: long-running tests (minutes); deselect with -m 'not slow'",
     "gmsh: requires the optional gmsh dependency (planetmodel[meshing])",

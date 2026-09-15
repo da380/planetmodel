@@ -271,15 +271,15 @@ def test_elastic_completes_the_description_in_both_directions():
     class FromModuli(Elastic, Model):
         def __init__(self):
             layers = [
-                {"rho": constant_field(2.0, iv0, character=DENSITY, name="rho"),
-                 "kappa": constant_field(3.0, iv0, character=DENSITY, name="kappa"),
-                 "mu": constant_field(0.0, iv0, character=DENSITY, name="mu")},
-                {"rho": constant_field(1.0, iv1, character=DENSITY, name="rho"),
-                 "A": constant_field(4.0, iv1, character=DENSITY, name="A"),
-                 "C": constant_field(3.0, iv1, character=DENSITY, name="C"),
-                 "F": constant_field(1.0, iv1, character=DENSITY, name="F"),
-                 "L": constant_field(1.0, iv1, character=DENSITY, name="L"),
-                 "N": constant_field(1.5, iv1, character=DENSITY, name="N")},
+                {"rho": constant_field(iv0, 2.0, character=DENSITY, name="rho"),
+                 "kappa": constant_field(iv0, 3.0, character=DENSITY, name="kappa"),
+                 "mu": constant_field(iv0, 0.0, character=DENSITY, name="mu")},
+                {"rho": constant_field(iv1, 1.0, character=DENSITY, name="rho"),
+                 "A": constant_field(iv1, 4.0, character=DENSITY, name="A"),
+                 "C": constant_field(iv1, 3.0, character=DENSITY, name="C"),
+                 "F": constant_field(iv1, 1.0, character=DENSITY, name="F"),
+                 "L": constant_field(iv1, 1.0, character=DENSITY, name="L"),
+                 "N": constant_field(iv1, 1.5, character=DENSITY, name="N")},
             ]
             super().__init__(Geometry(sk), layers)
 
@@ -300,3 +300,45 @@ def test_elastic_completes_the_description_in_both_directions():
     # a bare mapping through the free function, and a no-op where complete
     assert "vp" in with_velocities(dict(core.fields))
     assert with_velocities(dict(shell.fields)) == dict(shell.fields)
+
+
+def test_with_field_on_an_elastic_name_re_derives_the_rest():
+    """Replacing a velocity makes the velocities the description and the
+    five follow; replacing a Love modulus makes the five the description
+    and the velocities follow; a name outside the elastic set touches
+    nothing else."""
+    from planetmodel import constant_field
+
+    m = PREM(ocean=False)
+    crust = m.layer("upper_crust")
+    iv = crust.interval
+    r = 6360e3
+    rho = crust["rho"](r)
+
+    slow = m.with_field("upper_crust", "vsv", constant_field(iv, 1.0, name="vsv"),
+                        replace=True)
+    lay = slow.layer("upper_crust")
+    assert np.isclose(lay["L"](r), rho * 1.0 ** 2)
+    assert np.isclose(lay["A"](r), rho * lay["vph"](r) ** 2)
+    assert set(lay.names) == set(crust.names)
+    assert type(slow) is PREM
+
+    stiff = m.with_field("upper_crust", "L", constant_field(iv, 5e10, name="L",
+                                                             character=DENSITY),
+                         replace=True)
+    lay = stiff.layer("upper_crust")
+    assert np.isclose(lay["vsv"](r), np.sqrt(5e10 / rho))
+    assert np.isclose(lay["vsh"](r), np.sqrt(lay["N"](r) / rho))
+    assert set(lay.names) == set(crust.names)
+
+    q = m.with_field("upper_crust", "qmu", constant_field(iv, 10.0, name="qmu"),
+                     replace=True)
+    lay = q.layer("upper_crust")
+    assert lay["L"] is crust["L"] and lay["vsv"] is crust["vsv"]
+
+    # a name of the same family added beside its kin: the others stay,
+    # since a family need not be complete for the derivation to run
+    with_vp = LayeredIsotropicElastic([0.0, 1.0], rho=[1.0], vp=[2.0], vs=[1.0])
+    faster = with_vp.with_field(0, "vp", constant_field((0.0, 1.0), 3.0, name="vp"),
+                                replace=True)
+    assert np.isclose(faster.layer(0)["A"](0.5), 9.0)

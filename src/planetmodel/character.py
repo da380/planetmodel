@@ -120,8 +120,9 @@ class Character:
         return f"rank {self.rank}, weight {self.weight}{tail}"
 
 
-#: Q_kappa, Q_mu, eta, relaxation times, viscosity, and the moduli.
+#: Q_kappa, Q_mu, eta, relaxation times, viscosity, velocities.
 SCALAR = Character(0, 0)
+#: Density, and every modulus, which shares its factor of 1/J.
 DENSITY = Character(0, 1)
 VECTOR = Character(1, 0)
 #: Equilibrium stress, stress glut.

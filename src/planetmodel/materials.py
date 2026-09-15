@@ -72,8 +72,9 @@ if TYPE_CHECKING:
 
 __all__ = ["moduli_from_velocities", "velocities_from_moduli",
            "kappa_mu_from_moduli", "voigt_matrix", "ElasticField",
-           "is_fluid", "moduli", "elastic_moduli", "kappa_mu", "LayerLike",
-           "Operand", "MODULI_NAMES", "SHEAR_NAMES", "ELASTIC_NAMES"]
+           "is_fluid", "moduli", "elastic_moduli", "kappa_mu", "named",
+           "independent_moduli", "LayerLike", "Operand", "MODULI_NAMES",
+           "SHEAR_NAMES", "ELASTIC_NAMES"]
 
 #: What the functions of a layer accept: a model's `Layer`, or any mapping
 #: of field name to field.
@@ -165,7 +166,7 @@ def kappa_mu_from_moduli(A: Operand, C: Operand, F: Operand, L: Operand, N: Oper
     return kappa, mu
 
 
-def _named(field: Field, name: str) -> Field:
+def named(field: Field, name: str) -> Field:
     """The field under `name` where it can be renamed, else as it is."""
     return field.renamed(name) if hasattr(field, "renamed") else field
 
@@ -175,7 +176,7 @@ def _vti_from_isotropic(kappa: Field, mu: Field) -> dict[str, Field]:
     named for what they are."""
     A = kappa + (4.0 / 3.0) * mu
     F = kappa - (2.0 / 3.0) * mu
-    return {k: _named(f, k)
+    return {k: named(f, k)
             for k, f in (("A", A), ("C", A), ("F", F), ("L", mu), ("N", mu))}
 
 
@@ -384,7 +385,7 @@ def is_fluid(layer: LayerLike) -> bool:
     return all(_vanishes(layer[n]) for n in held)
 
 
-def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
+def independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
     """The symmetry a layer states and its independent moduli as fields.
 
     The five moduli when held, read as ISOTROPIC where A = C, L = N and
@@ -407,8 +408,8 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
         A, C, F, L, N = (five[n] for n in vti)
         if _agree(A, C) and _agree(L, N) and _agree(F, A - 2.0 * L):
             kappa, mu = kappa_mu_from_moduli(**five)
-            return Symmetry.ISOTROPIC, {"kappa": _named(kappa, "kappa"),
-                                        "mu": _named(mu, "mu")}
+            return Symmetry.ISOTROPIC, {"kappa": named(kappa, "kappa"),
+                                        "mu": named(mu, "mu")}
         return Symmetry.VTI, five
     if all(n in layer for n in iso):
         return Symmetry.ISOTROPIC, {n: layer[n] for n in iso}
@@ -416,12 +417,12 @@ def _independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:
         v = {n: layer[n] for n in _TI_VELOCITIES}
         m = moduli_from_velocities(layer["rho"], v["vpv"], v["vsv"], vph=v["vph"],
                                    vsh=v["vsh"], eta=v["eta"])
-        return Symmetry.VTI, {k: _named(f, k) for k, f in m.items()}
+        return Symmetry.VTI, {k: named(f, k) for k, f in m.items()}
     if all(n in layer for n in ("rho", "vp", "vs")):
         m = moduli_from_velocities(layer["rho"], layer["vp"], layer["vs"])
         kappa, mu = kappa_mu_from_moduli(**m)
-        return Symmetry.ISOTROPIC, {"kappa": _named(kappa, "kappa"),
-                                    "mu": _named(mu, "mu")}
+        return Symmetry.ISOTROPIC, {"kappa": named(kappa, "kappa"),
+                                    "mu": named(mu, "mu")}
     raise KeyError(
         f"{_describe(layer)} holds {list(_held(layer))}; the moduli need "
         f"{list(vti)}, or {list(iso)}, or rho with {list(_TI_VELOCITIES)}, "
@@ -436,7 +437,7 @@ def moduli(layer: LayerLike) -> dict[str, Field]:
     vti = MODULI_NAMES[Symmetry.VTI]
     if all(n in layer for n in vti):
         return {n: layer[n] for n in vti}
-    symmetry, fields = _independent_moduli(layer)
+    symmetry, fields = independent_moduli(layer)
     if symmetry is Symmetry.ISOTROPIC:
         fields = _vti_from_isotropic(fields["kappa"], fields["mu"])
     return fields
@@ -454,11 +455,11 @@ def elastic_moduli(layer: LayerLike) -> Field:
     """
     if "elastic_moduli" in layer:
         return layer["elastic_moduli"]
-    symmetry, fields = _independent_moduli(layer)
+    symmetry, fields = independent_moduli(layer)
     return ElasticField(symmetry, fields, name="elastic_moduli")
 
 
 def kappa_mu(layer: LayerLike) -> tuple[Field, Field]:
     """The Voigt average (kappa, mu) of `moduli(layer)`, as fields."""
     kappa, mu = kappa_mu_from_moduli(**moduli(layer))
-    return _named(kappa, "kappa"), _named(mu, "mu")
+    return named(kappa, "kappa"), named(mu, "mu")

@@ -247,7 +247,7 @@ def test_maxwell_limits_of_a_frozen_model():
     model = LayeredIsotropicElastic.homogeneous(a, rho=rho, vp=8000.0,
                                                 vs=np.sqrt(mu / rho))
     model = model.with_field(0, "viscosity",
-                             constant_field(eta, (0.0, a), name="viscosity"))
+                             constant_field((0.0, a), eta, name="viscosity"))
     mesh = RadialMesh(model, ngll=5, lmax=4)
     elastic = love_numbers(Material(mesh, model), 4)
     tau = eta / mu
@@ -298,6 +298,12 @@ def test_pyslfp_file_round_trip(tmp_path, love):
         assert np.allclose(data[:, j + 1], getattr(love, name), rtol=1e-12)
         assert np.allclose(getattr(back, name), getattr(love, name), rtol=1e-12)
     assert back.lmax == 20 and np.all(np.isnan(back.l_u)) and back.scales == Scales.SI
+    assert np.isclose(back.radius, love.radius, rtol=1e-14)
+    assert np.isclose(back.surface_gravity, love.surface_gravity, rtol=1e-14)
+    assert np.isclose(back.G, love.G, rtol=1e-14)
+    bare = tmp_path / "bare.dat"
+    np.savetxt(bare, data, fmt=["%6d"] + ["%+.15e"] * 6)
+    assert np.isnan(read_love_numbers(bare).radius)
     nd = love.converted(PREM().nondimensionalised().scales)
     nd.write(path)
     assert np.allclose(np.loadtxt(path), data, rtol=1e-12)

@@ -45,10 +45,28 @@ if TYPE_CHECKING:
     from .model import Model
 
 __all__ = ["layer_method", "with_moduli", "with_velocities", "Elastic", "ConstantQ",
-           "SelfGravitating", "Viscoelastic"]
+           "SelfGravitating", "Viscoelastic", "ELASTIC_FAMILIES", "elastic_family"]
 
 #: The velocity names an elastic description may be given in.
 VELOCITY_NAMES = ("vp", "vs", "vpv", "vph", "vsv", "vsh", "eta")
+
+#: The ways a layer describes its elastic medium, each a family of names
+#: that is complete on its own: the velocities beside rho, the isotropic
+#: moduli, the five Love moduli, and the tensor stored under
+#: `elastic_moduli`.
+ELASTIC_FAMILIES = (VELOCITY_NAMES,
+                    materials.MODULI_NAMES[materials.Symmetry.ISOTROPIC],
+                    materials.MODULI_NAMES[materials.Symmetry.VTI],
+                    ("elastic_moduli",))
+
+
+def elastic_family(name: str) -> tuple[str, ...]:
+    """The family of `ELASTIC_FAMILIES` an elastic name belongs to."""
+    for family in ELASTIC_FAMILIES:
+        if name in family:
+            return family
+    raise KeyError(f"{name!r} is not an elastic name; those are "
+                   f"{list(materials.ELASTIC_NAMES)}")
 
 
 def layer_method[T](fn: Callable[..., T]) -> Callable[..., T]:
@@ -96,7 +114,7 @@ def with_velocities(fields: Mapping[str, Field]) -> dict[str, Field]:
         return ComposedField(lambda m, d: np.sqrt(m / d), (modulus, rho),
                              character=SCALAR, name=name)
 
-    symmetry, _ = materials._independent_moduli(out)
+    symmetry, _ = materials.independent_moduli(out)
     if symmetry is materials.Symmetry.ISOTROPIC:
         out["vp"] = speed(C, "vp")
         out["vs"] = speed(L, "vs")
@@ -125,6 +143,16 @@ class Elastic:
     recomputed from them.  A layer holding a general anisotropic tensor
     is refused by the three that read the five, until the general Voigt
     average is written.
+
+    The derived fields are kept in step by `with_field`: replacing an
+    elastic field on a layer makes the family it belongs to (rho with
+    the velocities, kappa and mu, or the five) the description, drops
+    the other elastic names from that layer, and completes the
+    description again, so the five follow a new `vs` and the velocities
+    a new `L`; a field added beside the existing ones is attached as it
+    is.  A change that goes through `replaced` directly, as the
+    library's own transformations do, is the caller's to keep
+    consistent.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -138,6 +166,30 @@ class Elastic:
     moduli = layer_method(materials.moduli)
     elastic_moduli = layer_method(materials.elastic_moduli)
     kappa_mu = layer_method(materials.kappa_mu)
+
+    def with_field(self: Model, which: int | str, name: str, field: Field, *,
+                   replace: bool = False) -> Model:
+        """A copy with `field` attached to one layer under `name`.
+
+        Replacing an elastic field makes its family the layer's
+        description and derives the other elastic fields from it again;
+        a field added beside the existing ones, or a family too
+        incomplete to describe the medium, is attached as it is.
+        """
+        from .model import Model
+        out = Model.with_field(self, which, name, field, replace=replace)
+        if not replace or name not in materials.ELASTIC_NAMES:
+            return out
+        i = self.layer(which).index
+        layers = [dict(layer.fields) for layer in out.layers]
+        keep = elastic_family(name)
+        fields = {k: f for k, f in layers[i].items()
+                  if k not in materials.ELASTIC_NAMES or k in keep}
+        try:
+            layers[i] = with_velocities(with_moduli(fields))
+        except KeyError:
+            return out
+        return out.replaced(layers=layers)
 
     def isotropic(self: Model) -> Model:
         """The model with every elastic description replaced by its Voigt

@@ -77,7 +77,7 @@ delta = layered.sample(rng=rng)
 perturbed = model
 for i in mantle:
     rho = model.layer(i)["rho"]
-    perturbed = perturbed.with_field(i, "rho", rho + rho * delta[i], replace=True)
+    perturbed = perturbed.with_field(i, "rho", rho * (1 + delta[i]), replace=True)
 testing.check_model(perturbed)
 r = np.array([2.0e6, 4.0e6, 6.0e6])
 for x in r:

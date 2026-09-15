@@ -370,7 +370,7 @@ class Geometry:
         A merged layer's name is None; kept interfaces keep theirs.
         """
         self._require_identity("coarsened")
-        sk, cmap = self._sk.coarsen(keep=keep, drop=drop)
+        sk, cmap = self._sk.coarsened(keep=keep, drop=drop)
         layer_names = [self._layer_names[fine[0]] if len(fine) == 1 else None
                        for fine in cmap.layers]
         old_faces = {f.radius: f.name for f in self.interfaces}

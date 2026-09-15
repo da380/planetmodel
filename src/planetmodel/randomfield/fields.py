@@ -256,7 +256,8 @@ class RadialGRF:
             raise ValueError(f"expected {self.r.shape} nodal values, got {v.shape}")
         full = np.zeros(self.mesh.nglob)
         full[self._slice] = v
-        return PolynomialLayer(self.mesh.to_ppoly(full[self.mesh.gmap],
+        return PolynomialLayer(self.interval,
+                               self.mesh.to_ppoly(full[self.mesh.gmap],
                                                   elements=self._elements))
 
     def to_field(self, values: ArrayLike, *, character: Character = SCALAR,
@@ -504,7 +505,7 @@ class LayeredGRF:
                 out.append(g.to_field(g.sample(rng=rng), character=character,
                                       name=self.name))
             else:
-                out.append(RadialField(iv, constant_layer(0.0, iv),
+                out.append(RadialField(iv, constant_layer(iv, 0.0),
                                        character=character, name=self.name))
         return tuple(out)
 

@@ -20,7 +20,7 @@ def test_maxwell_layer_limits():
     model = LayeredIsotropicElastic.homogeneous(a, rho=rho, vp=8000.0,
                                                 vs=np.sqrt(mu / rho))
     model = model.with_field(0, "viscosity",
-                             constant_field(eta, (0.0, a), name="viscosity"))
+                             constant_field((0.0, a), eta, name="viscosity"))
     layer = model.layer(0)
     base = moduli(layer)
     kappa, mu_f = kappa_mu(layer)

@@ -39,7 +39,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
-from .fields import Field, FieldBase, _to_stored, check_frame
+from .fields import Field, FieldBase, check_frame, to_stored
 from .frames import (SphericalFunction, cartesian_points, rotate_slots,
                      spherical_coordinates, spherical_frame, tensor_to_voigt,
                      voigt_to_tensor)
@@ -221,6 +221,8 @@ class PushedForwardField(FieldBase):
                                   ScaledMapping(self._mapping, k), name=self._name)
 
     def renamed(self, name: str | None) -> "PushedForwardField":
+        """The same field under `name`; None unnames it rather than
+        restoring the `<source>_phys` default."""
         out = PushedForwardField(self._source, self._mapping, name=name)
         out._name = name
         return out
@@ -280,7 +282,7 @@ class PulledBackField(FieldBase):
         raw = np.asarray(self._physical(rp, tp, pp))
         if np.iscomplexobj(raw):
             raise TypeError(f"{self!r} returned complex values; a field is real")
-        vals = _to_stored(raw, r.shape, self._character, self)
+        vals = to_stored(raw, r.shape, self._character, self)
         if self._character.voigt_shape is not None:
             vals = voigt_to_tensor(vals, rank=rank)
         vals = rotate_slots(vals, Rp, rank)
