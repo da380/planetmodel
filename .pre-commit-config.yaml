@@ -1,0 +1,59 @@
+# Hooks that guard every commit and push.
+#
+# Install them once, after `poetry install --with dev`:
+#
+#     poetry run pre-commit install --hook-type pre-commit --hook-type pre-push
+#
+# The linting and file-hygiene hooks run on `git commit`, the fast test
+# suite on `git push`.  CI runs this same file (the `Lint` job in
+# .github/workflows/ci.yml), so a clean commit here is a green lint job
+# there.
+
+# The archived tree and the deck data files are kept as they were found:
+# their trailing whitespace is part of the record.
+exclude: ^(archive/|examples/data/)
+
+repos:
+  # --- 1. Repository hygiene ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Work happens on `develop` and reaches `main` through a merge.
+      - id: no-commit-to-branch
+        args: [--branch, main]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # Meshes and figures are written by the tutorials and scripts and are
+      # gitignored; this is the backstop for an accidental `git add -f`.
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # --- 2. Ruff: linting only ---
+  # `rev` tracks the ruff version in pyproject.toml's dev group so that the
+  # hook and `poetry run ruff` agree.  Bump the two together.
+  #
+  # `ruff format` is deliberately not run: the house style (rule 9 of
+  # CLAUDE.md) uses hanging indents that ruff's formatter would rewrite
+  # throughout.  The linter alone is the contract.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      - id: ruff-check
+
+  # --- 3. Pytest (local hook) ---
+  # On push rather than on commit: the fast suite takes half a minute, which
+  # is what teaches people to reach for `--no-verify` if it runs per commit.
+  # The default selection is the fast suite (pyproject's addopts); the gmsh
+  # and MFEM tests are CI's `meshing` job.
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: poetry run pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

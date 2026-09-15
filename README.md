@@ -1,101 +1,125 @@
 # planetmodel
 
-Spherically layered planetary models: reference bodies and their
-fields, the mapping that makes them aspherical, and the meshes that
-solvers consume.
+Spherically layered planetary models: a skeleton of boundary radii, a
+geometry that places it in the physical world through one continuous
+mapping, fields on each layer, and the meshes that hand a model to a
+solver.
 
-## Three ideas and two meshers
+The library covers the skeleton, the geometry and its mappings; fields
+on one interval with an exact polynomial algebra; the model with its
+units, named model types (PREM from its polynomials, simple layered
+models, any mineos deck) and the mixins that complete them with moduli,
+velocities, gravity and linear rheologies; a radial spectral-element
+mesh; 2D and 3D meshes via gmsh with a manifest and export to MFEM; and
+two sub-packages that consume the radial mesh: `planetmodel.loading`
+solves the loading and tidal problem and gives Love numbers, and
+`planetmodel.randomfield` draws Matern random fields on balls, annuli
+and layers. A netCDF file for 3D models is next.
 
-**A skeleton of layers carrying fields.** A model is a list of layers.
-Each layer is an interval of radius, the fields it holds by name, and
-whether it is solid, fluid or vacuum. A field belongs to one layer; the
-body-wide field `body["rho"]` is a view assembled from the layers'
-pieces, defined on the layers that hold one and refusing radii
-elsewhere by name.
+## The ideas
 
-**Fields with character and dimensions, static or not.** Every field
-carries a tensor character, which says how it transforms under a
-mapping, and physical dimensions, which say what its numbers are. A
-field may depend on frequency or on time as well as on position: a
-viscoelastic modulus is a frequency-dependent field built by a law from
-a layer's static fields, and the law survives as a record the file
-formats copy.
+**A skeleton.** A strictly increasing list of boundary radii, possibly
+starting above zero for a shell. It answers geometric questions
+(intervals, where a radius lies, with the two sides of a boundary left to
+the caller) and supports surgery: refine, truncate, hollow, extend,
+coarsen.
 
-**A mapping from the reference body to the physical one.** The
-canonical state of a model is its fields on a spherically symmetric
-reference body plus a mapping to the physical body. Fields cross by
-the push-forward their character dictates, and a physical quantity is
-pulled back into the reference state on construction. A body with no
-mapping is spherical, so the one-dimensional model is the general case
-with a trivial map.
+**A geometry.** A skeleton, one mapping from the reference ball to the
+physical body, and the names of layers and interfaces. The mapping must
+be orientation-preserving, continuous, and kinked only on skeleton
+boundaries; a geometry checks those invariants when it is built. The
+shipped mapping is the radial stretch `m(X) = (r + h) e_r` driven by any
+callable `h(r, theta, phi)`, with closed forms for its deformation
+gradient, Jacobian, validity, inverse and linearisation; any object with
+`__call__`, `deformation_gradient` and `jacobian` is a mapping.
 
-Model classes say what a body guarantees: `ElasticModel`,
-`ViscoelasticModel`, `ViscousModel`. Each checks its fields layer by
-layer and survives every surgery.
+**A field on one interval.** Data on one layer: an interval, a character
+(the tensor rank and weight that say how it transforms), a name, and
+`evaluate(r, theta, phi, *, frame)` giving components in the local
+spherical frame or in Cartesian ones. A discontinuity is two layers
+asked separately. Radial fields sit on layer functions whose algebra is
+exact on polynomials, so PREM's moduli `rho v^2` are exact polynomials;
+analytic formulas, pointwise compositions, and fields pushed forward
+through a mapping are fields too. A field may be complex-valued, which
+is what a model frozen at a frequency holds.
 
-Two meshers deliver a body to solvers. `planetmodel.mesh1d` builds
-radial spectral-element meshes. `planetmodel.mesh3d` builds meshes of a
-layered body with gmsh, either the physical body or the reference body
-plus its mapping, writes a manifest saying what every attribute means,
-and exports to MFEM. Spectral codes read a netCDF file laid out on
-their own radial and angular nodes.
+**One model class.** A geometry with a bag of fields on every layer.
+What a name means comes from the shipped vocabulary or the specs a model
+is given. A model type (`PREM`, `LayeredIsotropicElastic`, `MineosModel`,
+or your own) is a class derived from `Model` alone; the mixins of
+`planetmodel.behaviours` add the shared derivations as methods, written
+once as free functions: the Love moduli beside the velocities, the
+elastic tensor and its Voigt average, gravity, and the constant-Q and
+Maxwell rheologies frozen at a frequency.
+
+**Units in one place.** The model's `Scales` say what one stored unit
+is in SI, and `converted` re-expresses the whole model by name, exactly
+for polynomials; `G` is read in the model's units. Nothing else names a
+unit: radii are numbers, every tolerance is relative, and the meshers
+hand the geometry's numbers to gmsh unchanged.
+
+**Two meshers.** `planetmodel.mesh1d` lays Gauss-Lobatto-Legendre
+elements along the radius with every skeleton boundary an element
+boundary, evaluates a model's fields and gravity on its nodes, and
+samples a model on an angular grid. `planetmodel.mesh3d` meshes a
+geometry, full or hollow, in 2D or 3D, with shells outside it, writes a
+JSON manifest saying what every attribute means, and exports the mesh,
+the mapping's displacement and the model's fields to MFEM.
+
+**Executable contracts.** `planetmodel.testing` holds one `check_*`
+function per protocol; the shipped implementations and yours are held to
+the same call.
 
 ## Installing
 
 ```
 pip install planetmodel                     # numpy and scipy only
-pip install 'planetmodel[netcdf]'           # the netCDF model file
-pip install 'planetmodel[meshing]'          # 3D meshes via gmsh
+pip install 'planetmodel[meshing]'          # 2D and 3D meshes via gmsh
 pip install 'planetmodel[mfem]'             # export to MFEM (PyMFEM)
-pip install 'planetmodel[plot]'             # matplotlib
+pip install 'planetmodel[harmonics]'        # grid transforms via pyshtools and ducc0
+pip install 'planetmodel[plot]'             # matplotlib, for the figures
+pip install 'planetmodel[notebook]'         # ipykernel, to run tutorials cell by cell
 ```
 
 Python 3.12 or later. Nothing optional is imported by `import
-planetmodel`; each extra is imported where it is used.
+planetmodel`.
 
-## Fifteen lines
+## Twelve lines
 
 ```python
 import numpy as np
-from planetmodel import prem, AngularGrid, write_model, read_model
+from planetmodel import PREM, RadialMesh, flattening, gravity
 
-earth = prem()                                   # a ViscoelasticModel
-core = earth.layer(1)                            # the outer core
-print(core.state, core.field_names[:4])          # fluid ('rho', 'vpv', ...)
+m = PREM()                                                  # exact polynomials, SI
+oc, mantle = m.layer("outer_core"), m.layer("lowermost_mantle")
+cmb = m.geometry.interface("cmb").radius
+print(oc["rho"](cmb), mantle["rho"](cmb), m.is_fluid("outer_core"))  # both sides
+print(m.elastic_moduli("lowermost_mantle")(cmb, 0.3, 0.0)[:3, :3] / 1e9)  # Voigt, GPa
+print(gravity(m, [cmb, 6371e3]), m.moduli_at("lower_mantle", 2 * np.pi / 3600)["L"](5e6))
 
-r = np.array([3.5e6, 5.0e6, 6.3e6])              # radii in metres
-print(earth["rho"](r))                           # density, kg m^-3
-print(earth.elastic_moduli(r)[0, 3, 3])          # L on the CMB side, Pa
-
-moduli_100s = earth.moduli_at(2 * np.pi / 100.0)  # complex tensor at 100 s
-print(moduli_100s(r)[0, 3, 3])
-
-sample = earth.sample(AngularGrid.gauss_legendre(8))
-write_model(earth, sample, "prem.nc")            # planetmodel.model/1
-again, _ = read_model("prem.nc")
-print(type(again).__name__, again.viscoelastic_moduli.domain)
+nd = m.nondimensionalised().stretched(flattening(1 / 300, rmax=1.0))
+mesh = RadialMesh(nd, ngll=5, drmax=0.05)
+print(nd.G, mesh.nodal(nd, "rho").shape, nd.geometry.validity())
 ```
 
 ## Where to go next
 
-- `examples/tutorials/`: application-first scripts to read, from
-  `01_prem.py` to a layered rheology and a mesh for MFEM.
-- `examples/reference/`: one concept per script, with the checks that
-  say what holds.
-- `docs/overview.md`: the referential framework and the design.
-- `docs/conventions.md`: coordinates, units, frames, the time
-  convention, the field vocabulary.
-- `docs/formats/`: the netCDF model file and the mesh manifest, written
-  from the reader's side.
-- `docs/extending.md`: how to add a field type, a law, a model class, a
-  mapping, a reader or a topography.
-- `docs/nondimensionalisation.md`: scales, and where numbers change.
+- `examples/tutorials/`: twelve walkthroughs, from a skeleton to Love
+  numbers, random fields and deck files, each a `# %%` script that runs
+  headless.
+- `src/planetmodel/mesh3d/manifest.py`: the manifest beside every mesh,
+  its schema described from the consumer's side.
+- `CONTRIBUTING.md`: the development setup, the hooks, the test
+  selections and how a release is made.
 
-The executable contracts in `planetmodel.testing` are the definition of
-each protocol: run `check_field` on your field and you know whether the
-library can use it.
+## Tests
+
+```
+poetry run pytest                                   # the fast suite
+poetry run pytest -m "not slow"                     # with gmsh and MFEM
+poetry run ruff check .
+```
 
 ## Licence
 
 BSD-3
-

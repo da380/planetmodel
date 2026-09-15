@@ -8,12 +8,14 @@ dist/*
 __pycache__/
 *.pyc
 
-# Pytest cache
+# Pytest and ruff caches
 .pytest_cache/
+.ruff_cache/
 
 # Coverage reports
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 
 # Sphinx documentation build output
@@ -34,3 +36,6 @@ examples/figures/
 CHANGELOG.md
 CLAUDE.md
 docs/**/*.md
+
+# nothing built lands in the repository root
+/*.json

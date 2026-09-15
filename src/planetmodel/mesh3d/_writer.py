@@ -1,26 +1,23 @@
-"""_writer.py -- getting the mesh onto disk in the form MFEM reads.
+"""Getting the mesh onto disk in the form MFEM reads.
 
 MSH version 2.2, because that is what MFEM's gmsh reader wants.  gmsh
-defaults to 4.1 and will happily write it, so the option is set
-explicitly at every write rather than assumed to be still in place from
-whatever ran before.
+defaults to 4.1, so the option is set explicitly at every write rather
+than assumed to be still in place from whatever ran before.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import gmsh
 
-from ..io.manifest import beside
 from ._session import session
+from .manifest import MSH_VERSION, beside
 
-__all__ = ["write_msh", "read_groups", "confirm_reread", "element_counts",
-           "MSH_VERSION"]
-
-MSH_VERSION = 2.2
+__all__ = ["write_msh", "read_groups", "confirm_reread", "element_counts"]
 
 
-def write_msh(path, *, binary: bool = False) -> Path:
+def write_msh(path: str | Path, *, binary: bool = False) -> Path:
     """Write the current model as MSH 2.2 and return the path."""
     path = beside(path, ".msh")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,14 +27,13 @@ def write_msh(path, *, binary: bool = False) -> Path:
     return path
 
 
-def read_groups(path) -> dict:
+def read_groups(path: str | Path) -> dict[int, dict[int, str]]:
     """Re-read a written mesh and report its physical groups.
 
-    Used to check that what was written is what comes back: gmsh's
-    writer drops entities that belong to no physical group, and a
+    gmsh's writer drops entities that belong to no physical group, so a
     numbering that exists in memory but not in the file would be a
-    silent loss.  The caller supplies a fresh session -- this only
-    merges into whatever model is current.
+    silent loss.  The caller supplies a fresh session; this only merges
+    into whatever model is current.
     """
     gmsh.merge(str(path))
     out: dict[int, dict[int, str]] = {}
@@ -46,15 +42,14 @@ def read_groups(path) -> dict:
     return out
 
 
-def confirm_reread(msh_path, manifest_path, dimension: int, layer_names,
-                   interface_names) -> None:
+def confirm_reread(msh_path: str | Path, manifest_path: str | Path, dimension: int,
+                   layer_names: Sequence[str | None],
+                   interface_names: Sequence[str | None]) -> None:
     """Merge the written file in a fresh session and check its groups.
 
-    Written and read in the same session, a mesh can look right for
-    reasons that never reached the disk.  A fresh session merging the
-    file is the only evidence a consumer's reader will have.  On a
-    mismatch both files are removed, since a pair that failed this is
-    exactly the pair nobody should find later.
+    A fresh session merging the file is the only evidence a consumer's
+    reader will have.  On a mismatch both files are removed, since a
+    pair that failed this is exactly the pair nobody should find later.
     """
     msh_path, manifest_path = Path(msh_path), Path(manifest_path)
     with session(name="reread"):
@@ -73,12 +68,13 @@ def confirm_reread(msh_path, manifest_path, dimension: int, layer_names,
                 f"not {dict(enumerate(names, 1))}; both files were removed")
 
 
-def element_counts(*, dimension: int = 3) -> dict:
+def element_counts(*, dimension: int = 3) -> dict[str, int]:
     """Elements and nodes of the current model, by dimension.
 
-    `elements` counts what the file will hold: the cells and the faces
-    of `dimension`, which carry physical groups.  The seam curves and
-    points OCC leaves on a sphere are meshed too, but never written.
+    `elements` counts what the file will hold: the cells of `dimension`
+    and the faces of `dimension - 1`, which carry physical groups.  The
+    seam curves and points OCC leaves on a sphere are meshed too, but
+    never written.
     """
     counts: dict[str, int] = {}
     total = 0

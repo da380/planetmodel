@@ -1,32 +1,30 @@
 # Examples
 
-Two tracks.
+`tutorials/` walks through the ideas of the library in order, one script
+per idea. Each is a plain Python file with `# %%` cell markers, so it runs
+as a script from any directory and cell by cell in an editor. Every
+tutorial runs headless in a few seconds; figures and the files a
+tutorial keeps go under `figures/`, which is gitignored.
 
-**`tutorials/`** are meant to be read. Each is a Python script in cell
-format (`# %%` markers, prose in markdown cells), so it opens as a
-notebook in VS Code or Jupyter and runs as a plain script from any
-directory:
-
-    python examples/tutorials/01_prem.py
-
-| tutorial | what you do |
+| tutorial | what it shows |
 |---|---|
-| `01_prem.py` | read PREM as the viscoelastic model it is; layers, states, views and domains; profiles; the moduli at a period and their dispersion; a netCDF file written and read back as the same class |
-| `02_a_body_of_your_own.py` | a density from a table; a body from `Layer` values; a vacuum shell; surgery; a field type of your own checked by `check_field`; an `ElasticModel` and what it refuses |
-| `03_topography_and_mapping.py` | the Moho of CRUST-1.0 as centred relief; an ellipsoidal boundary; the mapping and its validity; a density pushed forward; a physical elastic medium pulled back |
-| `04_layered_rheology.py` | an elastic lithosphere over a Maxwell mantle over a fluid core; the moduli on a Laplace contour and at real frequencies; a Prony series; the law record in the file; a law of your own |
-| `05_a_mesh_for_mfem.py` | a deck coarsened and given the Moho relief; a small 3D mesh and its manifest; the same build as a recipe; MFEM export (needs `planetmodel[meshing]`; `planetmodel[mfem]` for the export) |
-| `06_love_numbers.py` | load Love numbers of PREM by radial spectral elements (`planetmodel.loading`, meant for pyslfp) |
-| `07_random_fields.py` | Matern random fields of radius, of a shell, and on the layers of PREM (`planetmodel.randomfield`, meant for pygeoinf) |
+| `01_skeleton_and_geometry.py` | a skeleton, changing it, a geometry with names, hollow geometries, scaling |
+| `02_an_analytic_mapping.py` | a radial stretch from an analytic displacement, `F` and `J`, validity, kinks, a non-radial mapping |
+| `03_a_radial_mesh.py` | the GLL reference element, a radial mesh over a skeleton, per-element nodes, the exact polynomial view, truncation by degree, a figure (uses the `plot` extra when present) |
+| `04_a_mesh_for_mfem.py` | a mesh of a skeleton and its manifest, then topography through a mapping as a physical mesh, then a buffer shell with the topography tapered across it, each delivered to MFEM; the files are kept under `figures/tutorial_04_meshes/` for gmsh and glvis, or discarded with `--temp` (needs the `meshing` and `mfem` extras) |
+| `05_fields.py` | fields as functions of position on one layer, radial fields and the layer functions they store, exact arithmetic, real and complex dtypes, tensors and frames, push-forward, a figure |
+| `06_a_model_of_your_own.py` | a model from scratch: geometry, fields, specs, validation, conversion of units, changing the layering, a model type of your own, a figure |
+| `07_prem.py` | PREM from its polynomials: layers, moduli, gravity, nodal values on a radial mesh, a figure |
+| `08_simple_models.py` | homogeneous, layered and ellipsoidal models with analytic boundary shapes, a figure |
+| `09_fields_for_mfem.py` | a model's fields exported beside its mesh and read back by MFEM (needs the `meshing` and `mfem` extras) |
+| `10_love_numbers.py` | PREM's load and tidal Love numbers, convergence, the degree-2 radial solutions, the pyslfp file, PREM with its Q at the semidiurnal tide and a Maxwell mantle across periods, a figure |
+| `11_random_fields.py` | Matern random fields of radius, on the layers of PREM as a density perturbation, and on a shell as a field with a map and a slice, a figure |
+| `12_models_from_decks.py` | PREM's mineos deck as a model against the polynomial PREM, a deck format and model type of your own with a viscosity column, a figure |
 
-**`reference/`** holds short scripts, one concept each, in the
-numbers-and-checks style: the place to look up how one thing is done.
+```
+poetry run python examples/tutorials/01_skeleton_and_geometry.py
+```
 
-Every script runs headless (`MPLBACKEND=Agg`), writes figures to
-`examples/figures/` and files to a temporary directory, and says so and
-moves on when an optional extra (`netCDF4`, `gmsh`, PyMFEM) is missing.
-CI runs them all.
-
-Data: `prem.200` here is the PREM deck (mineos layout, SI); `tests/data/`
-holds `prem.nocrust`, an isotropic deck ending at the Moho, and the
-CRUST-1.0 Moho depth and crustal thickness grids (`lon lat value`, km).
+To run a tutorial cell by cell as a notebook, install the `notebook` extra
+(`poetry install --extras notebook`), which provides the IPython kernel
+an editor's interactive window uses.

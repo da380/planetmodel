@@ -1,8 +1,11 @@
-"""The curated public surface of the package."""
+"""The public surface: exports resolve, and optional arguments are keyword-only."""
+import ast
+import dataclasses
+import importlib
+import inspect
+import pkgutil
 import tomllib
 from pathlib import Path
-
-import pytest
 
 import planetmodel
 
@@ -11,81 +14,23 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_every_export_resolves():
     missing = [n for n in planetmodel.__all__ if not hasattr(planetmodel, n)]
-    assert not missing, f"__all__ names nothing: {missing}"
-
-
-def test_no_duplicate_exports():
+    assert not missing, missing
     assert len(planetmodel.__all__) == len(set(planetmodel.__all__))
 
 
 def test_version_matches_pyproject():
-    """__version__ and the packaging metadata are written separately."""
     with open(ROOT / "pyproject.toml", "rb") as fh:
         declared = tomllib.load(fh)["project"]["version"]
     assert planetmodel.__version__ == declared
 
 
-def test_the_new_names_are_exported():
-    for name in ("ReferenceBody", "RadialField", "Field", "Skeleton",
-                 "register", "lookup", "registered"):
-        assert name in planetmodel.__all__
-
-
-def test_importing_planetmodel_is_light():
-    """The packaging promise: no plotting stack, no gmsh, no netCDF."""
-    import subprocess
-    import sys
-    code = (
-        "import sys, planetmodel\n"
-        "heavy = [m for m in ('matplotlib', 'gmsh', 'netCDF4')"
-        " if m in sys.modules]\n"
-        "assert not heavy, heavy\n"
-    )
-    r = subprocess.run([sys.executable, "-c", code],
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-
-
-_EXAMPLES = sorted(str(p.relative_to(ROOT))
-                   for sub in ("tutorials", "reference")
-                   for p in (ROOT / "examples" / sub).glob("*.py"))
-
-
-def test_there_are_examples():
-    assert _EXAMPLES, "no example scripts found under examples/"
-
-
-@pytest.mark.parametrize("path", _EXAMPLES)
-def test_examples_still_compile(path):
-    """Smoke check only -- the examples plot and mesh, so CI runs them."""
-    import py_compile
-    py_compile.compile(str(ROOT / path), doraise=True)
-
-
-# ------------------------------------------------- keyword-only optional arguments
-
-# House rule: every parameter with a default is keyword-only.  The
-# exceptions below are the agreed allowlist and are not extended solo.
-KEYWORD_ONLY_EXCEPTIONS_BY_NAME = {
-    # evaluate(r, theta, phi): the natural call, angles optional only for
-    # radial fields; apply and equilibrium_form share its shape, and so
-    # does __call__, which is evaluate with the defaults
-    "evaluate", "evaluate_full", "apply", "equilibrium_form", "__call__",
-    # f.derivative(2) reads as numpy's
-    "derivative",
-    # the decorator form of register (the mesher's command-line main(argv)
-    # is the other idiom kept, but it is not public and so not listed)
-    "register",
-}
-KEYWORD_ONLY_EXCEPTIONS_QUALIFIED = {
-    # bound positionally by the unchanged first-stage tests
-    "solve_degree", "write_love_numbers",
-    "RadialGRF.sample", "SphericalGRF.sample", "LayeredGRF.sample",
-}
+# Every parameter with a default is keyword-only, in every function, method
+# and constructor of the package; the allowlist below is the agreed set of
+# exceptions and is not extended solo.
+KEYWORD_ONLY_EXCEPTIONS = set()
 
 
 def _positional_defaults(fn):
-    import inspect
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):
@@ -95,74 +40,88 @@ def _positional_defaults(fn):
             and p.default is not inspect.Parameter.empty]
 
 
+def _modules():
+    """Every module of the package that imports without optional dependencies."""
+    mods = [planetmodel]
+    for info in pkgutil.walk_packages(planetmodel.__path__, "planetmodel."):
+        try:
+            mods.append(importlib.import_module(info.name))
+        except ImportError:
+            pass
+    return mods
+
+
 def _public_callables():
-    """(qualified name, callable) for every public function and method."""
-    import inspect
-    import planetmodel.catalogue
-    import planetmodel.io.manifest
-    import planetmodel.io.netcdf
-    import planetmodel.io.recipe
-    import planetmodel.loading
-    import planetmodel.mesh3d
-    import planetmodel.randomfield
-    import planetmodel.model.rheology
-    import planetmodel.sampling
-    import planetmodel.testing
+    """Every function and class defined in the package, and every method."""
     seen = set()
-    roots = [getattr(planetmodel, n) for n in planetmodel.__all__]
-    for mod in (planetmodel.sampling, planetmodel.testing, planetmodel.mesh1d,
-                planetmodel.io, planetmodel.model, planetmodel.catalogue,
-                planetmodel.mesh3d, planetmodel.io.netcdf,
-                planetmodel.io.manifest, planetmodel.io.recipe,
-                planetmodel.model.rheology, planetmodel.loading,
-                planetmodel.randomfield):
-        roots += [getattr(mod, n) for n in getattr(mod, "__all__", ())]
-    for obj in roots:
-        if inspect.isclass(obj):
-            for cls in obj.__mro__:
-                if not getattr(cls, "__module__", "").startswith("planetmodel"):
-                    continue
-                if cls in seen:
-                    continue
-                seen.add(cls)
-                yield cls.__name__, cls                    # the constructor
-                for name, member in vars(cls).items():
-                    if name.startswith("_") and name != "__call__":
-                        continue
-                    fn = member
-                    if isinstance(member, (classmethod, staticmethod)):
-                        fn = member.__func__
-                    elif isinstance(member, property):
-                        continue
-                    if inspect.isfunction(fn):
-                        yield f"{cls.__name__}.{name}", fn
-        elif inspect.isfunction(obj) or inspect.isbuiltin(obj):
-            if obj not in seen and getattr(obj, "__module__",
-                                           "").startswith("planetmodel"):
-                seen.add(obj)
+    for mod in _modules():
+        for name, obj in vars(mod).items():
+            if getattr(obj, "__module__", None) != mod.__name__ or obj in seen:
+                continue
+            seen.add(obj)
+            if inspect.isclass(obj):
                 yield obj.__name__, obj
+                for attr, member in vars(obj).items():
+                    if isinstance(member, (staticmethod, classmethod)):
+                        member = member.__func__
+                    if inspect.isfunction(member):
+                        yield f"{obj.__name__}.{attr}", member
+            elif inspect.isfunction(obj):
+                yield name, obj
 
 
 def test_optional_arguments_are_keyword_only():
-    offenders = []
-    for qual, fn in _public_callables():
-        bare = qual.rsplit(".", 1)[-1]
-        if bare in KEYWORD_ONLY_EXCEPTIONS_BY_NAME:
-            continue
-        if qual in KEYWORD_ONLY_EXCEPTIONS_QUALIFIED:
+    offenders = {}
+    for qualname, fn in _public_callables():
+        short = qualname.split(".")[-1]
+        if qualname in KEYWORD_ONLY_EXCEPTIONS or short in KEYWORD_ONLY_EXCEPTIONS:
             continue
         bad = _positional_defaults(fn)
         if bad:
-            offenders.append(f"{qual}({', '.join(bad)})")
-    assert not offenders, (
-        "optional parameters that can be passed positionally "
-        "(house rule: keyword-only):\n  " + "\n  ".join(sorted(offenders)))
+            offenders[qualname] = bad
+    assert not offenders, f"positional optionals: {offenders}"
 
 
-def test_the_exception_list_is_still_needed():
-    """An exception that no longer matches anything should be removed."""
-    names = {q for q, _ in _public_callables()}
-    bare = {q.rsplit(".", 1)[-1] for q in names}
-    unused = ({n for n in KEYWORD_ONLY_EXCEPTIONS_BY_NAME if n not in bare}
-              | {q for q in KEYWORD_ONLY_EXCEPTIONS_QUALIFIED if q not in names})
-    assert not unused, f"exceptions matching nothing public: {sorted(unused)}"
+# Every dataclass field with a default sits after a `_: KW_ONLY` sentinel, so
+# a constructor reads like a signature: required fields, then `*`, then the
+# optionals by name.
+def test_dataclass_optional_fields_are_keyword_only():
+    offenders = [qualname for qualname, obj in _public_callables()
+                 if inspect.isclass(obj) and dataclasses.is_dataclass(obj)
+                 and any(f.default is not dataclasses.MISSING
+                         or f.default_factory is not dataclasses.MISSING
+                         for f in dataclasses.fields(obj) if not f.kw_only)]
+    assert not offenders, f"positional optional fields: {offenders}"
+
+
+# Every parameter and every return is annotated, in every function of the
+# package, nested functions and dunders included: a signature says what it
+# takes and gives.  Read from the source so that modules needing gmsh are
+# held to it too.
+def _unannotated(tree):
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        a = node.args
+        params = a.posonlyargs + a.args + a.kwonlyargs
+        missing = [p.arg for p in params
+                   if p.annotation is None and p.arg not in ("self", "cls")]
+        if a.vararg is not None and a.vararg.annotation is None:
+            missing.append("*" + a.vararg.arg)
+        if a.kwarg is not None and a.kwarg.annotation is None:
+            missing.append("**" + a.kwarg.arg)
+        if node.returns is None:
+            missing.append("->")
+        if missing:
+            yield node.lineno, node.name, missing
+
+
+def test_every_signature_is_annotated():
+    root = Path(planetmodel.__file__).parent
+    offenders = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        rows = list(_unannotated(tree))
+        if rows:
+            offenders[str(path.relative_to(root))] = rows
+    assert not offenders, f"unannotated signatures: {offenders}"

@@ -1,104 +1,84 @@
-"""export.py -- the MFEM delivery: a mesh, GridFunctions and the manifest.
+"""The MFEM delivery: the mesh, the displacement, and the manifest.
 
-One code path, two deliveries, and everything built on the
-**reference** mesh: the mesher writes concentric spheres as MSH 2.2,
-PyMFEM reads them, and the model is evaluated at the degrees of freedom
-of that mesh, whose coordinates are reference coordinates and therefore
-need no inverse mapping anywhere.  `delivery="physical"` then adds the
-displacement to the mesh nodes and writes the *pushed-forward* values at
-the same dofs; `delivery="referential"` leaves the mesh spherical, writes
-the referential values, and puts `m(X) - X` beside them as its own
-GridFunction, from which the consumer forms the physical mesh in one
-MFEM call.  Neither delivery ever inverts `m`, which is the whole reason
-the export walks reference dofs rather than physical ones.
+Everything is built on the reference mesh: the mesher writes concentric
+spheres as MSH 2.2 in the geometry's own numbers, PyMFEM reads them,
+and the geometry's mapping is evaluated at the nodal degrees of freedom
+of that mesh, whose coordinates are reference coordinates and need no
+inverse mapping.  This is the one place the mapping meets a mesh: a
+displacement is a vector in the mesh's own nodal space, whatever the
+mapping is made of.  `delivery="physical"` adds the displacement to the
+nodes before the mesh is written, and the moved mesh is checked for
+folding through the Jacobian of every element at its quadrature and
+nodal points, refused if any is not positive; `delivery="referential"`
+leaves the mesh spherical and writes `m(X) - X` beside it as a
+GridFunction in the mesh's own nodal space, from which the consumer
+forms the physical mesh in one call.  A 2D mesh has two coordinates per
+node; they are lifted to the plane z = 0 for the mapping and dropped
+again.
 
-Why L2.  A material discontinuity is the *point* of a layered model, and
-an interface of the mesh is where two layers meet with two different
-values.  An H1 space has one dof there and has to choose; an L2 space of
-the mesh order has per-element dofs -- with the Gauss-Legendre basis,
-strictly interior ones -- so each side of an interface carries its own
-layer's value and nothing is averaged into existence.  `continuous=` names
-the quantities the caller knows to be continuous and wants in H1 instead;
-there an interface dof is shared, and the layer that writes last wins,
-which is exactly why the flag is the caller's to give and not the
-writer's to guess.
+`export_mfem` adds the fields of a model, one GridFunction per name in
+an L2 space: a material discontinuity is the point of a layered model,
+and an L2 space of the mesh gives each element its own dofs, so the two
+sides of an interface carry their own layer's value and nothing is
+averaged.  Which layer a dof belongs to is the attribute of its
+element, and each layer is evaluated in one vectorised call; every
+value is referential, the model's own field at the reference point,
+with Cartesian components in the model's units, whichever delivery the
+mesh is written in.  A dof of a curved element can sit a chord's depth
+outside its layer's sphere; the element's attribute is the truth, so
+the point is pulled radially to the nearer interface before the layer
+is asked.  A shell outside the model, and a layer of the model without
+the field, are written as zero: a GridFunction has no room for "not
+defined here", and each field's manifest record says on which layers
+it means anything.
 
-Which layer a dof belongs to is read off the mesh: gmsh's physical groups
-become MFEM element attributes, attribute `i + 1` is layer `i` centre
-outward (the manifest is the map, `_tagging.py` makes it), so the elements
-are grouped by attribute and each group is evaluated in **one** vectorised
-call with `layer=` fixed.  No per-point Python callback ever crosses into
-MFEM.
-
-Domains.  A field belongs to the layers that hold it.  A field written
-on a body where some layer has none -- a crust left to
-the consumer, a vacuum buffer -- is written as zero there and the
-manifest's `files` entry says on which layers it means anything.  A
-GridFunction cannot carry NaN usefully (every integrator would spread it
-over the whole mesh), so zero plus the truth in the manifest is the honest
-combination; a consumer that restricts to the listed attributes, as
-mfemElasticity's SubMesh machinery does, never sees the zeros at all.
-
-Units.  The mesher divides *geometry* by `rref` and nothing else
-(`_units.py`), so the mesh is non-dimensional in length and the fields
-are in the body's own scale system -- SI for an SI body.  This writer
-keeps that rule rather than inventing a mass scale the mesh does not fix:
-values are the resolved body's own, and every `files` entry carries the
-field's dimension exponents and unit string beside the units block's
-`rref_m` and scale triple, which is what a consumer needs to reconcile
-the two.  For a body that was non-dimensionalised at the model layer the
-question does not arise: the divisor is one and everything is already in
-one system.
-
-Frames, and the displacement's units.  A dof carries Cartesian
-coordinates, and components follow the coordinates, so the values
-written are Cartesian components and every `files` entry says
-`frame: "cartesian"`.  This is where the MFEM delivery and the netCDF one
-part company on purpose: netCDF samples on `(r, theta, phi)` and writes
-spherical components, and both are the same rule applied to different
-coordinates.  The displacement is the one quantity written in *mesh*
-length units rather than the body's, since its whole use is `nodes +=
-displacement` in one MFEM call; its entry therefore carries the
-dimensions of a length with the non-dimensional unit string, and
-`rref_m` in the units block is what turns it into metres.
-
-Reading the result.  `<base>.mesh` is MFEM native and carries the curved
-nodes; the `.gf` files are indexed by the dof numbering of *that* mesh,
-and MFEM re-marks tetrahedra for refinement on load unless told not to,
-which permutes element vertices and with them the nodal and L2 dof
-numbering.  So the mesh must be read the way MFEM's own DataCollection
-reads a saved mesh, `Mesh(path, 1, 0, false)` -- generate edges, do not
-refine, do not fix orientation -- and the manifest's `files` block says so
-in the form a C++ reader passes on.
+`<base>.mesh` is MFEM native and carries the curved nodes.  A `.gf`
+file is indexed by the dof numbering of that mesh, and MFEM re-marks
+tetrahedra for refinement on load unless told not to, which permutes
+the numbering; so the mesh must be read as `Mesh(path, 1, 0, false)`
+(generate edges, do not refine, do not fix orientation), and the
+manifest's `mesh.read_options` says so in the form a C++ reader passes on.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
+from collections.abc import Iterable
+from collections.abc import Mapping as MappingOf
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
-from ..io import manifest
-from ..model.units import unit_string
-from ..model.character import VECTOR
-from ..model.pushforward import push_forward_field
-from ..model.units import Dimensions
-from ._units import MeshUnits
+from ..character import VECTOR, Character
+from ..fields import stored_shape
+from ..mapping import IdentityMapping, Mapping
+from ..units import LENGTH
+from . import manifest
+from .spec import DELIVERIES, MeshResult
 
-__all__ = ["ExportResult", "export_mfem", "MESH_READ_OPTIONS"]
+if TYPE_CHECKING:
+    from ..model import Model
+
+__all__ = ["ExportResult", "export_mfem_mesh", "export_mfem",
+           "jacobian_report", "MESH_READ_OPTIONS"]
+
+#: The frame the field values are written in: dof coordinates are
+#: Cartesian, and components follow the coordinates.
+FRAME = "cartesian"
 
 #: The options a consumer must construct `mfem::Mesh` with for the dof
-#: numbering of the `.gf` files to be the one they were written in.  The
-#: same triple MFEM's own `DataCollection` uses for a saved mesh.
+#: numbering of the `.gf` files to be the one they were written in.
 MESH_READ_OPTIONS = {"generate_edges": 1, "refine": 0,
                      "fix_orientation": False}
 
-#: What `evaluate_at` answers in: dof coordinates are Cartesian, so the
-#: components are too -- components follow the coordinates.
-FRAME = "cartesian"
+#: The name of the displacement field, m(X) - X, in the manifest.
+DISPLACEMENT = "displacement"
 
 
-def _mfem():
+def _mfem() -> ModuleType:
     """PyMFEM, imported here and nowhere else in planetmodel."""
     try:
         import mfem.ser as mfem
@@ -115,41 +95,36 @@ def _mfem():
 class ExportResult:
     """What an export wrote, and what a consumer reads it back with."""
 
+    #: The MFEM mesh file.
     mesh_path: Path
+    #: The manifest beside it.
     manifest_path: Path
-    field_paths: dict
+    #: The displacement GridFunction, in referential delivery; else None.
     displacement_path: Path | None
+    #: "physical" or "referential".
     delivery: str
-    files: dict
-    counts: dict
+    #: The `mfem::Mesh` constructor arguments the files were written under.
+    read_options: dict[str, Any]
+    #: Element, boundary element and nodal dof counts, and the order.
+    counts: dict[str, int]
+    #: The Jacobian report of the written mesh; see `jacobian_report`.
+    quality: dict[str, float]
+    _: KW_ONLY
+    #: name -> the field's GridFunction, for the fields `export_mfem` wrote.
+    field_paths: dict[str, Path] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         n = len(self.field_paths)
-        return (f"ExportResult({self.mesh_path.name}, {n} field"
-                f"{'' if n == 1 else 's'}, {self.delivery} delivery)")
+        fields = f", {n} field{'' if n == 1 else 's'}" if n else ""
+        return f"ExportResult({self.mesh_path.name}{fields}, {self.delivery} delivery)"
 
 
-# ------------------------------------------------------------------ loading
-
-def _load_reference_mesh(result, card):
-    """The MSH the mesher wrote, with MFEM's own verdict on it.
-
-    Both counts are read rather than trusted: MFEM's "wrong orientation"
-    messages are compiled out of a release build, so the return values
-    are the only honest measure, and the boundary check
-    judges only the outermost surface because interior faces are skipped.
-    """
+def _load_mesh(msh_path: str | Path) -> Any:
+    """The MSH the mesher wrote, with MFEM's own verdict on its orientation."""
     mfem = _mfem()
-    msh = Path(result.msh_path)
+    msh = Path(msh_path)
     if not msh.is_file():
         raise FileNotFoundError(f"no mesh at {msh}: the build wrote none")
-    if card.mapping is not None and card.mapping.get("applied_to_nodes"):
-        raise ValueError(
-            f"{msh.name} is a physical mesh: its nodes were displaced by the "
-            "mesher, so its coordinates are not reference coordinates and "
-            "the fields could only be evaluated by inverting the mapping. "
-            "Export from a delivery='referential' build -- the exporter "
-            "produces either delivery from the reference mesh.")
     mesh = mfem.Mesh(str(msh))
     wrong_cells = mesh.CheckElementOrientation(True)
     wrong_faces = mesh.CheckBdrElementOrientation(True)
@@ -159,19 +134,62 @@ def _load_reference_mesh(result, card):
             f"{wrong_faces} wrongly oriented boundary elements in "
             f"{msh.name}; the mesher's orientation repair did not take")
     if mesh.GetNodes() is None:
-        # A straight-sided mesh has no nodal space of its own; giving it
-        # the identity one costs nothing and lets everything below speak
-        # of dofs and displacements without a special case for order 1.
+        # A straight-sided mesh has no nodal space of its own; the
+        # identity one lets everything below speak of nodal dofs without
+        # a special case for order 1.
         mesh.SetCurvature(1)
     return mesh
 
 
-def _mesh_order(mesh) -> int:
+def jacobian_report(mesh: Any) -> dict[str, float]:
+    """The Jacobian of every element at its quadrature and nodal points.
+
+    `min_ratio` is the smallest, over the elements, of the least
+    Jacobian determinant divided by the greatest within the element: one
+    for an affine element, small for a strongly curved one, not positive
+    for a folded one.  `negative_jacobians` counts the elements with a
+    non-positive determinant somewhere.  A curved element can fold
+    between corners that are individually fine, which is why the nodal
+    points are included.
+    """
+    mfem = _mfem()
+    fes = mesh.GetNodes().FESpace()
+    order = _mesh_order(mesh)
+    worst = np.inf
+    negative = 0
+    for e in range(mesh.GetNE()):
+        T = mesh.GetElementTransformation(e)
+        rules = (mfem.IntRules.Get(mesh.GetElementBaseGeometry(e), 2 * order),
+                 fes.GetFE(e).GetNodes())
+        dets = []
+        for rule in rules:
+            for i in range(rule.GetNPoints()):
+                T.SetIntPoint(rule.IntPoint(i))
+                dets.append(T.Weight())
+        low, high = min(dets), max(dets)
+        if low <= 0.0:
+            negative += 1
+        worst = min(worst, low / high if high > 0.0 else -np.inf)
+    return {"min_ratio": float(worst), "negative_jacobians": int(negative)}
+
+
+def _require_unfolded(mesh: Any, what: str) -> dict[str, float]:
+    """The Jacobian report of `mesh`, or a refusal naming the folded elements."""
+    report = jacobian_report(mesh)
+    if report["negative_jacobians"]:
+        raise ValueError(
+            f"{what} folds {report['negative_jacobians']} element(s): the "
+            f"Jacobian is not positive throughout them (worst ratio "
+            f"{report['min_ratio']:.3g}).  Nothing was written.")
+    return report
+
+
+def _mesh_order(mesh: Any) -> int:
     """The polynomial order of the mesh's own nodal space."""
     return int(mesh.GetNodes().FESpace().GetOrder(0))
 
 
-def _node_array(gf) -> np.ndarray:
+def _node_array(gf: Any) -> np.ndarray:
     """A vector GridFunction's values as (ndof, vdim), whatever the ordering."""
     mfem = _mfem()
     fes = gf.FESpace()
@@ -182,7 +200,7 @@ def _node_array(gf) -> np.ndarray:
     return data.reshape(-1, vdim)
 
 
-def _write_vector(gf, values) -> None:
+def _write_vector(gf: Any, values: ArrayLike) -> None:
     """The inverse of `_node_array`: (ndof, vdim) back into a GridFunction."""
     mfem = _mfem()
     fes = gf.FESpace()
@@ -193,14 +211,136 @@ def _write_vector(gf, values) -> None:
         data[:] = np.asarray(values, dtype=float).ravel()
 
 
-def _dof_coordinates(mesh, fes):
-    """Reference coordinates of every dof of `fes`, in mesh units.
+def _lifted(X: ArrayLike) -> np.ndarray:
+    """Points of shape (n, 2) or (n, 3) as (n, 3), a 2D mesh's in z = 0."""
+    X = np.asarray(X, dtype=float)
+    n, sdim = X.shape
+    X3 = np.zeros((n, 3))
+    X3[:, :sdim] = X
+    return X3
 
-    The plan's route: project the coordinate function -- the mesh's own
-    nodal GridFunction, read as a vector coefficient -- into a vector
-    space with the same collection as `fes`.  For the nodal bases used
-    here that projection *is* interpolation at the dofs, so one C++ call
-    returns the point every dof stands for, curved elements included.
+
+def _displacement_at(mapping: Mapping, X: ArrayLike, *, scale: float) -> np.ndarray:
+    """m(X) - X at nodal coordinates of shape (n, 2) or (n, 3).
+
+    Two-dimensional points are lifted to z = 0 for the mapping, which
+    must then keep them in the plane to `1e-12 * scale`, and the third
+    component is dropped again.
+    """
+    X3 = _lifted(X)
+    sdim = np.shape(X)[1]
+    if hasattr(mapping, "displacement"):
+        u = np.asarray(mapping.displacement(X3), dtype=float)
+    else:
+        u = np.asarray(mapping(X3), dtype=float) - X3
+    if u.shape != X3.shape:
+        raise ValueError(f"the mapping returned {u.shape} for {X3.shape} points")
+    if not np.all(np.isfinite(u)):
+        raise ValueError("the mapping is not finite at some nodal dof")
+    if sdim == 2:
+        out_of_plane = float(np.max(np.abs(u[:, 2])))
+        if out_of_plane > 1e-12 * scale:
+            raise ValueError(
+                f"the mapping moves points of the disc out of its plane by up "
+                f"to {out_of_plane:.3g}; a 2D export needs a mapping that "
+                "keeps z = 0")
+    return u[:, :sdim]
+
+
+def _field_entry(name: str, path: str | Path, fes: Any, *, character: Character,
+                 dimensions: Any, si: bool, layers: Iterable[int]
+                 ) -> manifest.FieldEntry:
+    """One `fields[]` record: where the GridFunction is and which space it
+    lives in, and what its values are."""
+    mfem = _mfem()
+    ordering = ("byNODES" if fes.GetOrdering() == mfem.Ordering.byNODES
+                else "byVDIM")
+    return manifest.FieldEntry.from_field(
+        name, path, fe_space=fes.FEColl().Name(), vdim=int(fes.GetVDim()),
+        ordering=ordering, character=character, dimensions=dimensions, si=si,
+        layers=layers)
+
+
+def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
+                     delivery: str = "physical") -> ExportResult:
+    """Write an MFEM delivery of a built mesh: `.mesh`, the displacement
+    in referential delivery, and the manifest.
+
+    `result` is what a builder returned: the reference mesh on disk and
+    the geometry's mapping (None for a mesh built without one, taken as
+    the identity), applied to the node coordinates as they are.
+    Physical delivery moves the nodes and refuses a mesh the mapping
+    folds; referential delivery writes the displacement beside them.
+    `path_base` is the basename the files are written beside:
+    `<base>.mesh`, `<base>.displacement.gf` in referential delivery, and
+    `<base>.json`.  Giving the mesher's own basename overwrites its
+    manifest with this one; a separate basename keeps both.  The
+    manifest's `mesh` block names the MFEM file, says whether its nodes
+    are reference or physical coordinates, and names the displacement
+    among the `fields` where one was written; the displacement's unit
+    is "1" until a model's scales are known.
+    """
+    mfem = _mfem()
+    path_base = Path(path_base)
+    card = manifest.read(result.manifest_path)
+    if delivery not in DELIVERIES:
+        raise ValueError(
+            f"delivery must be one of {DELIVERIES}, got {delivery!r}")
+    mapping = IdentityMapping() if result.mapping is None else result.mapping
+    identity = bool(getattr(mapping, "is_identity", False))
+
+    mesh = _load_mesh(result.msh_path)
+    nodes = mesh.GetNodes()
+    X = np.array(_node_array(nodes), dtype=float, copy=True)
+    u = _displacement_at(mapping, X, scale=card.outer_radius)
+    displacement = mfem.GridFunction(nodes.FESpace())
+    _write_vector(displacement, u)
+
+    moved = delivery == "physical" and not identity
+    if moved:
+        nodes.GetDataArray()[:] += displacement.GetDataArray()
+        quality = _require_unfolded(mesh, f"the mapping {mapping!r}")
+    else:
+        quality = jacobian_report(mesh)
+    mesh_path = manifest.beside(path_base, ".mesh")
+    mesh_path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.Print(str(mesh_path), 16)
+
+    displacement_path = None
+    entries = []
+    if delivery == "referential":
+        displacement_path = manifest.beside(path_base, ".displacement.gf")
+        displacement.Save(str(displacement_path), 16)
+        entries.append(_field_entry(
+            DISPLACEMENT, displacement_path, nodes.FESpace(), character=VECTOR,
+            dimensions=LENGTH, si=False,
+            layers=[e["attribute"] for e in card.layers]))
+
+    card.mesh = manifest.mesh_block(
+        mesh_path, format="mfem", nodes="physical" if moved else "reference",
+        read_options=MESH_READ_OPTIONS,
+        displacement=DISPLACEMENT if entries else None)
+    card.fields = [dataclasses.asdict(e) for e in entries]
+    card.scales, card.constants = None, {}
+    manifest.validate_structure(card)
+    manifest_path = manifest.write(path_base, card)
+
+    counts = {"elements": mesh.GetNE(), "boundary_elements": mesh.GetNBE(),
+              "nodes": nodes.FESpace().GetNDofs(), "order": _mesh_order(mesh)}
+    return ExportResult(mesh_path=mesh_path, manifest_path=manifest_path,
+                        displacement_path=displacement_path,
+                        delivery=delivery, read_options=dict(MESH_READ_OPTIONS),
+                        counts=counts, quality=quality)
+
+
+def _dof_coordinates(mesh: Any, fes: Any) -> np.ndarray:
+    """The coordinates of every dof of `fes`, shape (ndof, sdim).
+
+    The mesh's own nodal GridFunction, read as a vector coefficient, is
+    projected into a vector space over the same collection as `fes`;
+    for a nodal basis that projection is interpolation at the dofs, so
+    one call gives the point every dof stands for, curved elements
+    included.
     """
     mfem = _mfem()
     vfes = mfem.FiniteElementSpace(mesh, fes.FEColl(), mesh.SpaceDimension(),
@@ -215,260 +355,160 @@ def _dof_coordinates(mesh, fes):
     return X
 
 
-def _elements_by_layer(mesh, fes):
-    """`layer index -> the dofs of the elements carrying that attribute`.
-
-    Attribute `i + 1` is layer `i`, centre outward: the numbering the
-    manifest records and `_tagging.py` writes into the physical groups.
-    """
-    attributes = np.fromiter((mesh.GetAttribute(e) for e in range(mesh.GetNE())),
-                             dtype=int, count=mesh.GetNE())
-    dofs = [np.asarray(fes.GetElementDofs(e), dtype=int)
-            for e in range(mesh.GetNE())]
-    out = {}
-    for attribute in np.unique(attributes):
-        chosen = np.flatnonzero(attributes == attribute)
-        out[int(attribute) - 1] = np.unique(
-            np.concatenate([dofs[e] for e in chosen]))
-    return out
+def _dofs_by_attribute(mesh: Any, fes: Any) -> dict[int, np.ndarray]:
+    """attribute -> the dofs of `fes` on the elements carrying it."""
+    n = mesh.GetNE()
+    attributes = np.fromiter((mesh.GetAttribute(e) for e in range(n)),
+                             dtype=int, count=n)
+    dofs = [np.asarray(fes.GetElementDofs(e), dtype=int) for e in range(n)]
+    return {int(a): np.unique(np.concatenate(
+                [dofs[e] for e in np.flatnonzero(attributes == a)]))
+            for a in np.unique(attributes)}
 
 
-# ------------------------------------------------------------ the evaluation
-
-def _clipped_into(X, interval):
-    """`X` pulled radially into `[lo, hi]`, direction untouched.
-
-    A curved element approximates its spherical face by a polynomial, so
-    a dof of an element in layer `i` can sit a chord's depth outside the
-    layer it belongs to.  The element's attribute is the truth -- it is
-    what a solver will select on -- so the radius is brought back to the
-    interface rather than the value being asked of the wrong layer, and
-    the direction, which is what fixes the frame, is left alone.
-    """
-    lo, hi = float(interval[0]), float(interval[1])
+def _clipped_into(X: ArrayLike, interval: tuple[float, float]) -> np.ndarray:
+    """`X` pulled radially into `[lo, hi]`, direction untouched."""
+    lo, hi = (float(x) for x in interval)
     r = np.linalg.norm(X, axis=-1)
     safe = np.where(r > 0.0, r, 1.0)
     return X * (np.clip(r, lo, hi) / safe)[..., None]
 
 
-def _component_shape(character):
-    """The trailing shape of a value: Voigt where the character reduces."""
-    return character.voigt_shape or character.component_shape
+def _check_model_sits_on(result: MeshResult, model: Model) -> None:
+    """Refuse a mesh not built from a geometry, or a model on another skeleton."""
+    if result.geometry is None:
+        raise ValueError(
+            f"{Path(result.msh_path).name} was not built from a geometry, so "
+            "no model sits on it; fields are exported on a layered mesh")
+    a = model.skeleton.boundaries
+    b = result.geometry.skeleton.boundaries
+    if a.size != b.size or not np.allclose(a, b, rtol=model.geometry.rtol,
+                                           atol=0.0):
+        raise ValueError(
+            f"the model's skeleton {a.tolist()} is not the one the mesh was "
+            f"built from, {b.tolist()}; export the fields of a model on the "
+            "mesh's own geometry")
 
 
-def _evaluate_on_layers(field, X, *, skeleton, groups, units, vdim,
-                        character, name):
-    """One vectorised call per layer, into a flat (ndof, vdim) array.
+def _chosen_names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
+    """The names to write: every name the model holds, or those given."""
+    if fields is None:
+        return tuple(model.field_names())
+    names = tuple(str(n) for n in fields)
+    for name in names:
+        if not model.layers_with(name):
+            raise KeyError(
+                f"no layer of the model holds {name!r}; it holds "
+                f"{list(model.field_names())}")
+    return names
 
-    `groups` is the field's domain intersected with the layers the mesh
-    actually has; everything outside it stays zero, and the manifest's
-    `layers` is what says so.
+
+def _character_of(model: Model, name: str) -> Character:
+    """The one character `name` has on every layer holding it."""
+    layers = model.layers_with(name)
+    characters = {model.layer(i)[name].character for i in layers}
+    if len(characters) != 1:
+        raise ValueError(
+            f"{name!r} has characters {sorted(map(str, characters))} on layers "
+            f"{list(layers)}; one GridFunction holds one character")
+    return characters.pop()
+
+
+def _field_values(model: Model, name: str, X: np.ndarray,
+                  groups: MappingOf[int, np.ndarray], *, vdim: int) -> np.ndarray:
+    """`name` at the dof coordinates `X`, (ndof, vdim), layer by layer.
+
+    `groups` maps attribute -> dofs.  Attribute i + 1 is layer i of the
+    model; everything the model does not hold the field on stays zero.
     """
-    values = np.zeros((X.shape[0], vdim), dtype=float)
-    shape = _component_shape(character)
-    for layer, dofs in groups.items():
-        points = _clipped_into(units.to_body(X[dofs]), skeleton.interval(layer))
-        got = np.asarray(field.evaluate_at(points, layer=layer, frame=FRAME),
-                         dtype=float)
+    values = np.zeros((X.shape[0], vdim))
+    shape = stored_shape(_character_of(model, name))
+    for i in model.layers_with(name):
+        dofs = groups.get(i + 1)
+        if dofs is None:
+            continue
+        layer = model.layer(i)
+        points = _clipped_into(_lifted(X[dofs]), layer.interval)
+        got = np.asarray(layer[name].evaluate_at(points, frame=FRAME), dtype=float)
         want = (dofs.size,) + tuple(shape)
         if got.shape != want:
             raise ValueError(
-                f"field {name!r} answered with shape {got.shape} on layer "
-                f"{layer}, expected {want} for a field of {character}")
+                f"{name!r} on layer {i} answered with shape {got.shape}, "
+                f"expected {want}")
         values[dofs] = got.reshape(dofs.size, vdim)
     return values
 
 
-# --------------------------------------------------------------- the manifest
+def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
+                fields: Iterable[str] | None = None, delivery: str = "physical",
+                order: int | None = None) -> ExportResult:
+    """Write an MFEM delivery of a built mesh with the fields of a model
+    beside it: `<base>.mesh`, the displacement in referential delivery,
+    one `<base>.<name>.gf` per field, and the manifest.
 
-def _file_entry(name, path, fes, *, character, dimensions, layers, si,
-                continuous, representation, kind="field"):
-    """One `files.grid_functions` record: where it is and what it means."""
-    mfem = _mfem()
-    ordering = ("byNODES" if fes.GetOrdering() == mfem.Ordering.byNODES
-                else "byVDIM")
-    return {
-        "kind": kind,
-        "name": name,
-        "file": Path(path).name,
-        "fe_space": fes.FEColl().Name(),
-        "vdim": int(fes.GetVDim()),
-        "ordering": ordering,
-        "continuous": bool(continuous),
-        "character_rank": int(character.rank),
-        "character_weight": int(character.weight),
-        "voigt": int(character.voigt_shape is not None),
-        "components": [int(n) for n in _component_shape(character)],
-        "physical_dimensions": (None if dimensions is None else
-                                [int(dimensions.mass), int(dimensions.length),
-                                 int(dimensions.time)]),
-        "units": unit_string(dimensions, si=si),
-        "frame": FRAME,
-        "layers": [int(i) for i in layers],
-        "attributes": [int(i) + 1 for i in layers],
-        "fill_value": 0.0,
-        "representation": representation,
-    }
-
-
-# ------------------------------------------------------------------- the API
-
-def export_mfem(result, path_base, *, fields=None, delivery=None,
-                order=None, continuous=()) -> ExportResult:
-    """Write an MFEM delivery of a built mesh: `.mesh`, `.gf`s, manifest.
-
-    `result` is what `build_layered_mesh` returned -- the reference mesh
-    on disk, the resolved body, the units it was meshed in and the
-    mapping it was built with.  `path_base` is the basename the files are
-    written beside: `<base>.mesh`, one `<base>.<field>.gf` per field,
-    `<base>.displacement.gf` in referential mode, and `<base>.json`.
-    Giving the mesher's own basename overwrites its manifest with this
-    one, which then describes the `.mesh` rather than the `.msh` it was
-    built from; a separate basename keeps both.
-
-    `fields` is a sequence of names (default: every field the body has)
-    or a mapping `name -> Field` for quantities the caller has built
-    itself; `delivery` is `"physical"` or `"referential"` and defaults
-    to the one the spec asked for; `order` is the order of the field spaces and
-    defaults to the mesh's own; `continuous` names the fields to put in
-    H1 rather than L2, which is a promise by the caller that they are
-    continuous across every interface.
-
-    A field is written on the elements of the layers that hold it and
-    zero elsewhere -- a GridFunction has no room for "not defined here",
-    and a NaN would spread through the first integrator that touched it
-    -- with the truth in the manifest's `layers`.
+    The mesh and the displacement are `export_mfem_mesh`'s.  Each field
+    is a GridFunction in an L2 space of `order` (the mesh's own by
+    default) with `vdim` the number of stored components (Voigt for
+    ranks 2 and 4), ordered byNODES, holding the referential value at
+    every dof: the model's field at the dof's reference coordinates,
+    with Cartesian components, in the model's units, whichever delivery
+    the mesh is written in.  A dof is evaluated by the layer its
+    element's attribute names, pulled radially to that layer's nearer
+    interface when a curved element leaves it outside; a shell outside
+    the model, and a layer of the model without the field, are written
+    as zero.  `fields` is None for every name the model holds, or the
+    names to write (KeyError for a name no layer holds).  The model must
+    sit on the geometry the mesh was built from: the same skeleton to
+    the model's geometry's `rtol`; a mesh not built from a geometry is
+    refused.  The manifest gains one `fields[]` record per name, saying
+    the file, the space to read it into, the character, the unit and the
+    layers on which the values mean anything, and `scales` and
+    `constants` blocks from the model.
     """
     mfem = _mfem()
-    path_base = Path(path_base)
-    card = manifest.read(result.manifest_path)
-    body = result.body
-    units = MeshUnits.identity() if result.units is None else result.units
-    mapping = result.mapping
-    spec_delivery = getattr(getattr(result, "spec", None), "delivery",
-                            "physical")
-    delivery = spec_delivery if delivery is None else delivery
-    if delivery not in ("physical", "referential"):
-        raise ValueError(
-            "delivery must be 'physical' or 'referential', got "
-            f"{delivery!r}")
-    if delivery == "referential" and mapping is None:
-        raise ValueError(
-            "a referential delivery hands the consumer the mapping to apply "
-            "and this mesh was built without one; a spherical body wants "
-            "delivery='physical'")
-
-    mesh = _load_reference_mesh(result, card)
+    _check_model_sits_on(result, model)
+    names = _chosen_names(model, fields)
+    mesh = _load_mesh(result.msh_path)
     order = _mesh_order(mesh) if order is None else int(order)
-    si = body.scales.is_si
-    continuous = set(continuous)
+    if order < 0:
+        raise ValueError(f"the order of an L2 space is not negative, got {order}")
+    holders = {name: [i + 1 for i in model.layers_with(name)] for name in names}
 
-    chosen = _chosen_fields(body, fields)
-    unknown = continuous - set(chosen)
-    if unknown:
-        raise KeyError(
-            f"continuous names {sorted(unknown)}, which are not among the "
-            f"fields being written ({sorted(chosen)})")
+    # Every value is computed before anything is written.
+    collection = mfem.L2_FECollection(order, mesh.Dimension())
+    scalar = mfem.FiniteElementSpace(mesh, collection, 1)
+    X = _dof_coordinates(mesh, scalar)
+    groups = _dofs_by_attribute(mesh, scalar)
+    values = {}
+    for name in names:
+        vdim = int(np.prod(stored_shape(_character_of(model, name)), dtype=int))
+        values[name] = (vdim, _field_values(model, name, X, groups, vdim=vdim))
 
-    # -- the spaces, and the reference coordinates of their dofs ----------
-    dim = mesh.Dimension()
-    collections = {False: mfem.L2_FECollection(order, dim),
-                   True: mfem.H1_FECollection(order, dim)}
-    coordinates, groups = {}, {}
-    for kind in {name in continuous for name in chosen}:
-        fes = mfem.FiniteElementSpace(mesh, collections[kind], 1)
-        coordinates[kind] = _dof_coordinates(mesh, fes)
-        groups[kind] = _elements_by_layer(mesh, fes)
-
-    # -- the displacement, in the mesh's own nodal space ------------------
-    nodes = mesh.GetNodes()
-    displacement = mfem.GridFunction(nodes.FESpace())
-    X_nodes = _node_array(nodes)
-    if mapping is None:
-        _write_vector(displacement, np.zeros_like(X_nodes))
-    else:
-        _write_vector(displacement, units.to_mesh(
-            mapping.displacement(units.to_body(X_nodes))))
-
-    # -- the fields, evaluated one vectorised call per layer --------------
+    export = export_mfem_mesh(result, path_base, delivery=delivery)
+    path_base = Path(path_base)
+    si = model.scales.is_si
     written, entries = {}, []
-    for name, field in chosen.items():
-        kind = name in continuous
-        character = field.character
-        vdim = int(np.prod(_component_shape(character), dtype=int))
-        source = (field if delivery == "referential"
-                  else push_forward_field(field, mapping)
-                  if mapping is not None else field)
-        # A field per the protocol need not say where it is defined;
-        # one that does not is taken to be defined everywhere.
-        domain = getattr(field, "domain", range(len(body.layers)))
-        layers = tuple(i for i in domain if i in groups[kind])
-        fes = mfem.FiniteElementSpace(mesh, collections[kind], vdim,
-                                      mfem.Ordering.byNODES)
+    for name, (vdim, array) in values.items():
+        fes = mfem.FiniteElementSpace(mesh, collection, vdim, mfem.Ordering.byNODES)
         gf = mfem.GridFunction(fes)
-        values = _evaluate_on_layers(
-            source, coordinates[kind], skeleton=body.skeleton,
-            groups={i: groups[kind][i] for i in layers}, units=units,
-            vdim=vdim, character=character, name=name)
-        _write_vector(gf, values)
-        path = _beside(path_base, f".{name}.gf")
+        _write_vector(gf, array)
+        path = manifest.beside(path_base, f".{name}.gf")
         gf.Save(str(path), 16)
         written[name] = path
-        entries.append(_file_entry(
-            name, path, fes, character=character,
-            dimensions=getattr(field, "dimensions", None), layers=layers,
-            si=si, continuous=kind,
-            representation=("referential" if delivery == "referential"
-                            else "physical")))
+        spec = model.spec(name)
+        entries.append(_field_entry(
+            name, path, fes, character=_character_of(model, name),
+            dimensions=None if spec is None else spec.dimensions, si=si,
+            layers=holders[name]))
 
-    # -- the mesh: displaced now, after every dof was read ----------------
-    if delivery == "physical" and mapping is not None:
-        nodes.GetDataArray()[:] += displacement.GetDataArray()
-    mesh_path = _beside(path_base, ".mesh")
-    mesh.Print(str(mesh_path), 16)
-
-    displacement_path = None
-    if delivery == "referential":
-        displacement_path = _beside(path_base, ".displacement.gf")
-        displacement.Save(str(displacement_path), 16)
-        entries.append(_file_entry(
-            "displacement", displacement_path, nodes.FESpace(),
-            character=VECTOR, dimensions=Dimensions.LENGTH,
-            layers=range(len(body.layers)), si=False, continuous=True,
-            representation="referential", kind="displacement"))
-
-    files = {
-        "mesh": mesh_path.name,
-        "mesh_read_options": dict(MESH_READ_OPTIONS),
-        "grid_functions": entries,
-    }
-    card.files = files
-    card.delivery = delivery
-    if card.mapping is not None:
-        card.mapping["applied_to_nodes"] = delivery == "physical"
+    card = manifest.read(export.manifest_path)
+    for entry in card.fields:
+        if entry["name"] == DISPLACEMENT:
+            entry["unit"] = LENGTH.unit_string(si=si)
+    card.fields.extend(dataclasses.asdict(e) for e in entries)
+    card.scales = manifest.scales_block(model.scales)
+    card.constants = manifest.constants_block(model)
     manifest.validate_structure(card)
     manifest_path = manifest.write(path_base, card)
-
-    counts = {"elements": mesh.GetNE(), "boundary_elements": mesh.GetNBE(),
-              "nodes": nodes.FESpace().GetNDofs(), "order": order}
-    return ExportResult(mesh_path=mesh_path, manifest_path=manifest_path,
-                        field_paths=written,
-                        displacement_path=displacement_path,
-                        delivery=delivery, files=files, counts=counts)
-
-
-def _beside(path_base: Path, suffix: str) -> Path:
-    """`<base><suffix>`, with the mesher's own basename convention."""
-    return manifest.beside(path_base, suffix)
-
-
-def _chosen_fields(body, fields) -> dict:
-    """The fields to write: named, given outright, or all the body has."""
-    if fields is None:
-        # Every static field: a frequency- or time-dependent one has no
-        # values until frozen (at_frequency, at_time); pass it by name.
-        return {name: body[name] for name in body.field_names
-                if getattr(body[name], "kind", "static") == "static"}
-    if hasattr(fields, "items"):
-        return dict(fields)
-    return {str(name): body[str(name)] for name in fields}
+    return dataclasses.replace(export, manifest_path=manifest_path,
+                               field_paths=written)

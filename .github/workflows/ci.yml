@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  # The meshing and MFEM tests need gmsh and PyMFEM, which are heavy; the
+  # `meshing` job below runs them on Linux only, and `full-tests` runs the
+  # whole suite on demand from the Actions tab.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are pointless; pushes to a branch are kept so
+  # that main and develop keep a complete history of green and red commits.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # The hooks of .pre-commit-config.yaml, so that CI and the local hooks can
+  # never disagree about what "clean" means.  Runs once, on Linux: nothing
+  # here is platform-dependent.
+  lint:
+    name: Lint (pre-commit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run hooks
+        env:
+          # `no-commit-to-branch` guards local commits; on a CI checkout of main
+          # it would fail every run.  `pytest` is a pre-push hook and is
+          # covered by the test job below.
+          SKIP: no-commit-to-branch,pytest
+        run: pre-commit run --all-files --show-diff-on-failure --color=always
+
+  # The fast suite: numpy and scipy, plus the `plot` and `harmonics` extras
+  # so that the plotting and pyshtools tests run rather than skip.  Every
+  # platform and every supported Python.
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing is worth knowing about on the others too.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.create false
+
+      - name: Install dependencies
+        run: poetry install --with dev --extras "plot harmonics"
+
+      - name: Test with pytest
+        # The default selection is the fast suite (pyproject's addopts).
+        run: poetry run pytest --cov=planetmodel --cov-report=term-missing
+
+      - name: Build package
+        run: poetry build
+
+  # The gmsh unit geometries and the MFEM exports, which the fast suite
+  # deselects.  Linux only: gmsh and PyMFEM ship Linux wheels, and the
+  # meshes are a few elements across.
+  meshing:
+    name: Meshing and MFEM (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.create false
+
+      - name: Install dependencies
+        run: poetry install --with dev --extras "plot harmonics meshing mfem"
+
+      # gmsh's wheel needs the X and OpenGL libraries even headless.
+      - name: Install gmsh's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+      - name: Test the meshing and export suites
+        run: poetry run pytest -m "gmsh or mfem"
+
+  # Everything, including whatever is marked slow.  Run by hand: Actions ->
+  # CI -> Run workflow.  Worth doing before a release.
+  full-tests:
+    name: Full test suite (including slow)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.create false
+
+      - name: Install dependencies
+        run: poetry install --with dev --extras "plot harmonics meshing mfem"
+
+      - name: Install gmsh's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+      - name: Test with pytest
+        run: poetry run pytest -m "" --cov=planetmodel --cov-report=term-missing

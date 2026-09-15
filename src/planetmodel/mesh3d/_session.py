@@ -1,16 +1,18 @@
-"""_session.py -- gmsh is process-global state, so own it explicitly.
+"""gmsh is process-global state, so it is owned explicitly.
 
 gmsh keeps one model registry per process.  A leaked session leaves
 entities, options and physical groups behind for whatever runs next,
-which turns an unrelated later failure into the visible symptom.  So
-every entry into gmsh goes through this context manager, which
-initialises, routes gmsh's own logging into the planetmodel logger, and
-finalizes even when the body raises.
+turning an unrelated later failure into the visible symptom.  Every
+entry into gmsh therefore goes through this context manager, which
+initialises, routes gmsh's own logging into the planetmodel logger,
+and finalizes even when the body raises.
 """
 from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Iterator, Mapping
+from types import ModuleType
 
 import gmsh
 
@@ -26,12 +28,12 @@ def is_active() -> bool:
 
 @contextlib.contextmanager
 def session(*, name: str = "planetmodel", verbose: bool = False,
-            terminal: bool = False):
-    """A gmsh session that always finalizes.
+            terminal: bool = False) -> Iterator[ModuleType]:
+    """A gmsh session that always finalizes; yields `gmsh.model`.
 
     Nesting is refused rather than silently reusing the outer session:
-    two callers sharing one global model is exactly the confusion this
-    exists to prevent.
+    two callers sharing one global model is the confusion this exists
+    to prevent.
     """
     if is_active():
         raise RuntimeError(
@@ -65,7 +67,7 @@ def _drain_log() -> None:
         pass
 
 
-def set_options(options: dict) -> None:
+def set_options(options: Mapping[str, float | str]) -> None:
     """Apply gmsh options, choosing setNumber or setString by value type."""
     for key, value in options.items():
         if isinstance(value, str):
