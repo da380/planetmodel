@@ -1,16 +1,18 @@
 # %% [markdown]
 # # 7. PREM
 #
-# `PREM` is the Preliminary Reference Earth Model built from the Table I
-# polynomials of Dziewonski and Anderson (1981): thirteen named layers,
-# every field an exact piecewise polynomial in SI, and no file read. It is
-# a model type: a class derived from `Model` with the elastic, gravity and
-# rheology behaviours as methods, each of which is one of the library's
-# free functions. This tutorial asks it the questions a seismologist asks:
-# values on both sides of a discontinuity, which layers are fluid, the
-# elastic moduli, gravity and mass, the isotropic and elastic versions,
-# the Love moduli at a frequency, nodal values on a radial mesh, and a
-# sample on an angular grid.
+# `PREM` is the Preliminary Reference Earth Model of Dziewonski and
+# Anderson (1981), built from the polynomials of their Table I. It has
+# thirteen named layers, every field is an exact piecewise polynomial in
+# SI units, and no file is read. It is a model type: a class derived from
+# `Model` whose methods for elasticity, gravity and rheology are the
+# library's free functions, as tutorial 6 described.
+#
+# This tutorial asks PREM the questions a seismologist asks: the values
+# on either side of a discontinuity, which layers are fluid, the elastic
+# moduli, gravity and mass, the isotropic and purely elastic versions of
+# the model, the moduli at a frequency, values at the nodes of a radial
+# mesh, and a sample on an angular grid.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -27,6 +29,10 @@ FIGURES.mkdir(exist_ok=True)
 
 # %% [markdown]
 # ## The layers by name
+#
+# Each layer has a name, an interval of radius, and its own fields. A
+# layer is fluid when its shear modulus is zero, which `is_fluid` reads
+# from the fields.
 
 # %%
 model = PREM()
@@ -37,9 +43,10 @@ for layer in model.layers:
           f"{'fluid' if model.is_fluid(layer.index) else 'solid'}")
 
 # %% [markdown]
-# A discontinuity is two layers asked separately. The CMB belongs to both
-# the outer core and the lowermost mantle, and each gives its own value
-# exactly at the boundary.
+# A discontinuity is not a special object. It is two layers that meet at
+# a radius, and each is asked separately. The core-mantle boundary
+# belongs to both the outer core and the lowermost mantle, and each gives
+# its own value exactly at the boundary.
 
 # %%
 cmb = model.geometry.interface("cmb").radius
@@ -50,14 +57,20 @@ for name in ("rho", "vpv", "vsv"):
 # %% [markdown]
 # ## Transverse isotropy, and the moduli
 #
-# Between 80 and 220 km depth PREM is transversely isotropic; elsewhere
-# `vph = vpv`, `vsh = vsv` and `eta = 1` as exact constants. The table
-# gives velocities, and the `Elastic` mixin completes the description on
-# construction: every layer holds the Love moduli `A, C, F, L, N` as
-# fields of weight 1 beside the velocities, exact polynomials here. The
-# methods read those fields: `moduli(which)` is the five, `elastic_moduli`
-# the Voigt matrix field, `kappa_mu` the Voigt averages, and the free
-# functions of `planetmodel.materials` do the same on any layer.
+# PREM is transversely isotropic between the Moho, at 24.4 km depth, and
+# 220 km depth: the lid and the low-velocity zone. There the vertical
+# and horizontal P and S velocities differ and the fifth parameter `eta`
+# is not one. Everywhere else `vph = vpv`, `vsh = vsv` and `eta = 1` are
+# held as exact constants.
+#
+# The table gives velocities. When the model is built, the `Elastic`
+# mixin adds the five moduli of a transversely isotropic medium, the
+# Love moduli `A, C, F, L, N`, to every layer as fields alongside the
+# velocities. Here they are exact polynomials. The methods then read
+# those fields: `moduli(which)` returns the five, `elastic_moduli` the
+# tensor as a six-by-six Voigt matrix field, and `kappa_mu` the bulk and
+# shear moduli of the isotropic average. The free functions of
+# `planetmodel.materials` do the same on any layer.
 
 # %%
 lid = model.layer("lid")
@@ -69,7 +82,8 @@ print("A in the lid is a polynomial of degree", A.function.degree,
       "| A = rho vph^2:", A(r80) == lid["rho"](r80) * lid["vph"](r80) ** 2)
 print("the method reads the field:", model.moduli("lid")["A"] is A,
       "| the free function too:", moduli(lid)["A"] is A)
-print("the outer core's L is exactly zero:", model.layer("outer_core")["L"].function)
+L_core = model.layer("outer_core")["L"]
+print("the outer core's L is exactly zero:", L_core.function.is_zero())
 C = model.elastic_moduli("lid")
 print("Voigt matrix at 71 km depth, GPa, spherical frame:")
 print(np.round(C(6300e3, 0.3, 0.0) / 1e9, 1))
@@ -80,9 +94,11 @@ print("kappa, mu at the top of the lower mantle (GPa):",
 # %% [markdown]
 # ## Isotropic and elastic versions
 #
-# `isotropic()` replaces every layer's elastic description by its Voigt
-# average, exactly, keeping `rho` and the Q fields; `elastic()` drops the
-# rheology fields. Both are copies of the same class.
+# `isotropic()` returns a copy of the model in which every layer's
+# elastic description is replaced by its isotropic average, computed
+# exactly on the polynomials. The density and the Q fields are kept.
+# `elastic()` returns a copy without the rheology fields, here the two
+# Q's, so that no layer is viscoelastic. Both copies are still `PREM`.
 
 # %%
 iso = model.isotropic()
@@ -93,20 +109,31 @@ print("elastic PREM is viscoelastic nowhere:",
       not any(model.elastic().is_viscoelastic(i) for i in range(model.nlayers)))
 
 # %% [markdown]
-# ## The Love moduli at a frequency
+# ## The moduli at a frequency
 #
 # PREM's elastic values are those at a period of one second, and its Q
-# fields say how they disperse. Two mixins give the frequency dependence.
-# `ConstantQ` reads the logarithmic dispersion relation off the Q fields
-# without touching the model: `moduli_at(which, omega)` is a layer's five
-# at angular frequency `omega` as complex fields, about the reference
-# frequency `reference_omega()`, one second by default, and
-# `elastic_moduli_at` the tensor. `Viscoelastic` is the general
-# machinery for any linear rheology: `frozen(omega)` is the model at that
-# frequency, every viscoelastic layer carrying complex `A, C, F, L, N`
-# (constant Q from the Q fields, Maxwell from a viscosity) with the
-# frequency recorded as the constant `omega`, still a `PREM`, so Love
-# numbers follow through `planetmodel.loading`.
+# fields say how the moduli change with frequency. Two mixins give that
+# frequency dependence.
+#
+# `ConstantQ` applies the constant-Q absorption band: the bulk and shear
+# moduli are dispersed logarithmically about the reference frequency,
+# which `reference_omega()` returns and which is one second for PREM.
+# `moduli_at(which, omega)` returns a layer's five moduli at angular
+# frequency `omega` as complex fields, and `elastic_moduli_at` the
+# tensor. The model itself is not changed.
+#
+# `Viscoelastic` is the general machinery for any linear rheology.
+# `frozen(omega)` returns a copy of the model at that frequency in which
+# every viscoelastic layer holds complex `A, C, F, L, N`, from constant
+# Q where the layer has Q fields and from a Maxwell body where it has a
+# viscosity, with the frequency recorded as the model constant `omega`.
+# The copy is still a `PREM`, and it is what the Love number solver of
+# `planetmodel.loading` takes.
+#
+# The example looks at the shear modulus `L` in the lower mantle at two
+# periods. Its imaginary part over its value at one second is one over
+# the shear Q, and its real part falls by about two percent between one
+# second and a semidiurnal tide.
 
 # %%
 lm = model.layer("lower_mantle")
@@ -118,8 +145,8 @@ for label, T in (("100 s", 100.0), ("12 h", 43200.0)):
     print(f"L at 1371 km depth, {label:6s}: {L / 1e9:.4f} GPa   "
           f"Im L / L_1s = {L.imag / lm['L'](r0):.2e}",
           f"= 1/Q_mu = {1 / lm['qmu'](r0):.2e}")
-softening = model.moduli_at("lower_mantle", omega_tide)["L"](r0).real / lm["L"](r0) - 1
-print(f"softening from 1 s to 12 h: {100 * softening:.2f} %")
+change = model.moduli_at("lower_mantle", omega_tide)["L"](r0).real / lm["L"](r0) - 1
+print(f"change in Re L from 1 s to 12 h: {100 * change:.2f} %")
 tensor_tide = model.elastic_moduli_at("lower_mantle", omega_tide)
 print("the model is untouched:", lm["L"].dtype,
       "| the tensor at 12 h:", tensor_tide.dtype)
@@ -134,11 +161,13 @@ print("a fluid layer's L stays zero:", tide.layer("outer_core")["L"](2000e3))
 # ## Gravity and mass
 #
 # `gravity` integrates `rho r^2` layer by layer through the layer
-# functions, so for PREM it is exact. `G` is the model's; after
-# `nondimensionalised()` it is one and the numbers are order one, and the
-# copy is still a `PREM`. `with_gravity()` is the model with the same
-# gravity attached to every layer as a radial field under the vocabulary
-# name `g`, exact for PREM, so it is held, differentiated, sampled and
+# functions, so for PREM it is exact. The gravitational constant is the
+# model's own, in the model's units. After `nondimensionalised()` it is
+# one, the numbers are of order one, and the copy is still a `PREM`.
+#
+# `with_gravity()` is a copy of the model with the same gravity attached
+# to every layer as a radial field under the vocabulary name `g`. That
+# field is exact for PREM, and it can be differentiated, sampled and
 # drawn like any other field.
 
 # %%
@@ -155,10 +184,14 @@ print("dg/dr at 4000 km:", g_mantle.derivative()(4000e3), "1/s^2")
 # %% [markdown]
 # ## On a radial mesh
 #
-# `RadialMesh.nodal` evaluates the field of each element's own layer at
-# its nodes, so a node on a boundary carries both one-sided values; `nu`
-# asks for a radial derivative, and `nodal_gravity` gives gravity there.
-# A name a layer lacks is refused unless `missing="nan"`.
+# A `RadialMesh` divides the radius into spectral elements, each within
+# one layer, with Gauss-Lobatto-Legendre nodes in each element.
+# `RadialMesh.nodal` evaluates a field at those nodes, element by
+# element, taking each element's field from its own layer. A node on a
+# layer boundary belongs to two elements and so carries both one-sided
+# values. The argument `nu` asks for a radial derivative instead, and
+# `nodal_gravity` gives gravity at the nodes. A field that some layer
+# lacks is refused unless `missing="nan"` asks for NaN there.
 
 # %%
 mesh = RadialMesh(model, ngll=5, drmax=200e3)
@@ -172,16 +205,17 @@ print("qmu is NaN on", int(np.isnan(qmu).all(axis=1).sum()), "fluid elements")
 # %% [markdown]
 # ## A sample on an angular grid
 #
-# `sample` evaluates a model once on the radial nodes times an angular
-# grid, the delivery a numerical code wants. A radial field is stored as
-# `(nnode,)` plus its components; one that depends on direction gets the
-# angular axes. Every array is read-only and `check_sample` holds it to
-# the model.
+# `sample` evaluates a model once on the product of the radial nodes and
+# an angular grid, which is the form a numerical code wants its input
+# in. A radial field is stored on the radial nodes alone, shape
+# `(nnode,)` plus its components. A field that varies with the angles is
+# stored with the two angular axes as well. Every array is read-only,
+# and `check_sample` verifies the sample against the model.
 
 # %%
 grid = gauss_legendre(8)
 s = sample(model, grid, radial=RadialMesh(model, ngll=4, drmax=500e3))
-print(s.radial, "|", grid.ntheta, "x", grid.nphi, "directions")
+print(s.radial, "|", grid.ntheta, "colatitudes x", grid.nphi, "longitudes")
 print("stored shapes:", {n: s.fields[n].shape for n in ("rho", "vpv")})
 print("displacement:", s.displacement, "(identity geometry)")
 testing.check_sample(s, model)
@@ -191,9 +225,10 @@ print("check_sample passes")
 # ## A picture
 #
 # `planetmodel.plotting` draws every profile of a spherically symmetric
-# model one way: radius on the vertical axis increasing upward, one
-# segment per layer, and a line joining the two sides of each
-# discontinuity.
+# model the same way: radius on the vertical axis increasing upward, one
+# curve per layer, and a line joining the two sides of each
+# discontinuity. The third panel shows the constant-Q dispersion of the
+# lower-mantle shear modulus against period.
 
 # %%
 try:

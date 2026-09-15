@@ -1,19 +1,23 @@
 # %% [markdown]
 # # 9. Fields for MFEM
 #
-# Stage 1 handed a mesh and a displacement to MFEM; now a model's fields
-# go beside them. `export_mfem` writes the mesh as before and one
-# GridFunction per field: an L2 (discontinuous) space whose values at the
-# reference mesh's degrees of freedom are the field's Cartesian components
-# in the model's units, evaluated layer by layer, so a discontinuity across
-# an interface is carried exactly. The manifest lists each field beside
-# the displacement, with its character, unit and layers, and records the
-# model's scales and constants so that every value has its units.
+# Tutorial 4 wrote a mesh for MFEM and applied the geometry's mapping at
+# the export. This tutorial adds a model's fields beside the mesh.
+# `export_mfem` writes the mesh as before and one file per field, holding
+# an MFEM `GridFunction`: the values of a finite-element function on the
+# mesh. The space used is an L2 space, in which each element has its own
+# values and nothing is shared across element faces, so that a jump in a
+# field across an interface is carried exactly. Each value is the field
+# at the reference coordinates of a degree of freedom, as Cartesian
+# components in the model's units, evaluated layer by layer. The manifest
+# lists each field beside the displacement, with its character, its unit
+# and the layers on which it is defined, and records the model's scales
+# and constants, so that every number in the files has known units.
 #
-# A coarse mesh of a small layered model is built here; PREM's thin crust
-# needs an Earth-scale mesh, which `scripts/mfem_cross_check.py` does.
-# Files go to `examples/figures/tutorial_09_fields/` unless `--temp` is
-# passed. This tutorial needs gmsh and PyMFEM.
+# The mesh here is a coarse mesh of a small three-layer model. PREM's
+# thin crust needs an Earth-scale mesh, which `scripts/mfem_cross_check.py`
+# builds. Files go to `examples/figures/tutorial_09_fields/` unless
+# `--temp` is passed. This tutorial needs gmsh and PyMFEM.
 
 # %%
 import argparse
@@ -41,10 +45,13 @@ else:
 # %% [markdown]
 # ## A small model on a deformed geometry
 #
-# Three constant layers with Earth-like contrasts in a unit ball, made
-# oblate by a flattening. The moduli of the mantle are attached as a
-# rank-4 field under the vocabulary name `elastic_moduli`; the core layers
-# have none, so their export is zero there.
+# The model has three layers with constant properties and Earth-like
+# contrasts, in a ball of unit radius, made oblate by the degree-2
+# displacement of tutorial 4. The mantle's elastic moduli are computed
+# from its velocities and attached as a rank-4 field under the
+# vocabulary name `elastic_moduli`. The core layers hold no such field,
+# so the exported values are zero there and the manifest says on which
+# layers the field is defined.
 
 # %%
 model = LayeredIsotropicElastic(
@@ -61,15 +68,19 @@ print("mass:", mass(model))
 # ## Mesh, then export with fields
 #
 # The mesh is built on the model's geometry as in tutorial 4, without a
-# buffer this time, and exported in the other delivery: `referential`
-# leaves the mesh spherical and hands the displacement `m(X) - X` to the
-# solver as a vector field on the mesh's nodes, so that the solver applies
-# the mapping itself. That is the natural delivery once fields travel too, since a
-# field's values are referential, the model's own field at the reference
-# point, whichever shape the mesh is drawn in. `export_mfem` takes the
-# build's result and the model, which must sit on the same skeleton.
-# `fields=None` writes every name the model holds; `rho` is a scalar,
-# `elastic_moduli` a Voigt (6, 6) matrix stored with `vdim = 36`.
+# buffer this time. The export uses the `referential` delivery: the mesh
+# stays spherical and the displacement `m(X) - X` is written beside it as
+# a vector field on the nodes, for the solver to apply itself. This is
+# the natural delivery once fields travel with the mesh, because the
+# field values are referential in any case: each is the model's own
+# field at the reference point, whatever shape the mesh is drawn in.
+#
+# `export_mfem` takes the mesh result and the model, which must sit on the
+# skeleton the mesh was built from. `fields=None` would write every field
+# the model holds; here three names are chosen. `rho` and `vs` are
+# scalars, and `elastic_moduli` is a rank-4 tensor stored in Voigt form
+# as a six-by-six matrix, so its GridFunction has 36 components per
+# degree of freedom.
 
 # %%
 spec = MeshSpec(model.geometry, UniformInterfaces(0.15, 0.3, 0.3), dimension=3,
@@ -85,24 +96,27 @@ for name, path in exported.field_paths.items():
 
 # %% [markdown]
 # ## The manifest's fields
+#
+# The manifest now has a record per field: the file, the finite-element
+# space to read it into and the number of components, the character, the
+# unit, and the attributes of the layers on which the field is defined.
+# The displacement is listed as a field like the others. The scales and
+# constants of the model follow.
 
 # %%
 card = manifest.read(exported.manifest_path)
-print("schema:", card.schema)
-print("scales:", card.scales, "| constants:", card.constants)
-for entry in card.fields:
-    print(f"  {entry['name']:16s} {entry['file']:28s} rank {entry['rank']} "
-          f"weight {entry['weight']} unit {entry['unit']:10s} "
-          f"on attributes {entry['layers']}")
+print(card.describe())
 
 # %% [markdown]
 # ## Reading a field back
 #
-# A consumer reads the mesh with the manifest's options and each `.gf`
-# against it. Here the density is read back and integrated over the
-# reference mesh, which is the model's mass up to the mesh's approximation
-# of the sphere: the referential density over the reference volume is the
-# physical mass, whatever the mapping.
+# A consumer opens the mesh with the manifest's read options and then
+# reads each `.gf` file against it. Here the density is read back and
+# integrated over the reference mesh. The result is the model's mass, up
+# to the error of the curved mesh's approximation of the sphere. Mass is
+# preserved by the mapping, so the referential density integrated over
+# the reference volume is the physical mass whatever the shape of the
+# planet.
 
 # %%
 try:

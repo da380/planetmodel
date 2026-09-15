@@ -1,13 +1,16 @@
 # %% [markdown]
 # # 6. A model of your own
 #
-# A model is a geometry with a collection of fields on every layer, the scales
-# its numbers are in, and the specs that say what its names mean. `Model`
-# is the one base and there is no hierarchy beneath it: a model type is a
-# class derived from `Model` alone, and the behaviour it exposes it gets
-# by wrapping the library's free functions of a layer or a model. This
-# tutorial builds a viscous planet, validates it, converts its units, cuts
-# it, and then makes it a model type of its own.
+# A model is a geometry with a set of fields on every layer, together
+# with the scales its numbers are measured in and the specs that say what
+# each field name means. `Model` is the one base class. A model type, such
+# as `PREM` or one you write yourself, is a class derived from `Model`
+# alone, and any behaviour it offers as methods comes from wrapping the
+# library's free functions. There is no hierarchy of model types.
+#
+# This tutorial builds a two-layer viscous planet from scratch, checks
+# it, converts its units, cuts it into more layers, and then turns the
+# same construction into a model type of its own.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -41,9 +44,12 @@ FIGURES.mkdir(exist_ok=True)
 # %% [markdown]
 # ## The geometry, then the fields
 #
-# Names come from the geometry. Fields are attached one layer at a time,
-# each on exactly its layer's interval; here a fluid core with a density
-# alone, and a mantle with a density, a viscosity and a yield stress.
+# The geometry gives the layers and interfaces their names. Fields are
+# then attached one layer at a time, each defined on exactly its layer's
+# interval. The example is a fluid core with a density alone, and a
+# mantle with a density, a viscosity and a yield stress. The mantle
+# density is PREM's lower-mantle polynomial, published in g/cm^3 and
+# multiplied by 1000 here to give kg/m^3.
 
 # %%
 sk = Skeleton([0.0, 3480e3, 6371e3])
@@ -66,10 +72,17 @@ layers = [
 ]
 
 # %% [markdown]
-# `rho` and `viscosity` are in the vocabulary, which fixes their character
-# and dimensions. `yield_stress` is not: a name with no spec is accepted,
-# but it has no dimensions and would be refused on conversion. A spec
-# gives it both.
+# ## What the names mean
+#
+# A *spec* says what a field name means: its character and its physical
+# dimensions. The library ships a vocabulary of specs for the common
+# names, and `rho` and `viscosity` are in it. `yield_stress` is not. A
+# name with no spec is accepted, but the model then knows nothing about
+# its dimensions and refuses to convert it between units. Passing a spec
+# to the model gives the name a character and dimensions.
+#
+# `Dimensions` records powers of mass, length and time. A stress is
+# mass per length per time squared.
 
 # %%
 PRESSURE = Dimensions(mass=1, length=-1, time=-2)
@@ -84,9 +97,11 @@ print("yield stress unit:", unit_string(model.spec("yield_stress").dimensions))
 print("common to every layer:", model.common_names())
 
 # %% [markdown]
-# Validation is by name and character: a field attached under a name with
-# a spec must have the spec's character. A plain scalar under `rho` is
-# refused, as is a field on the wrong interval.
+# The model checks its fields when it is built. A field attached under a
+# name that has a spec must have the spec's character, and every field
+# must be defined on its own layer's interval. Below, a plain scalar is
+# refused under the name `rho`, and a field defined on the mantle's
+# interval is refused on the core.
 
 # %%
 try:
@@ -101,11 +116,14 @@ except ValueError as exc:
 # %% [markdown]
 # ## Units
 #
-# The model alone knows units. `Scales` say what one stored unit of
-# length, mass and time is in SI; `nondimensionalised` picks the
-# geophysical scales in which `G = 1`, and every field is converted by
-# name through the dimensions its spec declares. Polynomial layers convert
-# exactly, so the round trip is exact.
+# Only the model knows about units. Its `Scales` record what one stored
+# unit of length, mass and time is in SI; the default is SI itself.
+# `nondimensionalised` converts the model to scales in which the outer
+# radius, the Earth's mean density and the gravitational constant `G`
+# are all one. Each field is converted through the dimensions its spec
+# declares, which is why every name needs a spec. Polynomial layers are
+# converted by rescaling their coefficients, so converting and
+# converting back reproduces the original exactly.
 
 # %%
 nd = model.nondimensionalised()
@@ -120,11 +138,15 @@ print(
 )
 
 # %% [markdown]
-# ## Surgery carries the fields
+# ## Changing the layering
 #
-# Refining, truncating and hollowing go through the geometry and re-state
-# each affected field on its new interval by the field's own rule, exactly
-# for polynomials. Extending appends shells holding what they are given.
+# A model can be refined by inserting boundaries, truncated at a radius,
+# or extended by shells outside its surface. Each operation goes through
+# the geometry and then restates every affected field on its new
+# interval. For a polynomial this is exact. Refining splits a layer into
+# two unnamed parts that hold the same fields, so the density is
+# continuous across the new boundary. Extending appends shells that hold
+# only the fields they are given, none here.
 
 # %%
 split = model.refined([5701e3], names=["d670"])
@@ -140,29 +162,44 @@ with_air = model.extended([6500e3], names=["atmosphere"])
 print("an empty shell holds:", with_air.layer("atmosphere").names)
 
 # %% [markdown]
-# ## Free functions, and a model type that wraps them
+# ## The free functions
 #
-# Gravity is a function of a model that asks each layer for `rho`; the
-# elastic functions are functions of a layer. Both work on a bare `Model`.
-# A model type of your own is a class derived from `Model` alone that
-# exposes them as methods: a function of a model is a method as soon as
-# it is assigned in the class body, a function of a layer goes through
-# `layer_method`, which resolves an index or a name through `model.layer`,
-# and the shipped mixins (`Elastic`, `SelfGravitating`, `Viscoelastic`)
-# bundle the wrapped methods a kind of model exposes. Each mixin is a
-# class body of such assignments and nothing else, so the hierarchy stays
-# flat. Every copy goes through `Model.replaced`, a shallow copy, so the
-# constructor is yours to design and surgery keeps the class.
+# The library's shared behaviour is written as free functions. Some take
+# a model, such as `gravity(model, r)`, which asks each layer for `rho`
+# and integrates. Others take a single layer, such as the elastic
+# functions of `planetmodel.materials`. All of them work on a bare
+# `Model` with the right fields, and nothing more is needed to use them.
 
 # %%
 print("surface gravity:", gravity(model, 6371e3), "m/s^2")
 
+# %% [markdown]
+# ## A model type of your own
+#
+# A model type is a class derived from `Model` that builds its fields in
+# its constructor and exposes the free functions as methods. The rules
+# are simple. A function of a model becomes a method as soon as it is
+# assigned in the class body. A function of a layer is wrapped by
+# `layer_method`, which turns `fn(layer)` into `model.fn(which)` and
+# accepts a layer index or a layer name. The library's *mixins*,
+# `Elastic`, `SelfGravitating` and `Viscoelastic`, are classes that hold
+# nothing but such assignments, one bundle per kind of behaviour, so a
+# model type lists them in its bases instead of repeating the
+# assignments. Every copy of a model, whether from a unit conversion or
+# a change of layering, is a shallow copy made by `Model.replaced`, so
+# the constructor is entirely yours to design and a copy keeps your
+# class.
+#
+# The example is a function of a layer that a convection code might
+# want: the strain rate at which the viscous stress reaches the yield
+# stress, a field on the layer. The model type wraps it, mixes in
+# gravity, and builds the planet above from a handful of numbers.
 
-def viscosity_contrast(layer):
-    """The viscosity at the top of a layer over that at its bottom."""
-    eta = layer["viscosity"]
-    lo, hi = layer.interval
-    return eta(hi) / eta(lo)
+
+# %%
+def yield_strain_rate(layer):
+    """The strain rate at which viscous stress reaches the yield stress."""
+    return (layer["yield_stress"] / layer["viscosity"]).renamed("yield_strain_rate")
 
 
 class ViscousPlanet(SelfGravitating, Model):
@@ -178,7 +215,7 @@ class ViscousPlanet(SelfGravitating, Model):
     PRESSURE = Dimensions(mass=1, length=-1, time=-2)
     SPECS = {"yield_stress": FieldSpec(SCALAR, PRESSURE, meaning="yield stress")}
 
-    viscosity_contrast = layer_method(viscosity_contrast)
+    yield_strain_rate = layer_method(yield_strain_rate)
 
     def __init__(
         self,
@@ -210,26 +247,24 @@ class ViscousPlanet(SelfGravitating, Model):
 
 
 planet = ViscousPlanet(1e22)
-print("surface gravity as a method:", planet.gravity(6371e3))
-print("mantle viscosity contrast:", planet.viscosity_contrast("mantle"))
+print("surface gravity as a method:", planet.gravity(6371e3), "m/s^2")
 print("mass:", planet.mass(), "kg")
+rate = planet.yield_strain_rate("mantle")
+print(rate, "| at 5000 km:", rate(5000e3), "1/s")
 cut = planet.refined([5701e3])
-print(
-    type(cut).__name__, "keeps its class through surgery, with", cut.nlayers, "layers"
-)
+print(type(cut).__name__, "keeps its class when refined, with", cut.nlayers, "layers")
 testing.check_model(planet)
 print("check_model passes")
 
 # %% [markdown]
 # ## A picture
 #
-# Density and gravity of the planet against radius, drawn the way
 # `planetmodel.plotting` draws every profile of a spherically symmetric
-# model: radius upward, one segment per layer, and a line joining the
-# two sides of each discontinuity. `with_gravity()` is the planet with
-# its gravity attached to every layer as a field under the vocabulary
-# name `g`, so both panels are drawn the same way, by the name of a
-# field the model holds.
+# model the same way: radius on the vertical axis increasing upward, one
+# curve per layer, and a line joining the two sides of each
+# discontinuity. It draws a field by name, so to draw gravity the model
+# must hold it as a field. `with_gravity()` is a copy of the planet with
+# its gravity attached to every layer under the vocabulary name `g`.
 
 # %%
 try:

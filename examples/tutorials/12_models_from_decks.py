@@ -1,17 +1,27 @@
 # %% [markdown]
 # # 12. Models from decks
 #
-# A deck is a table of knots, radius first, one column per field, in which
-# a repeated radius marks a boundary. What the columns are called and what
-# the header lines mean is a `DeckFormat`; `MINEOS` is the format of the
-# mineos and PREM decks. Reading one gives a `Deck`, numbers and a header.
-# `deck_layers` interpolates every column layer by layer with a piecewise
-# polynomial, so the base fields are exact for the algebra downstream and
-# the moduli are products of them, and the mixins build the rest in the
-# normal way. This tutorial reads PREM's own 200-knot tabulation as a
-# `MineosModel` and compares it with the polynomial `PREM`, then writes a
-# deck of its own, PREM's elastic part with a viscosity in the solid
-# regions, and reads it back as a GIA-style model type.
+# A deck is a plain-text table describing a spherically symmetric model:
+# one row per knot, with the radius first and then one column per
+# field, the rows ordered by radius. A radius that appears twice marks a
+# boundary: the first of the two rows belongs to the layer below it and
+# the second to the layer above. Decks are how PREM and the models used
+# with the mineos normal-mode code are published.
+#
+# What the columns are called and what the header lines mean is a
+# `DeckFormat`; `MINEOS` is the format of mineos and PREM decks.
+# `read_deck` turns a file into a `Deck`, which is the numbers and the
+# header and nothing else. `deck_layers` interpolates every column,
+# layer by layer, with a piecewise polynomial through the knots, so the
+# base fields are polynomials and the arithmetic of the earlier
+# tutorials is exact on them; the moduli are products of them. The
+# mixins then add everything else in the usual way.
+#
+# This tutorial reads PREM's own 200-knot deck as a `MineosModel` and
+# compares it with the polynomial `PREM`. It then writes a deck in a
+# format of its own, PREM's elastic part with a viscosity column on the
+# solid layers, and reads it back as a model type of its own, of the
+# kind used for glacial isostatic adjustment.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -35,10 +45,15 @@ FIGURES.mkdir(exist_ok=True)
 # %% [markdown]
 # ## A mineos deck
 #
-# `read_deck` with the `MINEOS` format: three header lines (a title;
-# `ifanis tref ifdeck`; `nknot nic noc`) and nine columns in SI. The
-# layering comes from the repeated radii, thirteen layers here; the header
-# says which are the inner and outer core.
+# `read_deck` with the `MINEOS` format reads three header lines, a
+# title, then `ifanis tref ifdeck`, then `nknot nic noc`, and nine
+# columns in SI units: the radius, the density, the vertical and
+# horizontal P and S velocities, the two quality factors and the
+# anisotropy parameter eta. The layering comes from the repeated radii,
+# thirteen layers here. The header's `nic` and `noc` say which knots end
+# the inner and the outer core. `layers` returns a slice of the knots
+# for each layer; the outer core's S velocity is zero on every knot, as
+# a fluid's must be.
 
 # %%
 deck = read_deck(DATA / "prem.200", MINEOS)
@@ -46,17 +61,18 @@ print(deck)
 print("header:", dict(deck.header))
 print("boundaries (km):", np.round(deck.boundaries / 1e3, 1))
 s = deck.layers()[1]
-print("outer core knots:", s, "| vsv there:", set(deck["vsv"][s]))
+print("outer core knots:", s, "| vsv there:", np.unique(deck["vsv"][s]))
 
 # %% [markdown]
 # ## The model of a deck
 #
-# `MineosModel` is the model type of that format: the columns become the
-# base fields by a cubic spline through each layer's knots, `Elastic`
-# attaches the five moduli beside them, the header names the cores and
-# sets the reference frequency of the constant-Q band, and everything a
-# `PREM` can do this can too. It keeps its deck, its knots and its header,
-# and `to_deck` writes it back out.
+# `MineosModel` is the model type of that format. The columns become the
+# base fields by a cubic spline through each layer's knots. `Elastic`
+# adds the five moduli beside them, the header names the two core layers
+# and their boundaries and sets the reference frequency of the
+# attenuation model, and the model can do everything a `PREM` can. It
+# keeps its deck, its knots and its header, and `to_deck` writes it
+# back out.
 
 # %%
 model = MineosModel(deck)
@@ -69,10 +85,12 @@ testing.check_model(model)
 print("check_model passes")
 
 # %% [markdown]
-# Against the polynomial PREM the deck is a 200-knot sampling, and the
-# spline through it agrees to a few parts in a million; the moduli are
-# products of the splines and so agree to the same order, the mass to a
-# part in ten million, and the degree-2 Love numbers to the same.
+# The deck is a 200-knot sampling of the polynomial PREM, and the spline
+# through it agrees with the polynomial to about a part in a million.
+# The moduli are products of splines and agree to the same order. The
+# mass and the degree-2 load Love numbers agree to a part in ten
+# million; for the Love numbers both models are cut at the top of the
+# crust, since a fluid surface cannot be loaded.
 
 # %%
 prem = PREM()
@@ -92,12 +110,18 @@ print("degree-2 load Love numbers h', k':", ld["h"][2], ld["k"][2],
 # %% [markdown]
 # ## A deck of your own
 #
-# A format is its column names and its header. Here PREM's elastic part
-# sampled on eight knots per layer with a viscosity added on the solid
-# layers, NaN on the fluid ones: a column that is NaN throughout a layer
-# is absent from that layer, the way a fluid layer holds no `qmu`. The
-# header is a title and the column names, and the format says how to
-# read and write them.
+# A format is a set of column names and a description of the header.
+# The format here has seven columns after the radius, PREM's elastic
+# fields and a viscosity, and a header of two lines: a title, and the
+# column names. Its two functions say how the header lines are read
+# into a mapping and written back from one.
+#
+# The deck itself is built from PREM's elastic part, with no attenuation
+# and no ocean, sampled on eight knots per layer. The viscosity column
+# is set on the solid layers and NaN on the fluid outer core. A column
+# that is NaN on every knot of a layer is absent from that layer's
+# fields, which is how a rectangular table carries a field that some
+# layers do not have.
 
 # %%
 GIA = DeckFormat(
@@ -132,12 +156,17 @@ print("\n".join(path.read_text().splitlines()[:4]))
 
 
 # %% [markdown]
-# The model type of that format: a constructor that reads the deck and
-# hands the interpolated layers to `Model`, the `Tabulated` mixin keeping
-# the knots and the header, and the elastic, gravity and viscoelastic
-# behaviours as before. A viscosity on a layer makes it a Maxwell body in
-# shear, so `frozen(omega)` gives its complex moduli at a period, and the
-# loading solver gives the Love numbers of the relaxed body.
+# The model type for that format is a short class. Its constructor
+# reads the deck, interpolates the layers, keeps the knots and the
+# header as the `Tabulated` mixin expects, and passes the geometry and
+# the layers to `Model`. The layer names are taken from the model the
+# deck was written from, since this format's header does not record
+# them. The elastic, gravity and viscoelastic mixins are the same as
+# before. A layer with a viscosity is a Maxwell body in shear, so
+# `frozen` gives the model with complex moduli at a chosen period, and
+# the loading solver gives the complex tidal Love number at that period:
+# the elastic value at ten years, and most of the way to the fluid limit
+# at a hundred thousand years.
 
 # %%
 class GIAModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
@@ -160,11 +189,11 @@ year = 3.15576e7
 elastic_love = love_numbers(gia, 2, mesh=RadialMesh(gia, ngll=5, lmax=8)).tidal()
 print("elastic tidal k2:", elastic_love["k"][2])
 for period in (10.0, 1e3, 1e5):
-    frozen = gia.frozen(2 * np.pi / (period * year))
-    mesh = RadialMesh(frozen, ngll=5, lmax=8)
-    k2 = love_numbers(frozen, 2, mesh=mesh).tidal()["k"][2]
+    at_period = gia.frozen(2 * np.pi / (period * year))
+    mesh = RadialMesh(at_period, ngll=5, lmax=8)
+    k2 = love_numbers(at_period, 2, mesh=mesh).tidal()["k"][2]
     print(f"k2 at {period:8.0f} years: {k2.real:+.4f} {k2.imag:+.4f}i   "
-          f"({type(frozen).__name__})")
+          f"({type(at_period).__name__})")
 testing.check_model(gia)
 print("check_model passes; the deck it now is:",
       gia.to_deck(columns=["rho", "viscosity"]))

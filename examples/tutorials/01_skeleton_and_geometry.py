@@ -2,16 +2,18 @@
 # # 1. Skeletons and geometries
 #
 # planetmodel describes a planet in three levels. The lowest is the
-# **skeleton**: nothing but the radii of the boundaries between concentric
-# layers. The next is the **geometry**: the skeleton placed in the physical
-# world by one continuous mapping, together with the names of its layers
-# and interfaces. Fields, and with them the physics, come later and hang
-# on the geometry's layers.
+# **skeleton**: the radii of the boundaries between concentric layers,
+# and nothing else. The next is the **geometry**: the skeleton placed in
+# the physical world by one continuous mapping, together with names for
+# its layers and interfaces. The third level is the model, which attaches
+# fields, and with them the physics, to the layers of a geometry. This
+# tutorial covers the first two levels.
 #
 # Everything at these two levels is a number. A skeleton does not know
-# whether its radii are metres or Earth radii; that meaning is supplied by
-# whoever builds a concrete model on top. Every tolerance is relative to
-# the skeleton's span.
+# whether its radii are metres or Earth radii; that meaning is supplied
+# by whoever builds a model on top. Every tolerance is a fraction of the
+# skeleton's span, the distance from its innermost radius to its
+# outermost.
 #
 # Run this file as a script, or cell by cell in an editor that understands
 # `# %%` markers.
@@ -24,9 +26,10 @@ from planetmodel import Geometry, Skeleton
 # %% [markdown]
 # ## A skeleton
 #
-# A skeleton is a strictly increasing list of boundary radii. Here is a
-# four-layer planet in units of its own radius: an inner core, an outer
-# core, a mantle and a thin crust.
+# A skeleton is a strictly increasing list of boundary radii. The example
+# is a four-layer planet in units of its own radius: an inner core, an
+# outer core, a mantle and a thin crust. Layers are numbered from the
+# centre, starting at zero, and each has an interval of radius.
 
 # %%
 sk = Skeleton([0.0, 0.19, 0.55, 0.99, 1.0])
@@ -36,10 +39,12 @@ for i in range(sk.nlayers):
     print(f"  layer {i}: interval {sk.interval(i)}")
 
 # %% [markdown]
-# Asking where a radius lies returns a `Location`. At an interior boundary
-# both neighbouring layers are candidates and the skeleton does not choose
-# for you: a layered model is two-valued there, and which side you mean is
-# your decision.
+# `locate` says which layer a radius lies in and returns a `Location`. At
+# a boundary between two layers both are candidates, and the skeleton
+# does not choose between them. A layered model can have two different
+# values at a boundary, one from each side, so which side you mean is
+# your decision. A radius within a small fraction of the span of a
+# boundary counts as being on it.
 
 # %%
 print(sk.locate(0.3))
@@ -50,17 +55,17 @@ except ValueError as err:
     print("refused:", err)
 print("with a side chosen:", sk.locate(0.55).layers[1])
 
-# A radius within rtol * span of a boundary counts as being on it.
 print(sk.locate(0.55 + 1e-12).boundary, sk.locate(0.55 + 1e-6).boundary)
 
 # %% [markdown]
-# ## Surgery on a skeleton
+# ## Changing a skeleton
 #
-# A skeleton can be refined (boundaries inserted), truncated (cut from
-# above), hollowed (cut from below), extended (layers appended outside) or
-# coarsened (interior boundaries removed). Each returns a new skeleton;
-# the original is untouched. Coarsening also returns a map recording which
-# fine layers each coarse layer merged.
+# A skeleton can be refined, which inserts boundaries; truncated, which
+# cuts it from above; hollowed, which cuts it from below; extended, which
+# appends layers outside; or coarsened, which removes interior
+# boundaries. Each of these returns a new skeleton and leaves the
+# original as it was. Coarsening also returns a map that records which
+# of the old layers each new layer was made from.
 
 # %%
 fine = sk.refined([0.9])
@@ -75,8 +80,8 @@ print("extended: ", grown.boundaries)
 print("coarsened:", coarse.boundaries, "|", cmap)
 
 # %% [markdown]
-# A skeleton may be hollow: an innermost radius above zero describes a
-# spherical shell, as a mantle-convection model needs.
+# A skeleton may be hollow. An innermost radius above zero describes a
+# spherical shell, which is what a model of mantle convection needs.
 
 # %%
 shell = Skeleton([0.55, 0.99, 1.0])
@@ -85,11 +90,12 @@ print(shell, "| hollow:", shell.is_hollow)
 # %% [markdown]
 # ## A geometry
 #
-# A geometry is a skeleton with a mapping and names. With no mapping given
-# it is the identity: the physical planet *is* the spherical reference
-# body. Names are optional and are what the meshers pass on to a solver as
-# attribute names; layers and interfaces can be reached by index or by
-# name.
+# A geometry is a skeleton with a mapping and names. The mapping takes
+# the spherical reference body to the physical planet. When no mapping is
+# given it is the identity, and the physical planet is the sphere
+# itself. Names are optional. The meshers pass them to a solver as the
+# names of the mesh's regions and boundaries, and layers and interfaces
+# can be reached by name as well as by index.
 
 # %%
 g = Geometry(sk,
@@ -101,10 +107,12 @@ print(g.interface("cmb"))
 print("outer interface:", g.interface(-1))
 
 # %% [markdown]
-# Interfaces are numbered from the centre. For a full geometry interface
-# `k` separates layers `k` and `k + 1`, and the outer interface has `-1`
-# for the layer above it, meaning the outside. For a hollow geometry the
-# inner boundary is interface 0 with `-1` below it.
+# An interface is a boundary between two layers, or the outer boundary.
+# Interfaces are numbered from the centre, starting at zero. In a full
+# geometry, one whose innermost radius is zero, interface `k` separates
+# layers `k` and `k + 1`; the outer interface has `-1` as the layer above
+# it, meaning the outside. In a hollow geometry the inner boundary is
+# also an interface: it is interface 0, with `-1` below it.
 
 # %%
 def show(geometry):
@@ -118,8 +126,9 @@ hollow = Geometry(shell, interface_names=["cmb", "moho", "surface"])
 show(hollow)
 
 # %% [markdown]
-# Surgery on a geometry carries the names along. A split layer loses its
-# name, a merged layer's name is `None`, and an interface keeps its name
+# The same operations that change a skeleton also change a geometry, and
+# the names come along. A layer that is split loses its name; a layer
+# made by merging others has no name; an interface keeps its name
 # wherever its radius survives.
 
 # %%
@@ -132,10 +141,10 @@ print([lay.name for lay in merged.layers], [f.name for f in merged.interfaces])
 # %% [markdown]
 # ## Scaling
 #
-# Because nothing inside knows about units, changing them is a pure
-# rescaling: `scaled(k)` multiplies every length by `k`. A concrete model
-# built on top of a geometry decides once what one unit means, and hands
-# out scaled geometries when a consumer wants other numbers.
+# Because nothing at this level knows about units, changing them is a
+# matter of multiplying every length by a number, which `scaled` does. A
+# model built on top of a geometry decides once what one unit means, and
+# hands out scaled geometries when a consumer wants other numbers.
 
 # %%
 earth = g.scaled(6.371e6)
@@ -144,5 +153,5 @@ print("moho radius:", earth.interface("moho").radius)
 assert np.allclose(earth.scaled(1.0 / 6.371e6).skeleton.boundaries, sk.boundaries)
 
 # %% [markdown]
-# The next tutorial replaces the identity mapping with an analytic one and
-# looks at what a geometry checks before accepting it.
+# The next tutorial replaces the identity mapping with an analytic one
+# and shows what a geometry checks before accepting it.

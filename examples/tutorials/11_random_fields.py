@@ -1,14 +1,25 @@
 # %% [markdown]
 # # 11. Random fields
 #
-# `planetmodel.randomfield` draws Gaussian random fields of Matern type
-# on a ball, an annulus, or the layers of a skeleton, with the covariance
-# defined through a radial elliptic operator on a spectral-element mesh.
-# A `RadialGRF` is a field of radius alone; a `LayeredGRF` puts one on
-# each chosen layer and returns model fields; a `SphericalGRF` is a field
-# of a shell, delivered as spherical-harmonic coefficient functions and,
-# through `to_field`, as a field a model can hold. The operator family
-# beneath them is the piece pygeoinf wraps.
+# A random field is a function whose values are drawn at random with a
+# prescribed statistical structure. The fields here are Gaussian with
+# zero mean, a chosen standard deviation, and a correlation between
+# nearby points that falls off over a length scale. Fields of Matern
+# type are the standard family for this: besides the length scale they
+# have a smoothness parameter `nu`, and `planetmodel.randomfield` builds
+# them on a ball, on a spherical shell, or on the layers of a skeleton.
+# The construction is the one through a stochastic partial differential
+# equation: the covariance is a power of an elliptic operator, which is
+# discretised on a radial spectral-element mesh, one spherical-harmonic
+# degree at a time.
+#
+# Three samplers are provided. `RadialGRF` draws a field of the radius
+# alone. `LayeredGRF` draws an independent field on each chosen layer of
+# a model and returns fields the model can hold. `SphericalGRF` draws a
+# field on a shell, delivered as spherical-harmonic coefficients that
+# are functions of radius, and its `to_field` turns one into a field a
+# model can hold. The operator family underneath them is what pygeoinf
+# will build on.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -30,12 +41,15 @@ a = model.skeleton.boundaries[-1]
 # %% [markdown]
 # ## A field of radius
 #
-# `RadialGRF(r1, r2, nu, lam, sigma=...)` is a zero-mean field on
-# `[r1, r2]` with smoothness `nu`, length scale `lam` and standard
-# deviation `sigma`; the last two may vary with radius. A sample is the
-# vector of nodal values at the field's own GLL nodes, exact in
-# distribution to the requested `sigma` at every node, and `to_field`
-# turns it into an exact `RadialField`.
+# `RadialGRF(r1, r2, nu, lam, sigma=...)` is a zero-mean Gaussian field
+# on the interval `[r1, r2]` with smoothness `nu`, length scale `lam`
+# and standard deviation `sigma`. The last two may be numbers or
+# functions of radius. A sample is the vector of the field's values at
+# the nodes of its own mesh, and the sampler is scaled so that the
+# standard deviation at every node is exactly the `sigma` asked for.
+# `to_field` turns a sample into a `RadialField` whose layer function is
+# the polynomial through the nodal values on each element. The example
+# is a field on the mantle whose standard deviation grows with radius.
 
 # %%
 grf = RadialGRF(3480.0e3, a, 1.5, 400.0e3, sigma=lambda r: 0.02 * (r / a))
@@ -48,11 +62,13 @@ print("as a field at 5000 km:", field(5.0e6))
 # %% [markdown]
 # ## A field on the layers of a model
 #
-# `LayeredGRF` draws an independent field on each chosen layer and returns
-# one `RadialField` per layer: discontinuous at the layer boundaries and
-# exactly zero on the layers left out. Here is PREM's density with a two
-# per cent perturbation in the mantle and none in the core, put back into
-# the model with `with_field`.
+# `LayeredGRF` draws an independent field on each chosen layer and
+# returns one `RadialField` per layer of the model, zero on the layers
+# left out. The result is discontinuous across the layer boundaries.
+# Here PREM's density is given a random perturbation with a standard
+# deviation of two per cent on every layer outside the core, mantle and
+# crust alike, and none inside it. The perturbed densities are put back
+# into the model with `with_field`.
 
 # %%
 mantle = [layer.index for layer in model.layers if layer.interval[0] >= 3480.0e3]
@@ -72,12 +88,16 @@ for x in r:
 # %% [markdown]
 # ## A field on a spherical shell
 #
-# `SphericalGRF` extends the construction to a shell: the sample is the
-# set of real spherical-harmonic coefficient functions of radius, with the
-# degree cut chosen so that the truncated field has the requested
-# pointwise standard deviation. A horizontal length scale `lam_h` distinct
-# from the radial one gives horizontally correlated structure. On a unit
-# shell here, so the picture is easy to read.
+# `SphericalGRF` builds the same kind of field on a shell. A sample is
+# the set of real spherical-harmonic coefficients up to degree `lmax`,
+# each a function of radius. As for the radial field, the sampler is
+# scaled so that the standard deviation at any point of the truncated
+# field is exactly `sigma`. A horizontal length scale `lam_h`, different
+# from the radial one, gives structure that is correlated over a
+# different distance horizontally than radially. The example is on a
+# shell of unit outer radius so that the picture is easy to read. The
+# standard deviation of a map at one radius is close to the requested
+# value of 1, as one draw from the field should be.
 
 # %%
 shell = SphericalGRF(0.55, 1.0, 1.0, 0.06, lam_h=0.25, sigma=1.0, lmax=24)
@@ -98,10 +118,14 @@ slice_values = random_field.evaluate(rr, tt, 0.0)
 print("map std at r = 0.9:", surface_map.std().round(3), "(sigma = 1)")
 
 # %% [markdown]
-# On a Gauss-Legendre grid the synthesis is a fast transform through
-# pyshtools (the `harmonics` extra, with ducc0 as its backend where it
-# is installed): `sample_grid` gives nodes times grid, the layout of a
-# sample, and `analyse_grid` is its inverse for a band-limited field.
+# `sample_grid` draws a sample directly on a Gauss-Legendre grid, as an
+# array of mesh nodes by grid points, using the fast spherical-harmonic
+# transform of pyshtools (the `harmonics` extra, with ducc0 as its
+# backend where that is installed). `analyse_grid` is the inverse
+# transform for a field band-limited at the grid's degree, and the two
+# round-trip to rounding error. The average of the square of one sample
+# over the sphere is an estimate of `sigma^2` from a single draw, and
+# scatters around 1.
 
 # %%
 try:
@@ -120,10 +144,13 @@ except ImportError as exc:
 # %% [markdown]
 # ## The operator family underneath
 #
-# `RadialOperatorFamily` is the degree-indexed operator A_l of
-# A = 1 - div(lambda^2 grad) on a mesh, with its mass, spectrum, powers,
-# inverse and white noise: the pieces a space, an operator and a
-# Gaussian measure are made of.
+# `RadialOperatorFamily` holds the operator A = 1 - div(lambda^2 grad)
+# on the mesh as one matrix A_l for each spherical-harmonic degree l,
+# together with its mass matrix, its eigenvalues and eigenvectors, its
+# powers, its inverse and its white noise. These are the pieces from
+# which pygeoinf builds a function space, an operator on it and a
+# Gaussian measure. Here the smallest eigenvalues at degree 4, and a
+# check that applying A_4 undoes applying its inverse.
 
 # %%
 family = shell.family
@@ -152,8 +179,9 @@ if plt is not None:
     sig = 0.02 * grf.r / a
     ax.plot(2 * sig, grf.r / 1e3, "k--", lw=0.8)
     ax.plot(-2 * sig, grf.r / 1e3, "k--", lw=0.8)
+    ax.set_xlabel("sample value")
     ax.set_ylabel("radius [km]")
-    ax.set_title("radial samples inside the 2 sigma envelope")
+    ax.set_title("three radial samples and the 2 sigma envelope")
 
     ax = axes[0, 1]
     from planetmodel.plotting import radial_profile

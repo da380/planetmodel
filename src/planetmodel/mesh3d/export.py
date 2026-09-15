@@ -460,9 +460,10 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     names to write (KeyError for a name no layer holds).  The model must
     sit on the geometry the mesh was built from: the same skeleton to
     the model's geometry's `rtol`; a mesh not built from a geometry is
-    refused.  The manifest's `files.grid_functions` gains a record of
-    kind "field" per name and its `model` block says what the values
-    mean.
+    refused.  The manifest gains one `fields[]` record per name, saying
+    the file, the space to read it into, the character, the unit and the
+    layers on which the values mean anything, and `scales` and
+    `constants` blocks from the model.
     """
     mfem = _mfem()
     _check_model_sits_on(result, model)

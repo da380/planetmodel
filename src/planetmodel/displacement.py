@@ -176,24 +176,26 @@ def as_displacement(fn: RadialDisplacement | SphericalFunction, *,
 
 
 def flattening(f: float, *, rmax: float) -> CallableDisplacement:
-    """h = -f r P2(cos theta): the degree-2 shape of flattening `f`.
+    """h = -(2f/3) r P2(cos theta): the degree-2 shape of flattening `f`.
 
     Every sphere of the reference body becomes a spheroid of the same
-    mean radius with polar radius r (1 - 2f/3)... and equatorial radius
-    r (1 + f/3), so that the outer boundary has flattening f to first
-    order; `rmax` is the outer radius, where the shape is given.
+    mean radius with polar radius r (1 - 2f/3) and equatorial radius
+    r (1 + f/3), so that its flattening, the difference of the two over
+    the equatorial radius, is f / (1 + f/3), f to first order; `rmax`
+    is the outer radius, where the shape is given.
     """
     f, rmax = float(f), float(rmax)
+    a = 2.0 * f / 3.0
 
     def h(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-        return -f * r * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
+        return -a * r * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0)
 
     def dh_dr(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-        return -f * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0) + 0.0 * r
+        return -a * 0.5 * (3.0 * np.cos(theta) ** 2 - 1.0) + 0.0 * r
 
     def dh_dangles(r: np.ndarray, theta: np.ndarray, phi: np.ndarray
                    ) -> tuple[np.ndarray, np.ndarray]:
-        return 3.0 * f * r * np.cos(theta) * np.sin(theta), 0.0 * r
+        return 3.0 * a * r * np.cos(theta) * np.sin(theta), 0.0 * r
 
     return CallableDisplacement(h, radial_derivative=dh_dr,
                                 angular_gradient=dh_dangles,

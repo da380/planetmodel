@@ -1,14 +1,24 @@
 # %% [markdown]
 # # 10. Love numbers
 #
-# `planetmodel.loading` solves the quasi-static loading and tidal problem
-# of a spherically symmetric, self-gravitating body on a radial mesh,
-# degree by degree, and reports the Love numbers. A `Material` reads a
-# model on a mesh once; `love_numbers` assembles and solves every degree
-# for the three forcings; `solve_degree` returns the radial solution of
-# one degree for interactive use; `LoveNumbers.write` makes the file
-# pyslfp reads. A model frozen at a frequency has complex moduli, and the
-# same code gives the Love numbers of any linear rheology.
+# A surface load, an ice sheet or an ocean say, presses on a planet and
+# also pulls on it gravitationally. A tidal potential from another body
+# pulls without pressing. A spherically symmetric, self-gravitating
+# planet in static equilibrium responds to either with a displacement
+# and a change in its own gravitational potential. When the forcing is
+# expanded in spherical harmonics, each degree responds independently of
+# the others, and the surface response per unit forcing at each degree
+# is a small set of numbers, the Love numbers. The response to any load
+# or tide is assembled from them. `planetmodel.loading` solves this
+# problem on a radial mesh, one degree at a time.
+#
+# `Material` reads a model onto a mesh once. `love_numbers` solves every
+# degree up to a chosen maximum, for a load and for a tide, and returns
+# the Love numbers. `solve_degree` returns the radial solution of one
+# degree so that it can be looked at. `LoveNumbers.write` writes the
+# file that pyslfp, the sea-level code, reads. A model frozen at a
+# frequency has complex moduli, and the same solver then gives the
+# complex Love numbers of a viscoelastic body at that frequency.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure and the Love-number file are written to `examples/figures/`.
@@ -29,11 +39,12 @@ FIGURES.mkdir(exist_ok=True)
 # %% [markdown]
 # ## PREM's elastic load Love numbers
 #
-# The loaded surface must be solid, so PREM is taken without its ocean.
-# The mesh follows the `lmax` rule, no element wider than a tenth of the
-# radius over `lmax + 1`, with five GLL nodes per element; the material
-# holds density, gravity, fluidity and the transversely isotropic moduli
-# at every node.
+# A fluid surface cannot carry a load, so PREM is taken without its
+# ocean. `RadialMesh` with `lmax` sizes the mesh for degrees up to
+# `lmax`: no element is wider than a tenth of the radius divided by
+# `lmax + 1`, and here each element has five nodes. The material holds
+# the density, the gravity, whether each element is fluid, and the five
+# transversely isotropic moduli at every node.
 
 # %%
 model = PREM(ocean=False)
@@ -48,9 +59,13 @@ love = love_numbers(material, LMAX)
 print(f"degrees 0..{LMAX} in {time.time() - t0:.2f} s:", love)
 
 # %% [markdown]
-# The conventional dimensionless load numbers h', l', k', with degree one
-# in the centre-of-mass frame where k'_1 = -1 identically, and the
-# geodetic tidal numbers at degree two.
+# `conventional` returns the dimensionless load Love numbers h', l' and
+# k': the radial displacement, the tangential displacement and the
+# potential perturbation at the surface per unit load at each degree,
+# in the usual normalisation. Degree one is given in the centre-of-mass
+# frame, where k'_1 is exactly -1. `tidal` returns the tidal Love
+# numbers k, h and l, the response to a unit external potential; the
+# degree-2 tidal k is the number quoted in geodesy.
 
 # %%
 conv = love.conventional()
@@ -63,9 +78,12 @@ print(f"tidal degree 2: k = {tidal['k'][2]:.4f}, h = {tidal['h'][2]:.4f}, "
       f"l = {tidal['l'][2]:.4f}")
 
 # %% [markdown]
-# Two identities hold to solver precision: the reciprocity
-# g h^phi = k^u of the two load channels, and mass conservation at
-# degree zero, k_0 = -4 pi G a.
+# Two identities hold to solver precision and are a check on every run.
+# A load acts in two ways, by pressing on the surface and by attracting
+# the body, and the reciprocity relation g h^phi = k^u links the
+# displacement from the second to the potential from the first. At
+# degree zero the potential change from a uniform surface load is fixed
+# by mass conservation: k_0 = -4 pi G a.
 
 # %%
 print("reciprocity residual:", love.reciprocity_residual().max())
@@ -75,9 +93,18 @@ print("k_0 / (-4 pi G a) =", k0)
 # %% [markdown]
 # ## Convergence and the half-space limit
 #
-# Refining the mesh is the convergence check. At high degree the load
-# sees only the crust and h' tends to the Boussinesq value for an elastic
-# half-space with the upper crust's moduli.
+# The convergence check is to refine the mesh and solve again. Here
+# degree 32 is solved on a mesh with seven nodes per element and elements
+# half as wide, and the surface displacement changes in the twelfth
+# digit.
+#
+# At very high degree the load has a short wavelength and deforms only
+# the crust, so h' tends to the value for an elastic half-space with the
+# upper crust's moduli, the Boussinesq solution. At degree 64 the load
+# still reaches well into the mantle and h' is far from that limit. A
+# degree-4096 load, with a wavelength of about ten kilometres, is within
+# a part in a thousand of it. Each degree below is one solve on a mesh
+# sized for that degree, and takes under a second.
 
 # %%
 fine = RadialMesh(model, ngll=7, drmax=0.5 * mesh.drmax)
@@ -93,14 +120,22 @@ mu_c = rho_c * vs ** 2
 poisson = (vp ** 2 - 2 * vs ** 2) / (2 * (vp ** 2 - vs ** 2))
 g = material.surface_gravity
 hp_inf = -g ** 2 * (1.0 - poisson) / (2.0 * np.pi * material.G * mu_c)
-print(f"half-space limit h'_inf = {hp_inf:+.3f};  h' at l = {LMAX}: "
-      f"{conv['h'][LMAX]:+.3f}")
+print(f"half-space limit h'_inf = {hp_inf:+.3f}")
+for l in (64, 256, 1024, 4096):
+    m = RadialMesh(model, ngll=5, lmax=l)
+    h_l = solve_degree(Material(m, model), l).surface[0]
+    hp = h_l * g * (2 * l + 1) / (4.0 * np.pi * material.G * material.radius)
+    print(f"  l = {l:5d}: h' = {hp:+.3f}")
 
 # %% [markdown]
 # ## The radial solution of one degree
 #
-# `solve_degree` returns U, V and phi on the mesh for one forcing and
-# evaluates them anywhere; the surface values are the Love numbers.
+# `solve_degree` solves one degree for one forcing and returns three
+# functions of radius: U, the radial displacement; V, the tangential
+# displacement; and phi, the potential perturbation. `surface` gives
+# their values at the surface, which are the Love numbers of that
+# degree, and `evaluate` gives them at any radii. Here degree 2 under a
+# unit load and under a unit tide; the figure at the end draws them.
 
 # %%
 load2 = solve_degree(material, 2)
@@ -113,10 +148,14 @@ U_tide, V_tide, phi_tide = tide2.evaluate(radii)
 # %% [markdown]
 # ## The file for pyslfp
 #
-# Seven columns in SI, one row per degree from zero: `l, h_u, k_u, h_phi,
-# k_phi, h_t, k_t`. The file round-trips through `read_love_numbers`.
-# A non-dimensional model gives the same file, the conversion being by
-# dimension.
+# `write` writes a plain-text file with one row per degree from zero and
+# seven columns in SI units: the degree, then the displacement and
+# potential Love numbers for the pressing part of a load, for its
+# attracting part, and for a tide. `read_love_numbers` reads it back.
+# The Love numbers are computed in whatever units the model uses. The
+# dimensionless numbers do not depend on that choice, and `write`
+# converts to SI whatever the units were. Here the same degree-2 number
+# from PREM made non-dimensional, where G is 1.
 
 # %%
 path = FIGURES / "tutorial_10_love_numbers.dat"
@@ -132,14 +171,22 @@ print("non-dimensional model, G =", love_nd.G, "; h'_2 =",
 # %% [markdown]
 # ## A viscoelastic body is a model frozen at a frequency
 #
-# The solver's model is anything holding density and the five moduli,
-# real or complex. A linear rheology enters by freezing the model at an
-# angular frequency: `frozen` reads each layer's rheology from the fields
-# it holds (`viscosity` for a Maxwell body, `qmu` and `qkappa` for a
-# constant-Q band) and stores the complex moduli under `A, C, F, L, N`.
-# PREM's own Q gives complex Love numbers a hair off the elastic ones at a
-# semidiurnal tide; a Maxwell mantle runs from the elastic value at short
-# periods to the fluid limit at long ones, with a loss peak between.
+# The solver accepts any model that holds a density and the five moduli,
+# real or complex. A linear viscoelastic body forced at one angular
+# frequency behaves like an elastic body whose moduli are complex and
+# depend on that frequency. `frozen` builds that elastic body. It reads
+# the rheology of each layer from the fields the layer holds, a
+# `viscosity` for a Maxwell body or `qmu` and `qkappa` for constant-Q
+# attenuation, and stores the complex moduli under the names
+# `A, C, F, L, N`.
+#
+# Two examples. PREM with its own Q, frozen at the semidiurnal tidal
+# period of 12 hours, gives complex Love numbers a fraction of a per
+# cent away from the elastic ones. Then a Maxwell viscosity of 1e21 Pa s
+# is given to every layer outside the core, and the degree-2 tidal k is
+# computed at periods from minutes to 300 thousand years. It runs from
+# the elastic value at short periods to the fluid limit at long ones,
+# and the imaginary part, which measures the loss, peaks in between.
 
 # %%
 semidiurnal = 2.0 * np.pi / 43200.0

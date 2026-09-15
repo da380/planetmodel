@@ -1,16 +1,20 @@
 # %% [markdown]
 # # 2. An analytic mapping
 #
-# The physical planet is the image of the spherical reference body under a
-# **mapping** `m`. A mapping takes reference points to physical points and
-# provides its deformation gradient `F`, with `F[i, j] = d m_i / d X_j`,
-# and its Jacobian `J = det F`. That is the whole contract: anything with
-# those three methods on Cartesian points of shape `(..., 3)` is a mapping.
+# The physical planet is the image of the spherical reference body under
+# a **mapping** `m`. A mapping takes reference points to physical points.
+# It also provides its deformation gradient `F`, the matrix of
+# derivatives `F[i, j] = d m_i / d X_j`, and its Jacobian `J = det F`,
+# which is the local ratio of physical volume to reference volume. That
+# is all the library requires of a mapping: any object with those three
+# methods, acting on Cartesian points of shape `(..., 3)`, is one.
 #
-# The one mapping shipped is the **radial stretch**, `m(X) = (r + h) e_r`,
-# driven by a scalar radial displacement `h(r, theta, phi)`. Here `h` is
-# written down analytically. How a displacement is obtained from data is
-# a separate matter and is not part of this tutorial.
+# The library ships the identity, a **radial stretch**, and a scaled
+# copy of any mapping. The radial stretch is `m(X) = (r + h) e_r`: every
+# point moves along its own radius by a distance `h(r, theta, phi)`
+# called the radial displacement. This tutorial writes `h` down
+# analytically. Building `h` from data, a topography grid say, is a
+# separate matter and not part of this tutorial.
 
 # %%
 import numpy as np
@@ -30,20 +34,29 @@ sk = Skeleton([0.0, 0.19, 0.55, 0.99, 1.0])
 # %% [markdown]
 # ## A flattened planet
 #
-# An oblate planet is `h = -f r P2(cos theta)` with `P2` the second
-# Legendre polynomial: the poles move in, the equator moves out, and the
-# displacement grows linearly with radius so the centre stays put.
+# An oblate planet has `h = -a r P2(cos theta)`, where `P2` is the second
+# Legendre polynomial. The poles move in, the equator moves out, and the
+# displacement grows in proportion to the radius so that the centre stays
+# where it is. A sphere of radius `r` gets polar radius `r (1 - a)` and
+# equatorial radius `r (1 + a / 2)`, so its flattening, the difference of
+# the two over the equatorial radius, is `3a / 2` to first order. To
+# give a flattening `f`, the amplitude is `a = 2f / 3`.
 #
-# A displacement is any callable `h(r, theta, phi)`. Wrapping it in a
-# `CallableDisplacement` gives it the rest of the protocol: the radial
-# derivative and the angular gradient, exact when they are passed in (or
-# carried by the function as attributes) and central differences
-# otherwise, and the list of `knots`, the radii where `dh/dr` is allowed to
-# jump. The three arguments arrive already broadcast to one shape, so a
-# derivative that does not depend on `r` need not mention it.
+# A displacement is any function `h(r, theta, phi)`. Wrapping it in a
+# `CallableDisplacement` supplies the rest of what a radial stretch needs:
+# the derivative of `h` with respect to `r`, the derivatives with respect
+# to the two angles, and a list of `knots`, the radii at which `dh/dr` is
+# allowed to jump. Derivatives that are passed in are used as given, and
+# any that are not are computed by central differences. The three
+# arguments arrive broadcast to a common shape, so a derivative that does
+# not depend on `r` need not mention it.
+#
+# The library ships this displacement as `flattening`; it is written out
+# here to show the parts.
 
 # %%
 f = 1.0 / 300.0
+a = 2.0 * f / 3.0
 
 
 def p2(theta):
@@ -51,38 +64,41 @@ def p2(theta):
 
 
 def h(r, theta, phi):
-    return -f * r * p2(theta)
+    return -a * r * p2(theta)
 
 
 def dh_dr(r, theta, phi):
-    return -f * p2(theta)
+    return -a * p2(theta)
 
 
 def dh_dangles(r, theta, phi):
     return (
-        3.0 * f * r * np.cos(theta) * np.sin(theta),
+        3.0 * a * r * np.cos(theta) * np.sin(theta),
         np.zeros(np.broadcast(r, theta, phi).shape),
     )
 
 
-flattening = CallableDisplacement(
-    h, radial_derivative=dh_dr, angular_gradient=dh_dangles, name="flattening"
+oblate = CallableDisplacement(
+    h, radial_derivative=dh_dr, angular_gradient=dh_dangles, name="oblate"
 )
 
 # %% [markdown]
-# A `RadialStretch` needs the outer radius of the domain it is meant for,
-# which sets the scale of "close to the centre" and brackets its inverse.
-# Give it as a number, or as the skeleton or geometry whose outer boundary
-# it is.
+# A `RadialStretch` also needs the outer radius of the body it is meant
+# for. This sets the scale on which a point counts as being at the
+# centre, where the radial direction is undefined, and gives the mapping
+# a range to search when it inverts itself. The radius can be given as a
+# number, or as the skeleton or geometry whose outer boundary it is.
 
 # %%
-m = RadialStretch(flattening, rmax=sk)
+m = RadialStretch(oblate, rmax=sk)
 print(m)
 
 # %% [markdown]
-# Ask the mapping where a point goes, and for `F` and `J` there. In the
-# local frame `(e_r, e_theta, e_phi)` a radial stretch's `F` is sparse and
-# easy to read; the Cartesian form is its conjugate by the frame matrix.
+# A mapping can be asked where a point goes, and for `F` and `J` there.
+# In the local spherical frame `(e_r, e_theta, e_phi)` the deformation
+# gradient of a radial stretch has few non-zero entries and is easy to
+# read. Its Cartesian components are `R F R^T`, where `R` is the matrix
+# of the frame vectors.
 
 # %%
 X = cartesian_points(0.8, np.pi / 4, 0.3)
@@ -94,9 +110,10 @@ print("F (Cartesian):\n", m.deformation_gradient(X))
 print("J =", m.jacobian(X))
 
 # %% [markdown]
-# `testing.check_mapping` holds any mapping to its contract: `F` against a
-# central difference of `m`, `J` against `det F`, the displacement, and
-# the inverse where the mapping has one.
+# `testing.check_mapping` tests everything a mapping must do: `F` is
+# compared with a central difference of `m`, `J` with the determinant of
+# `F`, and, where the mapping provides them, the displacement with
+# `m(X) - X` and the inverse by a round trip.
 
 # %%
 points = cartesian_points(
@@ -111,19 +128,21 @@ print(
 # %% [markdown]
 # ## Validity
 #
-# A mapping must preserve orientation, or the physical body folds onto
-# itself. For a radial stretch that is two conditions, `1 + dh/dr > 0` and
-# `1 + h/r > 0`, checked on a sample of points. `validity_lattice` builds a
-# sample covering every layer of a skeleton and both poles. The report says
-# which factor failed and where.
+# A mapping must preserve orientation, meaning `J > 0` everywhere;
+# otherwise the physical body folds over on itself. For a radial stretch
+# `J = (1 + dh/dr) (1 + h/r)^2`, so this is two conditions, `1 + dh/dr > 0`
+# and `1 + h/r > 0`, and `is_valid` checks them on a sample of points.
+# `validity_lattice` builds a sample that covers every layer of a
+# skeleton, thin ones as densely as thick ones, and reaches both poles.
+# When the check fails, the report says which condition failed and where.
 
 # %%
 lattice = validity_lattice(sk)
 print(m.is_valid(sample=lattice))
 
-# Exaggerate the flattening until the poles move in faster than the
-# radius grows.
-for amp in (100.0, 250.0, 320.0):
+# Exaggerate the flattening until the poles move inward faster than the
+# radius grows, which happens when the amplitude a passes one.
+for amp in (100.0, 250.0, 480.0):
     big = RadialStretch(
         CallableDisplacement(lambda r, t, p, a=amp: a * h(r, t, p)), rmax=sk
     )
@@ -132,10 +151,10 @@ for amp in (100.0, 250.0, 320.0):
 # %% [markdown]
 # ## A geometry with a mapping
 #
-# A geometry accepts a mapping only if it is valid on the lattice, is
-# continuous across every interior boundary, and declares any kink in its
-# gradient at a boundary of the skeleton. Those are the invariants that
-# let a mesher trust the mapping without checking it again.
+# A geometry accepts a mapping only if three things hold: it is valid on
+# the lattice, it is continuous across every interior boundary, and any
+# jump in its gradient lies on a boundary of the skeleton. These are the
+# properties a mesher relies on, so it need not check them again.
 
 # %%
 g = Geometry(
@@ -150,15 +169,17 @@ testing.check_geometry(g)
 
 # The same in one step: `stretched` builds the radial stretch with this
 # geometry's outer radius and checks it.
-same = Geometry(sk).stretched(flattening)
+same = Geometry(sk).stretched(oblate)
 print(same)
 
 # %% [markdown]
-# A kinked displacement is one whose radial derivative jumps. It is
-# allowed, but the kink must sit on a boundary, because that is where a
-# mesh will put an element edge. Here relief confined to the crust grows
-# linearly from the Moho: the kink is at the Moho, which is a boundary, so
-# the geometry accepts it. Move the kink into the mantle and it is refused.
+# A displacement whose derivative with respect to `r` jumps at some
+# radius is allowed, but the jump must lie on a boundary, because a mesh
+# puts element edges on boundaries and nowhere else. The displacement
+# declares such radii as its knots. The example is relief confined to
+# the crust, growing in proportion to height above the Moho. Its
+# derivative jumps at the Moho, which is a boundary, so the geometry
+# accepts it. Move the jump into the mantle and the geometry refuses.
 
 
 # %%
@@ -179,10 +200,11 @@ except ValueError as err:
 # %% [markdown]
 # ## A mapping that is not radial
 #
-# Nothing requires a mapping to move points along rays. Any object with
-# the three methods is accepted, and the geometry falls back to the
-# generic test `J > 0`. Here a planet is squashed along its axis and
-# sheared, with `F` written by hand.
+# Nothing requires a mapping to move points along their own radius. Any
+# object with the three methods is accepted, and for one that provides
+# no validity test of its own the geometry checks `J > 0` directly. The
+# example squashes the planet along its axis and shears it, with `F`
+# written by hand.
 
 
 # %%
@@ -215,9 +237,12 @@ print(squashed, "| validity:", squashed.validity())
 testing.check_geometry(squashed)
 
 # %% [markdown]
-# Surgery that keeps the mapping continuous is allowed on a geometry with
-# a mapping (refining, truncating); surgery that would break it (extending,
-# coarsening) is refused until the mapping is rebuilt for the new skeleton.
+# A geometry with a mapping can be refined, truncated or hollowed, since
+# the mapping stays continuous on the result. It cannot be extended or
+# coarsened: extending would ask the mapping about points it was not
+# built for, and coarsening would remove boundaries its gradient may jump
+# on. For those, change the skeleton first and build the mapping for the
+# result.
 
 # %%
 print(g.refined([0.9]).nlayers, "layers after refining")
@@ -227,4 +252,5 @@ except ValueError as err:
     print("refused:", err)
 
 # %% [markdown]
-# The next tutorial hands a geometry to the 3D mesher.
+# The next tutorial builds a one-dimensional mesh over a skeleton. The
+# tutorial after that hands a geometry to the 3D mesher.
