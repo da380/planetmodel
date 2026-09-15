@@ -1,16 +1,8 @@
 name: Publish to PyPI
 
-# Switched off until the PyPI project and its token exist.  To enable,
-# replace the trigger below with
-#
-#     on:
-#       release:
-#         types: [published]
-#
-# so that publishing a GitHub release whose tag is v<version> uploads the
-# package (see CONTRIBUTING.md).
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
