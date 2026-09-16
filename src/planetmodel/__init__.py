@@ -24,7 +24,6 @@ Modules reached by name, one level down:
   plotting     radial profiles drawn one way, radius upward (matplotlib, optional)
   mesh1d       radial spectral-element meshes (GLL), nodal values, gravity
   mesh3d       2D and 3D meshes via gmsh, and MFEM export
-  loading      the loading and tidal problem on a radial mesh: Love numbers
   randomfield  Matern random fields on balls, annuli and layers
   testing      the executable contracts, `check_field` and its kin
 """

@@ -17,9 +17,8 @@ tutorial keeps go under `figures/`, which is gitignored.
 | `07_prem.py` | PREM from its polynomials: layers, moduli, gravity, nodal values on a radial mesh, a figure |
 | `08_simple_models.py` | homogeneous, layered and ellipsoidal models with analytic boundary shapes, a figure |
 | `09_fields_for_mfem.py` | a model's fields exported beside its mesh and read back by MFEM (needs the `meshing` and `mfem` extras) |
-| `10_love_numbers.py` | PREM's load and tidal Love numbers, convergence, the degree-2 radial solutions, the pyslfp file, PREM with its Q at the semidiurnal tide and a Maxwell mantle across periods, a figure |
-| `11_random_fields.py` | Matern random fields of radius, on the layers of PREM as a density perturbation, and on a shell as a field with a map and a slice, a figure |
-| `12_models_from_decks.py` | PREM's mineos deck as a model against the polynomial PREM, a deck format and model type of your own with a viscosity column, a figure |
+| `10_random_fields.py` | Matern random fields of radius, on the layers of PREM as a density perturbation, and on a shell as a field with a map and a slice, a figure |
+| `11_models_from_decks.py` | PREM's mineos deck as a model against the polynomial PREM, a deck format and model type of your own with a viscosity column, a figure |
 
 ```
 poetry run python examples/tutorials/01_skeleton_and_geometry.py
