@@ -1,6 +1,6 @@
 [project]
 name = "planetmodel"
-version = "1.0.0"
+version = "1.0.1"
 description = "Spherically layered planetary models: reference bodies, fields, mappings and meshes"
 keywords = ["geophysics", "seismology", "planetary models", "PREM", "spectral elements", "meshing"]
 classifiers = [
