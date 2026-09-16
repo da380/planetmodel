@@ -27,9 +27,8 @@ def run(script: str, *args: str, strict: bool = True) -> None:
                                     "06_a_model_of_your_own.py",
                                     "07_prem.py",
                                     "08_simple_models.py",
-                                    "10_love_numbers.py",
-                                    "11_random_fields.py",
-                                    "12_models_from_decks.py"])
+                                    "10_random_fields.py",
+                                    "11_models_from_decks.py"])
 def test_core_tutorials(script):
     run(script)
 

@@ -11,10 +11,11 @@ units, named model types (PREM from its polynomials, simple layered
 models, any mineos deck) and the mixins that complete them with moduli,
 velocities, gravity and linear rheologies; a radial spectral-element
 mesh; 2D and 3D meshes via gmsh with a manifest and export to MFEM; and
-two sub-packages that consume the radial mesh: `planetmodel.loading`
-solves the loading and tidal problem and gives Love numbers, and
-`planetmodel.randomfield` draws Matern random fields on balls, annuli
-and layers. A netCDF file for 3D models is next.
+a sub-package that consumes the radial mesh, `planetmodel.randomfield`,
+which draws Matern random fields on balls, annuli and layers. The Love
+numbers of a model, the loading and tidal problem solved on the radial
+mesh, are computed by [pyslfp](https://github.com/da380/pyslfp), which
+builds on this library. A netCDF file for 3D models is next.
 
 ## The ideas
 
@@ -104,9 +105,8 @@ print(nd.G, mesh.nodal(nd, "rho").shape, nd.geometry.validity())
 
 ## Where to go next
 
-- `examples/tutorials/`: twelve walkthroughs, from a skeleton to Love
-  numbers, random fields and deck files, each a `# %%` script that runs
-  headless.
+- `examples/tutorials/`: eleven walkthroughs, from a skeleton to random
+  fields and deck files, each a `# %%` script that runs headless.
 - `src/planetmodel/mesh3d/manifest.py`: the manifest beside every mesh,
   its schema described from the consumer's side.
 - `CONTRIBUTING.md`: the development setup, the hooks, the test

@@ -1,5 +1,5 @@
 # %% [markdown]
-# # 11. Random fields
+# # 10. Random fields
 #
 # A random field is a function whose values are drawn at random with a
 # prescribed statistical structure. The fields here are Gaussian with
@@ -210,6 +210,6 @@ if plt is not None:
     ax.set_title("meridional slice, phi = 0")
     fig.colorbar(im, ax=ax)
     fig.tight_layout()
-    out = FIGURES / "tutorial_11_random_fields.png"
+    out = FIGURES / "tutorial_10_random_fields.png"
     fig.savefig(out, dpi=110)
     print("wrote", out.name)

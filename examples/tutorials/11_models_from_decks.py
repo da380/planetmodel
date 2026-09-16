@@ -1,5 +1,5 @@
 # %% [markdown]
-# # 12. Models from decks
+# # 11. Models from decks
 #
 # A deck is a plain-text table describing a spherically symmetric model:
 # one row per knot, with the radius first and then one column per
@@ -33,10 +33,9 @@ from pathlib import Path
 import numpy as np
 
 from planetmodel import (PREM, Deck, DeckFormat, Elastic, Geometry, MINEOS,
-                         MineosModel, Model, RadialMesh, SelfGravitating, Tabulated,
-                         Viscoelastic, deck_layers, read_deck, testing, write_deck)
+                         MineosModel, Model, SelfGravitating, Tabulated, Viscoelastic,
+                         deck_layers, gravity, read_deck, testing, write_deck)
 from planetmodel.deck import deck_knots
-from planetmodel.loading import love_numbers
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
@@ -87,10 +86,8 @@ print("check_model passes")
 # %% [markdown]
 # The deck is a 200-knot sampling of the polynomial PREM, and the spline
 # through it agrees with the polynomial to about a part in a million.
-# The moduli are products of splines and agree to the same order. The
-# mass and the degree-2 load Love numbers agree to a part in ten
-# million; for the Love numbers both models are cut at the top of the
-# crust, since a fluid surface cannot be loaded.
+# The moduli are products of splines and agree to the same order, and
+# so do the mass and the gravity that follows from the density.
 
 # %%
 prem = PREM()
@@ -100,12 +97,9 @@ for x in (1000e3, 3000e3, 5000e3, 6300e3):
     print(f"r = {x / 1e3:5.0f} km: rho {d['rho'](x):9.2f} vs {p['rho'](x):9.2f}   "
           f"A/A_prem - 1 = {d['A'](x) / p['A'](x) - 1:+.1e}")
 print(f"mass: deck {model.mass():.7e}  prem {prem.mass():.7e}")
-mesh_d = RadialMesh(model.truncated(6368e3), ngll=5, lmax=8)
-mesh_p = RadialMesh(prem.truncated(6368e3), ngll=5, lmax=8)
-ld = love_numbers(model.truncated(6368e3), 2, mesh=mesh_d).conventional()
-lp = love_numbers(prem.truncated(6368e3), 2, mesh=mesh_p).conventional()
-print("degree-2 load Love numbers h', k':", ld["h"][2], ld["k"][2],
-      "| prem:", lp["h"][2], lp["k"][2])
+for x in (3480e3, 6371e3):
+    print(f"g at {x / 1e3:4.0f} km: deck {gravity(model, x):.6f}  "
+          f"prem {gravity(prem, x):.6f}")
 
 # %% [markdown]
 # ## A deck of your own
@@ -163,10 +157,10 @@ print("\n".join(path.read_text().splitlines()[:4]))
 # deck was written from, since this format's header does not record
 # them. The elastic, gravity and viscoelastic mixins are the same as
 # before. A layer with a viscosity is a Maxwell body in shear, so
-# `frozen` gives the model with complex moduli at a chosen period, and
-# the loading solver gives the complex tidal Love number at that period:
-# the elastic value at ten years, and most of the way to the fluid limit
-# at a hundred thousand years.
+# `frozen` gives the model with complex moduli at a chosen period. The
+# shear modulus of the lower mantle is its elastic value at ten years,
+# and has relaxed most of the way to zero at a hundred thousand years,
+# well past the Maxwell time of about two thousand years.
 
 # %%
 class GIAModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
@@ -186,13 +180,13 @@ print("viscoelastic layers:",
       [lay.name for lay in gia.layers if gia.is_viscoelastic(lay.index)])
 print("the outer core holds no viscosity:", "viscosity" not in gia.layer("outer_core"))
 year = 3.15576e7
-elastic_love = love_numbers(gia, 2, mesh=RadialMesh(gia, ngll=5, lmax=8)).tidal()
-print("elastic tidal k2:", elastic_love["k"][2])
+x = 4500e3
+print(f"elastic L at {x / 1e3:.0f} km: "
+      f"{gia.layer('lower_mantle')['L'](x) / 1e9:.2f} GPa")
 for period in (10.0, 1e3, 1e5):
     at_period = gia.frozen(2 * np.pi / (period * year))
-    mesh = RadialMesh(at_period, ngll=5, lmax=8)
-    k2 = love_numbers(at_period, 2, mesh=mesh).tidal()["k"][2]
-    print(f"k2 at {period:8.0f} years: {k2.real:+.4f} {k2.imag:+.4f}i   "
+    L = at_period.layer("lower_mantle")["L"](x) / 1e9
+    print(f"L at {period:8.0f} years: {L.real:+8.2f} {L.imag:+8.2f}i GPa   "
           f"({type(at_period).__name__})")
 testing.check_model(gia)
 print("check_model passes; the deck it now is:",
@@ -227,6 +221,6 @@ radial_profile(right, gia, "viscosity", scale=1e-3, lw=1.2)
 right.set_xscale("log"); right.set_xlabel("viscosity (Pa s)")
 right.set_title("the custom column, absent in the fluid")
 fig.tight_layout()
-out = FIGURES / "tutorial_12_models_from_decks.png"
+out = FIGURES / "tutorial_11_models_from_decks.png"
 fig.savefig(out, dpi=120)
 print("figure written to", out)
