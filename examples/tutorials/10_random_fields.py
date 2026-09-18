@@ -18,8 +18,9 @@
 # a model and returns fields the model can hold. `SphericalGRF` draws a
 # field on a shell, delivered as spherical-harmonic coefficients that
 # are functions of radius, and its `to_field` turns one into a field a
-# model can hold. The operator family underneath them is what pygeoinf
-# will build on.
+# model can hold. Underneath them are the operator family and its
+# eigenfunctions, which are public too, so that other code (pygeoinf,
+# for one) can build function spaces and probability measures on them.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -58,6 +59,45 @@ print(grf, "| samples:", samples.shape)
 field = grf.to_field(samples[0], name="dv")
 testing.check_field(field)
 print("as a field at 5000 km:", field(5.0e6))
+
+# %% [markdown]
+# ## The basis behind a sampler
+#
+# A sampler is built on the eigenfunctions of its operator: functions
+# `phi_j` of radius that the operator merely multiplies by a number, the
+# eigenvalue `theta_j`. They are found on the sampler's mesh, ordered by
+# eigenvalue, and the smooth ones come first. A sample is a sum of them
+# with random coefficients, the rougher ones weighted less.
+#
+# The mesh is longer than the interval asked for. The operator needs a
+# condition at each end of its mesh, and any condition distorts the
+# field near that end, so the mesh is extended by a *pad* on each side
+# and the distortion happens there, outside the interval that matters.
+# The interval asked for is called the physical interval.
+#
+# `grf.basis` is the `SpectralBasis` the sampler was built from. It
+# holds the eigenvalues `theta` and gives the eigenfunctions on the
+# whole mesh (`modes`), or at any radius of the physical interval
+# (`evaluate`). A function is described by its coefficients in the
+# basis: `synthesise` turns coefficients into values at the nodes, and
+# `analyse` turns values on the whole mesh back into coefficients.
+# `weights` are the numbers that turn nodal values into an integral
+# over the physical interval, here against `r^2 dr`.
+
+# %%
+basis = grf.basis
+testing.check_spectral_basis(basis)
+print(basis)
+print("mesh:", grf.mesh.left[0] / 1e3, "to", grf.mesh.right[-1] / 1e3, "km;",
+      "physical interval:", [x / 1e3 for x in basis.restriction.interval], "km")
+coeffs = basis.white_noise(rng=rng) * basis.theta ** -grf.beta
+values = basis.synthesise(coeffs, physical=False)
+print("coefficients recovered from the values:",
+      np.allclose(basis.analyse(values), coeffs))
+r1, r2 = basis.restriction.interval
+print("integral of r^2 over the mantle:", basis.weights().sum(),
+      "against", (r2 ** 3 - r1 ** 3) / 3)
+print("the first three modes at 5000 km:", basis.evaluate(5.0e6)[:3])
 
 # %% [markdown]
 # ## A field on the layers of a model
@@ -211,5 +251,20 @@ if plt is not None:
     fig.colorbar(im, ax=ax)
     fig.tight_layout()
     out = FIGURES / "tutorial_10_random_fields.png"
+    fig.savefig(out, dpi=110)
+    print("wrote", out.name)
+
+    # the first modes of the radial sampler on its padded mesh
+    fig, ax = plt.subplots(figsize=(8, 4))
+    x = grf.mesh.rglob / 1e3
+    for j in range(5):
+        ax.plot(x, basis.modes()[:, j], lw=0.9, label=f"mode {j}")
+    ax.axvspan(r1 / 1e3, r2 / 1e3, color="0.9", label="physical interval")
+    ax.set_xlabel("radius [km]")
+    ax.set_ylabel("eigenfunction")
+    ax.set_title("the first five modes; the pads lie outside the shaded band")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    out = FIGURES / "tutorial_10_basis.png"
     fig.savefig(out, dpi=110)
     print("wrote", out.name)

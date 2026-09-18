@@ -20,12 +20,13 @@ if TYPE_CHECKING:
     from .layerfunction import LayerFunction
     from .mapping import Mapping
     from .model import Model
+    from .randomfield.basis import SpectralBasis, SphericalBasis
     from .sampling import Sample
     from .skeleton import Skeleton
 
 __all__ = ["check_displacement", "check_mapping", "check_geometry",
            "check_layer_function", "check_field", "check_model",
-           "check_sample"]
+           "check_sample", "check_spectral_basis", "check_spherical_basis"]
 
 
 def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
@@ -632,3 +633,203 @@ def check_sample(sample: Sample, model: Model, *,
     scale = float(np.max(np.abs(r)))
     assert np.allclose(u[nodes, it, ip], want, rtol=rtol, atol=rtol * scale), (
         "displacement differs from R^T (m(X) - X) at the sample points")
+
+
+def _full_mass(basis: SpectralBasis) -> np.ndarray:
+    """The family's diagonal mass at every node of the mesh, the massless
+    centre of a ball included."""
+    mass = basis.family.mass(basis.degree)
+    full = np.zeros(basis.family.mesh.nglob)
+    full[full.size - mass.size:] = mass
+    return full
+
+
+def check_spectral_basis(basis: SpectralBasis, *,
+                         rng: np.random.Generator | None = None,
+                         rtol: float = 1e-10) -> None:
+    """Hold a SpectralBasis to what it promises of one degree's eigenbasis.
+
+    The spectrum: `theta` read-only, ascending, at least 1, `nmodes` of
+    them.  The modes: read-only, of shape (nglob, nmodes), M-orthonormal
+    on the full mesh, each an eigenfunction of the family's operator with
+    its theta, and zero at the centre of a ball when l >= 1.  The
+    transforms: the physical synthesis is the full one read on the
+    restriction's nodes; `analyse` inverts the full synthesis and is
+    idempotent on arbitrary nodal values, for one vector and for a stack.
+    Evaluation: `evaluate` at the physical nodes reproduces the modes
+    there, keeps the shape of its argument and refuses a radius outside
+    the interval.  Integration: `weights` are non-negative, the family's
+    mass inside the physical interval and no more than it at the two
+    ends (where the mass counts the pad elements too), and, on a mesh of
+    at least three GLL nodes, sum to the measure of the physical
+    interval, (r2^3 - r1^3) / 3 or r2 - r1.  `pointwise_variance` is the
+    diagonal of the synthesised covariance.  `white_noise` has the shapes
+    it promises and unit covariance on the leading modes to six standard
+    errors.  `rtol` is relative to the largest kept eigenvalue where an
+    operator is applied and to one elsewhere.
+    """
+    from .randomfield.basis import SpectralBasis
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    assert isinstance(basis, SpectralBasis), (
+        f"not a SpectralBasis: {type(basis).__name__}")
+    fam, l, R = basis.family, basis.degree, basis.restriction
+    mesh = fam.mesh
+    theta, k = basis.theta, basis.nmodes
+
+    assert k >= 1 and theta.shape == (k,), "theta is not (nmodes,) with a mode kept"
+    assert not theta.flags.writeable, "theta is writeable"
+    assert np.all(np.diff(theta) >= 0.0), "theta is not ascending"
+    assert theta[0] >= 1.0 - rtol, f"an eigenvalue below 1: {theta[0]!r}"
+
+    Phi = basis.modes()
+    assert Phi.shape == (mesh.nglob, k), (
+        f"modes have shape {Phi.shape}, expected {(mesh.nglob, k)}")
+    assert not Phi.flags.writeable, "the modes are writeable"
+    M = _full_mass(basis)
+    gram = Phi.T @ (M[:, None] * Phi)
+    assert _rel(gram, np.eye(k), rtol=rtol), "the modes are not M-orthonormal"
+    n0 = mesh.nglob - fam.ndof(l)
+    resid = fam.apply(l, Phi[n0:]) - Phi[n0:] * theta
+    scale = theta[-1] * np.max(np.abs(Phi))
+    assert np.max(np.abs(resid)) <= 1e3 * rtol * scale, (
+        "a mode is not an eigenfunction of the family's operator")
+    if fam.is_ball and l >= 1:
+        assert np.all(Phi[0] == 0.0), "a mode of degree l >= 1 is non-zero at r = 0"
+
+    assert np.array_equal(basis.r, mesh.rglob[R.nodes]), (
+        "r is not the mesh's nodes on the restriction")
+    for shape in ((k,), (k, 3)):
+        c = rng.standard_normal(shape)
+        full = basis.synthesise(c, physical=False)
+        assert full.shape == (mesh.nglob,) + shape[1:], (
+            "full synthesis has the wrong shape")
+        assert _rel(basis.synthesise(c), full[R.nodes], rtol=rtol,
+                    floor=np.max(np.abs(full))), (
+            "the physical synthesis is not the full one on the restriction")
+        assert _rel(basis.analyse(full), c, rtol=rtol), (
+            "analyse does not invert the full synthesis")
+        v = rng.standard_normal((mesh.nglob,) + shape[1:])
+        cv = basis.analyse(v)
+        assert _rel(basis.analyse(basis.synthesise(cv, physical=False)), cv,
+                    rtol=rtol), "analyse is not idempotent"
+
+    at_nodes = basis.evaluate(basis.r)
+    assert at_nodes.shape == basis.r.shape + (k,), "evaluate has the wrong shape"
+    assert _rel(at_nodes, Phi[R.nodes], rtol=rtol, floor=np.max(np.abs(Phi))), (
+        "evaluate at the physical nodes is not the modes there")
+    r1, r2 = R.interval
+    grid = rng.uniform(r1, r2, size=(2, 3))
+    assert basis.evaluate(grid).shape == (2, 3, k), (
+        "evaluate does not keep the shape of its argument")
+    try:
+        basis.evaluate(r2 + 0.1 * (r2 - r1))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("evaluate accepted a radius outside the interval")
+
+    w = basis.weights()
+    assert w.shape == basis.r.shape and np.all(w >= 0.0), (
+        "weights are not non-negative values at the physical nodes")
+    inside = slice(1, -1)
+    assert _rel(w[inside], M[R.nodes][inside], rtol=rtol, floor=np.max(M)), (
+        "weights differ from the family's mass inside the physical interval")
+    assert np.all(w <= M[R.nodes] * (1.0 + rtol)), (
+        "a weight exceeds the family's mass at its node")
+    if mesh.ngll >= 3:
+        measure = (r2 ** 3 - r1 ** 3) / 3.0 if fam.weight == "r2" else r2 - r1
+        assert abs(w.sum() - measure) <= rtol * abs(measure), (
+            f"weights sum to {w.sum()!r}, the interval measures {measure!r}")
+
+    for power in (1.0, 2.5):
+        S = basis.synthesise(np.eye(k))
+        want = np.einsum("ij,j,ij->i", S, theta ** -power, S)
+        assert _rel(basis.pointwise_variance(power), want, rtol=rtol,
+                    floor=np.max(want)), (
+            "pointwise_variance is not the diagonal of the covariance")
+
+    assert basis.white_noise(rng=rng).shape == (k,), "white noise is not (nmodes,)"
+    n, lead = 4000, min(k, 8)
+    z = basis.white_noise(rng=rng, size=n)
+    assert z.shape == (k, n), "white noise with size is not (nmodes, size)"
+    cov = z[:lead] @ z[:lead].T / n
+    assert np.max(np.abs(cov - np.eye(lead))) < 6.0 * np.sqrt(2.0 / n), (
+        "white noise does not have unit covariance")
+
+
+def check_spherical_basis(basis: SphericalBasis, *,
+                          rng: np.random.Generator | None = None,
+                          rtol: float = 1e-10) -> None:
+    """Hold a SphericalBasis to the order it fixes and to its degrees.
+
+    The bases are those of degrees 0 ... lmax on one family and one
+    restriction, with `nmodes` and `size` counting them.  The blocks of
+    the harmonics, taken in the order of `harmonics.packing`, tile
+    `range(size)` without gap or overlap, and `theta` on each block is
+    its degree's.  `synthesise` fills each harmonic of the coefficient
+    array with its degree's synthesis of that block and leaves the
+    entries of no harmonic zero, physical values being the full ones on
+    the restriction's nodes; `analyse` inverts the full synthesis, and
+    ignores the entries of no harmonic.
+    """
+    from .harmonics import packing
+    from .randomfield.basis import SphericalBasis
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    assert isinstance(basis, SphericalBasis), (
+        f"not a SphericalBasis: {type(basis).__name__}")
+    L = basis.lmax
+    assert len(basis) == L + 1, "len is not lmax + 1"
+    for l in range(L + 1):
+        b = basis[l]
+        assert b.degree == l, f"basis[{l}] has degree {b.degree}"
+        assert b.family is basis.family, "the bases do not share one family"
+        assert b.restriction.nodes == basis.restriction.nodes, (
+            "the bases do not share one restriction")
+        assert basis.nmodes[l] == b.nmodes, f"nmodes[{l}] is not the basis's"
+    assert basis.size == int(np.sum((2 * np.arange(L + 1) + 1) * basis.nmodes)), (
+        "size is not sum (2 l + 1) nmodes[l]")
+    assert basis.theta.shape == (basis.size,) and not basis.theta.flags.writeable, (
+        "theta is not a read-only vector of length size")
+
+    at = 0
+    S, Ls, Ms = packing(L)
+    for s, l, m in zip(S, Ls, Ms):
+        blk = basis.block(int(s), int(l), int(m))
+        assert (blk.start, blk.stop) == (at, at + basis[l].nmodes), (
+            f"the block of (s, l, m) = ({s}, {l}, {m}) does not follow its "
+            f"predecessor in the packing order")
+        assert np.array_equal(basis.theta[blk], basis[l].theta), (
+            f"theta on the block of ({s}, {l}, {m}) is not its degree's")
+        at = blk.stop
+    assert at == basis.size, "the blocks do not tile the vector"
+    for bad in ((1, 0, 0), (0, 1, 2), (0, L + 1, 0), (2, 0, 0)):
+        try:
+            basis.block(*bad)
+        except IndexError:
+            continue
+        raise AssertionError(f"block accepted (s, l, m) = {bad}")
+
+    v = rng.standard_normal(basis.size)
+    full = basis.synthesise(v, physical=False)
+    nglob = basis.family.mesh.nglob
+    assert full.shape == (2, L + 1, L + 1, nglob), "full synthesis has the wrong shape"
+    phys = basis.synthesise(v)
+    assert _rel(phys, full[..., basis.restriction.nodes], rtol=rtol,
+                floor=np.max(np.abs(full))), (
+        "the physical synthesis is not the full one on the restriction")
+    seen = np.zeros(full.shape[:3], dtype=bool)
+    for s, l, m in zip(S, Ls, Ms):
+        seen[s, l, m] = True
+        want = basis[l].synthesise(v[basis.block(int(s), int(l), int(m))],
+                                   physical=False)
+        assert _rel(full[s, l, m], want, rtol=rtol, floor=np.max(np.abs(want))), (
+            f"harmonic ({s}, {l}, {m}) is not its degree's synthesis of its block")
+    assert np.all(full[~seen] == 0.0), "an entry of no harmonic is non-zero"
+    assert _rel(basis.analyse(full), v, rtol=rtol), (
+        "analyse does not invert the full synthesis")
+    junk = full.copy()
+    junk[~seen] = 1.0
+    assert np.array_equal(basis.analyse(junk), basis.analyse(full)), (
+        "analyse reads entries that belong to no harmonic")

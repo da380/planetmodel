@@ -38,6 +38,44 @@ def test_radial_grf_normalisation_and_stats():
         g.to_layer(u[0, :3])
 
 
+def test_the_samplers_are_built_on_their_bases():
+    """The samplers hold the bases they are made of, and their covariances
+    are what they were before the bases existed: numbers recorded then,
+    chosen so that the sign of an eigenvector does not enter."""
+    from planetmodel.randomfield import SpectralBasis, SphericalBasis
+
+    g = RadialGRF(0.3, 1.0, 1.5, 0.2, sigma=lambda r: 1.0 + r, drmax=0.05)
+    assert isinstance(g.basis, SpectralBasis) and g.basis.degree == 0
+    testing.check_spectral_basis(g.basis)
+    assert g.basis.restriction is g.restriction and g.basis.r is g.r
+    assert g.nmodes == g.basis.nmodes == 142
+    C = g.covariance()
+    assert np.allclose(C[[0, 10, 56], [0, 12, 40]],
+                       [1.689999999999999, 2.0511116218346936, 2.6489316371911413],
+                       rtol=1e-9, atol=0.0)
+    raw = g.basis.pointwise_variance(2.0 * g.beta)
+    B = g.basis.synthesise(np.diag(g.basis.theta ** -g.beta))
+    assert np.allclose(g.factor, (g.sigma / np.sqrt(raw))[:, None] * B, rtol=1e-12)
+
+    b = RadialGRF(0.0, 1.0, 0.5, lambda r: 0.2 + 0.1 * r, drmax=0.06, robin="auto")
+    Cb = b.covariance()
+    assert b.nmodes == 132
+    assert np.allclose(Cb[[0, 5, 68], [0, 9, 60]],
+                       [1.0, 0.6276750404062182, 0.6686527605922784],
+                       rtol=1e-9, atol=0.0)
+
+    s = SphericalGRF(0.5, 1.0, 1.0, 0.25, lmax=4, lam_h=0.4, drmax=0.06)
+    assert isinstance(s.basis, SphericalBasis) and s.basis.lmax == 4
+    testing.check_spherical_basis(s.basis)
+    assert list(s.nmodes) == list(s.basis.nmodes) == [64, 71, 79, 87, 94]
+    C3 = s.factor(3) @ s.factor(3).T
+    assert np.allclose(C3[[0, 10, 36], [0, 14, 30]],
+                       [0.09763069928430478, 0.1526205920536206, 0.2459225804991355],
+                       rtol=1e-9, atol=0.0)
+    auto = SphericalGRF(0.0, 0.8, 1.5, 0.3, drmax=0.08, tol=1e-4)
+    assert auto.lmax == 50 and auto.basis.lmax == 50
+
+
 def test_padding_insensitivity():
     kw = dict(sigma=1.0, tol=1e-12)
     g2 = RadialGRF(0.6, 1.0, 1.0, 0.04, pad_factor=2.0, **kw)

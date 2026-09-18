@@ -38,6 +38,14 @@ static condensation: the Schur complement stays within the band, the
 reduced pencil has precisely the finite spectrum of the singular one,
 and `embed` reconstructs the axis value.  Degrees are cached
 independently, values-only and eigenpair caches separately.
+
+With the plain measure w = 1 the family is that of an interval of the
+line.  Its degree-0 member, f - (kappa f')', is the one-dimensional
+operator and asks nothing of where the interval lies; the centrifugal
+term alone knows about r = 0, so the members of degree l >= 1 exist
+only on a mesh in r > 0 and are refused on any other.  There is no
+centre to treat: r = 0, if the mesh reaches it, is an ordinary node
+with its own mass.
 """
 from __future__ import annotations
 
@@ -50,7 +58,11 @@ from scipy.linalg import eig_banded, eigvals_banded, solveh_banded
 
 from ..mesh1d import Mesh1D
 
-__all__ = ["RadialOperatorFamily", "Coefficient", "Robin"]
+__all__ = ["RadialOperatorFamily", "Coefficient", "Robin", "WEIGHTS"]
+
+#: The measures a family may carry: "r2" for r^2 dr, the radial part of the
+#: volume element of an annulus or ball, and "one" for plain dr on an interval.
+WEIGHTS: tuple[str, ...] = ("r2", "one")
 
 #: A coefficient of the operator: a number, a callable of the radius, or a
 #: nodal array of the mesh's shape (nspec, ngll).
@@ -107,35 +119,34 @@ class RadialOperatorFamily:
     degree's active dofs.  `kappa` (radial) and `kappa_h` (horizontal,
     defaulting to kappa) may be scalars, callables of radius, or nodal
     arrays; `weight` selects the measure, "r2" for r^2 dr (annuli and
-    balls) or "one" for plain dr on an interval with r > 0.  `robin` is
+    balls, a mesh in r >= 0) or "one" for plain dr on any interval, where
+    degrees l >= 1 need the mesh to lie in r > 0.  `robin` is
     None, one gamma for both boundaries, or a pair (inner, outer) with
     None meaning Neumann; an inner Robin term is ignored on a ball.
 
     The spectral methods are `eigvalsh(l)`, `eig(l, theta_max=None)`,
     `apply_power(l, s, v)`, `inner(l, s, u, v)` and `logdet(l)`; the
     direct ones `apply(l, v)` for A_l v and `solve(l, b)` for A_l^-1 b;
-    `white_noise(l, rng=...)` draws M^-1/2 z; and `ndof`, `nodes`,
-    `mass`, `embed` account for the dropped axis dof of a ball.
+    `white_noise(l, rng=...)` draws M^-1/2 z; `ndof`, `nodes`, `mass`,
+    `embed` account for the dropped axis dof of a ball, and
+    `element_mass` is the mass before assembly.
     Results are cached per degree.
     """
 
     def __init__(self, mesh: Mesh1D, *, kappa: Coefficient = 1.0,
                  kappa_h: Coefficient | None = None, weight: str = "r2",
                  robin: Robin = None) -> None:
-        if weight not in ("r2", "one"):
-            raise ValueError("weight must be 'r2' or 'one'")
+        if weight not in WEIGHTS:
+            raise ValueError(f"weight must be one of {WEIGHTS}")
         if not isinstance(mesh, Mesh1D):
             raise TypeError("mesh must be a Mesh1D (or RadialMesh)")
-        if mesh.rglob[0] < 0.0:
-            raise ValueError("mesh must lie in r >= 0")
-        if weight == "one" and mesh.rglob[0] <= 0.0:
-            raise ValueError("the plain measure needs r > 0 (the centrifugal "
-                             "factor 1/r^2 is otherwise singular); use "
-                             "weight='r2' for balls")
+        if weight == "r2" and mesh.rglob[0] < 0.0:
+            raise ValueError("the r^2 measure needs a mesh in r >= 0")
 
         self.mesh = mesh
         self.weight = weight
-        self._ball = bool(mesh.rglob[0] == 0.0)
+        self._ball = bool(weight == "r2" and mesh.rglob[0] == 0.0)
+        self._degree_zero_only = bool(weight == "one" and mesh.rglob[0] <= 0.0)
 
         kr = _nodal_coefficient(mesh, kappa)
         kh = kr if kappa_h is None else _nodal_coefficient(mesh, kappa_h)
@@ -147,10 +158,12 @@ class RadialOperatorFamily:
         n, q = mesh.nglob, mesh.ngll - 1
         wgt = r * r if weight == "r2" else np.ones_like(r)
 
+        Me = wq[None, :] * jac[:, None] * wgt
+        Me.setflags(write=False)
         M = np.zeros(n)
-        np.add.at(M, g, wq[None, :] * jac[:, None] * wgt)
+        np.add.at(M, g, Me)
         Kh = np.zeros(n)
-        rsafe = np.where(r > 0.0, r, 1.0)
+        rsafe = np.where(r != 0.0, r, 1.0)
         np.add.at(Kh, g, kh * (wq[None, :] * jac[:, None]) * (wgt / rsafe ** 2))
 
         # banded radial stiffness, upper symmetric storage:
@@ -179,6 +192,7 @@ class RadialOperatorFamily:
         if np.any(M[1 if self._ball else 0:] <= 0.0):
             raise RuntimeError("non-positive mass entry; degenerate mesh?")
 
+        self._Me = Me
         self._M, self._Kh, self._Kr, self._q = M, Kh, band, q
         self._vals: dict[int, np.ndarray] = {}
         self._pairs: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
@@ -188,13 +202,16 @@ class RadialOperatorFamily:
 
     @property
     def is_ball(self) -> bool:
-        """Whether the mesh starts at r = 0."""
+        """Whether the family is that of a ball: the r^2 measure on a mesh
+        that starts at r = 0."""
         return self._ball
 
     def _n0(self, l: int) -> int:
         """Leading dofs excluded at degree l: the axis of a ball."""
         if l < 0:
             raise ValueError("degree must be non-negative")
+        if l and self._degree_zero_only:
+            raise ValueError("degree l >= 1 needs r > 0 on a plain-measure mesh")
         return 1 if self._ball else 0
 
     def ndof(self, l: int) -> int:
@@ -208,6 +225,14 @@ class RadialOperatorFamily:
     def mass(self, l: int) -> np.ndarray:
         """Diagonal mass on the active dofs at degree l."""
         return self._M[self._n0(l):]
+
+    def element_mass(self) -> np.ndarray:
+        """The mass of each element at its own nodes, shape (nspec, ngll),
+        read-only: quadrature weight times Jacobian times the measure.
+        Summed over all the elements sharing a node it is the diagonal
+        mass; summed over a run of elements it is the weights of an
+        integral over that run alone, the same at every degree."""
+        return self._Me
 
     def embed(self, l: int, values: ArrayLike) -> np.ndarray:
         """Active-dof values completed to the full mesh (a no-op off balls):
@@ -379,7 +404,8 @@ class RadialOperatorFamily:
         return float(s * np.log(self.eigvalsh(l)).sum())
 
     def __repr__(self) -> str:
-        kind = "ball" if self._ball else "annulus"
+        kind = ("interval" if self.weight == "one"
+                else "ball" if self._ball else "annulus")
         return (f"RadialOperatorFamily({kind}, {self.mesh.nglob} nodes, "
                 f"weight={self.weight!r}, cached degrees: "
                 f"{sorted(set(self._vals) | set(self._pairs))})")

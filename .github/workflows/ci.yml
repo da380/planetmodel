@@ -88,6 +88,39 @@ jobs:
       - name: Build package
         run: poetry build
 
+  # The fast suite again under the oldest numpy and scipy that
+  # pyproject.toml admits, installed over the locked environment, so that
+  # the lower bounds stay true.  Linux and one Python: the question is the
+  # libraries' API, not the platform.  The versions here are the floors of
+  # `dependencies` in pyproject.toml and move with them.
+  lowest-pins:
+    name: Test (lowest numpy and scipy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.create false
+
+      - name: Install dependencies
+        run: poetry install --with dev --extras "plot harmonics"
+
+      - name: Step numpy and scipy down to their floors
+        run: pip install "numpy==2.0.*" "scipy==1.15.*"
+
+      - name: Test with pytest
+        run: |
+          python -c "import numpy, scipy; print(numpy.__version__, scipy.__version__)"
+          poetry run pytest
+
   # The gmsh unit geometries and the MFEM exports, which the fast suite
   # deselects.  Linux only: gmsh and PyMFEM ship Linux wheels, and the
   # meshes are a few elements across.
