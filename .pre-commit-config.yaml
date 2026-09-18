@@ -9,9 +9,9 @@
 # .github/workflows/ci.yml), so a clean commit here is a green lint job
 # there.
 
-# The archived tree and the deck data files are kept as they were found:
-# their trailing whitespace is part of the record.
-exclude: ^(archive/|examples/data/)
+# The deck data files are kept as they were found: their trailing
+# whitespace is part of the record.
+exclude: ^examples/data/
 
 repos:
   # --- 1. Repository hygiene ---

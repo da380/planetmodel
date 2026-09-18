@@ -50,6 +50,21 @@ def test_to_ppoly_is_exact_on_a_polynomial():
         m.to_ppoly(f(m.r), elements=(2, 2))
 
 
+def test_to_ppoly_with_a_trailing_shape_is_the_scalar_view_by_component():
+    m = Mesh1D([0.0, 1.0, 2.5], ngll=6, drmax=0.4)
+    v = np.random.default_rng(0).standard_normal(m.r.shape + (2, 3))
+    P = m.to_ppoly(v, elements=(1, 4))
+    assert P.c.shape == (6, 3, 2, 3)
+    for i in range(2):
+        for j in range(3):
+            one = m.to_ppoly(v[..., i, j], elements=(1, 4))
+            assert np.array_equal(P.c[..., i, j], one.c)
+    x = np.linspace(m.left[1], m.right[3], 9)
+    assert P(x).shape == (9, 2, 3)
+    with pytest.raises(ValueError, match="shape"):
+        m.to_ppoly(np.zeros((m.nspec, 2, m.ngll)))
+
+
 def test_radial_mesh_honours_the_skeleton():
     m = RadialMesh(SK, drmax=0.25)
     for b in SK.boundaries:

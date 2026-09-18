@@ -53,8 +53,10 @@ def test_analysis_inverts_synthesis():
     rng = np.random.default_rng(2)
     c = random_coefficients(L, rng, 4)
     grid = gauss_legendre(L)
-    back = analyse_grid(synthesise_grid(c, grid), grid)
-    assert back.shape == c.shape
+    values = synthesise_grid(c, grid)
+    assert values.shape == (4, grid.ntheta, grid.nphi)     # the radial axis first
+    back = analyse_grid(values, grid)
+    assert back.shape == c.shape                           # ... and last
     assert np.allclose(back, c, atol=1e-11)
     low = analyse_grid(synthesise_grid(c, grid), grid, lmax=3)
     assert low.shape == (2, 4, 4, 4) and np.allclose(low, c[:, :4, :4], atol=1e-11)
@@ -90,3 +92,34 @@ def test_shell_sample_on_a_grid_has_the_marginal_variance():
     c = g.sample(rng=5)
     want = synthesise_grid(c, grid)
     assert np.allclose(values, want)
+
+
+def test_a_product_on_the_ball_through_the_bases():
+    """Two fields of a ball multiplied as a consumer would: coefficient
+    functions on the full mesh, values on a grid, the product, and back.
+    Multiplying by the constant one returns the field, and the product of
+    two fields is the projection of the product of their values."""
+    from planetmodel.randomfield import (RadialOperatorFamily, SpectralBasis,
+                                         SphericalBasis, padded_mesh, restriction)
+    L = 3
+    mesh = padded_mesh(0.0, 1.0, pad=0.3, ngll=5, drmax=0.2)
+    fam = RadialOperatorFamily(mesh, kappa=0.05)
+    R = restriction(mesh, 0.0, 1.0)
+    sph = SphericalBasis([SpectralBasis(fam, l, restrict=R, nmodes=6)
+                          for l in range(L + 1)])
+    grid = gauss_legendre(2 * L)
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal(sph.size)
+    one = np.zeros(sph.size)
+    one[sph.block(0, 0, 0)] = sph[0].analyse(np.full(mesh.nglob, np.sqrt(4 * np.pi)))
+
+    def product(u, v):
+        gu = synthesise_grid(sph.synthesise(u, physical=False), grid)
+        gv = synthesise_grid(sph.synthesise(v, physical=False), grid)
+        assert gu.shape == (mesh.nglob, grid.ntheta, grid.nphi)
+        return sph.analyse(analyse_grid(gu * gv, grid, lmax=L))
+
+    assert np.allclose(product(a, one), a, atol=1e-10)
+    b = rng.standard_normal(sph.size)
+    assert np.allclose(product(a, b), product(b, a), atol=1e-12)
+    assert np.linalg.norm(product(a, b)) > 0.0

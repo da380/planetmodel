@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.polynomial import Polynomial
 from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
@@ -102,29 +101,38 @@ class Mesh1D:
                  elements: tuple[int, int] | None = None) -> PPoly:
         """The exact piecewise-polynomial (scipy PPoly) view of nodal values.
 
-        `nodal` has shape (nspec, ngll); `elements`, when given, is a
-        half-open (start, stop) element range restricting the view.
-        Within each element the result is the interpolating polynomial
-        through the GLL nodes, so its derivative and integral are those
-        of the spectral-element function.  Discontinuous data is
-        representable; at a shared breakpoint the upper element's
-        polynomial is evaluated.
+        `nodal` has shape (nspec, ngll), or that followed by any trailing
+        shape, in which case the values of the result have the trailing
+        shape; `elements`, when given, is a half-open (start, stop)
+        element range restricting the view.  Within each element the
+        result is the interpolating polynomial through the GLL nodes, so
+        its derivative and integral are those of the spectral-element
+        function.  Discontinuous data is representable; at a shared
+        breakpoint the upper element's polynomial is evaluated.
         """
         nodal = np.asarray(nodal, dtype=float)
-        if nodal.shape != (self.nspec, self.ngll):
+        if nodal.shape[:2] != (self.nspec, self.ngll):
             raise ValueError(f"nodal values must have shape "
-                             f"{(self.nspec, self.ngll)}, got {nodal.shape}")
+                             f"{(self.nspec, self.ngll)}, or that followed by a "
+                             f"trailing shape; got {nodal.shape}")
         e0, e1 = (0, self.nspec) if elements is None else map(int, elements)
         if not 0 <= e0 < e1 <= self.nspec:
             raise ValueError("elements must be a non-empty in-range interval")
-        n = self.ngll
+        n, ne, extra = self.ngll, e1 - e0, nodal.shape[2:]
         V = np.vander(self.xi, n, increasing=True)
-        cxi = np.linalg.solve(V, nodal[e0:e1].T)      # coefficients in xi
-        C = np.zeros((n, e1 - e0))
-        for k, e in enumerate(range(e0, e1)):
-            # substitute xi = (x - left) / jac - 1 into the xi-polynomial
-            p = Polynomial(cxi[:, k])(Polynomial([-1.0, 1.0 / self.jac[e]]))
-            C[n - p.coef.size:, k] = p.coef[::-1]     # PPoly: degree-descending
+        rhs = nodal[e0:e1].reshape(ne, n, -1).transpose(1, 0, 2)
+        cxi = np.linalg.solve(V, rhs.reshape(n, -1)).reshape(n, ne, -1)
+        # substitute xi = (x - left) / jac - 1 into the xi-polynomial, by
+        # Horner's rule on coefficient arrays: c <- c * (t / jac - 1) + cxi[k]
+        inv = (1.0 / self.jac[e0:e1])[:, None]
+        c = np.zeros_like(cxi)
+        c[0] = cxi[n - 1]
+        for k in range(n - 2, -1, -1):
+            up = c[:-1] * inv
+            c = -c
+            c[1:] += up
+            c[0] += cxi[k]
+        C = c[::-1].reshape((n, ne) + extra)          # PPoly: degree-descending
         x = np.concatenate((self.left[e0:e1], self.right[e1 - 1:e1]))
         return PPoly(C, x)
 

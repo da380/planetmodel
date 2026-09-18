@@ -16,14 +16,14 @@ giving anisotropic fields without breaking the block-diagonality over
 spherical harmonics.
 
 Sampling is the discrete Karhunen-Loeve expansion of each degree block:
-with the M-orthonormal eigenpairs (Theta_l, Phi_l) of A_l from
-`RadialOperatorFamily`, discrete white noise is Phi z with z ~ N(0, I),
-so u_lm(r) = Phi_l Theta_l^-beta z_lm with z_lm iid over (l, m).  Modes
-are truncated where their contribution to the total variance falls
-below a relative tolerance, and for `SphericalGRF` with `lmax=None` the
-degree sum is truncated the same way.  The marginal standard deviation
-is then normalised exactly: the raw pointwise variance of the truncated
-expansion,
+with the M-orthonormal eigenpairs (Theta_l, Phi_l) of A_l, held as the
+`SpectralBasis` of each degree, discrete white noise is Phi z with
+z ~ N(0, I), so u_lm(r) = Phi_l Theta_l^-beta z_lm with z_lm iid over
+(l, m).  Modes are truncated where their contribution to the total
+variance falls below a relative tolerance, and for `SphericalGRF` with
+`lmax=None` the degree sum is truncated the same way.  The marginal
+standard deviation is then normalised exactly: the raw pointwise
+variance of the truncated expansion,
 
     sigma_raw^2(r) = sum_l (2l+1)/(4 pi) sum_j theta_lj^-2 beta phi_lj(r)^2,
 
@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Iterable, Sequence
-from math import comb
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -66,6 +65,8 @@ from ..harmonics import real_harmonics, synthesise_grid
 from ..layerfunction import PolynomialLayer, constant_layer
 from ..mesh1d import Mesh1D
 from ..skeleton import Skeleton
+from .basis import SpectralBasis, SphericalBasis
+from .mesh import Restriction, matern_reach, padded_mesh, restriction
 from .operator import RadialOperatorFamily, Robin
 
 if TYPE_CHECKING:
@@ -91,48 +92,31 @@ def _as_fun(x: Profile) -> Callable[[np.ndarray], np.ndarray]:
     return lambda r: np.full(np.shape(r), v)
 
 
-def _padded_mesh(r1: float, r2: float, nu: float,
-                 lam_fun: Callable[[np.ndarray], np.ndarray], ngll: int,
-                 drmax: float | None, pad_factor: float) -> tuple[Mesh1D, float]:
-    """The padded computational mesh for a physical interval [r1, r2]:
-    each side padded by pad_factor sqrt(8 nu) lambda(boundary), the
-    inner end clamped at r = 0, r1 and r2 pinned as breakpoints.
-    Returns the mesh and the drmax used (lambda_min / 2 by default)."""
+def _length_scale(lam_fun: Callable[[np.ndarray], np.ndarray], r1: float,
+                  r2: float) -> tuple[float, float, float]:
+    """The length scale at r1, at r2 and at its smallest on [r1, r2], from
+    a sampling of the interval; refuses one that is not positive and finite."""
     lam_s = lam_fun(np.linspace(r1, r2, 257))
     if np.any(lam_s <= 0.0) or not np.all(np.isfinite(lam_s)):
         raise ValueError("lambda must be positive and finite on [r1, r2]")
+    return float(lam_s[0]), float(lam_s[-1]), float(lam_s.min())
+
+
+def _sampler_mesh(r1: float, r2: float, nu: float,
+                  lam_fun: Callable[[np.ndarray], np.ndarray], ngll: int,
+                  drmax: float | None, pad_factor: float
+                  ) -> tuple[Mesh1D, float, Restriction]:
+    """The samplers' computational mesh for a physical interval [r1, r2]:
+    each side padded by `pad_factor` Matern reaches of the length scale at
+    that boundary, elements no wider than `drmax`, by default half the
+    smallest length scale.  Returns the mesh, the drmax used and the
+    restriction to [r1, r2]."""
+    lam1, lam2, lam_min = _length_scale(lam_fun, r1, r2)
     if drmax is None:
-        drmax = float(lam_s.min()) / 2.0
-    reach = pad_factor * np.sqrt(8.0 * nu)
-    lo = max(0.0, r1 - reach * float(lam_s[0]))
-    hi = r2 + reach * float(lam_s[-1])
-    breaks = np.unique([lo, r1, r2, hi])
-    return Mesh1D(breaks, ngll=ngll, drmax=drmax), float(drmax)
-
-
-def _phys_slice(mesh: Mesh1D, r1: float, r2: float) -> tuple[int, int, slice]:
-    """Element range and contiguous global-node slice of [r1, r2]."""
-    e0 = int(np.searchsorted(mesh.left, r1, side="left"))
-    e1 = int(np.searchsorted(mesh.right, r2, side="left"))
-    if not (np.isclose(mesh.left[e0], r1) and np.isclose(mesh.right[e1], r2)):
-        raise RuntimeError("physical endpoints are not mesh breakpoints")
-    return e0, e1, slice(mesh.gmap[e0, 0], mesh.gmap[e1, -1] + 1)
-
-
-def _truncated_modes(fam: RadialOperatorFamily, l: int, p: float,
-                     tol: float) -> tuple[np.ndarray, np.ndarray]:
-    """Leading eigenpairs of A_l under the variance-trace criterion: the
-    smallest set of modes whose omitted trace satisfies
-    sum_tail theta^-p <= tol sum_all theta^-p, at least one kept."""
-    vals = fam.eigvalsh(l)
-    wts = vals ** (-p)
-    tail = np.cumsum(wts[::-1])[::-1]
-    small = tail <= tol * tail[0]
-    k = int(np.argmax(small)) if small.any() else vals.size
-    k = max(k, 1)
-    if k == vals.size:
-        return fam.eig(l)
-    return fam.eig(l, theta_max=float(vals[k - 1]) * (1.0 + 1e-12))
+        drmax = lam_min / 2.0
+    pad = (pad_factor * matern_reach(nu, lam1), pad_factor * matern_reach(nu, lam2))
+    mesh = padded_mesh(r1, r2, pad=pad, weight="r2", ngll=ngll, drmax=drmax)
+    return mesh, float(drmax), restriction(mesh, r1, r2)
 
 
 def _parse_robin_spec(robin: Robin | str, lam_fun: Callable[[np.ndarray], np.ndarray],
@@ -143,28 +127,6 @@ def _parse_robin_spec(robin: Robin | str, lam_fun: Callable[[np.ndarray], np.nda
             raise ValueError("robin must be None, 'auto', a number or a pair")
         return (1.0 / float(lam_fun(r1)), 1.0 / float(lam_fun(r2)))
     return robin
-
-
-def _ppoly(mesh: Mesh1D, nodal: ArrayLike, elements: tuple[int, int]) -> PPoly:
-    """The exact piecewise polynomial of nodal values with any trailing
-    shape, over a half-open element range."""
-    e0, e1 = elements
-    n = mesh.ngll
-    block = np.asarray(nodal, dtype=float)[e0:e1]
-    ne, extra = block.shape[0], block.shape[2:]
-    V = np.vander(mesh.xi, n, increasing=True)
-    flat = block.reshape(ne, n, -1).transpose(1, 0, 2).reshape(n, -1)
-    cxi = np.linalg.solve(V, flat)
-    cxi = cxi.reshape(n, ne, -1)
-    C = np.zeros((n, ne) + extra)
-    ks = np.arange(n)
-    for i, e in enumerate(range(e0, e1)):
-        # xi = t / jac - 1 with t = x - left: xi^k = sum_j C(k, j) (-1)^(k-j) (t/jac)^j
-        T = np.array([[comb(k, j) * (-1.0) ** (k - j) / mesh.jac[e] ** j
-                       if j <= k else 0.0 for k in ks] for j in ks])
-        C[::-1, i] = (T @ cxi[:, i]).reshape((n,) + extra)
-    x = np.concatenate((mesh.left[e0:e1], mesh.right[e1 - 1:e1]))
-    return PPoly(C, x)
 
 
 # -- fields of radius alone -------------------------------------------------
@@ -196,20 +158,19 @@ class RadialGRF:
 
         lam_f = _as_fun(lam)
         clipped = lambda r: lam_f(np.clip(r, r1, r2))
-        self.mesh, self.drmax = _padded_mesh(r1, r2, self.nu, clipped, ngll,
-                                             drmax, pad_factor)
+        self.mesh, self.drmax, self.restriction = _sampler_mesh(
+            r1, r2, self.nu, clipped, ngll, drmax, pad_factor)
         robin = _parse_robin_spec(robin, clipped, r1, r2)
         self.family = RadialOperatorFamily(
             self.mesh, kappa=lambda r: clipped(r) ** 2, weight="r2", robin=robin)
 
-        e0, e1, sl = _phys_slice(self.mesh, r1, r2)
-        self._elements, self._slice = (e0, e1 + 1), sl
-        self.r = self.mesh.rglob[sl].copy()
-        self.r.setflags(write=False)
+        self.r = self.restriction.r
 
-        theta, Phi = _truncated_modes(self.family, 0, 2.0 * self.beta, tol)
-        Phi = self.family.embed(0, Phi)[sl]
-        var_raw = (Phi ** 2) @ theta ** (-2.0 * self.beta)
+        self.basis = SpectralBasis(self.family, 0, restrict=self.restriction,
+                                   power=2.0 * self.beta, tol=tol)
+        theta = self.basis.theta
+        Phi = self.basis.modes()[self.restriction.nodes]
+        var_raw = self.basis.pointwise_variance(2.0 * self.beta)
         if np.any(var_raw <= 0.0):
             raise RuntimeError("vanishing raw variance at a physical node")
 
@@ -255,10 +216,10 @@ class RadialGRF:
         if v.shape != self.r.shape:
             raise ValueError(f"expected {self.r.shape} nodal values, got {v.shape}")
         full = np.zeros(self.mesh.nglob)
-        full[self._slice] = v
+        full[self.restriction.nodes] = v
         return PolynomialLayer(self.interval,
                                self.mesh.to_ppoly(full[self.mesh.gmap],
-                                                  elements=self._elements))
+                                                  elements=self.restriction.elements))
 
     def to_field(self, values: ArrayLike, *, character: Character = SCALAR,
                  name: str | None = None) -> RadialField:
@@ -286,7 +247,7 @@ class SphericalGRF:
     total for two degrees in a row (`lmax_cap` bounds the scan, with a
     warning if it bites).  `sample()` returns coefficients of shape
     (2, lmax + 1, lmax + 1, r.size) in the layout of
-    `randomfield.harmonics`, and the pointwise standard deviation of the
+    `planetmodel.harmonics`, and the pointwise standard deviation of the
     truncated synthesis is exactly sigma(r).
     """
 
@@ -310,8 +271,8 @@ class SphericalGRF:
         clip_r = lambda r: lam_f(np.clip(r, r1, r2))
         lamh_f = clip_r if lam_h is None else (
             lambda r, f=_as_fun(lam_h): f(np.clip(r, r1, r2)))
-        self.mesh, self.drmax = _padded_mesh(r1, r2, self.nu, clip_r, ngll,
-                                             drmax, pad_factor)
+        self.mesh, self.drmax, self.restriction = _sampler_mesh(
+            r1, r2, self.nu, clip_r, ngll, drmax, pad_factor)
         robin = _parse_robin_spec(robin, clip_r, r1, r2)
         self.family = RadialOperatorFamily(
             self.mesh, kappa=lambda r: clip_r(r) ** 2,
@@ -339,16 +300,16 @@ class SphericalGRF:
                 raise ValueError("lmax must be non-negative")
             self.lmax = int(lmax)
 
-        e0, e1, sl = _phys_slice(self.mesh, r1, r2)
-        self._elements, self._slice = (e0, e1 + 1), sl
-        self.r = self.mesh.rglob[sl].copy()
-        self.r.setflags(write=False)
+        sl = self.restriction.nodes
+        self.r = self.restriction.r
 
+        self.basis = SphericalBasis([
+            SpectralBasis(self.family, l, restrict=self.restriction, power=p, tol=tol)
+            for l in range(self.lmax + 1)])
         var_raw = np.zeros(self.r.size)
         self._B: list[np.ndarray] = []
-        for l in range(self.lmax + 1):
-            theta, Phi = _truncated_modes(self.family, l, p, tol)
-            Phi = self.family.embed(l, Phi)[sl]
+        for b in self.basis:
+            l, theta, Phi = b.degree, b.theta, b.modes()[sl]
             B = Phi * theta[None, :] ** (-self.beta)
             var_raw += (2 * l + 1) / (4.0 * np.pi) * (B ** 2).sum(axis=1)
             self._B.append(B)
@@ -361,7 +322,7 @@ class SphericalGRF:
         self.sigma = sig
         self.sigma.setflags(write=False)
         self._scale = sig / np.sqrt(var_raw)
-        self.nmodes = np.array([B.shape[1] for B in self._B])
+        self.nmodes = self.basis.nmodes
 
     @property
     def degrees(self) -> np.ndarray:
@@ -411,8 +372,9 @@ class SphericalGRF:
         if c.shape != want:
             raise ValueError(f"expected coefficients of shape {want}, got {c.shape}")
         full = np.zeros((self.mesh.nglob,) + want[:3])
-        full[self._slice] = np.moveaxis(c, -1, 0)
-        return _ppoly(self.mesh, full[self.mesh.gmap], self._elements)
+        full[self.restriction.nodes] = np.moveaxis(c, -1, 0)
+        return self.mesh.to_ppoly(full[self.mesh.gmap],
+                                  elements=self.restriction.elements)
 
     def to_field(self, coeffs: ArrayLike, *, character: Character = SCALAR,
                  name: str | None = None) -> AnalyticField:

@@ -16,7 +16,10 @@ m = 0 in the sine slot and for m > l.  Scipy's complex harmonics carry
 the Condon-Shortley phase; it is removed here.  The layout and the
 convention are those of pyshtools under `normalization="ortho"` and
 `csphase=1`, so a coefficient array here is a pyshtools `cilm` array
-as it stands.
+as it stands.  Of its 2 (lmax + 1)^2 entries, (lmax + 1)^2 belong to a
+harmonic; `packing` lists them in the one order in which they are laid
+out as a vector: by degree, then the cosine harmonics of orders
+0 ... l, then the sine harmonics of orders 1 ... l.
 
 Two routes.  `real_harmonics` and `synthesise` evaluate the basis at
 arbitrary points through scipy, vectorised over the points: the
@@ -41,7 +44,8 @@ from scipy.special import sph_harm_y
 if TYPE_CHECKING:
     from .sampling import AngularGrid
 
-__all__ = ["real_harmonics", "synthesise", "synthesise_grid", "analyse_grid"]
+__all__ = ["real_harmonics", "synthesise", "synthesise_grid", "analyse_grid",
+           "packing"]
 
 
 def real_harmonics(lmax: int, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
@@ -82,6 +86,23 @@ def synthesise(coeffs: ArrayLike, theta: ArrayLike, phi: ArrayLike) -> np.ndarra
         raise ValueError(f"coefficients of shape {c.shape} do not match points "
                          f"of shape {Y.shape[3:]}")
     return np.einsum("slm...,slm...->...", c, Y)
+
+
+def packing(lmax: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Index arrays (s, l, m) of the (lmax + 1)^2 entries of a coefficient
+    array that belong to a harmonic, in the order of a vector of them: by
+    degree l, then s = 0 with m = 0 ... l, then s = 1 with m = 1 ... l.
+    So `coeffs[s, l, m]` is the vector of an array, and
+    `out[s, l, m] = vector` puts one back."""
+    lmax = int(lmax)
+    if lmax < 0:
+        raise ValueError("lmax must be non-negative")
+    s, l, m = [], [], []
+    for deg in range(lmax + 1):
+        s += [0] * (deg + 1) + [1] * deg
+        l += [deg] * (2 * deg + 1)
+        m += list(range(deg + 1)) + list(range(1, deg + 1))
+    return np.array(s), np.array(l), np.array(m)
 
 
 # -- grids, through pyshtools ---------------------------------------------------

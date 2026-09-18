@@ -47,6 +47,31 @@ def test_ball_neumann_bessel_spectrum():
     assert fam.embed(2, np.ones(fam.ndof(2)))[0] == 0.0
 
 
+def test_interval_neumann_cosine_spectrum():
+    """On an interval of the line with the plain measure, degree 0 is the
+    one-dimensional operator: eigenvalues 1 + kappa (n pi / (b - a))^2 with
+    the cosines as eigenfunctions, wherever the interval lies."""
+    kap = 0.04
+    for a, b in ((-1.0, 1.0), (0.0, 2.0), (0.5, 2.5)):
+        mesh = Mesh1D([a, b], ngll=6, drmax=0.05)
+        fam = RadialOperatorFamily(mesh, kappa=kap, weight="one")
+        assert not fam.is_ball and fam.ndof(0) == mesh.nglob
+        n = np.arange(12)                     # the modes the mesh resolves
+        exact = 1.0 + kap * (n * np.pi / (b - a)) ** 2
+        assert np.max(np.abs(fam.eigvalsh(0)[:n.size] - exact) / exact) < 1e-8
+        theta, Phi = fam.eig(0, theta_max=exact[3] * 1.001)
+        mode = np.cos(3 * np.pi * (mesh.rglob - a) / (b - a))
+        overlap = Phi[:, 3] @ (fam.mass(0) * mode)
+        assert abs(abs(overlap) - np.sqrt((b - a) / 2.0)) < 1e-8
+        if a > 0.0:
+            assert fam.eigvalsh(1)[0] > 1.0
+        else:
+            for call in (fam.pencil, fam.eigvalsh, fam.ndof, fam.mass):
+                with pytest.raises(ValueError, match="degree l >= 1 needs r > 0"):
+                    call(1)
+    assert "interval" in repr(fam)
+
+
 def test_family_algebra():
     """Orthonormality, residual, powers, inner products, Robin shift."""
     mesh = Mesh1D([0.4, 0.55, 1.0], ngll=5, drmax=0.06)
@@ -104,8 +129,10 @@ def test_apply_solve_and_white_noise():
 
 def test_refusals():
     mesh = Mesh1D([0.0, 1.0], ngll=4, drmax=0.5)
-    with pytest.raises(ValueError):
-        RadialOperatorFamily(mesh, weight="one")
+    with pytest.raises(ValueError, match="weight"):
+        RadialOperatorFamily(mesh, weight="r")
+    with pytest.raises(ValueError, match="r >= 0"):
+        RadialOperatorFamily(Mesh1D([-1.0, 1.0]), weight="r2")
     with pytest.raises(ValueError):
         RadialOperatorFamily(mesh, kappa=-1.0)
     with pytest.raises(ValueError):
