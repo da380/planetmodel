@@ -26,6 +26,16 @@ def no_leaked_gmsh_session():
 COARSE = UniformInterfaces(0.15, 0.3, 0.3)
 
 
+def boundary_edge_lengths(curve):
+    """The lengths of the straight line elements on a curve of the open model."""
+    import gmsh
+    tags, xyz, _ = gmsh.model.mesh.getNodes(1, curve, includeBoundary=True)
+    pos = dict(zip(tags, np.asarray(xyz).reshape(-1, 3)))
+    _, _, nodes = gmsh.model.mesh.getElements(1, curve)
+    ends = np.asarray(nodes[0]).reshape(-1, 2)
+    return np.array([np.linalg.norm(pos[a] - pos[b]) for a, b in ends])
+
+
 def full_geometry():
     """Three shells of a unit ball, named."""
     return Geometry(Skeleton([0.0, 0.4, 0.8, 1.0]),

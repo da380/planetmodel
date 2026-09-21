@@ -88,18 +88,19 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
                           radii=(a, b))
         timings["geometry"] = clock() - t0
 
+        # The inclusion is centred on itself: its distance is measured
+        # from there, and "outward" on it means away from there.
+        centre = (0.0, 0.0, d) if dimension == 3 else (d, 0.0, 0.0)
+        centres = {tagging.faces[0]: centre}
+
         t0 = clock()
-        apply_size_fields(tagging, sizes)
+        apply_size_fields(tagging, sizes, centres=centres)
         apply_mesh_options(
             order=1, algorithm_2d=algorithm_2d, algorithm_3d=algorithm_3d,
             size_min=min(s.size for s in sizes.values()),
             size_max=max(s.far_size for s in sizes.values()))
         gmsh.model.mesh.generate(dimension)
         timings["mesh"] = clock() - t0
-
-        # "Outward" on the inclusion means away from its own centre.
-        centre = (0.0, 0.0, d) if dimension == 3 else (d, 0.0, 0.0)
-        centres = {tagging.faces[0]: centre}
 
         t0 = clock()
         orient_mesh(dimension, centres=centres)
