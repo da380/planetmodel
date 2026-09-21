@@ -1,11 +1,20 @@
 """Telling gmsh how finely to resolve each interface.
 
-One Distance field per interface, each wrapped in a Threshold that
-grows the element size from `size` at the boundary to `far_size` over
+One distance per interface, each wrapped in a Threshold that grows the
+element size from `size` at the boundary to `far_size` over
 `decay_width`, and a single Min over all of them so every point takes
-the finest requirement that applies to it.  A single Distance field
-over every boundary could only express one size for all of them, which
-is what a layered domain does not want.
+the finest requirement that applies to it.  A single distance to every
+boundary could only express one size for all of them, which is what a
+layered domain does not want.
+
+Every interface is a full circle or sphere when it is meshed, of radius
+R about a centre c, so the distance to it is | |x - c| - R | and is
+given to gmsh in closed form.  gmsh's own Distance field is not used:
+it measures the distance to a sampling of the entity by points, which
+on the interface itself is zero at the points and about half their
+spacing between them, and the Threshold turns that into an element size
+that ripples along the interface and is on average coarser than the one
+asked for, the more so the shorter the decay width.
 """
 from __future__ import annotations
 
@@ -15,6 +24,7 @@ import gmsh
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ._orient import Centres
 from ._tagging import Tagging
 from .spec import InterfaceSizing
 
@@ -22,25 +32,29 @@ __all__ = ["apply_size_fields", "apply_mesh_options",
            "check_sizing_resolves_spans", "check_sizing_scale"]
 
 
-def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing]) -> int:
+def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing], *,
+                      centres: Centres | None = None) -> int:
     """Build the background size field from per-interface sizings.
 
     `sizes` maps interface index to InterfaceSizing, in the lengths the
-    geometry is drawn in.  Returns the tag of the field set as the
-    background.
+    geometry is drawn in.  `centres` maps a surface's entity tag to its
+    centre where that is not the origin.  Returns the tag of the field
+    set as the background.
     """
     if not sizes:
         raise ValueError("no sizing given: every interface needs one")
 
-    entity_key = "SurfacesList" if tagging.dimension == 3 else "CurvesList"
+    centres = centres or {}
     thresholds: list[float] = []
 
-    for i, face in enumerate(tagging.faces):
+    for i, (face, radius) in enumerate(zip(tagging.faces, tagging.radii)):
         sizing = sizes.get(i)
         if sizing is None:
             raise ValueError(f"no sizing for interface {i}")
-        dist = gmsh.model.mesh.field.add("Distance")
-        gmsh.model.mesh.field.setNumbers(dist, entity_key, [float(face)])
+        dist = gmsh.model.mesh.field.add("MathEval")
+        gmsh.model.mesh.field.setString(
+            dist, "F", _distance_to_sphere(centres.get(face, (0.0, 0.0, 0.0)),
+                                           radius))
 
         thr = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(thr, "InField", dist)
@@ -54,6 +68,17 @@ def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing]) ->
     gmsh.model.mesh.field.setNumbers(combined, "FieldsList", thresholds)
     gmsh.model.mesh.field.setAsBackgroundMesh(combined)
     return combined
+
+
+def _distance_to_sphere(centre: ArrayLike, radius: float) -> str:
+    """The distance | |x - c| - R | as an expression gmsh evaluates.
+
+    Each number is written with the digits that round-trip and in
+    brackets, so a sign or an exponent is read as part of it.
+    """
+    cx, cy, cz = (float(c) for c in np.asarray(centre, dtype=float))
+    return (f"Fabs(Sqrt((x-({cx!r}))^2+(y-({cy!r}))^2+(z-({cz!r}))^2)"
+            f"-({float(radius)!r}))")
 
 
 def apply_mesh_options(*, order: int, algorithm_2d: int, algorithm_3d: int,

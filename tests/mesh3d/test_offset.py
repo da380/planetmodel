@@ -7,7 +7,7 @@ import gmsh
 from planetmodel.mesh3d import build_offset_mesh, manifest as sc
 from planetmodel.mesh3d._session import session
 
-from conftest import COARSE
+from conftest import COARSE, boundary_edge_lengths
 
 pytestmark = pytest.mark.gmsh
 
@@ -71,6 +71,23 @@ def test_a_disc_builds_in_two_dimensions(offset, tmp_path):
     xyz = coords.reshape(-1, 3)
     assert np.allclose(np.linalg.norm(xyz - [offset, 0.0, 0.0], axis=1), 0.4,
                        atol=2e-3)
+
+
+def test_the_inclusion_is_meshed_uniformly_at_the_size_asked_for(tmp_path):
+    # The distance to the inclusion is measured from its own centre: from
+    # the origin the refinement would miss its boundary altogether.
+    size = 0.02
+    res = build_offset_mesh(tmp_path / "fine", inner_radius=0.3, outer_radius=1.0,
+                            offset=0.4, sizing=COARSE.__class__(size, 0.08, 0.1),
+                            dimension=2, order=1)
+    assert res.validation.ok
+    with session(name="edges"):
+        gmsh.merge(str(res.msh_path))
+        for group in (1, 2):
+            (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, group)
+            lengths = boundary_edge_lengths(curve)
+            assert lengths.max() / lengths.min() < 1.05
+            assert lengths.mean() == pytest.approx(size, rel=0.05)
 
 
 def test_an_offset_mesh_keeps_the_numbers_it_was_given(tmp_path):

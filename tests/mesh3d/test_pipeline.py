@@ -21,6 +21,8 @@ from planetmodel.mesh3d._validate import check_interface_radii, validate_mesh
 from planetmodel.mesh3d._writer import element_counts, read_groups, write_msh
 
 
+from conftest import boundary_edge_lengths
+
 pytestmark = pytest.mark.gmsh
 
 FULL = (0.0, 0.4, 0.8, 1.0)          # skeleton boundaries of a full ball
@@ -216,6 +218,21 @@ def test_sizing_is_honoured_per_interface():
         r = np.linalg.norm(coords.reshape(-1, 3), axis=1)
         assert np.mean(np.abs(r - 0.8) < 0.05) > 0.3
     assert refined > 1.5 * coarse
+
+
+@pytest.mark.parametrize("boundaries", [(0.0, 0.6, 1.0), (0.6, 1.0)])
+def test_interfaces_are_meshed_uniformly_at_the_size_asked_for(boundaries):
+    # A short decay width, where a distance measured to a sampling of the
+    # interface shows most: the size then ripples between the sample
+    # points, here by a factor of three, and averages twice what was asked.
+    size = 0.02
+    sizes = {i: InterfaceSizing(size, 0.08, 0.1) for i in range(2)}
+    with session(name="uniform"):
+        t = build_and_mesh(boundaries, 2, sizes=sizes)
+        for face in t.faces:
+            lengths = boundary_edge_lengths(face)
+            assert lengths.max() / lengths.min() < 1.05
+            assert lengths.mean() == pytest.approx(size, rel=0.05)
 
 
 def test_size_options_disable_the_competing_sources():
