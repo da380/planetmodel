@@ -38,22 +38,25 @@ from __future__ import annotations
 
 import copy
 from collections import abc
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
 
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .character import Character
 from .displacement import RadialDisplacement, SphericalFunction
-from .fields import Field
+from .fields import Field, RadialField
 from .geometry import Geometry, LayerInfo, Names, Renames
-from .layerfunction import same_interval
+from .layerfunction import LayerFunction, polynomial_fit, same_interval
 from .mapping import Mapping
-from .skeleton import Skeleton
+from .materials import is_fluid
+from .skeleton import CoarseningMap, Skeleton
 from .units import EARTH_MEAN_DENSITY, LENGTH, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec
 
-__all__ = ["Layer", "Model"]
+__all__ = ["Layer", "Model", "CoarseningFit"]
 
 
 class Layer:
@@ -117,6 +120,50 @@ class Layer:
         lo, hi = self._info.interval
         return (f"Layer({self._label()}, [{lo:g}, {hi:g}], "
                 f"fields={list(self._fields)})")
+
+
+@dataclass(frozen=True)
+class CoarseningFit:
+    """What a model coarsening did: the map, and each fit's misfit.
+
+    `residuals` maps (coarse layer index, field name) to the fit's
+    relative root-mean-square misfit against the fine model over the
+    merged interval, the absolute RMS where the data vanish, measured
+    on a mesh four times finer than the fit's nodes.  A layer left
+    whole keeps its fields and appears in no entry.
+    """
+
+    map: CoarseningMap
+    residuals: abc.Mapping[tuple[int, str], float]
+
+    @property
+    def worst(self) -> float:
+        """The largest residual; zero where nothing was fitted."""
+        return max(self.residuals.values(), default=0.0)
+
+    def describe(self) -> str:
+        """One line per fit, the worst first."""
+        lines = [f"  layer {j} {name!r}: {res:.3g}"
+                 for (j, name), res in sorted(self.residuals.items(),
+                                              key=lambda kv: -kv[1])]
+        return "\n".join([repr(self)] + lines)
+
+    def __repr__(self) -> str:
+        return (f"CoarseningFit({self.map.fine.nlayers} -> "
+                f"{self.map.coarse.nlayers} layers, {len(self.residuals)} "
+                f"fits, worst {self.worst:.3g})")
+
+
+def _misfit(data: Callable[[np.ndarray], np.ndarray], fitted: LayerFunction,
+            interval: tuple[float, float], n: int) -> float:
+    """The fit's relative RMS misfit against the data on the interval,
+    measured at 4 n equispaced radii; absolute where the data vanish."""
+    lo, hi = interval
+    r = np.linspace(lo, hi, 4 * n)
+    y = np.asarray(data(r))
+    err = float(np.sqrt(np.mean(np.abs(np.asarray(fitted(r)) - y) ** 2)))
+    scale = float(np.sqrt(np.mean(np.abs(y) ** 2)))
+    return err / scale if scale > 0.0 else err
 
 
 class Model:
@@ -423,6 +470,140 @@ class Model:
                 raise ValueError(f"got fields for {len(shells)} shells, "
                                  f"expected {n_new}")
         return self.replaced(geometry=g, layers=self._carried(g, shells=shells))
+
+    def coarsened(self, *, keep: Iterable[int | str] | None = None,
+                  drop: Iterable[int | str] | None = None, degree: int = 3,
+                  n: int = 64) -> tuple["Model", CoarseningFit]:
+        """Interior interfaces removed, each merged layer's fields refit.
+
+        Exactly one of `keep` and `drop` selects interior interfaces by
+        name or index; the outermost interface, and the inner boundary
+        of a hollow model, are not selectable.  A layer left whole
+        keeps its field objects.  A merged layer holds, for every name
+        all its fine layers carry, the least-squares polynomial of
+        `degree` through `n` Chebyshev samples of the fine model, and
+        the returned CoarseningFit reports each fit's relative misfit
+        for the caller to judge.  Merging a fluid layer with a solid
+        one, a name only some of the merged layers hold, and a field
+        that is not a scalar of the radius alone are refused by name.
+        The identity mapping is required, as for every surgery; the
+        fits are independent, so derived fields (an attached gravity, a
+        modulus beside its velocities) are more consistently derived
+        again from the coarse model.
+        """
+        geometry, cmap = self._coarsening(keep=keep, drop=drop)
+        layers: list[dict[str, Field]] = []
+        residuals: dict[tuple[int, str], float] = {}
+        for j, group in enumerate(cmap.layers):
+            if len(group) == 1:
+                layers.append(dict(self._layers[group[0]].fields))
+                continue
+            self._require_mergeable(group)
+            interval = geometry.skeleton.interval(j)
+            fields: dict[str, Field] = {}
+            for name in self._merged_names(group):
+                character = self._one_character(group, name)
+                data = self._across(group, name)
+                fitted = polynomial_fit(interval, data, degree=degree, n=n)
+                fields[name] = RadialField(interval, fitted,
+                                           character=character, name=name)
+                residuals[(j, name)] = _misfit(data, fitted, interval, n)
+            layers.append(fields)
+        coarse = self.replaced(geometry=geometry, layers=layers)
+        return coarse, CoarseningFit(cmap, MappingProxyType(residuals))
+
+    def _coarsening(self, *, keep: Iterable[int | str] | None,
+                    drop: Iterable[int | str] | None
+                    ) -> tuple[Geometry, CoarseningMap]:
+        """`keep`/`drop` as interface names or indices, resolved onto
+        the geometry's interior boundaries and coarsened."""
+        if (keep is None) == (drop is None):
+            raise ValueError("give exactly one of keep and drop")
+        faces = self._geometry.interfaces
+        first = 1 if self.skeleton.is_hollow else 0
+
+        def interior(w: int | str) -> int:
+            face = self._geometry.interface(w)
+            if face.index == len(faces) - 1:
+                raise ValueError(
+                    f"interface {face.name or face.index!r} is the outermost "
+                    "boundary and cannot be selected for coarsening")
+            if first and face.index == 0:
+                raise ValueError(
+                    f"interface {face.name or face.index!r} is the inner "
+                    "boundary of a hollow model and cannot be selected")
+            return face.index - first
+
+        which = [interior(w) for w in (drop if keep is None else keep)]
+        if keep is None:
+            return self._geometry.coarsened(drop=which)
+        return self._geometry.coarsened(keep=which)
+
+    def _require_mergeable(self, group: Sequence[int]) -> None:
+        """Refuse a merge across the fluid-solid character."""
+        fluidity = {}
+        for i in group:
+            try:
+                fluidity[i] = is_fluid(self._layers[i])
+            except KeyError:
+                continue
+        if True in fluidity.values() and False in fluidity.values():
+            fluid = [i for i, f in fluidity.items() if f]
+            solid = [i for i, f in fluidity.items() if not f]
+            raise ValueError(
+                f"cannot merge fluid layers {fluid} with solid layers "
+                f"{solid}: keep the interface between them")
+
+    def _merged_names(self, group: Sequence[int]) -> tuple[str, ...]:
+        """Every name all layers of `group` hold, in the first layer's
+        order; a name only some hold is refused."""
+        held = [set(self._layers[i].names) for i in group]
+        common = set.intersection(*held)
+        partial = sorted(set.union(*held) - common)
+        if partial:
+            raise ValueError(
+                f"cannot merge layers {list(group)}: {partial} are held on "
+                "some of them and not others; drop them first, or keep the "
+                "interface")
+        return tuple(nm for nm in self._layers[group[0]].names if nm in common)
+
+    def _one_character(self, group: Sequence[int], name: str) -> Character:
+        """The one character `name` has across `group`, each layer's
+        field a scalar of the radius alone; anything else is refused."""
+        characters = set()
+        for i in group:
+            f = self._layers[i][name]
+            if f.character.rank != 0 or not getattr(f, "is_radial", False):
+                raise ValueError(
+                    f"{name!r} on layer {self._layers[i]._label()} is not a "
+                    "scalar of the radius alone, so it cannot be refit "
+                    "radially; drop it first, or keep the interface")
+            characters.add(f.character)
+        if len(characters) != 1:
+            raise ValueError(
+                f"{name!r} has characters {sorted(map(str, characters))} "
+                f"across layers {list(group)}; one field holds one character")
+        return characters.pop()
+
+    def _across(self, group: Sequence[int], name: str
+                ) -> Callable[[np.ndarray], np.ndarray]:
+        """`name` of the fine model as one function of r over `group`,
+        each radius answered by the fine layer containing it."""
+        b = self.skeleton.boundaries
+        lo_i, hi_i = int(group[0]), int(group[-1])
+
+        def data(r: np.ndarray) -> np.ndarray:
+            r = np.asarray(r, dtype=float)
+            idx = np.clip(np.searchsorted(b, r, side="right") - 1, lo_i, hi_i)
+            parts = {int(i): self._layers[int(i)][name](r[idx == i])
+                     for i in np.unique(idx)}
+            out = np.empty(r.shape, dtype=np.result_type(
+                *(p.dtype for p in parts.values())))
+            for i, vals in parts.items():
+                out[idx == i] = vals
+            return out
+
+        return data
 
     # -- units --------------------------------------------------------------
 

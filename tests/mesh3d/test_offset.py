@@ -25,6 +25,16 @@ def test_an_offset_ball_builds_and_validates(offset3):
     assert res.counts["layers"] == 2 and res.counts["interfaces"] == 2
     assert res.geometry is None and res.spec is None and res.mapping is None
     assert res.msh_path.exists() and res.manifest_path.exists()
+    assert "optimise" in res.timings
+
+
+def test_offset_optimisation_can_be_switched_off(tmp_path):
+    res = build_offset_mesh(tmp_path / "raw", inner_radius=0.4, outer_radius=1.0,
+                            sizing=COARSE, dimension=2, optimise="Netgen")
+    assert "optimise" not in res.timings          # 2D: nothing to optimise
+    res = build_offset_mesh(tmp_path / "off", inner_radius=0.4, outer_radius=1.0,
+                            sizing=COARSE, optimise=None)
+    assert "optimise" not in res.timings and res.validation.ok
 
 
 def test_the_offset_manifest_says_what_it_knows(offset3):

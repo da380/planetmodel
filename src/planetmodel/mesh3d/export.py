@@ -42,7 +42,7 @@ manifest's `mesh.read_options` says so in the form a C++ reader passes on.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as MappingOf
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
@@ -55,12 +55,13 @@ from numpy.typing import ArrayLike
 from ..character import VECTOR, Character
 from ..fields import stored_shape
 from ..mapping import IdentityMapping, Mapping
+from ..materials import is_fluid
 from ..units import LENGTH
 from . import manifest
 from .spec import DELIVERIES, MeshResult
 
 if TYPE_CHECKING:
-    from ..model import Model
+    from ..model import Layer, Model
 
 __all__ = ["ExportResult", "export_mfem_mesh", "export_mfem",
            "jacobian_report", "MESH_READ_OPTIONS"]
@@ -248,8 +249,8 @@ def _displacement_at(mapping: Mapping, X: ArrayLike, *, scale: float) -> np.ndar
 
 
 def _field_entry(name: str, path: str | Path, fes: Any, *, character: Character,
-                 dimensions: Any, si: bool, layers: Iterable[int]
-                 ) -> manifest.FieldEntry:
+                 dimensions: Any, si: bool, layers: Iterable[int],
+                 radial_degree: int | None = None) -> manifest.FieldEntry:
     """One `fields[]` record: where the GridFunction is and which space it
     lives in, and what its values are."""
     mfem = _mfem()
@@ -258,7 +259,7 @@ def _field_entry(name: str, path: str | Path, fes: Any, *, character: Character,
     return manifest.FieldEntry.from_field(
         name, path, fe_space=fes.FEColl().Name(), vdim=int(fes.GetVDim()),
         ordering=ordering, character=character, dimensions=dimensions, si=si,
-        layers=layers)
+        layers=layers, radial_degree=radial_degree)
 
 
 def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
@@ -439,6 +440,93 @@ def _field_values(model: Model, name: str, X: np.ndarray,
     return values
 
 
+def _fluidity(layer: Layer) -> bool | None:
+    """The layer's fluidity, or None where its fields do not say."""
+    try:
+        return bool(is_fluid(layer))
+    except KeyError:
+        return None
+
+
+def _interface_kind(below: int, above: int, in_model: Sequence[bool],
+                    fluid: Sequence[bool | None]) -> str | None:
+    """One of `manifest.KINDS` for an interface between the 0-based
+    layers `below` and `above` (-1 outside), or None where the model
+    does not say."""
+    b = below != -1 and in_model[below]
+    a = above != -1 and in_model[above]
+    if b and a:
+        fb, fa = fluid[below], fluid[above]
+        if fb is None or fa is None:
+            return None
+        if fb and fa:
+            return "fluid-fluid"
+        return "fluid-solid" if fb or fa else "solid-solid"
+    if b or a:
+        return "free"
+    return "outer" if above == -1 else None
+
+
+def _side_value(model: Model, layer: int, in_model: Sequence[bool], name: str,
+                radius: float) -> float | None:
+    """`name` just inside the 0-based `layer` at `radius`, where it is
+    a real scalar radial value there; None otherwise."""
+    if layer == -1 or not in_model[layer]:
+        return None
+    fields = model.layer(layer)
+    if name not in fields:
+        return None
+    field = fields[name]
+    if field.character.rank != 0 or not getattr(field, "is_radial", False):
+        return None
+    value = np.asarray(field(radius))
+    if np.iscomplexobj(value):
+        return None
+    return float(value)
+
+
+def _radial_degree(model: Model, name: str) -> int | None:
+    """The degree in r reproducing `name` within every layer holding
+    it, or None for a field of higher rank or one without a single
+    degree on some layer."""
+    if _character_of(model, name).rank != 0:
+        return None
+    degrees = []
+    for i in model.layers_with(name):
+        d = getattr(model.layer(i)[name], "radial_degree", None)
+        if d is None:
+            return None
+        degrees.append(int(d))
+    return max(degrees)
+
+
+def _annotate_from_model(card: manifest.MeshManifest, model: Model,
+                         names: Iterable[str]) -> None:
+    """Write what the model says onto the manifest's skeleton records.
+
+    `fluid` on every layer (False for a shell, None where the fields do
+    not say), `kind` on every interface from those flags, and `values`
+    on every interface: the one-sided values of each of `names` that is
+    a real scalar radial field, absent sides null.
+    """
+    in_model = [bool(e["in_geometry"]) for e in card.layers]
+    fluid = [_fluidity(model.layer(e["attribute"] - 1)) if in_model[i] else False
+             for i, e in enumerate(card.layers)]
+    for entry, f in zip(card.layers, fluid):
+        entry["fluid"] = f
+    names = list(names)
+    for entry in card.interfaces:
+        below, above = (int(k) for k in entry["between_layers"])
+        entry["kind"] = _interface_kind(below, above, in_model, fluid)
+        values = {}
+        for name in names:
+            pair = [_side_value(model, k, in_model, name, entry["radius"])
+                    for k in (below, above)]
+            if any(v is not None for v in pair):
+                values[name] = pair
+        entry["values"] = values or None
+
+
 def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
                 fields: Iterable[str] | None = None, delivery: str = "physical",
                 order: int | None = None) -> ExportResult:
@@ -461,9 +549,15 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     sit on the geometry the mesh was built from: the same skeleton to
     the model's geometry's `rtol`; a mesh not built from a geometry is
     refused.  The manifest gains one `fields[]` record per name, saying
-    the file, the space to read it into, the character, the unit and the
-    layers on which the values mean anything, and `scales` and
-    `constants` blocks from the model.
+    the file, the space to read it into, the character, the unit, the
+    layers on which the values mean anything and, for a scalar field
+    polynomial in r, the degree that reproduces it (`radial_degree`);
+    and `scales` and `constants` blocks from the model.  What the model
+    says about the skeleton is written onto its records: `fluid` on
+    every layer (the vanishing of shear in the exported description;
+    False for a shell, null where the fields do not say), `kind` on
+    every interface, and `values`, the one-sided values there of every
+    exported real scalar radial field.
     """
     mfem = _mfem()
     _check_model_sits_on(result, model)
@@ -499,7 +593,7 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
         entries.append(_field_entry(
             name, path, fes, character=_character_of(model, name),
             dimensions=None if spec is None else spec.dimensions, si=si,
-            layers=holders[name]))
+            layers=holders[name], radial_degree=_radial_degree(model, name)))
 
     card = manifest.read(export.manifest_path)
     for entry in card.fields:
@@ -508,6 +602,7 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     card.fields.extend(dataclasses.asdict(e) for e in entries)
     card.scales = manifest.scales_block(model.scales)
     card.constants = manifest.constants_block(model)
+    _annotate_from_model(card, model, written)
     manifest.validate_structure(card)
     manifest_path = manifest.write(path_base, card)
     return dataclasses.replace(export, manifest_path=manifest_path,

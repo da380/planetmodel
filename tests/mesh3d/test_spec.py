@@ -4,9 +4,11 @@ import dataclasses
 import pytest
 
 from planetmodel import Geometry, Skeleton
-from planetmodel.mesh3d import (AngularResolution, InterfaceSizing, MeshResult,
-                                MeshSpec, PerInterface, Shell, UniformInterfaces,
+from planetmodel.mesh3d import (AngularResolution, CappedInterfaces,
+                                InterfaceSizing, MeshResult, MeshSpec,
+                                PerInterface, Shell, UniformInterfaces,
                                 ValidationReport)
+from planetmodel.mesh3d._sizing import check_sizing_resolves_spans
 from planetmodel.mesh3d.spec import QUALITY_FLOOR
 
 from conftest import COARSE, full_geometry, hollow_geometry
@@ -96,6 +98,18 @@ def test_mesh_spec_is_frozen_with_defaults():
         spec.order = 3
 
 
+def test_mesh_spec_normalises_optimise():
+    g = full_geometry()
+    assert MeshSpec(g, COARSE).optimise == ("Netgen",)
+    assert MeshSpec(g, COARSE, optimise=None).optimise == ()
+    assert MeshSpec(g, COARSE, optimise=["Netgen", "Relocate3D"]).optimise == \
+        ("Netgen", "Relocate3D")
+    with pytest.raises(TypeError, match="optimise"):
+        MeshSpec(g, COARSE, optimise=3)
+    with pytest.raises(TypeError, match="optimise methods are names"):
+        MeshSpec(g, COARSE, optimise=[3])
+
+
 def test_a_plain_function_is_a_valid_sizing_rule():
     def mine(interfaces, outer_radius):
         return {f.index: InterfaceSizing(0.1, 0.2, 0.2) for f in interfaces}
@@ -155,8 +169,51 @@ def test_per_interface_overrides_by_name_and_index():
         PerInterface({0: fine})(faces, 1.0)
 
 
+def test_capped_interfaces_caps_in_angle():
+    faces = full_geometry().interfaces          # radii 0.4, 0.8, 1.0
+    sizes = CappedInterfaces(10.0, 10.0, 0.3)(faces, 1.0)
+    assert sizes[0].size == pytest.approx(0.3 * 0.4)
+    assert sizes[2].size == pytest.approx(0.3 * 1.0)
+    for s in sizes.values():
+        assert s.far_size >= s.size
+
+
+def test_capped_interfaces_caps_at_thin_spans():
+    g = Geometry(Skeleton([0.0, 0.5, 0.998, 1.0]))
+    sizes = CappedInterfaces(0.15, 0.3, 0.3)(g.interfaces, 1.0)
+    assert sizes[0].size == pytest.approx(0.15)
+    # the crust is 0.002 thick: both its interfaces take elements
+    # that fit inside it, decaying over their own scale
+    assert sizes[1].size == pytest.approx(4.0 * 0.002)
+    assert sizes[2].size == pytest.approx(4.0 * 0.002)
+    assert sizes[1].decay_width == pytest.approx(10.0 * 0.008)
+    assert sizes[0].decay_width == pytest.approx(0.3)
+
+
+def test_capped_interfaces_on_a_hollow_geometry():
+    faces = hollow_geometry().interfaces        # radii 0.5, 0.8, 1.0
+    sizes = CappedInterfaces(10.0, 10.0, 0.5)(faces, 1.0)
+    # no layer below the inner boundary: only the angular cap bites
+    assert sizes[0].size == pytest.approx(0.3 * 0.5)
+
+
+def test_capped_interfaces_satisfies_the_span_check():
+    b = [0.0, 0.19, 0.55, 0.9966, 1.0]          # a crust 0.0034 thick
+    g = Geometry(Skeleton(b))
+    sizes = CappedInterfaces(0.2, 0.4, 0.4)(g.interfaces, 1.0)
+    assert check_sizing_resolves_spans(b, sizes) == []
+
+
+def test_the_span_check_names_the_capped_rule():
+    with pytest.raises(ValueError, match="CappedInterfaces"):
+        check_sizing_resolves_spans(
+            [0.0, 0.99, 1.0], {0: InterfaceSizing(0.15, 0.3, 0.3),
+                               1: InterfaceSizing(0.15, 0.3, 0.3)})
+
+
 def test_sizing_rules_are_frozen_and_comparable():
     assert AngularResolution(0.1, 0.5) == AngularResolution(0.1, 0.5)
+    assert CappedInterfaces(0.1, 0.5, 0.5) == CappedInterfaces(0.1, 0.5, 0.5)
     with pytest.raises(dataclasses.FrozenInstanceError):
         AngularResolution(0.1, 0.5).h_ref = 1.0
 
@@ -179,6 +236,19 @@ def test_mesh_result_constructs_by_hand(tmp_path):
                    validation=ValidationReport(dimension=2), timings={})
     assert r.spec is None and r.mapping is None
     assert repr(r) == "MeshResult(a.msh, 3 elements, 1 layers)"
+
+
+def test_mesh_result_summary_is_one_line(tmp_path):
+    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+                   geometry=None,
+                   counts={"elements": 3, "nodes": 5, "layers": 1},
+                   validation=ValidationReport(dimension=3, min_sicn=0.4),
+                   timings={"mesh": 0.5, "write": 0.25})
+    line = r.summary()
+    assert "\n" not in line
+    assert "3 elements" in line and "5 nodes" in line
+    assert "minSICN 0.4" in line
+    assert "0.75 s" in line and "mesh 0.5" in line and "write 0.25" in line
 
 
 def test_the_geometry_type_is_the_core_one():

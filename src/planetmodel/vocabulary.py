@@ -98,6 +98,10 @@ VOCABULARY: dict[str, FieldSpec] = {
     "g": FieldSpec(SCALAR, units.GRAVITY,
                    meaning="gravitational acceleration of the spherically "
                            "symmetric reference, radially inward, by magnitude"),
+    "drho_dphi0": FieldSpec(
+        DENSITY, units.DENSITY / (units.GRAVITY * units.LENGTH),
+        meaning="stratification of a fluid layer: "
+                "d rho / d Phi_0 = rho'(r) / g(r)"),
 }
 
 #: The named constants, each with its SI value and dimensions.

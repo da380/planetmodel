@@ -7,10 +7,10 @@ reference one, concentric spheres with the geometry's names as
 attributes: gmsh meshes the skeleton and nothing else, and the
 geometry's mapping is applied later, at the MFEM export, where a
 displacement is a vector in the mesh's own nodal space.  Then CAD,
-tagging, sizing, meshing at order 1, orientation, curving, validation,
-and only then anything is written.  A mesh that fails its checks and
-exists anyway looks finished, so nothing reaches disk before
-validation.
+tagging, sizing, meshing at order 1, optimisation of the linear mesh,
+orientation, curving, validation, and only then anything is written.
+A mesh that fails its checks and exists anyway looks finished, so
+nothing reaches disk before validation.
 
 With shells and a non-identity mapping the mapping must be defined and
 orientation-preserving out to the outer boundary of the computational
@@ -144,6 +144,12 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
             size_max=max(s.far_size for s in sizes.values()))
         gmsh.model.mesh.generate(d)
         timings["mesh"] = clock() - t0
+
+        if d == 3 and spec.optimise:
+            t0 = clock()
+            for method in spec.optimise:
+                gmsh.model.mesh.optimize(method)
+            timings["optimise"] = clock() - t0
 
         t0 = clock()
         orient_mesh(d)

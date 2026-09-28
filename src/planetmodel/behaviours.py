@@ -31,18 +31,18 @@ type derived from `Model` alone.  The transformations `isotropic`,
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from . import materials, rheology
-from .character import SCALAR
+from .character import DENSITY, SCALAR
 from .fields import ComposedField, Field
 from .mesh1d.gravity import gravity, gravity_fields, mass
 
 if TYPE_CHECKING:
-    from .model import Model
+    from .model import CoarseningFit, Model
 
 __all__ = ["layer_method", "with_moduli", "with_velocities", "Elastic", "ConstantQ",
            "SelfGravitating", "Viscoelastic", "ELASTIC_FAMILIES", "elastic_family"]
@@ -67,6 +67,25 @@ def elastic_family(name: str) -> tuple[str, ...]:
             return family
     raise KeyError(f"{name!r} is not an elastic name; those are "
                    f"{list(materials.ELASTIC_NAMES)}")
+
+
+def _description_family(model: Model, group: Sequence[int]) -> tuple[str, ...]:
+    """The elastic names a merged group is refit through: the first
+    description every layer of the group holds, velocities preferred
+    since their products keep the derived moduli exact polynomials."""
+    held = set.intersection(*(set(model.layer(i).names) for i in group))
+    if "rho" in held and ({"vp", "vs"} <= held or {"vpv", "vsv"} <= held):
+        return tuple(nm for nm in VELOCITY_NAMES if nm in held)
+    five = materials.MODULI_NAMES[materials.Symmetry.VTI]
+    if set(five) <= held:
+        return five
+    iso = materials.MODULI_NAMES[materials.Symmetry.ISOTROPIC]
+    if set(iso) <= held:
+        return iso
+    raise ValueError(
+        f"merged layers {list(group)} share no complete elastic description "
+        "in velocities or moduli (perhaps only 'elastic_moduli'); keep the "
+        "interface, or re-describe the layers first")
 
 
 def layer_method[T](fn: Callable[..., T]) -> Callable[..., T]:
@@ -191,6 +210,39 @@ class Elastic:
             return out
         return out.replaced(layers=layers)
 
+    def coarsened(self: Model, *, keep: Iterable[int | str] | None = None,
+                  drop: Iterable[int | str] | None = None, degree: int = 3,
+                  n: int = 64) -> tuple[Model, CoarseningFit]:
+        """`Model.coarsened` with the elastic description kept consistent.
+
+        Each merged group is refit through its base description alone,
+        rho with the velocities where every merged layer holds them
+        (the five then follow as exact polynomial products of the
+        fits), else the five Love moduli, else kappa and mu; the other
+        elastic names are dropped before the fit and derived again
+        from the fitted description, so the coarse model satisfies the
+        elastic relations exactly.  A group whose layers share no such
+        description (one speaking only through `elastic_moduli`, say)
+        is refused.  Layers left whole are untouched.
+        """
+        from .model import Model
+        _, cmap = self._coarsening(keep=keep, drop=drop)
+        layers = [dict(layer.fields) for layer in self.layers]
+        merged = [group for group in cmap.layers if len(group) > 1]
+        for group in merged:
+            family = _description_family(self, group)
+            for i in group:
+                layers[i] = {k: f for k, f in layers[i].items()
+                             if k not in materials.ELASTIC_NAMES or k in family}
+        stripped = self.replaced(layers=layers, check=False)
+        coarse, fit = Model.coarsened(stripped, keep=keep, drop=drop,
+                                      degree=degree, n=n)
+        out = [dict(layer.fields) for layer in coarse.layers]
+        for j, group in enumerate(fit.map.layers):
+            if len(group) > 1:
+                out[j] = with_velocities(with_moduli(out[j]))
+        return coarse.replaced(layers=out), fit
+
     def isotropic(self: Model) -> Model:
         """The model with every elastic description replaced by its Voigt
         average: each layer keeps rho and everything that is not an
@@ -246,9 +298,10 @@ class SelfGravitating:
     density on every layer: the reference body's, computed on each call
     and never stored, as numbers by `gravity` and `mass`, as one radial
     field per layer by `gravity_fields`, and as a copy of the model
-    holding that field under the vocabulary name `g` by `with_gravity`.
-    A density that depends on direction is refused, and the geometry's
-    mapping does not enter (see `mesh1d.gravity`)."""
+    holding that field under the vocabulary name `g` by `with_gravity`;
+    `with_stratification` attaches d rho / d Phi_0 = rho'(r) / g(r) to
+    the fluid layers.  A density that depends on direction is refused,
+    and the geometry's mapping does not enter (see `mesh1d.gravity`)."""
 
     gravity = gravity
     mass = mass
@@ -266,6 +319,48 @@ class SelfGravitating:
                     f"layer {layer.index} ({layer.name!r}) already holds {name!r}; "
                     "pass replace=True to replace it")
             layers.append({**layer.fields, name: field})
+        return self.replaced(layers=layers)
+
+    def with_stratification(self: Model, *, name: str = "drho_dphi0",
+                            replace: bool = False) -> Model:
+        """The model with the stratification of its fluid layers,
+        d rho / d Phi_0 = rho'(r) / g(r), attached to each of them
+        under `name`; solid layers, and layers whose fluidity cannot
+        be read, are left alone, and a model with no fluid layer is
+        refused.  rho' is exact where the density is polynomial; the
+        field is zero where g vanishes (the centre).  A fluid layer
+        already holding `name` is refused unless `replace`."""
+        fields = gravity_fields(self)
+        layers = []
+        n_fluid = 0
+        for layer, g in zip(self.layers, fields):
+            try:
+                fluid = materials.is_fluid(layer)
+            except KeyError:
+                fluid = False
+            if not fluid:
+                layers.append(dict(layer.fields))
+                continue
+            if name in layer and not replace:
+                raise ValueError(
+                    f"layer {layer.index} ({layer.name!r}) already holds {name!r}; "
+                    "pass replace=True to replace it")
+            rho = layer["rho"]
+            if not hasattr(rho, "derivative"):
+                raise ValueError(
+                    f"layer {layer.index} ({layer.name!r}) holds a rho that "
+                    "cannot state its radial derivative, so its "
+                    "stratification cannot be formed")
+            n_fluid += 1
+            strat = ComposedField(
+                lambda d, a: np.where(a != 0.0, d, 0.0)
+                / np.where(a != 0.0, a, 1.0),
+                (rho.derivative(nu=1), g), character=DENSITY, name=name)
+            layers.append({**layer.fields, name: strat})
+        if not n_fluid:
+            raise ValueError(
+                "no fluid layer: the stratification d rho / d Phi_0 is a "
+                "property of fluids, and no layer of this model is one")
         return self.replaced(layers=layers)
 
 

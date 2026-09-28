@@ -29,13 +29,14 @@ from . import manifest
 from .export import ExportResult, export_mfem, export_mfem_mesh
 from .layered import build_layered_mesh
 from .offset import build_offset_mesh
-from .spec import (AngularResolution, InterfaceSizing, MeshResult, MeshSpec,
-                   PerInterface, Shell, SizingRule, UniformInterfaces,
-                   ValidationReport)
+from .spec import (AngularResolution, CappedInterfaces, InterfaceSizing,
+                   MeshResult, MeshSpec, PerInterface, Shell, SizingRule,
+                   UniformInterfaces, ValidationReport)
 
 __all__ = [
     "MeshSpec", "MeshResult", "Shell", "InterfaceSizing", "SizingRule",
-    "AngularResolution", "UniformInterfaces", "PerInterface",
-    "ValidationReport", "build_layered_mesh", "build_offset_mesh",
-    "export_mfem_mesh", "export_mfem", "ExportResult", "manifest",
+    "AngularResolution", "UniformInterfaces", "CappedInterfaces",
+    "PerInterface", "ValidationReport", "build_layered_mesh",
+    "build_offset_mesh", "export_mfem_mesh", "export_mfem", "ExportResult",
+    "manifest",
 ]

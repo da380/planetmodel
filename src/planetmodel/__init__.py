@@ -89,7 +89,7 @@ from .mapping import (
 from .materials import ElasticField, elastic_moduli, is_fluid, kappa_mu, moduli
 from .mesh1d import RadialMesh
 from .mesh1d.gravity import gravity, gravity_fields, mass
-from .model import Layer, Model
+from .model import CoarseningFit, Layer, Model
 from .pushforward import PulledBackField, PushedForwardField, pull_back, push_forward
 from .rheology import (
     dispersive_moduli,
@@ -110,6 +110,7 @@ __all__ = [
     "Skeleton",
     "Location",
     "CoarseningMap",
+    "CoarseningFit",
     "Geometry",
     "LayerInfo",
     "InterfaceInfo",

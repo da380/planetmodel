@@ -254,3 +254,74 @@ def test_a_model_may_be_named_and_the_name_survives_every_copy():
     assert PREM().name == "PREM" and PREM(ocean=False).name == "PREM (no ocean)"
     assert LayeredIsotropicElastic.homogeneous(1.0, rho=1.0, vp=2.0, vs=1.0,
                                                name="one").name == "one"
+
+
+# ------------------------------------------------------------- coarsening
+
+def _rho_on(interval, coeffs):
+    return RadialField(interval, polynomial_layer(interval, coeffs),
+                       character=DENSITY, name="rho")
+
+
+def coarsenable():
+    """Three layers; rho is one linear polynomial across the first two."""
+    sk = Skeleton([0.0, 0.3, 0.6, 1.0])
+    g = Geometry(sk, interface_names=["a", "b", "surface"])
+    layers = [{"rho": _rho_on(sk.interval(0), [2.0, 1.0])},
+              {"rho": _rho_on(sk.interval(1), [2.0, 1.0])},
+              {"rho": _rho_on(sk.interval(2), [5.0])}]
+    return Model(g, layers)
+
+
+def test_coarsened_refits_merged_layers_and_keeps_the_rest():
+    m = coarsenable()
+    coarse, fit = m.coarsened(drop=["a"])
+    assert type(coarse) is Model and coarse.nlayers == 2
+    assert [f.name for f in coarse.geometry.interfaces] == ["b", "surface"]
+    # the merged layer recovers the shared polynomial exactly
+    r = np.linspace(0.0, 0.6, 9)
+    assert np.allclose(coarse.layer(0)["rho"](r), 2.0 + r, rtol=1e-12)
+    assert coarse.layer(0)["rho"].radial_degree <= 3
+    # the layer left whole keeps its field object
+    assert coarse.layer(1)["rho"] is m.layer(2)["rho"]
+    # the fit says what it did
+    assert fit.map.dropped_interfaces == (0,)
+    assert set(fit.residuals) == {(0, "rho")}
+    assert fit.worst < 1e-12
+    assert "rho" in fit.describe()
+    # keep= names the same coarsening
+    same, _ = m.coarsened(keep=["b"])
+    assert same.skeleton == coarse.skeleton
+
+
+def test_coarsened_refusals_name_the_problem():
+    m = coarsenable()
+    with pytest.raises(ValueError, match="exactly one of keep and drop"):
+        m.coarsened()
+    with pytest.raises(ValueError, match="outermost"):
+        m.coarsened(drop=["surface"])
+    # a name held on only some of the merged layers
+    lopsided = m.with_field(0, "foo", constant_field((0.0, 0.3), 1.0, name="foo"))
+    with pytest.raises(ValueError, match=r"\['foo'\] are held on some"):
+        lopsided.coarsened(drop=["a"])
+    # a field that is not a scalar of the radius alone
+    shaped = AnalyticField((0.3, 0.6), lambda r, t, p: 1.0 + 0.1 * np.cos(t),
+                           character=DENSITY, name="rho")
+    with pytest.raises(ValueError, match="radius alone"):
+        m.with_field(1, "rho", shaped, replace=True).coarsened(drop=["a"])
+    # the hollow inner boundary is not selectable
+    hollow = m.hollowed(0.3)
+    with pytest.raises(ValueError, match="inner boundary"):
+        hollow.coarsened(drop=[0])
+
+
+def test_coarsened_reports_an_honest_residual():
+    """A step in rho cannot be a cubic: the residual says so."""
+    sk = Skeleton([0.0, 0.5, 1.0])
+    layers = [{"rho": _rho_on(sk.interval(0), [2.0])},
+              {"rho": _rho_on(sk.interval(1), [1.0])}]
+    m = Model(Geometry(sk), layers)
+    coarse, fit = m.coarsened(drop=[0])
+    assert coarse.nlayers == 1
+    assert 0.05 < fit.residuals[(0, "rho")] < 1.0
+    assert repr(fit).startswith("CoarseningFit(2 -> 1 layers")

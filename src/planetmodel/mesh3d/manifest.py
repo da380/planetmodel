@@ -9,17 +9,27 @@ definition of its shape.  A consumer reads the manifest, opens the mesh
 the way it says, and knows where to look for every field and what each
 one means.
 
-The schema is `planetmodel.mesh.manifest/4`, with these blocks:
+The schema is `planetmodel.mesh.manifest/5`, with these blocks:
 
   mesh          file, format ("msh" or "mfem"), nodes ("reference" or
                 "physical"), read_options, displacement
-  layers[]      attribute, name, r_inner, r_outer, in_geometry
-  interfaces[]  attribute, name, radius, between_layers
+  layers[]      attribute, name, r_inner, r_outer, in_geometry, fluid
+  interfaces[]  attribute, name, radius, between_layers, kind, values
   fields[]      name, file, fe_space, vdim, ordering, rank, weight,
-                voigt, unit, layers
+                voigt, unit, layers, radial_degree
   scales        length, mass, time in SI; null until a model is exported
   constants     the model's constants in its units; empty until then
   meta          whatever the spec's `meta` carried
+
+`fluid`, `kind`, `values` and `radial_degree` are read from the model,
+so the model export writes them and everything else writes null: null
+means "no model has said", never "no".  `fluid` is the vanishing of
+shear in the exported fields (`materials.is_fluid`), a statement about
+this model's description, not about any one timescale; a shell is not
+fluid.  `kind` classifies an interface from those flags (KINDS below);
+`values` holds the one-sided values of each exported real scalar radial
+field, `{name: [below, above]}`; `radial_degree` is the degree in r
+that reproduces a scalar field within each layer holding it.
 
 The layers and interfaces are the skeleton the mesh was built on, in
 the mesh's own lengths: the mesher neither scales nor normalises, so a
@@ -50,13 +60,13 @@ if TYPE_CHECKING:
     from ..geometry import InterfaceInfo, LayerInfo
     from ..model import Model
 
-__all__ = ["SCHEMA", "FORMATS", "NODES", "MeshManifest", "LayerEntry",
+__all__ = ["SCHEMA", "FORMATS", "NODES", "KINDS", "MeshManifest", "LayerEntry",
            "InterfaceEntry", "FieldEntry", "write", "read", "beside",
            "mesh_block", "scales_block", "constants_block",
            "validate_structure", "validate_against"]
 
 #: Bump only for an incompatible change; consumers check it.
-SCHEMA = "planetmodel.mesh.manifest/4"
+SCHEMA = "planetmodel.mesh.manifest/5"
 
 #: The MSH format version the mesher writes and MFEM's reader wants.
 MSH_VERSION = 2.2
@@ -67,6 +77,13 @@ FORMATS = ("msh", "mfem")
 #: What the mesh's node coordinates are: reference coordinates, or the
 #: physical ones of a mesh whose nodes were displaced by a mapping.
 NODES = ("reference", "physical")
+
+#: What an interface's `kind` may be: the fluidity of the two model
+#: layers it separates; "free" where a model layer meets the outside or
+#: a shell (the model's surface, or a hollow model's inner boundary);
+#: "outer" for the outer boundary of a mesh whose outermost layer is a
+#: shell.  A boundary between two shells has no kind.
+KINDS = ("solid-solid", "fluid-solid", "fluid-fluid", "free", "outer")
 
 
 def beside(path: str | Path, suffix: str) -> Path:
@@ -98,6 +115,10 @@ class LayerEntry:
     r_outer: float
     #: Whether the layer belongs to the geometry (True) or is a shell (False).
     in_geometry: bool
+    _: KW_ONLY
+    #: Whether shear vanishes throughout the model's layer; False for a
+    #: shell, null until a model export reads it (or where it cannot).
+    fluid: bool | None = None
 
     @classmethod
     def from_layer(cls, layer: LayerInfo, *, attribute: int, r_inner: float,
@@ -126,6 +147,13 @@ class InterfaceEntry:
     radius: float
     #: [layer below, layer above], 0-based, -1 outside.
     between_layers: list
+    _: KW_ONLY
+    #: One of KINDS; null until a model export can read it.
+    kind: str | None = None
+    #: {field name: [value below, value above]} for the exported real
+    #: scalar radial fields, null on a side holding no such value; null
+    #: until a model export writes it.
+    values: dict | None = None
 
     @classmethod
     def from_interface(cls, face: InterfaceInfo, *, attribute: int,
@@ -161,12 +189,18 @@ class FieldEntry:
     voigt: bool
     unit: str
     layers: list
+    _: KW_ONLY
+    #: The polynomial degree in r reproducing a scalar field within
+    #: each layer holding it; null where no single degree does, for a
+    #: field of higher rank, and until a model export writes it.
+    radial_degree: int | None = None
 
     @classmethod
     def from_field(cls, name: str, file: str | Path, *, fe_space: str, vdim: int,
                    ordering: str, character: Character,
                    dimensions: Dimensions | None, si: bool,
-                   layers: Iterable[int]) -> "FieldEntry":
+                   layers: Iterable[int],
+                   radial_degree: int | None = None) -> "FieldEntry":
         """The record of a field of `character` and `dimensions` written
         to `file` in the given space, on the given layer attributes."""
         return cls(name=str(name), file=Path(file).name, fe_space=str(fe_space),
@@ -174,12 +208,16 @@ class FieldEntry:
                    rank=int(character.rank), weight=int(character.weight),
                    voigt=character.voigt_shape is not None,
                    unit=unit_string(dimensions, si=si),
-                   layers=[int(a) for a in layers])
+                   layers=[int(a) for a in layers],
+                   radial_degree=None if radial_degree is None
+                   else int(radial_degree))
 
 
 #: The JSON types each annotated Python type may hold.
 _JSON_TYPES = {int: (int,), float: (int, float), bool: (bool,), str: (str,),
-               list: (list,), dict: (dict,)}
+               list: (list,), dict: (dict,),
+               int | None: (int, type(None)), bool | None: (bool, type(None)),
+               str | None: (str, type(None)), dict | None: (dict, type(None))}
 
 
 def _entry_types(cls: type) -> dict[str, tuple[type, ...]]:
@@ -317,13 +355,15 @@ class MeshManifest:
         lines.append("  layers")
         rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
                  f"[{_num(e.get('r_inner'))}, {_num(e.get('r_outer'))}]",
-                 "in geometry" if e.get("in_geometry", True) else "shell")
+                 "in geometry" if e.get("in_geometry", True) else "shell",
+                 {True: "fluid", False: "solid"}.get(e.get("fluid"), ""))
                 for e in self.layers]
         lines.extend(_table(rows))
         lines.append("  interfaces")
         rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
                  f"radius {_num(e.get('radius'))}",
-                 f"between layers {list(e.get('between_layers', []))}")
+                 f"between layers {list(e.get('between_layers', []))}",
+                 str(e.get("kind") or ""))
                 for e in self.interfaces]
         lines.extend(_table(rows))
         if self.fields:
@@ -491,6 +531,15 @@ def validate_structure(manifest: MeshManifest) -> None:
         if list(face["between_layers"]) != want:
             fail(f"interfaces[{i}].between_layers is "
                  f"{face['between_layers']}, expected {want}")
+        if face["kind"] is not None and face["kind"] not in KINDS:
+            fail(f"interfaces[{i}].kind is {face['kind']!r}, not one of "
+                 f"{KINDS} or null")
+        for key, pair in (face["values"] or {}).items():
+            if (not isinstance(pair, list) or len(pair) != 2
+                    or not all(v is None or _typed(v, (int, float))
+                               for v in pair)):
+                fail(f"interfaces[{i}].values[{key!r}] is {pair!r}, not "
+                     "[below, above] as numbers or nulls")
 
     names = [e["name"] for e in manifest.fields]
     if len(set(names)) != len(names):
@@ -499,9 +548,17 @@ def validate_structure(manifest: MeshManifest) -> None:
         if not all(_typed(a, (int,)) and 1 <= a <= n_layers for a in e["layers"]):
             fail(f"fields[{i}].layers is {e['layers']}, not attributes in "
                  f"1..{n_layers}")
+        d = e["radial_degree"]
+        if d is not None and d < 0:
+            fail(f"fields[{i}].radial_degree is {d}, not a degree")
     if m["displacement"] is not None and m["displacement"] not in names:
         fail(f"mesh.displacement names {m['displacement']!r}, which fields "
              "holds no record for")
+    for i, face in enumerate(manifest.interfaces):
+        for key in face["values"] or {}:
+            if key not in names:
+                fail(f"interfaces[{i}].values names {key!r}, which fields "
+                     "holds no record for")
 
     if manifest.scales is not None:
         _check_record(manifest.scales, _SCALES_FIELDS, "scales", fail)

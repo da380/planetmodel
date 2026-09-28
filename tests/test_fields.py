@@ -58,6 +58,20 @@ def test_both_ends_are_reached_exactly():
     assert f(lo) == p(lo) and f(hi) == p(hi)
 
 
+def test_radial_degree_reads_the_polynomial_or_declines():
+    assert rho().radial_degree == 3
+    assert constant_field(IV, 2.0).radial_degree == 0
+    v = RadialField(IV, [polynomial_layer(IV, [1.0, 1.0]), 0.0, 2.0],
+                    character=VECTOR)
+    assert v.radial_degree == 1
+    # a numeric layer function is not one polynomial piece
+    assert RadialField(IV, NumericLayer(IV, lambda r: r ** 2)).radial_degree \
+        is None
+    # nor is a composed field's answer a polynomial the field can see
+    f = ComposedField(lambda x: x * x, (rho(),), character=SCALAR)
+    assert getattr(f, "radial_degree", None) is None
+
+
 def test_radial_vector_components_are_spherical_and_rotate():
     v = RadialField(IV, [polynomial_layer(IV, [1.0]), 0.0, 2.0], character=VECTOR)
     th, ph = 0.7, 1.1

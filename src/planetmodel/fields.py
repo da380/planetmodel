@@ -365,6 +365,23 @@ class RadialField(FieldBase):
             raise ValueError(f"{self!r} has {self._fs.size} components; use functions")
         return self._fs[()]
 
+    @property
+    def radial_degree(self) -> int | None:
+        """The least polynomial degree in r reproducing every component
+        throughout the interval, or None where a component is not a
+        single polynomial piece (interior breakpoints, or not a
+        polynomial at all)."""
+        worst = 0
+        for idx in np.ndindex(self._fs.shape):
+            p = getattr(self._fs[idx], "ppoly", None)
+            if p is None or p.x.size != 2:
+                return None
+            c = p.c[:, 0]
+            nonzero = np.flatnonzero(c != 0.0)
+            if nonzero.size:
+                worst = max(worst, int(c.size - 1 - nonzero[0]))
+        return worst
+
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
         if not self._fs.shape:

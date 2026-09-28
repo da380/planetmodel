@@ -11,8 +11,8 @@ import pytest
 import gmsh
 
 from planetmodel import Geometry, Skeleton
-from planetmodel.mesh3d import (InterfaceSizing, MeshSpec, Shell,
-                                UniformInterfaces, build_layered_mesh,
+from planetmodel.mesh3d import (CappedInterfaces, InterfaceSizing, MeshSpec,
+                                Shell, UniformInterfaces, build_layered_mesh,
                                 manifest as sc)
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._writer import read_groups
@@ -250,6 +250,34 @@ def test_coarse_sizing_for_a_thin_layer_is_refused_before_meshing(tmp_path):
     with pytest.raises(ValueError, match="too coarse"):
         build_layered_mesh(MeshSpec(g, COARSE), tmp_path / "thin")
     assert not list(tmp_path.iterdir())
+
+
+def test_the_linear_mesh_is_optimised_by_default(tmp_path):
+    res = build_layered_mesh(MeshSpec(full_geometry(), COARSE),
+                             tmp_path / "optimised")
+    assert res.spec.optimise == ("Netgen",)
+    assert "optimise" in res.timings
+    assert res.validation.ok
+
+
+def test_optimisation_off_and_in_two_dimensions_is_skipped(tmp_path):
+    res = build_layered_mesh(MeshSpec(full_geometry(), COARSE, optimise=None),
+                             tmp_path / "raw")
+    assert "optimise" not in res.timings and res.validation.ok
+    res = build_layered_mesh(MeshSpec(full_geometry(), COARSE, dimension=2),
+                             tmp_path / "disc")
+    assert "optimise" not in res.timings and res.validation.ok
+
+
+def test_capped_sizing_meshes_a_thin_layer_the_uniform_rule_refuses(tmp_path):
+    g = Geometry(Skeleton([0.0, 0.5, 0.99, 1.0]))
+    with pytest.raises(ValueError, match="too coarse"):
+        build_layered_mesh(MeshSpec(g, COARSE, dimension=2), tmp_path / "no")
+    res = build_layered_mesh(
+        MeshSpec(g, CappedInterfaces(0.15, 0.3, 0.3), dimension=2),
+        tmp_path / "yes")
+    assert res.validation.ok
+    assert "elements" in res.summary()
 
 
 def test_sizing_at_the_wrong_scale_is_refused(tmp_path):
