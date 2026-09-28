@@ -204,7 +204,7 @@ def test_the_fields_scales_and_constants_round_trip(exported, built):
     export = exported["shells3"]
     card = sc.read(export.manifest_path)
     sc.validate_structure(card)
-    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/4"
+    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/5"
     assert card.scales == {"length": 1.0, "mass": 1.0, "time": 1.0}
     assert card.constants == {"G": G_SI}
     assert [e["name"] for e in card.fields] == \
@@ -213,13 +213,25 @@ def test_the_fields_scales_and_constants_round_trip(exported, built):
     assert rho == {"name": "rho", "file": export.field_paths["rho"].name,
                    "fe_space": "L2_3D_P2", "vdim": 1, "ordering": "byNODES",
                    "rank": 0, "weight": 1, "voigt": False, "unit": "kg m-3",
-                   "layers": [1, 2, 3]}
+                   "layers": [1, 2, 3], "radial_degree": None}
     elastic = card.field_record("elastic_moduli")
     assert (elastic["rank"], elastic["weight"], elastic["voigt"]) == (4, 1, True)
     assert elastic["unit"] == "kg m-1 s-2" and elastic["layers"] == [2, 3]
     assert elastic["vdim"] == 36
+    assert elastic["radial_degree"] is None
     foo = card.field_record("foo")
     assert foo["unit"] == "unknown" and foo["layers"] == [3]
+    assert foo["radial_degree"] == 0
+    # this model holds no shear name, so its fluidity is unknown; the
+    # shell is not fluid, and the kinds follow
+    assert [lay["fluid"] for lay in card.layers] == [None, None, None, False]
+    assert [f["kind"] for f in card.interfaces] == [None, None, "free", "outer"]
+    # foo is the one real scalar radial field: its one-sided values,
+    # null on the sides that do not hold it
+    assert card.interfaces[0]["values"] is None
+    assert card.interfaces[1]["values"] == {"foo": [None, 2.0]}
+    assert card.interfaces[2]["values"] == {"foo": [2.0, None]}
+    assert card.interfaces[3]["values"] is None
     # the displacement is a field like the others, on every layer, in metres
     u = card.field_record("displacement")
     assert card.mesh["displacement"] == "displacement"
@@ -269,6 +281,32 @@ def test_a_model_in_other_scales_records_them(built, tmp_path):
     assert {e["unit"] for e in card.fields} == {"1"}
     mesh = load(export)
     assert set(np.unique(read_back(mesh, export.field_paths["rho"]))) == {1.0, 2.0}
+
+
+def test_gravity_exports_as_a_field(built, tmp_path):
+    res, _ = built["hollow2"]
+    model = LayeredIsotropicElastic([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0]).with_gravity()
+    export = export_mfem(res, tmp_path / "grav", model=model, fields=["rho", "g"])
+    card = sc.read(export.manifest_path)
+    g = card.field_record("g")
+    assert g["unit"] == "m s-2" and g["layers"] == [1, 2]
+    assert np.all(read_back(load(export), export.field_paths["g"]) > 0.0)
+
+
+def test_a_fluid_layer_reaches_the_manifest(built, tmp_path):
+    res, _ = built["hollow2"]
+    model = LayeredIsotropicElastic([0.5, 0.8, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                    vs=[1.0, 0.0])
+    export = export_mfem(res, tmp_path / "fluid", model=model)
+    card = sc.read(export.manifest_path)
+    assert [lay["fluid"] for lay in card.layers] == [False, True]
+    assert [f["kind"] for f in card.interfaces] == ["free", "fluid-solid", "free"]
+    assert card.interfaces[0]["values"]["rho"] == [None, 2.0]
+    assert card.interfaces[1]["values"]["rho"] == [2.0, 1.0]
+    assert card.interfaces[2]["values"]["rho"] == [1.0, None]
+    assert card.interfaces[1]["values"]["vs"] == [1.0, 0.0]
+    assert card.field_record("rho")["radial_degree"] == 0
 
 
 def test_a_model_on_another_skeleton_is_refused(built, tmp_path):

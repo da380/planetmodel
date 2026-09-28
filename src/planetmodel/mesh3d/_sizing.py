@@ -136,7 +136,8 @@ def check_sizing_resolves_spans(boundaries: ArrayLike,
             "the sizing is too coarse for this domain's thinnest layers, and "
             "gmsh would fail with an unrelated-looking PLC error:\n  - "
             + "\n  - ".join(problems)
-            + "\nRefine the sizing, or coarsen the geometry so the thin "
+            + "\nRefine the sizing, cap it against thin layers "
+              "(CappedInterfaces), or coarsen the geometry so the thin "
               "layers are merged.")
     return problems
 

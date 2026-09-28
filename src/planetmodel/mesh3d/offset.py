@@ -32,7 +32,7 @@ from ._sizing import apply_mesh_options, apply_size_fields, check_sizing_scale
 from ._tagging import Tagging, mean_radius_of_entity
 from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import MeshResult, SizingRule
+from .spec import MeshResult, SizingRule, optimise_methods
 
 __all__ = ["build_offset_mesh"]
 
@@ -44,6 +44,7 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
                       interface_names: Sequence[str] = ("inclusion_boundary",
                                                         "surface"),
                       algorithm_2d: int = 6, algorithm_3d: int = 1,
+                      optimise: str | Sequence[str] | None = "Netgen",
                       validate: bool = True, verbose: bool = False
                       ) -> MeshResult:
     """Mesh a ball of radius `a` offset by `d` inside one of radius `b`.
@@ -51,8 +52,10 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
     `offset` displaces the inner body along z in 3D and along x in 2D,
     within the plane the geometry is drawn in.  Zero is the concentric
     case.  `sizing` is a sizing rule, applied to the two boundaries.
-    Every length is meshed in the numbers given.  The result has no
-    geometry, spec or mapping.
+    `optimise` names the gmsh optimisation of the linear volume mesh
+    before it is curved, as on `MeshSpec`; 3D only.  Every length is
+    meshed in the numbers given.  The result has no geometry, spec or
+    mapping.
     """
     path = Path(path)
     a, b, d = float(inner_radius), float(outer_radius), float(offset)
@@ -71,6 +74,7 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
         raise ValueError(
             "no sizing given: an offset mesh takes the same sizing rules as "
             "a layered geometry, applied to its two boundaries")
+    methods = optimise_methods(optimise)
     timings: dict[str, float] = {}
     clock = time.perf_counter
 
@@ -101,6 +105,12 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
             size_max=max(s.far_size for s in sizes.values()))
         gmsh.model.mesh.generate(dimension)
         timings["mesh"] = clock() - t0
+
+        if dimension == 3 and methods:
+            t0 = clock()
+            for method in methods:
+                gmsh.model.mesh.optimize(method)
+            timings["optimise"] = clock() - t0
 
         t0 = clock()
         orient_mesh(dimension, centres=centres)

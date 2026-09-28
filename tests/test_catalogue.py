@@ -342,3 +342,61 @@ def test_with_field_on_an_elastic_name_re_derives_the_rest():
     faster = with_vp.with_field(0, "vp", constant_field((0.0, 1.0), 3.0, name="vp"),
                                 replace=True)
     assert np.isclose(faster.layer(0)["A"](0.5), 9.0)
+
+
+def test_layered_isotropic_takes_polynomial_layers():
+    m = LayeredIsotropicElastic(
+        [0.0, 0.5, 1.0], rho=[(2.0, -1.0), 1.0], vp=[(1.0, 0.5), 2.0],
+        vs=[0.0, 1.0], scale=2.0)
+    r = np.linspace(0.0, 0.5, 5)
+    assert np.allclose(m.layer(0)["rho"](r), 2.0 - r / 2.0)
+    assert np.allclose(m.layer(0)["vp"](r), 1.0 + 0.25 * r)
+    assert m.is_fluid(0) and not m.is_fluid(1)
+    assert m.layer(1)["rho"](0.75) == 1.0
+    assert m.layer(0)["rho"].radial_degree == 1
+    # the five follow exactly: C = rho vpv^2 in the fluid layer too
+    assert np.allclose(m.moduli(0)["C"](r),
+                       (2.0 - r / 2.0) * (1.0 + 0.25 * r) ** 2)
+    check_model(m)
+
+
+def test_coarsened_prem_keeps_the_elastic_relations():
+    m = PREM(ocean=False)
+    coarse, fit = m.coarsened(keep=["icb", "cmb", "d670"])
+    assert type(coarse) is PREM
+    assert coarse.nlayers == 4
+    assert [f.name for f in coarse.geometry.interfaces] == \
+        ["icb", "cmb", "d670", "surface"]
+    # fluidity survives: the outer core is untouched and still fluid
+    assert not coarse.is_fluid(0) and coarse.is_fluid(1)
+    assert not coarse.is_fluid(2) and not coarse.is_fluid(3)
+    assert coarse.layer(1)["rho"] is m.layer("outer_core")["rho"]
+    # the elastic relations hold exactly on the refit layers
+    for j in (2, 3):
+        lay = coarse.layer(j)
+        lo, hi = lay.interval
+        r = np.linspace(lo, hi, 9)[1:-1]
+        assert np.allclose(lay["A"](r), lay["rho"](r) * lay["vph"](r) ** 2,
+                           rtol=1e-12)
+        assert np.allclose(lay["L"](r), lay["rho"](r) * lay["vsv"](r) ** 2,
+                           rtol=1e-12)
+        assert lay["rho"].radial_degree == 3
+    # the lower mantle merges one polynomial: its density refits exactly
+    assert fit.residuals[(2, "rho")] < 1e-9
+    # the upper region carries real jumps; the report is honest about it
+    assert 1e-4 < fit.residuals[(3, "rho")] < 0.2
+    assert fit.worst < 0.5
+    check_model(coarse)
+
+
+def test_coarsening_across_the_cmb_is_refused():
+    m = PREM(ocean=False)
+    with pytest.raises(ValueError, match="fluid"):
+        m.coarsened(drop=["cmb"])
+    # a merged group must share a complete elastic description
+    bare = LayeredIsotropicElastic([0.0, 0.4, 1.0], rho=[3.0, 2.0],
+                                   vp=[2.0, 2.0], vs=[1.0, 1.0])
+    for name in ("vp", "vs", "A", "C", "F", "L", "N"):
+        bare = bare.without_field(name)
+    with pytest.raises(ValueError, match="elastic description"):
+        bare.coarsened(drop=[0])

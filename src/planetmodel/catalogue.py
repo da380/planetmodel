@@ -21,8 +21,9 @@ velocity are isotropic and get vph = vpv, vsh = vsv and eta = 1 as
 exact constants; the fluid outer core and ocean hold no qmu; the
 elastic values are those at a reference period of 1 s.
 
-`LayeredIsotropicElastic` builds an isotropic model of constant exact
-layers from a few numbers, a fluid layer being one with vs = 0; its
+`LayeredIsotropicElastic` builds an isotropic model of exact layers
+from a few numbers per layer, a constant or the coefficients of a
+polynomial in r / scale, a fluid layer being one with vs = 0; its
 `homogeneous` classmethod is the one-layer case.
 
 `MineosModel` is the model of a mineos deck, PREM's own tabulation
@@ -199,16 +200,20 @@ class PREM(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Model):
 
 
 class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
-    """An isotropic model of constant layers between `boundaries`.
+    """An isotropic model of exact polynomial layers between `boundaries`.
 
     `boundaries` are the skeleton's, centre outward (an inner radius
     above zero gives a hollow model); `rho`, `vp` and `vs` give one
-    value per layer, and a layer with vs = 0 is fluid.  `name` is the
-    model's.
+    entry per layer, a number for a constant or a sequence of ascending
+    polynomial coefficients in r / scale, and a layer with vs = 0
+    throughout is fluid.  `name` is the model's.
     """
 
-    def __init__(self, boundaries: Sequence[float], *, rho: Sequence[float],
-                 vp: Sequence[float], vs: Sequence[float],
+    def __init__(self, boundaries: Sequence[float], *,
+                 rho: Sequence[float | Sequence[float]],
+                 vp: Sequence[float | Sequence[float]],
+                 vs: Sequence[float | Sequence[float]],
+                 scale: float = 1.0,
                  layer_names: Sequence[str | None] | None = None,
                  interface_names: Sequence[str | None] | None = None,
                  scales: Scales = Scales.SI, name: str | None = None) -> None:
@@ -222,11 +227,18 @@ class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
         layers = []
         for i in range(sk.nlayers):
             iv = sk.interval(i)
-            layers.append({
-                "rho": constant_field(iv, rho[i], character=DENSITY, name="rho"),
-                "vp": constant_field(iv, vp[i], name="vp"),
-                "vs": constant_field(iv, vs[i], name="vs"),
-            })
+            fields = {}
+            for key, character in (("rho", DENSITY), ("vp", SCALAR),
+                                   ("vs", SCALAR)):
+                value = values[key][i]
+                if np.isscalar(value):
+                    fields[key] = constant_field(iv, float(value),
+                                                 character=character, name=key)
+                else:
+                    fields[key] = RadialField(
+                        iv, polynomial_layer(iv, value, scale=scale),
+                        character=character, name=key)
+            layers.append(fields)
         super().__init__(geometry, layers, scales=scales, name=name)
 
     @classmethod

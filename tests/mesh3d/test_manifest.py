@@ -62,7 +62,10 @@ def exported_card(geometry, *, with_field=True):
 
 def test_from_build_assembles_the_skeleton_and_the_mesh():
     card = card_for(full_geometry(), meta={"run": 1})
-    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/4"
+    assert card.schema == sc.SCHEMA == "planetmodel.mesh.manifest/5"
+    assert card.layers[0]["fluid"] is None
+    assert card.interfaces[0]["kind"] is None
+    assert card.interfaces[0]["values"] is None
     assert card.mesh == {"file": "m.msh", "format": "msh", "nodes": "reference",
                          "read_options": {}, "displacement": None}
     assert [lay["name"] for lay in card.layers] == ["core", "mantle", "crust"]
@@ -103,7 +106,8 @@ def test_field_entries_carry_character_unit_and_layers():
     assert dataclasses.asdict(e) == {
         "name": "displacement", "file": "m.displacement.gf",
         "fe_space": "H1_3D_P2", "vdim": 3, "ordering": "byNODES", "rank": 1,
-        "weight": 0, "voigt": False, "unit": "1", "layers": [1, 2, 3]}
+        "weight": 0, "voigt": False, "unit": "1", "layers": [1, 2, 3],
+        "radial_degree": None}
     rho = sc.FieldEntry.from_field(
         "rho", "d/m.rho.gf", fe_space="L2_3D_P2", vdim=1, ordering="byNODES",
         character=DENSITY, dimensions=DENSITY_DIMS, si=True, layers=[1, 2])
@@ -244,6 +248,40 @@ def test_validate_structure_checks_the_entries_and_their_consistency():
         sc.validate_structure(bad)
 
 
+def test_validate_structure_checks_the_model_read_records():
+    card = exported_card(full_geometry())
+    good = copy.deepcopy(card)
+    good.layers[0]["fluid"] = False
+    good.interfaces[0]["kind"] = "solid-solid"
+    good.interfaces[0]["values"] = {"rho": [2.0, None]}
+    good.fields[1]["radial_degree"] = 0
+    sc.validate_structure(good)
+    bad = copy.deepcopy(card)
+    bad.layers[0]["fluid"] = "yes"
+    with pytest.raises(ValueError, match=r"layers\[0\].fluid"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.interfaces[0]["kind"] = "wet"
+    with pytest.raises(ValueError, match=r"interfaces\[0\].kind"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.interfaces[0]["values"] = {"rho": [1.0]}
+    with pytest.raises(ValueError, match=r"interfaces\[0\].values\['rho'\]"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.interfaces[0]["values"] = {"ghost": [1.0, None]}
+    with pytest.raises(ValueError, match="holds no record"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.fields[1]["radial_degree"] = -1
+    with pytest.raises(ValueError, match=r"fields\[1\].radial_degree"):
+        sc.validate_structure(bad)
+    bad = copy.deepcopy(card)
+    bad.fields[1]["radial_degree"] = "cubic"
+    with pytest.raises(ValueError, match=r"fields\[1\].radial_degree"):
+        sc.validate_structure(bad)
+
+
 def test_validate_against_catches_a_mismatch():
     card = card_for(full_geometry())
     sc.validate_against(card, layer_count=3, interface_count=3,
@@ -296,5 +334,5 @@ def test_describe_is_a_readable_summary_and_str():
     assert "mesh        m.msh (msh), reference nodes" in bare.describe()
     # repr stays one line
     assert repr(card) == \
-        "MeshManifest(planetmodel.mesh.manifest/4, m.mesh, 2 layers, " \
+        "MeshManifest(planetmodel.mesh.manifest/5, m.mesh, 2 layers, " \
         "3 interfaces, 2 fields)"

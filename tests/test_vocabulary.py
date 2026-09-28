@@ -9,6 +9,7 @@ from planetmodel.vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec, s
 EXPECTED_NAMES = {
     "rho", "vp", "vs", "vpv", "vsv", "vph", "vsh", "eta", "qkappa", "qmu",
     "kappa", "mu", "A", "C", "F", "L", "N", "elastic_moduli", "viscosity", "g",
+    "drho_dphi0",
 }
 
 
@@ -34,18 +35,24 @@ def test_characters_and_dimensions_are_what_the_physics_says():
     assert spec("kappa").dimensions == units.MODULUS
     assert spec("viscosity").dimensions == units.VISCOSITY
     assert spec("viscosity").character is SCALAR
+    assert spec("drho_dphi0").dimensions == \
+        units.DENSITY / (units.GRAVITY * units.LENGTH)
+    assert spec("drho_dphi0").character is DENSITY
 
 
 def test_every_character_is_the_one_its_dimensions_imply():
-    """Rank 0 everywhere but the tensor; weight 1 exactly for a density
-    or a modulus."""
+    """Rank 0 everywhere but the tensor; weight 1 exactly for what
+    carries the mass density's pullback: a density, a modulus, the
+    stratification."""
+    weighted_dims = (units.DENSITY, units.MODULUS,
+                     units.DENSITY / (units.GRAVITY * units.LENGTH))
     for name, entry in VOCABULARY.items():
         c, d = entry.character, entry.dimensions
         if name == "elastic_moduli":
             assert c.rank == 4, name
         else:
             assert c.rank == 0, name
-        weighted = d in (units.DENSITY, units.MODULUS)
+        weighted = d in weighted_dims
         assert (c.weight == 1) == weighted, name
         assert c.voigt, name
 

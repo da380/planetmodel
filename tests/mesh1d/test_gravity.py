@@ -150,3 +150,21 @@ def test_gravity_fields_on_a_numeric_density():
     assert np.allclose(fields[0](r), gravity(m, r), rtol=1e-10)
     assert np.allclose(fields[1](np.array([0.5, 0.9])), gravity(m, [0.5, 0.9]),
                        rtol=1e-10)
+
+
+def test_with_stratification_matches_the_direct_ratio():
+    m = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[(2.0, -1.0), 1.0],
+                                vp=[1.0, 2.0], vs=[0.0, 1.0])
+    held = m.with_stratification()
+    assert type(held) is type(m)
+    core = held.layer(0)
+    assert "drho_dphi0" in core and "drho_dphi0" not in held.layer(1)
+    r = np.linspace(0.05, 0.5, 8)
+    assert np.allclose(core["drho_dphi0"](r), -1.0 / gravity(m, r), rtol=1e-12)
+    assert core["drho_dphi0"](0.0) == 0.0
+    with pytest.raises(ValueError, match="already holds"):
+        held.with_stratification()
+    assert "drho_dphi0" in held.with_stratification(replace=True).layer(0)
+    solid = LayeredIsotropicElastic([0.0, 1.0], rho=[1.0], vp=[2.0], vs=[1.0])
+    with pytest.raises(ValueError, match="no fluid layer"):
+        solid.with_stratification()

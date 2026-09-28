@@ -12,7 +12,7 @@ geometry's own mapping, and is what the builder meshes.
 Sizing is a callable, not a class hierarchy: a rule takes the
 interfaces of the computational domain and its outer radius, in the
 geometry's own lengths, and returns one InterfaceSizing per interface
-index.  The three shipped rules are frozen dataclasses whose instances
+index.  The shipped rules are frozen dataclasses whose instances
 are the callable, so they print, compare and serialise; anything else
 is a function.
 
@@ -32,8 +32,9 @@ from ..mapping import Mapping
 
 __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
-    "UniformInterfaces", "PerInterface", "MeshSpec", "MeshResult",
-    "ValidationReport", "DELIVERIES", "OUTER_BOUNDARIES", "QUALITY_FLOOR",
+    "UniformInterfaces", "CappedInterfaces", "PerInterface", "MeshSpec",
+    "MeshResult", "ValidationReport", "optimise_methods", "DELIVERIES",
+    "OUTER_BOUNDARIES", "QUALITY_FLOOR",
 ]
 
 #: The two deliveries of the MFEM export: the nodes moved by the mapping,
@@ -121,9 +122,32 @@ class InterfaceSizing:
 
 #: A sizing rule: (interfaces of the computational domain, its outer
 #: radius) -> {interface index: InterfaceSizing}.  The interfaces are
-#: objects with `index`, `radius` and `name`.
+#: objects with `index`, `radius`, `between` and `name`.
 type SizingRule = Callable[[Sequence[InterfaceInfo], float],
                            dict[int, InterfaceSizing]]
+
+
+def optimise_methods(optimise: str | Sequence[str] | None) -> tuple[str, ...]:
+    """The gmsh optimisation methods `optimise` names, as a tuple.
+
+    A single method name, a sequence of names applied in order, or None
+    for no optimisation; each is a method `gmsh.model.mesh.optimize`
+    accepts ("Netgen", "Relocate3D", ...).
+    """
+    if optimise is None:
+        return ()
+    if isinstance(optimise, str):
+        return (optimise,)
+    try:
+        methods = tuple(optimise)
+    except TypeError:
+        raise TypeError(
+            "optimise must be a method name, a sequence of names or None, "
+            f"got {type(optimise).__name__}") from None
+    for m in methods:
+        if not isinstance(m, str):
+            raise TypeError(f"optimise methods are names, got {m!r}")
+    return methods
 
 
 @dataclass(frozen=True)
@@ -176,6 +200,58 @@ class UniformInterfaces:
         return {face.index: InterfaceSizing(self.h_min, self.h_max,
                                             self.decay_width)
                 for face in interfaces}
+
+
+@dataclass(frozen=True)
+class CappedInterfaces:
+    """One absolute size, capped in angle and against thin layers.
+
+    Each interface takes `size = min(h, angular * r, thin * s)`, with
+    `r` its radius and `s` the thinner of the layer spans it bounds:
+    a small sphere is resolved in angle however deep it sits (0.3 rad
+    is about twenty elements round a great circle), and a thin layer
+    takes elements that fit inside it rather than failing in gmsh a
+    long way from the cause.  The far size is `max(h_far, size)`, and
+    the decay width the smaller of `decay_width` and `decay_factor`
+    times the size, so a size capped far below `h` relaxes over a
+    distance of its own scale instead of holding a fine mesh through
+    the body.
+    """
+
+    #: The element size at every interface, before the caps.
+    h: float
+    #: The element size far from every interface.
+    h_far: float
+    #: The distance over which an uncapped size grows to `h_far`.
+    decay_width: float
+    _: KW_ONLY
+    #: The cap in angle: at most `angular * radius` on each interface,
+    #: in radians.
+    angular: float = 0.3
+    #: The cap against thin layers: at most `thin` times the thinner
+    #: adjacent layer span.
+    thin: float = 4.0
+    #: A capped size decays over at most `decay_factor` times itself.
+    decay_factor: float = 10.0
+
+    def __call__(self, interfaces: Sequence[InterfaceInfo],
+                 outer_radius: float) -> dict[int, InterfaceSizing]:
+        faces = sorted(interfaces, key=lambda f: f.radius)
+        radii = [f.radius for f in faces]
+        out = {}
+        for k, face in enumerate(faces):
+            below, above = face.between
+            spans = []
+            if below != -1:
+                spans.append(radii[k] - (radii[k - 1] if k else 0.0))
+            if above != -1 and k + 1 < len(radii):
+                spans.append(radii[k + 1] - radii[k])
+            size = min(self.h, self.angular * face.radius,
+                       self.thin * min(spans))
+            out[face.index] = InterfaceSizing(
+                size=size, far_size=max(self.h_far, size),
+                decay_width=min(self.decay_width, self.decay_factor * size))
+        return out
 
 
 @dataclass(frozen=True)
@@ -243,6 +319,11 @@ class MeshSpec:
     algorithm_2d: int = 6
     #: gmsh's Mesh.Algorithm3D.
     algorithm_3d: int = 1
+    #: The gmsh optimisation of the linear volume mesh before it is
+    #: curved: a method name, a sequence applied in order, or None for
+    #: none.  3D only; the Delaunay mesher leaves slivers between
+    #: interfaces that a Netgen pass removes without moving their nodes.
+    optimise: str | Sequence[str] | None = "Netgen"
     #: False writes a failing mesh; the failures are on the result's report.
     validate: bool = True
     #: Copied into the manifest's `meta` block, for the consumer's own use.
@@ -262,6 +343,7 @@ class MeshSpec:
             raise ValueError(
                 f"outer_boundary must be one of {OUTER_BOUNDARIES}, "
                 f"got {self.outer_boundary!r}")
+        object.__setattr__(self, "optimise", optimise_methods(self.optimise))
         object.__setattr__(self, "shells", tuple(self.shells))
         for shell in self.shells:
             if not isinstance(shell, Shell):
@@ -393,6 +475,19 @@ class MeshResult:
     spec: MeshSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
+
+    def summary(self) -> str:
+        """The build in one line: counts, worst quality, worst interface
+        error, and seconds in all and by stage."""
+        v = self.validation
+        stages = ", ".join(f"{k} {t:.2g}" for k, t in self.timings.items())
+        total = sum(self.timings.values())
+        return (f"{self.counts.get('elements', '?')} elements, "
+                f"{self.counts.get('nodes', '?')} nodes in "
+                f"{self.counts.get('layers', '?')} layers; "
+                f"minSICN {v.min_sicn:.3g}, max interface error "
+                f"{v.max_interface_radius_error:.3g}; "
+                f"{total:.3g} s ({stages})")
 
     def __repr__(self) -> str:
         n = self.counts.get("elements", "?")
