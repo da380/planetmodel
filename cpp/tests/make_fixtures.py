@@ -41,6 +41,16 @@ case, a tab, the place the fault lies, a tab, and a phrase the refusal
 says.  **GLL points** (`gll.txt`): `gll <ngll>` and the points on [-1,
 1].
 
+**Surface files** (`surface_basic.nc`): one surface file with a field
+of every time support on a Gauss-Legendre grid, polar values on two of
+them, a NaN-marked point, geophysical scales, a radius, meta and a
+citation; beside it `surface_basic.expect`, one fact per line:
+`scales`, `radius`, `grid <kind> <lmax> <ntheta> <nphi>`,
+`time <k> <value>` and `instant <k> <value>`, per field
+`variable <name> <support> <time rule> <lateral rule> <m l t T | ->`,
+sampled entries `value <name> <k|-> <i> <j> <value>` (`absent` where
+the point is NaN) and `poles <name> <k|-> <north> <south>`.
+
 **Interpolation cases** (`case_lateral_*.nc`, `case_radial_*.nc`), one
 netCDF file each: for a lateral case the grid (`colatitude`,
 `longitude`, radians), its `kind`, the `values` at its nodes and the
@@ -1079,6 +1089,76 @@ def vocabulary(directory: Path) -> list[Path]:
     return [path]
 
 
+def surface_files(directory: Path) -> list[Path]:
+    """The surface file of the module docstring, and its expectations."""
+    from planetmodel import surfacefile
+
+    grid = pm.gauss_legendre(8)
+    rng = np.random.default_rng(11)
+    time = np.array([0.0, 1.0, 2.5, 4.0])
+    instant = np.array([2.5, 4.0])
+    shape = (grid.ntheta, grid.nphi)
+    topography = rng.normal(size=shape)
+    topography[0, 0] = np.nan
+    fields = {
+        "topography": surfacefile.SurfaceVariable(
+            topography, dimensions=units.LENGTH,
+            meaning="present-day topography", poles=[1.0, -2.0]),
+        "ice_thickness": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="linear", dimensions=units.LENGTH,
+            poles=rng.normal(size=(time.size, 2))),
+        "rate": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size - 1,) + shape), support="interval"),
+        "instantaneous": surfacefile.SurfaceVariable(
+            rng.normal(size=(instant.size,) + shape), support="instant",
+            lateral_interpolation="cubic"),
+    }
+    scales = pm.Scales.geophysical(6.371e6)
+    path = directory / "surface_basic.nc"
+    surfacefile.write_surface(path, grid, fields=fields,
+                              source="planetmodel fixtures", time=time,
+                              instant=instant, radius=1.0, scales=scales,
+                              meta={"epoch": "present"}, citation=("a work",))
+    surfacefile.validate_structure(path)
+    data = surfacefile.read_surface_file(path)
+    lines = [f"scales {scales.length!r} {scales.mass!r} {scales.time!r} "
+             f"{scales.temperature!r}",
+             f"radius {data.radius!r}",
+             f"grid {grid.kind} {grid.lmax} {grid.ntheta} {grid.nphi}"]
+    lines += [f"time {k} {float(t)!r}" for k, t in enumerate(data.time)]
+    lines += [f"instant {k} {float(t)!r}" for k, t in enumerate(data.instant)]
+    samples = ((0, 1), (grid.ntheta // 2, grid.nphi // 3),
+               (grid.ntheta - 1, grid.nphi - 1), (0, 0))
+    for name, field in fields.items():
+        a = data.variables[name].attributes
+        exps = ("-" if "dimensions" not in a else
+                " ".join(str(int(e)) for e in np.atleast_1d(a["dimensions"])))
+        lines.append(f"variable {name} {a['time_support']} "
+                     f"{a['time_interpolation']} {a['lateral_interpolation']} "
+                     f"{exps}")
+        values = data.variables[name].values
+        leading = [None] if values.ndim == 2 else [0, values.shape[0] - 1]
+        for k in leading:
+            v = values if k is None else values[k]
+            tag = "-" if k is None else str(k)
+            for i, j in samples:
+                if np.isnan(v[i, j]):
+                    lines.append(f"absent {name} {tag} {i} {j}")
+                else:
+                    lines.append(f"value {name} {tag} {i} {j} {float(v[i, j])!r}")
+        poles_name = f"{name}_poles"
+        if poles_name in data.variables:
+            p = np.atleast_2d(data.variables[poles_name].values)
+            for k in ([None] if field.support == "static" else range(p.shape[0])):
+                row = p[0] if k is None else p[k]
+                tag = "-" if k is None else str(k)
+                lines.append(f"poles {name} {tag} {float(row[0])!r} {float(row[1])!r}")
+    expect = directory / "surface_basic.expect"
+    expect.write_text("\n".join(lines) + "\n")
+    return [path, expect]
+
+
 def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
     """Every fixture into `directory`, each model file validated; the
     manifests, which build meshes, only where `meshes` is true."""
@@ -1088,7 +1168,7 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
     for path in models:
         validate_structure(path)
     return (models + model_cases(directory) + gll(directory) + grids(directory)
-            + vocabulary(directory)
+            + vocabulary(directory) + surface_files(directory)
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
             + manifest_cases(directory) + decks(directory)
