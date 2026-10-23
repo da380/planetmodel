@@ -430,6 +430,152 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
   }
 }
 
+/** @brief What a field does with a date outside its span. */
+enum class Extrapolation {
+  Refuse, /**< The date is refused. */
+  Hold    /**< The nearest value of the span is served. */
+};
+
+/**
+ * @brief A surface file as a function of time: each field's values at a
+ * date, by the field's own time rule.
+ *
+ * A `node` field is interpolated between its nodes (`linear`), read from
+ * the latest node not after the date (`previous`), or served at its
+ * stored nodes alone (`none`); an `interval` field from the interval
+ * holding the date, the last closed at its end; an `instant` field at
+ * its stored instants alone; a `static` field at any date.  Outside its
+ * span a field refuses the date, or holds its nearest value under
+ * `Extrapolation::Hold`.  The arithmetic is the Python
+ * `SurfaceHistory`'s, so the two read a file identically.
+ */
+class SurfaceHistory {
+ public:
+  /**
+   * @brief Hold a file as a history.
+   * @param file The file, read or built; a built one should pass
+   *        `ValidateSurfaceFile` first.
+   */
+  explicit SurfaceHistory(SurfaceFile file) : file_(std::move(file)) {
+    if (!file_.grid) detail::Fail("surface history", "grid", "is missing");
+  }
+
+  /** @brief The file's numbers and metadata, as read. */
+  [[nodiscard]] const SurfaceFile& File() const noexcept { return file_; }
+
+  /** @brief The fields, polar values not counted among them. */
+  [[nodiscard]] std::vector<std::string> Names() const {
+    auto out = std::vector<std::string>{};
+    for (const auto& [name, var] : file_.variables) {
+      if (!name.ends_with("_poles")) out.push_back(name);
+    }
+    return out;
+  }
+
+  /**
+   * @brief How a field sits in time, one of `TIME_SUPPORTS`.
+   * @param name The field.
+   * @throws planetmodel::Error where the file holds no such field.
+   */
+  [[nodiscard]] std::string Support(std::string_view name) const {
+    return *detail::TextOf(VariableOf(name).attributes, "time_support");
+  }
+
+  /**
+   * @brief A field's values on the grid at a date, (ntheta, nphi) in C
+   * order, by its own time rule; NaN stays where the field does not
+   * cover a point.
+   * @param name The field.
+   * @param date The date, in the file's units; a `static` field takes
+   *        none.
+   * @param extrapolation What to do outside the field's span: refuse
+   *        (the default), or hold its nearest value (`linear`,
+   *        `previous` and `interval` fields).
+   * @throws planetmodel::Error where the file holds no such field, the
+   *         date is refused, or a dated field is given no date.
+   */
+  [[nodiscard]] std::vector<double> Values(
+      std::string_view name, std::optional<double> date = {},
+      Extrapolation extrapolation = Extrapolation::Refuse) const {
+    const auto& var = VariableOf(name);
+    const auto size = file_.grid->NTheta() * file_.grid->NPhi();
+    const auto rows = Rows(name, var, date, extrapolation);
+    if (!rows) return var.values;
+    const auto [first, second] = *rows;
+    const auto [k0, w0] = first;
+    const auto [k1, w1] = second;
+    auto out = std::vector<double>(size);
+    for (auto n = std::size_t{0}; n < size; ++n) {
+      out[n] = w0 * var.values[k0 * size + n] + w1 * var.values[k1 * size + n];
+    }
+    return out;
+  }
+
+ private:
+  using Row = std::pair<std::size_t, double>;
+
+  [[nodiscard]] const FileVariable& VariableOf(std::string_view name) const {
+    const auto it = file_.variables.find(std::string{name});
+    if (name.ends_with("_poles") || it == file_.variables.end()) {
+      detail::Fail("surface history", name, "is not a field of the file");
+    }
+    return it->second;
+  }
+
+  /// The leading rows a date reads, with their weights; empty for a
+  /// static field, whose values are the answer whole.  The selection and
+  /// the weights are the Python `SurfaceHistory._rows`'s.
+  [[nodiscard]] std::optional<std::pair<Row, Row>> Rows(
+      std::string_view name, const FileVariable& var, std::optional<double> date,
+      Extrapolation extrapolation) const {
+    auto fail = [&name](std::string_view message) {
+      detail::Fail("surface history", name, message);
+    };
+    const auto support = *detail::TextOf(var.attributes, "time_support");
+    if (support == "static") return std::nullopt;
+    if (!date) fail(std::format("is a {} field and needs a date", support));
+    auto exact = [&fail](const std::vector<double>& axis, double at,
+                         std::string_view what) {
+      const auto it = std::ranges::find(axis, at);
+      if (it == axis.end()) fail(what);
+      const auto k = static_cast<std::size_t>(it - axis.begin());
+      return std::pair{Row{k, 1.0}, Row{k, 0.0}};
+    };
+    if (support == "instant") {
+      return exact(*file_.instant, *date,
+                   "is held at its stored instants alone, and the date is not one");
+    }
+    const auto& axis = *file_.time;
+    const auto rule = *detail::TextOf(var.attributes, "time_interpolation");
+    if (support == "node" && rule == "none") {
+      return exact(axis, *date,
+                   "states no time rule and is held at its stored nodes alone");
+    }
+    auto at = *date;
+    if (at < axis.front() || at > axis.back()) {
+      if (extrapolation != Extrapolation::Hold) {
+        fail(std::format("is not sampled at {}, outside its span [{}, {}]", at,
+                         axis.front(), axis.back()));
+      }
+      at = std::clamp(at, axis.front(), axis.back());
+    }
+    const auto after =
+        static_cast<std::size_t>(std::ranges::upper_bound(axis, at) - axis.begin());
+    if (support == "interval" || rule == "previous") {
+      const auto last = support == "interval" ? axis.size() - 2 : axis.size() - 1;
+      return std::pair{Row{std::min(after - 1, last), 1.0},
+                       Row{std::min(after - 1, last), 0.0}};
+    }
+    const auto k = std::min(after - 1, axis.size() - 2);
+    const auto w = (at - axis[k]) / (axis[k + 1] - axis[k]);
+    if (w == 0.0) return std::pair{Row{k, 1.0}, Row{k, 0.0}};
+    if (w == 1.0) return std::pair{Row{k + 1, 1.0}, Row{k + 1, 0.0}};
+    return std::pair{Row{k, 1.0 - w}, Row{k + 1, w}};
+  }
+
+  SurfaceFile file_;
+};
+
 }  // namespace planetmodel
 
 #endif  // PLANETMODEL_SURFACEFILE_HPP

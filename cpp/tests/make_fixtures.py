@@ -49,7 +49,11 @@ citation; beside it `surface_basic.expect`, one fact per line:
 `time <k> <value>` and `instant <k> <value>`, per field
 `variable <name> <support> <time rule> <lateral rule> <m l t T | ->`,
 sampled entries `value <name> <k|-> <i> <j> <value>` (`absent` where
-the point is NaN) and `poles <name> <k|-> <north> <south>`.
+the point is NaN), `poles <name> <k|-> <north> <south>`, and the
+history's reading
+`sample <name> <date|-> <refuse|hold> <i> <j> <value>`, from
+`SurfaceHistory.values` at dates between nodes, at nodes, held outside
+the span, inside and closing an interval, and at an instant.
 
 **Interpolation cases** (`case_lateral_*.nc`, `case_radial_*.nc`), one
 netCDF file each: for a lateral case the grid (`colatitude`,
@@ -1108,6 +1112,11 @@ def surface_files(directory: Path) -> list[Path]:
             rng.normal(size=(time.size,) + shape), support="node",
             time_interpolation="linear", dimensions=units.LENGTH,
             poles=rng.normal(size=(time.size, 2))),
+        "load_previous": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="previous"),
+        "load_nodes": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node"),
         "rate": surfacefile.SurfaceVariable(
             rng.normal(size=(time.size - 1,) + shape), support="interval"),
         "instantaneous": surfacefile.SurfaceVariable(
@@ -1154,6 +1163,23 @@ def surface_files(directory: Path) -> list[Path]:
                 row = p[0] if k is None else p[k]
                 tag = "-" if k is None else str(k)
                 lines.append(f"poles {name} {tag} {float(row[0])!r} {float(row[1])!r}")
+    history = surfacefile.read_surface(path)
+    for name, date, extrapolation in (("topography", None, "refuse"),
+                                      ("ice_thickness", 1.75, "refuse"),
+                                      ("ice_thickness", 2.5, "refuse"),
+                                      ("ice_thickness", 9.0, "hold"),
+                                      ("load_previous", 1.75, "refuse"),
+                                      ("load_previous", -3.0, "hold"),
+                                      ("load_nodes", 2.5, "refuse"),
+                                      ("rate", 3.0, "refuse"),
+                                      ("rate", 4.0, "refuse"),
+                                      ("instantaneous", 2.5, "refuse")):
+        at = history.values(name, date=date, extrapolation=extrapolation)
+        tag = "-" if date is None else repr(float(date))
+        for i, j in samples:
+            if np.isfinite(at[i, j]):
+                lines.append(f"sample {name} {tag} {extrapolation} {i} {j} "
+                             f"{float(at[i, j])!r}")
     expect = directory / "surface_basic.expect"
     expect.write_text("\n".join(lines) + "\n")
     return [path, expect]

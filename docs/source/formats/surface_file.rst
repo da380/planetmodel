@@ -128,3 +128,20 @@ metadata back as a ``SurfaceFile``; ``validate_structure`` checks a
 file alone, naming the first thing wrong; and
 ``planetmodel.testing.check_surface_file`` holds a file to what it was
 written from.
+
+Reading as a history
+--------------------
+
+``read_surface`` gives a ``SurfaceHistory``, the file as a function of
+time: ``values(name, date)`` serves a field's values on the grid at a
+date by the field's own time rule — a ``node`` field interpolated
+between its nodes (``linear``), read from the latest node not after
+the date (``previous``), or served at its stored nodes alone
+(``none``); an ``interval`` field from the interval holding the date,
+the last closed at its end; an ``instant`` field at its stored
+instants alone; a ``static`` field at any date.  Outside its span a
+field refuses the date, or holds its nearest value where the caller
+asks (``extrapolation="hold"``).  ``function(name, date)`` is the same
+field as a ``GriddedFunction`` by its stated lateral rule, stored
+polar values carried along.  The C++ ``SurfaceHistory`` reads a file
+by the same arithmetic, so the two languages serve identical values.

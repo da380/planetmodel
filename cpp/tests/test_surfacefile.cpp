@@ -9,6 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -125,6 +126,18 @@ TEST(SurfaceFile, ReadsTheFixtureToItsExpectations) {
       ASSERT_LT(2 * k + 1, values.size()) << line;
       EXPECT_EQ(values[2 * k], north) << line;
       EXPECT_EQ(values[2 * k + 1], south) << line;
+    } else if (what == "sample") {
+      auto name = std::string{}, tag = std::string{}, extrap = std::string{};
+      auto i = std::size_t{0}, j = std::size_t{0};
+      auto value = 0.0;
+      words >> name >> tag >> extrap >> i >> j >> value;
+      const auto history = pm::SurfaceHistory(file);
+      const auto date = tag == "-" ? std::optional<double>{} : std::optional{std::stod(tag)};
+      const auto at = history.Values(name, date,
+                                     extrap == "hold" ? pm::Extrapolation::Hold
+                                                      : pm::Extrapolation::Refuse);
+      ASSERT_LT(i * nphi + j, at.size()) << line;
+      EXPECT_DOUBLE_EQ(at[i * nphi + j], value) << line;
     } else {
       FAIL() << "unknown expectation: " << line;
     }
@@ -219,6 +232,38 @@ TEST(SurfaceFile, WritesReadsBackAndLeavesTheFileForThePython) {
   EXPECT_TRUE(thickness.contains("units"));
   // the reader holds the file to the structure, so reading is the check
   EXPECT_EQ(read.schema, pm::SURFACE_SCHEMA);
+}
+
+TEST(SurfaceHistory, ServesEverySupportAndRefusesTheRest) {
+  const auto file = WrittenSurface();
+  const auto history = pm::SurfaceHistory(file);
+  const auto size = file.grid->NTheta() * file.grid->NPhi();
+  // linear: the midpoint of the first two nodes, exactly half their sum
+  const auto& nodes = file.variables.at("ice_thickness").values;
+  const auto mid = history.Values("ice_thickness", 0.5);
+  for (auto n = std::size_t{0}; n < size; ++n) {
+    EXPECT_DOUBLE_EQ(mid[n], 0.5 * nodes[n] + 0.5 * nodes[size + n]);
+  }
+  // held outside the span: the last node's values
+  const auto held = history.Values("ice_thickness", 9.0, pm::Extrapolation::Hold);
+  for (auto n = std::size_t{0}; n < size; ++n) EXPECT_EQ(held[n], nodes[2 * size + n]);
+  // the last interval is closed at its end
+  const auto& rate = file.variables.at("rate").values;
+  EXPECT_EQ(history.Values("rate", 2.5).front(), rate[size]);
+  // an instant is served exactly, and never held
+  EXPECT_EQ(history.Values("instantaneous", 1.5).front(),
+            file.variables.at("instantaneous").values.front());
+  EXPECT_THROW(static_cast<void>(history.Values("instantaneous", 1.6,
+                                                pm::Extrapolation::Hold)),
+               pm::Error);
+  // a static field takes any date; the NaN point stays NaN
+  EXPECT_TRUE(std::isnan(history.Values("topography", 7.0)[1]));
+  EXPECT_THROW(static_cast<void>(history.Values("ice_thickness")), pm::Error);
+  EXPECT_THROW(static_cast<void>(history.Values("ice_thickness", 9.0)), pm::Error);
+  EXPECT_THROW(static_cast<void>(history.Values("missing", 0.0)), pm::Error);
+  EXPECT_THROW(static_cast<void>(history.Values("topography_poles")), pm::Error);
+  EXPECT_EQ(history.Names().size(), 4u);
+  EXPECT_EQ(history.Support("rate"), "interval");
 }
 
 TEST(SurfaceFile, RefusesWhatTheFormatCannotHold) {

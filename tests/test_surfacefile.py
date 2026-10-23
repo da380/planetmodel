@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from planetmodel import Scales, equiangular, gauss_legendre
-from planetmodel.surfacefile import (SCHEMA, SurfaceVariable,
+from planetmodel.surfacefile import (SCHEMA, SurfaceVariable, read_surface,
                                      read_surface_file, validate_structure,
                                      write_surface)
 from planetmodel.testing import check_surface_file
@@ -168,6 +168,70 @@ def test_malformed_files_are_refused(tmp_path: Path):
         with netCDF4.Dataset(bad, "w"):
             pass
         validate_structure(bad)
+
+
+def test_the_history_serves_every_support(tmp_path: Path):
+    grid = gauss_legendre(4)
+    i = np.arange(grid.ntheta)[:, None].astype(float)
+    j = np.arange(grid.nphi)[None, :].astype(float)
+    base = i + 0.01 * j
+    nodes = np.stack([k * 10.0 + base for k in range(3)])
+    nodes[1, 0, 0] = np.nan
+    fields = {
+        "h": SurfaceVariable(nodes, support="node", time_interpolation="linear"),
+        "p": SurfaceVariable(nodes, support="node", time_interpolation="previous"),
+        "n": SurfaceVariable(nodes, support="node"),
+        "r": SurfaceVariable(nodes[:2], support="interval"),
+        "q": SurfaceVariable(nodes[:1], support="instant"),
+        "s": SurfaceVariable(base, poles=[3.0, -4.0],
+                             dimensions=Dimensions(length=1)),
+    }
+    path = write_surface(tmp_path / "history.nc", grid, fields=fields,
+                         source="tests", time=[0.0, 1.0, 3.0], instant=[2.0])
+    history = read_surface(path)
+    assert set(history.names()) == set(fields)
+    assert history.support("r") == "interval"
+    assert history.dimensions("s") == Dimensions(length=1)
+    assert history.dimensions("h") is None
+
+    # linear: between nodes, at a node (the NaN beside it kept out), held
+    assert np.allclose(history.values("h", date=2.0)[1:], 15.0 + base[1:])
+    assert np.isnan(history.values("h", date=0.5)[0, 0])
+    assert history.values("h", date=0.0)[0, 0] == base[0, 0]
+    assert np.allclose(history.values("h", date=9.0, extrapolation="hold")[1:],
+                       20.0 + base[1:])
+    with pytest.raises(ValueError, match="outside"):
+        history.values("h", date=9.0)
+    # previous: the latest node not after the date
+    assert np.allclose(history.values("p", date=2.999)[1:], 10.0 + base[1:])
+    assert np.allclose(history.values("p", date=3.0)[1:], 20.0 + base[1:])
+    # none: the stored nodes alone
+    assert np.allclose(history.values("n", date=1.0)[1:], 10.0 + base[1:])
+    with pytest.raises(ValueError, match="stored nodes alone"):
+        history.values("n", date=0.5)
+    # interval: right-continuous, the last closed at the end
+    assert np.allclose(history.values("r", date=0.5), base)
+    assert np.allclose(history.values("r", date=1.0)[1:], 10.0 + base[1:])
+    assert np.allclose(history.values("r", date=3.0)[1:], 10.0 + base[1:])
+    # instant: the stored instants alone, never held
+    assert np.allclose(history.values("q", date=2.0), base)
+    with pytest.raises(ValueError, match="stored instants alone"):
+        history.values("q", date=2.0001, extrapolation="hold")
+    # static: any date, and a date needed otherwise
+    assert np.allclose(history.values("s"), base)
+    assert np.allclose(history.values("s", date=7.0), base)
+    with pytest.raises(ValueError, match="needs a date"):
+        history.values("h")
+    with pytest.raises(KeyError):
+        history.values("s_poles")
+    with pytest.raises(ValueError, match="extrapolation"):
+        history.values("h", date=1.0, extrapolation="clamp")
+
+    # the gridded function carries the rule and the stored poles
+    fn = history.function("s")
+    assert np.allclose(fn.poles, [3.0, -4.0])
+    theta = grid.colatitudes[2]
+    assert np.isclose(fn(theta, grid.longitudes[3]), base[2, 3])
 
 
 def test_dimensions_round_trip(tmp_path: Path):

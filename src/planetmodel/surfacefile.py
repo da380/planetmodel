@@ -48,8 +48,16 @@ complex fields are refused.
 `write_surface` writes a file from `SurfaceVariable`s and
 `read_surface_file` gives one back as a `SurfaceFile` of numbers and
 metadata, nothing interpolated or converted; `validate_structure`
-checks a file's structure alone.  netCDF4 (the `netcdf` extra) is
-imported where a file is opened.
+checks a file's structure alone.  `read_surface` gives a
+`SurfaceHistory`, the file as a function of time: each field's values
+at a date by the field's own time rule — a `node` field interpolated
+between its nodes (`linear`), read from the latest node not after the
+date (`previous`), or served at its stored nodes alone (`none`); an
+`interval` field from the interval holding the date, the last closed
+at its end; an `instant` field at its stored instants alone; a
+`static` field at any date.  Outside its span a field refuses the
+date, or holds its nearest value where the caller asks.  netCDF4 (the
+`netcdf` extra) is imported where a file is opened.
 """
 from __future__ import annotations
 
@@ -61,7 +69,7 @@ from dataclasses import KW_ONLY, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -74,9 +82,12 @@ from .sampling import KINDS as GRID_KINDS
 from .sampling import AngularGrid
 from .units import BASE, TIME, Dimensions, Scales, scaled_unit
 
+if TYPE_CHECKING:
+    from .gridded import GriddedFunction
+
 __all__ = ["SCHEMA", "TIME_SUPPORTS", "TIME_METHODS", "SurfaceVariable",
-           "SurfaceFile", "write_surface", "read_surface_file",
-           "validate_structure"]
+           "SurfaceFile", "SurfaceHistory", "write_surface",
+           "read_surface_file", "read_surface", "validate_structure"]
 
 #: The schema string every reader checks; bumped only for an incompatible change.
 SCHEMA = "planetmodel.surface/1"
@@ -469,3 +480,152 @@ def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
                        title=None if title is None else str(title),
                        meta=MappingProxyType(meta),
                        citation=tuple(str(attrs.get("citation", "")).splitlines()))
+
+
+# -- the file as a function of time -----------------------------------------------
+
+#: What a field does with a date outside its span.
+_EXTRAPOLATIONS = ("refuse", "hold")
+
+
+class SurfaceHistory:
+    """A surface file as a function of time (module docstring): each
+    field's values at a date, by the field's own time rule, and as a
+    `GriddedFunction` by its lateral one."""
+
+    def __init__(self, file: SurfaceFile) -> None:
+        self._file = file
+
+    @property
+    def file(self) -> SurfaceFile:
+        """The file's numbers and metadata, as read."""
+        return self._file
+
+    @property
+    def grid(self) -> AngularGrid:
+        """The angular grid every field is on."""
+        return self._file.grid
+
+    @property
+    def time(self) -> np.ndarray | None:
+        """The time nodes, where the file has them."""
+        return self._file.time
+
+    @property
+    def instant(self) -> np.ndarray | None:
+        """The observation times, where the file has them."""
+        return self._file.instant
+
+    def names(self) -> tuple[str, ...]:
+        """The fields, polar values not counted among them."""
+        return tuple(n for n in self._file.variables if not n.endswith("_poles"))
+
+    def support(self, name: str) -> str:
+        """How a field sits in time, one of `TIME_SUPPORTS`."""
+        return str(self._variable(name).attributes["time_support"])
+
+    def dimensions(self, name: str) -> Dimensions | None:
+        """A field's dimensions, where the file declares them."""
+        exps = self._variable(name).attributes.get("dimensions")
+        if exps is None:
+            return None
+        return Dimensions(**{b: int(e) for b, e in zip(BASE, np.atleast_1d(exps))})
+
+    def values(self, name: str, *, date: float | None = None,
+               extrapolation: str = "refuse") -> np.ndarray:
+        """A field's values on the grid at `date`, (ntheta, nphi), by its
+        own time rule (module docstring); NaN stays where the field does
+        not cover a point.  `extrapolation` is `refuse` (the default) or
+        `hold`, which serves the nearest value of a `linear`, `previous`
+        or `interval` field outside its span."""
+        rows = self._rows(name, date, extrapolation)
+        values = self._variable(name).values
+        if rows is None:
+            return values.copy()
+        (k0, w0), (k1, w1) = rows
+        return w0 * values[k0] + w1 * values[k1]
+
+    def function(self, name: str, *, date: float | None = None,
+                 extrapolation: str = "refuse",
+                 rtol: float = 1e-9) -> GriddedFunction:
+        """The field at `date` as a `GriddedFunction` by its stated lateral
+        rule (`harmonic` read as `cubic`, this library evaluating no
+        harmonic rule), its stored polar values carried along where the
+        file holds them; a field with NaN cannot be one."""
+        from .gridded import GriddedFunction
+
+        lateral = str(self._variable(name).attributes["lateral_interpolation"])
+        poles = None
+        held = self._file.variables.get(f"{name}_poles")
+        if held is not None:
+            rows = self._rows(name, date, extrapolation)
+            if rows is None:
+                poles = np.asarray(held.values, dtype=float)
+            else:
+                (k0, w0), (k1, w1) = rows
+                poles = w0 * held.values[k0] + w1 * held.values[k1]
+        return GriddedFunction(self.grid, self.values(name, date=date,
+                                                      extrapolation=extrapolation),
+                               lateral="cubic" if lateral == "harmonic" else lateral,
+                               poles=poles, rtol=rtol)
+
+    def _variable(self, name: str) -> FileVariable:
+        """The variable of a field, polar values and reserved names refused."""
+        if name.endswith("_poles") or name not in self._file.variables:
+            raise KeyError(f"the file holds no field {name!r}")
+        return self._file.variables[name]
+
+    def _rows(self, name: str, date: float | None, extrapolation: str
+              ) -> tuple[tuple[int, float], tuple[int, float]] | None:
+        """The leading rows a date reads, with their weights; None for a
+        static field, whose values are the answer whole."""
+        if extrapolation not in _EXTRAPOLATIONS:
+            raise ValueError(f"extrapolation is one of {_EXTRAPOLATIONS}, "
+                             f"got {extrapolation!r}")
+        support = self.support(name)
+        if support == "static":
+            return None
+        if date is None:
+            raise ValueError(f"{name!r} is a {support} field and needs a date")
+        date = float(date)
+        hold = extrapolation == "hold"
+        if support == "instant":
+            axis = self._file.instant
+            hits = np.flatnonzero(axis == date)
+            if hits.size == 0:
+                raise ValueError(f"{name!r} is held at its stored instants "
+                                 f"alone, and {date!r} is not one")
+            return ((int(hits[0]), 1.0), (int(hits[0]), 0.0))
+        axis = self._file.time
+        rule = str(self._variable(name).attributes["time_interpolation"])
+        if support == "node" and rule == "none":
+            hits = np.flatnonzero(axis == date)
+            if hits.size == 0:
+                raise ValueError(f"{name!r} states no time rule and is held "
+                                 f"at its stored nodes alone; {date!r} is not one")
+            return ((int(hits[0]), 1.0), (int(hits[0]), 0.0))
+        if date < axis[0] or date > axis[-1]:
+            if not hold:
+                raise ValueError(f"{date!r} lies outside {name!r}'s span "
+                                 f"[{axis[0]!r}, {axis[-1]!r}]")
+            date = min(max(date, float(axis[0])), float(axis[-1]))
+        if support == "interval":
+            k = min(int(np.searchsorted(axis, date, side="right")) - 1,
+                    axis.size - 2)
+            return ((k, 1.0), (k, 0.0))
+        if rule == "previous":
+            k = int(np.searchsorted(axis, date, side="right")) - 1
+            return ((k, 1.0), (k, 0.0))
+        k = min(int(np.searchsorted(axis, date, side="right")) - 1, axis.size - 2)
+        w = (date - float(axis[k])) / (float(axis[k + 1]) - float(axis[k]))
+        if w == 0.0:  # a stored node: its own values, a NaN beside it kept out
+            return ((k, 1.0), (k, 0.0))
+        if w == 1.0:
+            return ((k + 1, 1.0), (k + 1, 0.0))
+        return ((k, 1.0 - w), (k + 1, w))
+
+
+def read_surface(path: str | os.PathLike[str]) -> SurfaceHistory:
+    """A surface file as a function of time, its structure validated
+    first."""
+    return SurfaceHistory(read_surface_file(path))
