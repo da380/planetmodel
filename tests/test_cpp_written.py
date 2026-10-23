@@ -81,7 +81,8 @@ def test_the_cpp_wrote_its_files():
     names = {p.name for p in _written("*.nc")}
     assert {"written_si.nc", "written_custom.nc", "written_tensors.nc",
             "written_surfaces.nc", "kernel.nc", "roundtrip_model_prem.nc",
-            "roundtrip_model_harmonic.nc", "roundtrip_model_surfaces.nc"} <= names
+            "roundtrip_model_harmonic.nc", "roundtrip_model_surfaces.nc",
+            "surface_written.nc"} <= names
 
 
 @needs_written
@@ -110,6 +111,44 @@ def test_a_file_the_cpp_wrote_cites_what_it_was_given():
         "A. Author (2026).  A written model.", "B. Author (2026).  Its source.")
     prem = read_model(Path(WRITTEN) / "roundtrip_model_prem.nc")
     assert prem.citation == read_model(FIXTURES / "model_prem.nc").citation != ()
+
+
+@needs_written
+def test_the_surface_file_the_cpp_wrote_holds_what_it_was_given():
+    from planetmodel import Scales, gauss_legendre
+    from planetmodel.surfacefile import SurfaceVariable, read_surface_file
+    from planetmodel.testing import check_surface_file
+    from planetmodel.units import LENGTH
+
+    path = Path(WRITTEN) / "surface_written.nc"
+    grid = read_surface_file(path).grid
+    k = np.arange(3)[:, None, None].astype(float)
+    i = np.arange(grid.ntheta)[None, :, None].astype(float)
+    j = np.arange(grid.nphi)[None, None, :].astype(float)
+    topography = (i + 0.01 * j)[0]
+    topography.flat[1] = np.nan
+    fields = {
+        "topography": SurfaceVariable(topography, dimensions=LENGTH,
+                                      meaning="present-day topography",
+                                      poles=[1.5, -0.5]),
+        "ice_thickness": SurfaceVariable(100.0 * k + i + 0.01 * j,
+                                         support="node",
+                                         time_interpolation="linear",
+                                         dimensions=LENGTH),
+        "rate": SurfaceVariable((10.0 * k + i - 0.1 * j)[:2],
+                                support="interval"),
+        "instantaneous": SurfaceVariable((1.0 * k + 2.0 * i + 0.2 * j)[:2],
+                                         support="instant",
+                                         lateral_interpolation="cubic"),
+    }
+    check_surface_file(path, grid, fields=fields, time=[0.0, 1.0, 2.5],
+                       instant=[1.5, 2.5], radius=1.25,
+                       scales=Scales(length=2.0, mass=3.0, time=5.0),
+                       meta={"epoch": "present", "lmax": 4},
+                       citation=("one", "two"))
+    want = gauss_legendre(4)
+    assert np.allclose(grid.colatitudes, want.colatitudes, rtol=0, atol=1e-12)
+    assert np.allclose(grid.weights, want.weights, rtol=0, atol=1e-12)
 
 
 @needs_written

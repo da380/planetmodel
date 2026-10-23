@@ -9,6 +9,10 @@ writes model files that the Python reads. It reads and writes:
     a field you can evaluate anywhere by the file's own interpolation
     rules, and the mapping;
   - writing builds a file from your own fields;
+- **surface files**, fields on one spherical surface, static or in time
+  (`surfacefile.hpp`): reading gives the numbers as stored, held to the
+  structure, and writing builds a file from your own fields
+  (`SurfaceField`), whole or not at all;
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
   (`json.hpp`);

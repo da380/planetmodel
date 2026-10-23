@@ -9,7 +9,9 @@ and read by ``read_surface_file`` (the numbers and metadata, nothing
 interpolated) and by any netCDF reader: the file is CF-styled, so
 xarray, Panoply and ncview open it as it stands.  The Python module is
 the definition of the format, and ``validate_structure`` there checks a
-file against it.
+file against it.  In C++, planetmodel's own library (:doc:`../cpp`)
+reads a surface file whole, held to the structure, and writes one from
+a code's own fields.
 
 **Schema string**: the global attribute ``schema``,
 ``planetmodel.surface/1``.  Readers check it; it is bumped only for an
