@@ -48,6 +48,8 @@ for their readers:
 
 * :doc:`formats/model_file`: a model in one netCDF file, its fields on
   angular grids at radial nodes, and its mapping.
+* :doc:`formats/surface_file`: fields on one spherical surface, static
+  or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what
   the mesh's numbered attributes and the field files beside it are.
 
@@ -57,6 +59,7 @@ for their readers:
    :hidden:
 
    formats/model_file
+   formats/surface_file
    formats/mesh_manifest
 
 The C++ library

@@ -44,6 +44,12 @@ Global attributes
      - ``planetmodel.model/1``
    * - ``Conventions``
      - ``CF-1.8``
+   * - ``source``
+     - the writing code and version, stamped by the writers (absent in
+       files written before it was)
+   * - ``created``
+     - when the file was written, ISO 8601, stamped by the writers
+       (absent in older files)
    * - ``title``
      - ``planetmodel model`` and the model's name
    * - ``name``

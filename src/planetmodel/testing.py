@@ -26,14 +26,17 @@ if TYPE_CHECKING:
     from .model import Model
     from .modelfile import Surfaces
     from .randomfield.basis import SpectralBasis, SphericalBasis
-    from .sampling import Sample
+    from .sampling import AngularGrid, Sample
     from .skeleton import Skeleton
+    from .surfacefile import SurfaceVariable
+    from .units import Scales
 
 __all__ = ["check_displacement", "check_mapping", "check_geometry",
            "check_layer_function", "check_field", "check_model",
            "check_refinement", "check_sample", "check_spectral_basis",
            "check_spherical_basis", "check_model_file", "check_dataset",
-           "check_surface", "check_strata", "check_regional"]
+           "check_surface", "check_strata", "check_regional",
+           "check_surface_file"]
 
 
 def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
@@ -963,7 +966,8 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     """Hold a model file to the model it was written from.
 
     Checks the structure (`validate_structure`); the skeleton, the layer
-    and interface names, the scales and the citation; that every variable is held on
+    and interface names, the scales and the citation; that the file names
+    its source and carries a parseable created stamp; that every variable is held on
     the layers its `layers` attribute names, NaN elsewhere, by fields of
     the model of the stated character; that a lateral variable names in
     `radial_layers` exactly the layers where the model's field is radial,
@@ -997,6 +1001,9 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     assert data.scales == model.scales, (
         f"the file is in {data.scales!r}, the model in {model.scales!r}")
     assert data.citation == model.citation, "the file does not cite what the model does"
+    assert data.source.strip(), "the file names no source"
+    from datetime import datetime
+    datetime.fromisoformat(data.created)
     assert data.rtol == model.geometry.rtol, (
         f"the file states rtol {data.rtol!r}, the model's geometry has "
         f"{model.geometry.rtol!r}")
@@ -1339,3 +1346,103 @@ def check_regional(regional: RegionalGrid, *, rng: np.random.Generator | None = 
             f"{regional!r}: {name} has values outside its region")
         held = held or bool(np.isfinite(v[-1]))
     assert held, f"{regional!r}: nothing at its centre half way down"
+
+
+def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
+                       fields: Mapping[str, SurfaceVariable],
+                       time: ArrayLike | None = None,
+                       instant: ArrayLike | None = None,
+                       radius: float | None = None,
+                       scales: Scales | None = None,
+                       meta: Mapping[str, Any] | None = None,
+                       citation: Iterable[str] = ()) -> None:
+    """Hold a surface file to what it was written from.
+
+    Checks the structure (`surfacefile.validate_structure`); that the
+    grid, the time and instant axes, the radius, the scales, the meta
+    attributes and the citation read back as given; that `source` and
+    `created` are present and `created` parses as ISO 8601; that the
+    file holds exactly the given fields (their polar values apart), each
+    of its stated support, rules and dimensions, its values the given
+    ones with NaN preserved; and that a field's polar values are held
+    exactly when they were given.  netCDF4 is imported here.
+    """
+    from datetime import datetime
+
+    from .surfacefile import SCHEMA, read_surface_file, validate_structure
+    from .units import BASE, Scales
+
+    validate_structure(path)
+    data = read_surface_file(path)
+    assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
+    assert data.grid.kind == grid.kind and data.grid.lmax == grid.lmax, (
+        "the file's grid is not of the given kind and band")
+    assert np.allclose(data.grid.colatitudes, grid.colatitudes, rtol=0,
+                       atol=1e-12), "the file's colatitudes are not the grid's"
+    assert np.allclose(data.grid.longitudes, grid.longitudes, rtol=0,
+                       atol=1e-12), "the file's longitudes are not the grid's"
+    assert (grid.weights is None) == (data.grid.weights is None), (
+        "the file does not hold the grid's weights")
+    if grid.weights is not None:
+        assert np.allclose(data.grid.weights, grid.weights, rtol=1e-15), (
+            "the file's weights are not the grid's")
+    for name, want in (("time", time), ("instant", instant)):
+        stored = getattr(data, name)
+        assert (want is None) == (stored is None), (
+            f"the file's {name} axis is not as given")
+        if want is not None:
+            assert np.array_equal(stored, np.asarray(want, dtype=float)), (
+                f"the file's {name} values are not as given")
+    if radius is None:
+        assert data.radius is None, "the file states a radius it was not given"
+    else:
+        assert data.radius == float(radius), (
+            f"the file's radius is {data.radius!r}, not {radius!r}")
+    assert data.scales == (Scales.SI if scales is None else scales), (
+        f"the file is in {data.scales!r}")
+    assert data.source.strip(), "the file names no source"
+    datetime.fromisoformat(data.created)
+    for key, value in (meta or {}).items():
+        assert data.meta.get(key) == value, (
+            f"meta_{key} is {data.meta.get(key)!r}, not {value!r}")
+    assert data.citation == tuple(citation), (
+        "the file does not cite what it was given")
+    plain = {n for n in data.variables if not n.endswith("_poles")}
+    assert plain == set(fields), (
+        f"the file holds {sorted(plain)}, not {sorted(fields)}")
+    sizes = {"static": None, "node": None if time is None else len(np.atleast_1d(
+        np.asarray(time))), "instant": None if instant is None else len(
+        np.atleast_1d(np.asarray(instant)))}
+    for name, field in fields.items():
+        var = data.variables[name]
+        a = var.attributes
+        stated = (a.get("time_support"), a.get("time_interpolation"),
+                  a.get("lateral_interpolation"))
+        given = (field.support, field.time_interpolation,
+                 field.lateral_interpolation)
+        assert stated == given, f"{name}: states {stated}, was given {given}"
+        assert a.get("long_name") == (field.meaning or name), (
+            f"{name}: long_name is {a.get('long_name')!r}")
+        if field.dimensions is not None:
+            exps = [int(e) for e in np.atleast_1d(a["dimensions"])]
+            want_exps = [getattr(field.dimensions, b) for b in BASE]
+            assert exps == want_exps, f"{name}: dimensions {exps} != {want_exps}"
+        else:
+            assert "dimensions" not in a, f"{name}: states undeclared dimensions"
+        leading = {"static": (), "node": (sizes["node"],),
+                   "interval": (None if sizes["node"] is None
+                                else sizes["node"] - 1,),
+                   "instant": (sizes["instant"],)}[field.support]
+        shape = tuple(leading) + (grid.ntheta, grid.nphi)
+        want = np.broadcast_to(np.asarray(field.values, dtype=float), shape)
+        assert np.array_equal(var.values, want, equal_nan=True), (
+            f"{name}: the file's values are not as given")
+        if field.poles is None:
+            assert f"{name}_poles" not in data.variables, (
+                f"{name}: polar values it was not given")
+        else:
+            want = np.broadcast_to(np.asarray(field.poles, dtype=float),
+                                   tuple(leading) + (2,))
+            assert np.array_equal(data.variables[f"{name}_poles"].values, want,
+                                  equal_nan=True), (
+                f"{name}: the file's polar values are not as given")

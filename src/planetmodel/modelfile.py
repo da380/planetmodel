@@ -8,7 +8,9 @@ definition of the format and the reference the C++ readers are held to;
 `docs/source/formats/model_file.rst` describes it for consumers.
 
 **Global attributes**: `schema` (`SCHEMA`, checked by every reader),
-`Conventions`, the model's `name`, `scale_length`, `scale_mass`,
+`Conventions`, `source` (the writing code and version) and `created`
+(when, ISO 8601) — both stamped by the writers, and empty on reading a
+file from before they were — the model's `name`, `scale_length`, `scale_mass`,
 `scale_time` and `scale_temperature` (what one stored unit is in SI),
 `rtol` (the geometry's tolerance, the default where a file has none),
 `constant_<name>` for every constant in the model's units, `citation`
@@ -130,7 +132,9 @@ __all__ = ["SCHEMA", "CONVENTIONS", "DEFAULT_INTERPOLATION", "Grids",
            "Interpolation", "Surfaces", "FileVariable",
            "FilePart", "FileGeometry", "FileSurfaces", "ModelFile", "write_model",
            "read_model_file", "file_layers", "file_geometry", "file_surfaces",
-           "read_model", "read_surfaces", "validate_structure"]
+           "read_model", "read_surfaces", "validate_structure",
+           "netcdf_module", "put_variable", "variable_attributes",
+           "variable_values", "grid_degrees", "grid_of_group"]
 
 #: The schema string every reader checks; bumped only for an incompatible change.
 SCHEMA = "planetmodel.model/1"
@@ -171,7 +175,7 @@ type Grids = AngularGrid | Mapping[int | str, AngularGrid]
 type Surfaces = Mapping[str, Mapping[int | str, Relief]]
 
 
-def _netcdf() -> ModuleType:
+def netcdf_module() -> ModuleType:
     """netCDF4, imported here and nowhere else in planetmodel."""
     try:
         import netCDF4
@@ -254,6 +258,12 @@ class ModelFile:
     surfaces: FileSurfaces | None = None
     #: The works the model cites, one a line of the attribute `citation`.
     citation: tuple[str, ...] = ()
+    #: The code that wrote the file (the attribute `source`); empty in
+    #: files written before the writers stamped it.
+    source: str = ""
+    #: When the file was written, ISO 8601 (the attribute `created`);
+    #: empty in files written before the writers stamped it.
+    created: str = ""
 
     def part_of(self, layer: int) -> FilePart:
         """The part holding `layer`."""
@@ -463,7 +473,7 @@ def _radial_layers(attributes: Mapping[str, Any]) -> set[int]:
     return {int(i) for i in np.atleast_1d(attributes.get("radial_layers", []))}
 
 
-def _put(group: Any, name: str, dims: tuple[str, ...], values: np.ndarray,
+def put_variable(group: Any, name: str, dims: tuple[str, ...], values: np.ndarray,
          attributes: Mapping[str, Any]) -> None:
     """A float64 variable with NaN as its fill, and its attributes."""
     var = group.createVariable(name, "f8", dims, fill_value=np.nan, **_ZLIB)
@@ -484,7 +494,7 @@ def _axes(group: Any, character: Character) -> tuple[str, ...]:
     return _AXES[shape]
 
 
-def _degrees(grid: AngularGrid) -> tuple[np.ndarray, np.ndarray]:
+def grid_degrees(grid: AngularGrid) -> tuple[np.ndarray, np.ndarray]:
     """The grid's latitudes and longitudes in degrees, each on its own axis."""
     lat, _ = geographic(grid.colatitudes, np.zeros_like(grid.colatitudes))
     _, lon = geographic(np.full_like(grid.longitudes, 0.5 * np.pi), grid.longitudes)
@@ -508,16 +518,16 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
     length = scaled_unit(Dimensions(length=1), model.scales)
     r = mesh.r.ravel()
     node_layer = np.repeat(mesh.layer, mesh.ngll)
-    _put(group, "radius", ("node",), r,
+    put_variable(group, "radius", ("node",), r,
          {"long_name": "radius of the node; an element boundary is two nodes",
           "units": length})
     var = group.createVariable("element_layer", "i4", ("element",))
     var[...] = mesh.layer
     var.long_name = "skeleton layer of the element"
-    _put(group, "element_bounds", ("element", "bound"),
+    put_variable(group, "element_bounds", ("element", "bound"),
          np.stack([mesh.left, mesh.right], axis=-1),
          {"long_name": "radii of the element's ends", "units": length})
-    lat, lon = _degrees(grid)
+    lat, lon = grid_degrees(grid)
     var = group.createVariable("latitude", "f8", ("latitude",))
     var[...] = lat
     var.units, var.standard_name = "degrees_north", "latitude"
@@ -527,7 +537,7 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
     var.units, var.standard_name = "degrees_east", "longitude"
     var.long_name = "longitude"
     if grid.weights is not None:
-        _put(group, "colatitude_weights", ("latitude",), grid.weights,
+        put_variable(group, "colatitude_weights", ("latitude",), grid.weights,
              {"long_name": "colatitude quadrature weights against sin(theta) dtheta",
               "units": "1"})
     lacks_pole = not all(grid.pole_nodes)
@@ -568,9 +578,9 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
         attrs["coordinates"] = "radius"
         if not radial:
             _mark_radial_layers(attrs, fields)
-        _put(group, name, dims + axes, values, attrs)
+        put_variable(group, name, dims + axes, values, attrs)
         if poles is not None:
-            _put(group, f"{name}_poles", ("node", "pole") + axes, poles,
+            put_variable(group, f"{name}_poles", ("node", "pole") + axes, poles,
                  {"long_name": f"{name} at the north and south poles, Cartesian "
                                "components", "units": attrs["units"]})
     if form == "field":
@@ -588,12 +598,12 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
                                            for b in BASE], dtype=np.int32),
                  "radial_interpolation": rules[0],
                  "lateral_interpolation": rules[1], "coordinates": "radius"}
-        _put(group, "displacement", ("node", "latitude", "longitude") + axes,
+        put_variable(group, "displacement", ("node", "latitude", "longitude") + axes,
              values, attrs)
         if lacks_pole:
             from .frames import cartesian_points
             P = cartesian_points(r[:, None], np.array([0.0, np.pi]), np.zeros(2))
-            _put(group, "displacement_poles", ("node", "pole") + axes,
+            put_variable(group, "displacement_poles", ("node", "pole") + axes,
                  np.asarray(mapping(P), dtype=float) - P,
                  {"long_name": "displacement at the north and south poles, "
                                "Cartesian components", "units": length})
@@ -636,7 +646,7 @@ def _write_perturbed(group: Any, model: Model, name: str,
     attrs = _attributes(name, model, char, holders, ref_rules, lateral=False)
     attrs.update({"perturbation": f"{name}_perturbation", "perturbation_kind": kind,
                   "coordinates": "radius"})
-    _put(group, name, ("node",), ref, attrs)
+    put_variable(group, name, ("node",), ref, attrs)
     perturbed = [i for i, f in fields.items()
                  if getattr(f, "reference", None) is not None]
     pattrs = _attributes(name, model, pert_char, perturbed, rules,
@@ -650,9 +660,9 @@ def _write_perturbed(group: Any, model: Model, name: str,
         _mark_radial_layers(pattrs, {i: f.perturbation for i, f in fields.items()
                                      if getattr(f, "reference", None) is not None})
     dims = ("node",) if pert_radial else ("node", "latitude", "longitude")
-    _put(group, f"{name}_perturbation", dims, dp, pattrs)
+    put_variable(group, f"{name}_perturbation", dims, dp, pattrs)
     if poles is not None:
-        _put(group, f"{name}_perturbation_poles", ("node", "pole"), poles,
+        put_variable(group, f"{name}_perturbation_poles", ("node", "pole"), poles,
              {"long_name": f"{kind} perturbation of {name} at the poles",
               "units": pattrs["units"]})
 
@@ -685,10 +695,10 @@ def _write_stack(root: Any, model: Model, parts: list[tuple[list[int], AngularGr
     if grid.lmax is not None:
         g.setncattr("grid_lmax", np.int32(grid.lmax))
     length = scaled_unit(Dimensions(length=1), model.scales)
-    _put(g, "boundary_radius", ("boundary",), radii,
+    put_variable(g, "boundary_radius", ("boundary",), radii,
          {"long_name": "radius of the surface the displacement belongs to",
           "units": length})
-    lat, lon = _degrees(grid)
+    lat, lon = grid_degrees(grid)
     var = g.createVariable("latitude", "f8", ("latitude",))
     var[...] = lat
     var.units, var.standard_name = "degrees_north", "latitude"
@@ -696,7 +706,8 @@ def _write_stack(root: Any, model: Model, parts: list[tuple[list[int], AngularGr
     var[...] = lon
     var.units, var.standard_name = "degrees_east", "longitude"
     if grid.weights is not None:
-        _put(g, "colatitude_weights", ("latitude",), grid.weights, {"units": "1"})
+        put_variable(g, "colatitude_weights", ("latitude",), grid.weights,
+                     {"units": "1"})
     values = np.zeros((radii.size, grid.ntheta, grid.nphi))
     poles = np.zeros((radii.size, 2))
     for k, rel in enumerate(reliefs):
@@ -706,12 +717,13 @@ def _write_stack(root: Any, model: Model, parts: list[tuple[list[int], AngularGr
             np.asarray(rel(grid.colatitudes[:, None], grid.longitudes[None, :]),
                        dtype=float), (grid.ntheta, grid.nphi))
         poles[k] = np.asarray(rel(np.array([0.0, np.pi]), np.zeros(2)), dtype=float)
-    _put(g, "boundary_displacement", ("boundary", "latitude", "longitude"), values,
-         {"long_name": "radial displacement of the surface", "units": length,
-          "lateral_interpolation": lateral, "between": "linear"})
+    put_variable(g, "boundary_displacement",
+                 ("boundary", "latitude", "longitude"), values,
+                 {"long_name": "radial displacement of the surface", "units": length,
+                  "lateral_interpolation": lateral, "between": "linear"})
     if not all(grid.pole_nodes):
         g.createDimension("pole", 2)
-        _put(g, "boundary_displacement_poles", ("boundary", "pole"), poles,
+        put_variable(g, "boundary_displacement_poles", ("boundary", "pole"), poles,
              {"long_name": "radial displacement at the north and south poles",
               "units": length})
 
@@ -788,7 +800,7 @@ def _write_surfaces(root: Any, model: Model, held: Mapping[str, Mapping[int, Rel
     var = g.createVariable("surface_interface", "i4", ("surface",))
     var[...] = np.asarray(faces, dtype=np.int32)
     var.long_name = "the interface the surface is, by its index at the root"
-    lat, lon = _degrees(grid)
+    lat, lon = grid_degrees(grid)
     var = g.createVariable("latitude", "f8", ("latitude",))
     var[...] = lat
     var.units, var.standard_name = "degrees_north", "latitude"
@@ -798,7 +810,7 @@ def _write_surfaces(root: Any, model: Model, held: Mapping[str, Mapping[int, Rel
     var.units, var.standard_name = "degrees_east", "longitude"
     var.long_name = "longitude"
     if grid.weights is not None:
-        _put(g, "colatitude_weights", ("latitude",), grid.weights,
+        put_variable(g, "colatitude_weights", ("latitude",), grid.weights,
              {"long_name": "colatitude quadrature weights against sin(theta) dtheta",
               "units": "1"})
     lacks_pole = not all(grid.pole_nodes)
@@ -828,9 +840,9 @@ def _write_surfaces(root: Any, model: Model, held: Mapping[str, Mapping[int, Rel
         if dims is not None:
             attrs["dimensions"] = np.asarray([getattr(dims, b) for b in BASE],
                                              dtype=np.int32)
-        _put(g, name, ("surface", "latitude", "longitude"), values, attrs)
+        put_variable(g, name, ("surface", "latitude", "longitude"), values, attrs)
         if lacks_pole:
-            _put(g, f"{name}_poles", ("surface", "pole"), poles,
+            put_variable(g, f"{name}_poles", ("surface", "pole"), poles,
                  {"long_name": f"{name} at the north and south poles",
                   "units": attrs["units"]})
 
@@ -841,7 +853,8 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
                 interpolation: Interpolation | None = None,
                 meta: Mapping[str, Any] | None = None,
                 surfaces: Surfaces | None = None,
-                surface_grid: AngularGrid | None = None) -> Path:
+                surface_grid: AngularGrid | None = None,
+                source: str | None = None) -> Path:
     """Write `model` to a model file at `path`, which is returned.
 
     `grid` is one `AngularGrid` for every layer, or a mapping from layers
@@ -858,13 +871,15 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     `surfaces` on `surface_grid`: by default the grid the functions are
     held on where they share one, else the outermost part's.  A surface
     field's dimensions and meaning are the model's spec of its name, and
-    `interpolation` names its lateral rule as for a field.  The model is
+    `interpolation` names its lateral rule as for a field.  `source`
+    names the writing code and version in the attribute of that name,
+    this library and its version unless given.  The model is
     written in its own units.
     """
     from .model import Model
     if not isinstance(model, Model):
         raise TypeError(f"expected a Model, got {type(model).__name__}")
-    nc = _netcdf()
+    nc = netcdf_module()
     interpolation = dict(interpolation or {})
     names = model.field_names() if fields is None else tuple(fields)
     if isinstance(names, str):
@@ -901,7 +916,7 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     os.close(fd)
     try:
         _write_file(nc, Path(partial), model, parts, form, names, radial,
-                    interpolation, meta, held, on)
+                    interpolation, meta, held, on, source)
         os.replace(partial, path)
     finally:
         if os.path.exists(partial):
@@ -914,12 +929,19 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
                 names: Sequence[str], radial: RadialMesh | None,
                 interpolation: Interpolation, meta: Mapping[str, Any],
                 held: Mapping[str, Mapping[int, Relief]],
-                surface_grid: AngularGrid | None) -> None:
+                surface_grid: AngularGrid | None,
+                source: str | None) -> None:
     """The file of `write_model`, at a path of its own until it is whole."""
+    from datetime import datetime, timezone
+
+    from . import __version__
     with nc.Dataset(path, "w", format="NETCDF4") as root:
         root.setncattr("schema", SCHEMA)
         root.setncattr("Conventions", CONVENTIONS)
         root.setncattr("title", f"planetmodel model {model.name or ''}".strip())
+        root.setncattr("source", source or f"planetmodel {__version__}")
+        root.setncattr("created",
+                       datetime.now(timezone.utc).isoformat(timespec="seconds"))
         if model.name:
             root.setncattr("name", model.name)
         for base in ("length", "mass", "time", "temperature"):
@@ -941,14 +963,15 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
         root.createDimension("bound", 2)
         b = model.skeleton.boundaries
         length = scaled_unit(Dimensions(length=1), model.scales)
-        _put(root, "layer_bounds", ("layer", "bound"), np.stack([b[:-1], b[1:]], -1),
-             {"long_name": "radii of the layer's inner and outer boundaries",
-              "units": length})
+        put_variable(root, "layer_bounds", ("layer", "bound"),
+                     np.stack([b[:-1], b[1:]], -1),
+                     {"long_name": "radii of the layer's inner and outer boundaries",
+                      "units": length})
         var = root.createVariable("layer_name", str, ("layer",))
         for i, layer in enumerate(model.geometry.layers):
             var[i] = layer.name or ""
         faces = model.geometry.interfaces
-        _put(root, "interface_radius", ("interface",),
+        put_variable(root, "interface_radius", ("interface",),
              np.array([f.radius for f in faces], dtype=float),
              {"long_name": "radius of the interface", "units": length})
         var = root.createVariable("interface_name", str, ("interface",))
@@ -973,7 +996,7 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
 
 # -- reading --------------------------------------------------------------------
 
-def _attrs(var: Any) -> dict[str, Any]:
+def variable_attributes(var: Any) -> dict[str, Any]:
     """A netCDF variable's attributes, numpy scalars made plain."""
     out = {}
     for key in var.ncattrs():
@@ -986,14 +1009,14 @@ def _attrs(var: Any) -> dict[str, Any]:
     return out
 
 
-def _values(var: Any) -> np.ndarray:
+def variable_values(var: Any) -> np.ndarray:
     """A variable's numbers as float64, NaN where it holds its fill."""
     v = var[:]
     return (v.filled(np.nan) if np.ma.isMaskedArray(v)
             else np.asarray(v, dtype=float)).astype(float)
 
 
-def _grid_of(group: Any) -> AngularGrid:
+def grid_of_group(group: Any) -> AngularGrid:
     """The angular grid a group's coordinates and attributes hold."""
     from .sampling import AngularGrid
     lat = np.asarray(group.variables["latitude"][:], dtype=float)
@@ -1017,7 +1040,7 @@ def validate_structure(source: str | os.PathLike[str] | Any) -> None:
     structure the module docstring defines, raising ValueError naming
     the first thing wrong."""
     if isinstance(source, (str, os.PathLike)):
-        nc = _netcdf()
+        nc = netcdf_module()
         with nc.Dataset(source, "r") as ds:
             _validate(ds, source)
     else:
@@ -1134,7 +1157,7 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
             want: tuple[int, ...] = (3,)
         else:
             try:
-                want = stored_shape(_character(_attrs(var)))
+                want = stored_shape(_character(variable_attributes(var)))
             except (ValueError, TypeError) as error:
                 _fail(path, f"{where}/{name} states no character: {error}")
         tail = var.shape[3 if lateral else 1:]
@@ -1145,7 +1168,7 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
                 "radial_interpolation") not in RADIAL_METHODS:
             _fail(path, f"{where}/{name} states an unknown radial rule")
         if "radial_layers" in a:
-            listed = _radial_layers(_attrs(var))
+            listed = _radial_layers(variable_attributes(var))
             held = (set(int(i) for i in np.atleast_1d(var.getncattr("layers")))
                     if "layers" in a else set(int(i) for i in layers))
             if not lateral or not listed <= held:
@@ -1235,7 +1258,7 @@ def _validate_surfaces(g: Any, path: object, ninterface: int, taken: set[str]) -
 
 def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
     """A model file's numbers and metadata, its structure validated first."""
-    nc = _netcdf()
+    nc = netcdf_module()
     with nc.Dataset(path, "r") as ds:
         _validate(ds, path)
         attrs = {k: ds.getncattr(k) for k in ds.ncattrs()}
@@ -1274,11 +1297,11 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
             if not np.allclose(stored, mesh.r.ravel(), rtol=1e-12, atol=0):
                 _fail(path, f"part_{k}: radius is not the GLL nodes of its elements")
             variables = {
-                name: FileVariable(_values(var), _attrs(var))
+                name: FileVariable(variable_values(var), variable_attributes(var))
                 for name, var in g.variables.items()
                 if name not in ("radius", "element_layer", "element_bounds",
                                 "latitude", "longitude", "colatitude_weights")}
-            parts.append(FilePart(layers, mesh, _grid_of(g),
+            parts.append(FilePart(layers, mesh, grid_of_group(g),
                                   MappingProxyType(variables)))
         geometry = None
         if "geometry" in ds.groups:
@@ -1289,7 +1312,7 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
                      if "boundary_displacement_poles" in g.variables else None)
             geometry = FileGeometry(
                 np.asarray(g.variables["boundary_radius"][:], dtype=float),
-                _grid_of(g), np.asarray(var[:], dtype=float), poles,
+                grid_of_group(g), np.asarray(var[:], dtype=float), poles,
                 str(var.getncattr("lateral_interpolation")),
                 str(var.getncattr("between")))
         surfaces = None
@@ -1297,10 +1320,12 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
             g = ds.groups["surfaces"]
             faces = tuple(int(k) for k in
                           np.asarray(g.variables["surface_interface"][:]))
-            variables = {name: FileVariable(_values(var), _attrs(var))
+            variables = {name: FileVariable(variable_values(var),
+                                            variable_attributes(var))
                          for name, var in g.variables.items()
                          if name not in _SURFACE_OWN}
-            surfaces = FileSurfaces(faces, _grid_of(g), MappingProxyType(variables))
+            surfaces = FileSurfaces(faces, grid_of_group(g),
+                                    MappingProxyType(variables))
     return ModelFile(schema=str(attrs["schema"]), name=attrs.get("name"),
                      scales=scales, constants=MappingProxyType(constants),
                      meta=MappingProxyType(meta), skeleton=skeleton,
@@ -1308,7 +1333,9 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
                      parts=tuple(parts), geometry=geometry,
                      declared=MappingProxyType(declared),
                      rtol=float(attrs.get("rtol", DEFAULT_RTOL)), surfaces=surfaces,
-                     citation=tuple(str(attrs.get("citation", "")).splitlines()))
+                     citation=tuple(str(attrs.get("citation", "")).splitlines()),
+                     source=str(attrs.get("source", "")),
+                     created=str(attrs.get("created", "")))
 
 
 def _character(attrs: Mapping[str, Any]) -> Character:

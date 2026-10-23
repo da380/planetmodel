@@ -690,3 +690,16 @@ def test_a_malformed_surfaces_group_is_refused_by_name(tmp_path, edit, message):
     corrupt(path, lambda ds: edit(ds.groups["surfaces"]))
     with pytest.raises(ValueError, match=message):
         read_model_file(path)
+
+
+def test_the_writers_stamp_their_provenance(tmp_path):
+    from datetime import datetime
+
+    model = LayeredIsotropicElastic([0.0, 1.0], rho=[3.0], vp=[2.0], vs=[1.0])
+    path = write_model(tmp_path / "stamped.nc", model, grid=gauss_legendre(4))
+    data = read_model_file(path)
+    assert data.source.startswith("planetmodel ")
+    datetime.fromisoformat(data.created)
+    path = write_model(tmp_path / "named.nc", model, grid=gauss_legendre(4),
+                       source="my code 1.0")
+    assert read_model_file(path).source == "my code 1.0"
