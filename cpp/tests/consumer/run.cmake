@@ -8,14 +8,41 @@
 #                   with the header's message
 #   netcdf_absent   the default with netCDF-C hidden: the configuration
 #                   fails, naming netCDF-C and the option
+#   installed       the library installed into a prefix (with Interpolation
+#                   and NumericConcepts beside it), then found there by
+#                   find_package: builds and runs both programs
 set(build "${WORK}/${CASE}")
 file(REMOVE_RECURSE "${build}")
+set(fetched
+    -DFETCHCONTENT_SOURCE_DIR_INTERPOLATION=${INTERPOLATION_SOURCE}
+    -DFETCHCONTENT_SOURCE_DIR_NUMERICCONCEPTS=${NUMERICCONCEPTS_SOURCE})
 set(configure ${CMAKE_COMMAND} -S "${CONSUMER_SOURCE}" -B "${build}"
     -DCMAKE_CXX_COMPILER=${CXX}
     -DPLANETMODEL_ROOT=${PLANETMODEL_ROOT}
-    -DFETCHCONTENT_SOURCE_DIR_INTERPOLATION=${INTERPOLATION_SOURCE}
-    -DFETCHCONTENT_SOURCE_DIR_NUMERICCONCEPTS=${NUMERICCONCEPTS_SOURCE})
-if(CASE STREQUAL "without_netcdf" OR CASE STREQUAL "header_refused")
+    ${fetched})
+if(CASE STREQUAL "installed")
+  set(prefix "${build}/prefix")
+  set(library "${build}/planetmodel")
+  function(library_step what)
+    execute_process(COMMAND ${ARGN} RESULT_VARIABLE status
+                    OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT status EQUAL 0)
+      message(FATAL_ERROR "the library's ${what} failed:\n${out}\n${err}")
+    endif()
+  endfunction()
+  library_step(configuration
+    ${CMAKE_COMMAND} -S "${PLANETMODEL_ROOT}/cpp" -B "${library}"
+    -DCMAKE_CXX_COMPILER=${CXX} -DCMAKE_INSTALL_PREFIX=${prefix}
+    -DPLANETMODEL_BUILD_TESTS=OFF -DPLANETMODEL_BUILD_EXAMPLES=OFF
+    ${fetched})
+  library_step(build ${CMAKE_COMMAND} --build "${library}")
+  library_step(installation ${CMAKE_COMMAND} --install "${library}")
+  # Only the prefix: nothing of the source tree or the fetched dependencies.
+  set(configure ${CMAKE_COMMAND} -S "${CONSUMER_SOURCE}" -B "${build}/consumer"
+      -DCMAKE_CXX_COMPILER=${CXX} -DPLANETMODEL_INSTALLED=ON
+      -DCMAKE_PREFIX_PATH=${prefix})
+  set(build "${build}/consumer")
+elseif(CASE STREQUAL "without_netcdf" OR CASE STREQUAL "header_refused")
   list(APPEND configure -DPLANETMODEL_WITH_NETCDF=OFF)
 elseif(CASE STREQUAL "netcdf_absent")
   # Neither of the two ways in can find it: the package lookup is disabled
@@ -59,7 +86,7 @@ if(CASE STREQUAL "header_refused")
 endif()
 
 set(targets scales)
-if(CASE STREQUAL "with_netcdf")
+if(CASE STREQUAL "with_netcdf" OR CASE STREQUAL "installed")
   list(APPEND targets netcdf)
 endif()
 foreach(target IN LISTS targets)

@@ -1,0 +1,32 @@
+# planetmodel's installed package: find_package(planetmodel) gives the target
+# planetmodel::planetmodel, as FetchContent does.
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Interpolation)
+
+# Whether the model file is there, as PLANETMODEL_WITH_NETCDF was when this was
+# installed; the netCDF-C target the exported one names is made again here.
+set(planetmodel_WITH_NETCDF @PLANETMODEL_WITH_NETCDF@)
+set(_pm_netcdf_target "@PLANETMODEL_NETCDF_TARGET@")
+if(_pm_netcdf_target STREQUAL "netCDF::netcdf")
+  find_dependency(netCDF CONFIG)
+elseif(_pm_netcdf_target STREQUAL "PkgConfig::PLANETMODEL_NETCDF")
+  find_dependency(PkgConfig)
+  if(NOT TARGET PkgConfig::PLANETMODEL_NETCDF)
+    pkg_check_modules(PLANETMODEL_NETCDF QUIET IMPORTED_TARGET netcdf)
+  endif()
+  if(NOT TARGET PkgConfig::PLANETMODEL_NETCDF)
+    set(planetmodel_FOUND FALSE)
+    set(planetmodel_NOT_FOUND_MESSAGE
+        "planetmodel was installed with netCDF-C found by pkg-config, and "
+        "pkg-config cannot find netcdf.pc now (PKG_CONFIG_PATH)")
+    return()
+  endif()
+endif()
+unset(_pm_netcdf_target)
+
+include("${CMAKE_CURRENT_LIST_DIR}/planetmodelTargets.cmake")
+
+check_required_components(planetmodel)

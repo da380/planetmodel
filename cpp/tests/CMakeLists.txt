@@ -46,7 +46,8 @@ set(_pm_consumer_args
   -DCXX=${CMAKE_CXX_COMPILER}
   -DINTERPOLATION_SOURCE=${interpolation_SOURCE_DIR}
   -DNUMERICCONCEPTS_SOURCE=${numericconcepts_SOURCE_DIR})
-foreach(_case IN ITEMS with_netcdf without_netcdf header_refused netcdf_absent)
+foreach(_case IN ITEMS with_netcdf without_netcdf header_refused netcdf_absent
+                      installed)
   add_test(NAME consumer_${_case}
            COMMAND ${CMAKE_COMMAND} ${_pm_consumer_args} -DCASE=${_case}
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/consumer/run.cmake)
