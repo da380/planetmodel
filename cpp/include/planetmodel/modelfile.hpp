@@ -66,6 +66,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -95,6 +96,7 @@
 #include "planetmodel/rules.hpp"
 #include "planetmodel/skeleton.hpp"
 #include "planetmodel/units.hpp"
+#include "planetmodel/version.hpp"
 #include "planetmodel/vocabulary.hpp"
 
 namespace planetmodel {
@@ -172,6 +174,12 @@ inline netcdf::Attribute Integers(std::span<const int> values) {
 
 /// One integer as an integer attribute.
 inline netcdf::Attribute Integer(long long value) { return std::vector<long long>{value}; }
+
+/// The writing time in UTC, ISO 8601: the `created` stamp of the writers.
+inline std::string CreatedNow() {
+  const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+  return std::format("{:%FT%T}+00:00", now);
+}
 
 }  // namespace detail
 
@@ -936,6 +944,12 @@ class ModelFile {
   [[nodiscard]] const std::string& Source() const noexcept { return source_; }
   /** @brief The schema it declares, `MODEL_SCHEMA`. */
   [[nodiscard]] const std::string& Schema() const noexcept { return schema_; }
+  /** @brief The code that wrote the file (the attribute `source`); empty in
+   * files from before the writers stamped it. */
+  [[nodiscard]] const std::string& WrittenBy() const noexcept { return written_by_; }
+  /** @brief When the file was written, ISO 8601 (the attribute `created`);
+   * empty in files from before the writers stamped it. */
+  [[nodiscard]] const std::string& Created() const noexcept { return created_; }
   /** @brief The model's name, where it has one. */
   [[nodiscard]] const std::optional<std::string>& Name() const noexcept { return name_; }
   /** @brief The works the model cites, one a string, in the order stated; empty for none. */
@@ -1162,6 +1176,13 @@ class ModelFile {
   void SetName(std::string name) {
     name_ = name.empty() ? std::nullopt : std::optional<std::string>{std::move(name)};
   }
+
+  /**
+   * @brief Name the writing code and version, the `source` attribute of
+   * the written file; this library and its version unless set.
+   * @param written_by The code and version.
+   */
+  void SetWrittenBy(std::string written_by) { written_by_ = std::move(written_by); }
 
   /**
    * @brief State the works the model cites, in place of any stated before.
@@ -2142,6 +2163,8 @@ class ModelFile {
 
   std::string source_{};
   std::string schema_{};
+  std::string written_by_{};
+  std::string created_{};
   std::optional<std::string> name_{};
   std::vector<std::string> citation_{};
   ::planetmodel::Scales scales_{};
@@ -2503,6 +2526,8 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   if (!schema) fail("schema", "is missing: not a planetmodel model file");
   out.schema_ = *schema;
   out.name_ = text("name");
+  out.written_by_ = text("source").value_or("");
+  out.created_ = text("created").value_or("");
   if (const auto citation = text("citation")) {
     for (auto start = std::size_t{0}; start < citation->size();) {
       const auto end = std::min(citation->find('\n', start), citation->size());
@@ -2737,6 +2762,9 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
   put(root, global, "schema", std::string{MODEL_SCHEMA});
   put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
   put(root, global, "title", name_ ? "planetmodel model " + *name_ : "planetmodel model");
+  put(root, global, "source",
+      written_by_.empty() ? "planetmodel C++ " + std::string{Version()} : written_by_);
+  put(root, global, "created", created_.empty() ? detail::CreatedNow() : created_);
   if (name_) put(root, global, "name", *name_);
   if (!citation_.empty()) {
     auto joined = citation_.front();

@@ -606,6 +606,8 @@ TEST(Writer, WritesFieldsOnEveryShippedGridThatReadBackToThemselves) {
   const auto read = pm::ReadModelFile(path);
   ExpectReadsBack(read, SiKnown());
   EXPECT_EQ(read.Name(), "written si");
+  EXPECT_EQ(read.WrittenBy(), "planetmodel C++ " + std::string{pm::Version()});
+  EXPECT_NE(read.Created().find('T'), std::string::npos);
   EXPECT_EQ(read.Citation(), (std::vector<std::string>{"A. Author (2026).  A written model.",
                                                         "B. Author (2026).  Its source."}));
   EXPECT_EQ(read.Parts()[0].grid->Kind(), "driscoll_healy");

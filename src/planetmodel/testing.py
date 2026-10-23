@@ -966,7 +966,8 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     """Hold a model file to the model it was written from.
 
     Checks the structure (`validate_structure`); the skeleton, the layer
-    and interface names, the scales and the citation; that every variable is held on
+    and interface names, the scales and the citation; that the file names
+    its source and carries a parseable created stamp; that every variable is held on
     the layers its `layers` attribute names, NaN elsewhere, by fields of
     the model of the stated character; that a lateral variable names in
     `radial_layers` exactly the layers where the model's field is radial,
@@ -1000,6 +1001,9 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     assert data.scales == model.scales, (
         f"the file is in {data.scales!r}, the model in {model.scales!r}")
     assert data.citation == model.citation, "the file does not cite what the model does"
+    assert data.source.strip(), "the file names no source"
+    from datetime import datetime
+    datetime.fromisoformat(data.created)
     assert data.rtol == model.geometry.rtol, (
         f"the file states rtol {data.rtol!r}, the model's geometry has "
         f"{model.geometry.rtol!r}")

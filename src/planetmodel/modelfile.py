@@ -8,7 +8,9 @@ definition of the format and the reference the C++ readers are held to;
 `docs/source/formats/model_file.rst` describes it for consumers.
 
 **Global attributes**: `schema` (`SCHEMA`, checked by every reader),
-`Conventions`, the model's `name`, `scale_length`, `scale_mass`,
+`Conventions`, `source` (the writing code and version) and `created`
+(when, ISO 8601) — both stamped by the writers, and empty on reading a
+file from before they were — the model's `name`, `scale_length`, `scale_mass`,
 `scale_time` and `scale_temperature` (what one stored unit is in SI),
 `rtol` (the geometry's tolerance, the default where a file has none),
 `constant_<name>` for every constant in the model's units, `citation`
@@ -256,6 +258,12 @@ class ModelFile:
     surfaces: FileSurfaces | None = None
     #: The works the model cites, one a line of the attribute `citation`.
     citation: tuple[str, ...] = ()
+    #: The code that wrote the file (the attribute `source`); empty in
+    #: files written before the writers stamped it.
+    source: str = ""
+    #: When the file was written, ISO 8601 (the attribute `created`);
+    #: empty in files written before the writers stamped it.
+    created: str = ""
 
     def part_of(self, layer: int) -> FilePart:
         """The part holding `layer`."""
@@ -845,7 +853,8 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
                 interpolation: Interpolation | None = None,
                 meta: Mapping[str, Any] | None = None,
                 surfaces: Surfaces | None = None,
-                surface_grid: AngularGrid | None = None) -> Path:
+                surface_grid: AngularGrid | None = None,
+                source: str | None = None) -> Path:
     """Write `model` to a model file at `path`, which is returned.
 
     `grid` is one `AngularGrid` for every layer, or a mapping from layers
@@ -862,7 +871,9 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     `surfaces` on `surface_grid`: by default the grid the functions are
     held on where they share one, else the outermost part's.  A surface
     field's dimensions and meaning are the model's spec of its name, and
-    `interpolation` names its lateral rule as for a field.  The model is
+    `interpolation` names its lateral rule as for a field.  `source`
+    names the writing code and version in the attribute of that name,
+    this library and its version unless given.  The model is
     written in its own units.
     """
     from .model import Model
@@ -905,7 +916,7 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     os.close(fd)
     try:
         _write_file(nc, Path(partial), model, parts, form, names, radial,
-                    interpolation, meta, held, on)
+                    interpolation, meta, held, on, source)
         os.replace(partial, path)
     finally:
         if os.path.exists(partial):
@@ -918,12 +929,19 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
                 names: Sequence[str], radial: RadialMesh | None,
                 interpolation: Interpolation, meta: Mapping[str, Any],
                 held: Mapping[str, Mapping[int, Relief]],
-                surface_grid: AngularGrid | None) -> None:
+                surface_grid: AngularGrid | None,
+                source: str | None) -> None:
     """The file of `write_model`, at a path of its own until it is whole."""
+    from datetime import datetime, timezone
+
+    from . import __version__
     with nc.Dataset(path, "w", format="NETCDF4") as root:
         root.setncattr("schema", SCHEMA)
         root.setncattr("Conventions", CONVENTIONS)
         root.setncattr("title", f"planetmodel model {model.name or ''}".strip())
+        root.setncattr("source", source or f"planetmodel {__version__}")
+        root.setncattr("created",
+                       datetime.now(timezone.utc).isoformat(timespec="seconds"))
         if model.name:
             root.setncattr("name", model.name)
         for base in ("length", "mass", "time", "temperature"):
@@ -1315,7 +1333,9 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
                      parts=tuple(parts), geometry=geometry,
                      declared=MappingProxyType(declared),
                      rtol=float(attrs.get("rtol", DEFAULT_RTOL)), surfaces=surfaces,
-                     citation=tuple(str(attrs.get("citation", "")).splitlines()))
+                     citation=tuple(str(attrs.get("citation", "")).splitlines()),
+                     source=str(attrs.get("source", "")),
+                     created=str(attrs.get("created", "")))
 
 
 def _character(attrs: Mapping[str, Any]) -> Character:

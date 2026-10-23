@@ -23,7 +23,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -317,10 +316,7 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
   namespace nc = netcdf;
   const auto source = path.string();
   auto stamped = file;
-  if (stamped.created.empty()) {
-    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    stamped.created = std::format("{:%FT%T}+00:00", now);
-  }
+  if (stamped.created.empty()) stamped.created = detail::CreatedNow();
   ValidateSurfaceFile(stamped, source);
   const auto partial = detail::PartialName(path);
   try {
