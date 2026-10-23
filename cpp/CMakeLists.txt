@@ -10,6 +10,8 @@
 #   FetchContent_MakeAvailable(planetmodel)
 #   target_link_libraries(my_code PRIVATE planetmodel::planetmodel)
 #
+# or finds an installed copy, the same target by find_package(planetmodel).
+#
 # The model file needs netCDF-C, behind PLANETMODEL_WITH_NETCDF: on by
 # default and then required, so that a build lacking it fails at
 # configuration and says so; off, nothing of netCDF is looked for and the
@@ -52,13 +54,29 @@ option(PLANETMODEL_BUILD_DOCS
        "Build the Doxygen reference, target planetmodel_docs" OFF)
 option(PLANETMODEL_WARNINGS_AS_ERRORS
        "Treat warnings in planetmodel's own tests and examples as errors" OFF)
-set(PLANETMODEL_INTERPOLATION_TAG v1.1.2 CACHE STRING
-    "The tag of da380/Interpolation to fetch")
+# On even when this is a subproject, unlike the options above. A code that
+# links planetmodel into a library it installs and exports -- statically, or
+# publicly -- cannot be installed unless planetmodel is in an export set too:
+# CMake refuses with "requires target planetmodel that is not in any export
+# set". Interpolation and NumericConcepts install themselves as subprojects for
+# the same reason, so the whole chain lands in the code's prefix.
+option(PLANETMODEL_INSTALL "Generate the install and export rules" ON)
+
+# The Interpolation revision fetched when none is installed. The default is
+# main: the libraries are one author's and move together, so on a development
+# branch tracking main is the point. A release must name a state that can be
+# rebuilt, so the commit that tags a release sets this default to the commit
+# it was tested against, and the commit after it sets it back to main. From
+# outside: cmake -DPLANETMODEL_INTERPOLATION_TAG=<commit>
+set(PLANETMODEL_INTERPOLATION_TAG main CACHE STRING
+    "The da380/Interpolation revision to fetch if none is installed")
+mark_as_advanced(PLANETMODEL_INTERPOLATION_TAG)
 
 include(FetchContent)
+include(GNUInstallDirs)
 
-# Interpolation brings NumericConcepts with it, at the tag it pins; a code
-# that declared either first keeps its own declaration.
+# Interpolation brings NumericConcepts with it, at the revision it asks for; a
+# code that declared either first keeps its own declaration.
 FetchContent_Declare(Interpolation
   GIT_REPOSITORY https://github.com/da380/Interpolation.git
   GIT_TAG        ${PLANETMODEL_INTERPOLATION_TAG}
@@ -68,7 +86,8 @@ FetchContent_MakeAvailable(Interpolation)
 add_library(planetmodel INTERFACE)
 add_library(planetmodel::planetmodel ALIAS planetmodel)
 target_include_directories(planetmodel INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(planetmodel INTERFACE cxx_std_23)
 target_link_libraries(planetmodel INTERFACE Interpolation::Interpolation)
 target_compile_definitions(planetmodel INTERFACE
@@ -107,6 +126,46 @@ if(PLANETMODEL_WITH_NETCDF)
   message(STATUS "planetmodel: the model file over ${_pm_netcdf}")
 else()
   message(STATUS "planetmodel: built without netCDF-C, so without the model file")
+endif()
+
+# The installed package: the headers, the target, and a configuration file
+# that finds Interpolation and netCDF-C again -- netCDF-C the way it was found
+# here, since the exported target names that imported target (netCDF::netcdf
+# from netCDF-C's own package, or PkgConfig::PLANETMODEL_NETCDF).
+if(PLANETMODEL_INSTALL)
+  include(CMakePackageConfigHelpers)
+  set(_pm_cmake_dir ${CMAKE_INSTALL_LIBDIR}/cmake/planetmodel)
+
+  install(TARGETS planetmodel EXPORT planetmodelTargets)
+  install(DIRECTORY include/planetmodel
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(EXPORT planetmodelTargets
+          FILE planetmodelTargets.cmake
+          NAMESPACE planetmodel::
+          DESTINATION ${_pm_cmake_dir})
+
+  # Within a major version the format and the API only grow. Header-only,
+  # so nothing in the package is architecture-specific.
+  write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/planetmodelConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+    ARCH_INDEPENDENT)
+
+  if(PLANETMODEL_WITH_NETCDF)
+    set(PLANETMODEL_NETCDF_TARGET ${_pm_netcdf})
+  else()
+    set(PLANETMODEL_NETCDF_TARGET "")
+  endif()
+  configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/planetmodelConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/planetmodelConfig.cmake
+    INSTALL_DESTINATION ${_pm_cmake_dir})
+
+  install(FILES
+          ${CMAKE_CURRENT_BINARY_DIR}/planetmodelConfig.cmake
+          ${CMAKE_CURRENT_BINARY_DIR}/planetmodelConfigVersion.cmake
+          DESTINATION ${_pm_cmake_dir})
 endif()
 
 # The model files the writer's tests and the kernel example write, for the

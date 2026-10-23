@@ -41,9 +41,17 @@ FetchContent_MakeAvailable(planetmodel)
 target_link_libraries(my_code PRIVATE planetmodel::planetmodel)
 ```
 
+It also installs: `cmake --install` puts the headers and a CMake package
+in the prefix (with Interpolation and NumericConcepts beside them), and a
+code then finds the same target with `find_package(planetmodel)`. The
+install rules are on as a subproject too (`PLANETMODEL_INSTALL`), so that
+a code installing a library that links planetmodel can export it.
+
 It needs a C++23 compiler (GCC 13 or Clang 18 and later) and CMake 3.24
 or later. It fetches its one dependency,
-[Interpolation](https://github.com/da380/Interpolation), at a pinned tag.
+[Interpolation](https://github.com/da380/Interpolation), at the revision
+`PLANETMODEL_INTERPOLATION_TAG` names (`main` between releases; a release
+commit pins it).
 The model file needs netCDF-C, found through its CMake package or
 pkg-config. The option `PLANETMODEL_WITH_NETCDF` is on by default, and
 configuring then fails, saying so, if netCDF-C is not found. A code that
