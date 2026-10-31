@@ -30,7 +30,8 @@ from planetmodel import PREM, gauss_legendre, equiangular, from_geographic, slic
 from planetmodel.frames import cartesian_points
 from planetmodel import datasets
 from planetmodel.modelfile import read_model, write_model
-from planetmodel.plotting import correlation, profile, section, spectrum, sphere_map
+from planetmodel.plotting import (correlation, cutaway, profile, section, spectrum,
+                                  sphere_map)
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
@@ -105,6 +106,89 @@ fig.savefig(out, dpi=100)
 print("figure written to", out)
 
 # %% [markdown]
+# A cutaway is the picture such models were first shown in: the Earth
+# seen from outside with an octant removed down to the core-mantle
+# boundary, the perturbation on the faces of the cut, the core standing
+# in it, and the surface wearing Natural Earth's shaded relief with the
+# coastlines drawn where they are seen. Here the octant north of the
+# equator from 60 degrees west to 30 degrees east is removed, and the
+# viewer is where the default puts them, 25 degrees north and a little
+# east of the cut's first face, over the Atlantic; on the right the same cut
+# with the perturbation at the surface too and the coastlines over it.
+# `n` is the number of pixels across the picture, and the figure is saved
+# at a resolution that keeps them.
+
+# %%
+octant = slices.cutaway(s40, "vs", longitudes=(np.radians(-60.0), np.radians(30.0)),
+                        colatitudes=(0.0, 0.5 * np.pi), inner=3480e3, n=1200,
+                        relative_to="reference")
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+cutaway(ax, octant, scale=1e-3, surface="image", inner="0.8", coastlines=True,
+        clip=99.5, colorbar=True)
+ax.set_title("S40RTS, the northern octant removed")
+cutaway(bx, octant, scale=1e-3, inner="0.8", coastlines=True, clip=99.5)
+bx.set_title("the perturbation at the surface too")
+out = FIGURES / "tutorial_14_cutaway.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
+# The surface can be dressed in several ways, and the cut faces always
+# show the field. `surface=` is `"field"`, `"image"` for Natural Earth's
+# shaded relief, `"land"` for the land and the sea in two plain
+# colours, or any matplotlib colour; `coastlines=True` adds the
+# coastlines to any of them. `inner=` dresses the sphere left standing
+# in the cut the same way: a colour, or `"field"` for the perturbation
+# at the core-mantle boundary. Plain colours and the relief are lit
+# from the upper left so that the sphere reads as one; the field's
+# colours are never shaded.
+
+# %%
+dressings = [
+    ("the field at the surface", dict()),
+    ("the field with coastlines", dict(coastlines=True)),
+    ("Natural Earth's relief", dict(surface="image")),
+    ("the relief with coastlines", dict(surface="image", coastlines=True)),
+    ("land and sea", dict(surface="land")),
+    ("land and sea with coastlines", dict(surface="land", coastlines=True)),
+    ("a plain surface with coastlines", dict(surface="0.92", coastlines=True)),
+    ("the field on the core, the surface plain",
+     dict(surface="0.92", inner="field", coastlines=True)),
+]
+fig, axs = plt.subplots(2, 4, figsize=(24, 12), layout="constrained")
+for ax, (title, style) in zip(axs.ravel(), dressings):
+    style.setdefault("inner", "0.8")
+    cutaway(ax, octant, scale=1e-3, clip=99.5, **style)
+    ax.set_title(title)
+fig.suptitle("S40RTS with the northern octant removed: what the surface can show")
+out = FIGURES / "tutorial_14_cutaway_surfaces.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
+# The cut need not be an octant. Left to their defaults the colatitudes
+# span the whole body, so the wedge goes from pole to pole, and `inner`
+# is the centre; S40RTS is a model of the mantle alone, so the cut stops
+# at its inner boundary, the core-mantle boundary, whose sphere is then
+# seen in the cut. Here a wedge of a hundred degrees is removed, the
+# relief on the surface on the left, and on the right the field on the
+# surface and on the core-mantle boundary.
+
+# %%
+wedge = slices.cutaway(s40, "vs", longitudes=(np.radians(-100.0), 0.0), n=1200,
+                       relative_to="reference")
+print("the cut stops at", wedge.inner / 1e3, "km")
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+cutaway(ax, wedge, scale=1e-3, clip=99.5, surface="image", inner="0.8", coastlines=True,
+        colorbar=True)
+ax.set_title("a wedge of 100 degrees cut to the core")
+cutaway(bx, wedge, scale=1e-3, clip=99.5, coastlines=True)
+bx.set_title("the field on the surface and on the core-mantle boundary")
+out = FIGURES / "tutorial_14_cutaway_wedge.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
 # ## A published model on a model of your own
 #
 # `transplanted` puts a data set's perturbation onto a model of your own.
@@ -145,6 +229,92 @@ ax.set_title("the perturbation of vsv 1000 km deep, by degree")
 fig.tight_layout()
 out = FIGURES / "tutorial_14_spectra.png"
 fig.savefig(out, dpi=100)
+print("figure written to", out)
+
+# %% [markdown]
+# On PREM the model has a core, so a cutaway can go down to the
+# core-mantle boundary, to the inner-core boundary, or to the centre:
+# `inner=` is a radius, or the name of one of the model's interfaces.
+# The sphere left standing in the cut is drawn plain, or with the field
+# on it; at an interface the field has two sides, and `side=` says
+# which, `"below"` for the core's values and `"above"` for the mantle's
+# at the base of the mantle. Cut to the centre, the faces run through
+# the core, where the perturbation is zero, so the two deeper cuts show
+# the velocity itself: zero in the liquid outer core, and the solid
+# inner core standing at the centre.
+
+# %%
+cuts = [
+    ("to the core-mantle boundary", dict(inner="cmb", relative_to="reference"),
+     dict(inner="0.8", clip=99.5)),
+    ("to the core-mantle boundary, the mantle side on it",
+     dict(inner="cmb", side="above", relative_to="reference"),
+     dict(inner="field", clip=99.5)),
+    ("to the inner-core boundary, the velocity itself", dict(inner="icb"),
+     dict(inner="0.8")),
+    ("to the centre, the velocity itself", dict(inner=0.0), dict()),
+]
+fig, axs = plt.subplots(2, 2, figsize=(14, 14), layout="constrained")
+for ax, (title, cut, style) in zip(axs.ravel(), cuts):
+    deep = slices.cutaway(on_prem, "vsv", colatitudes=(0.0, 0.5 * np.pi), n=1000,
+                          longitudes=(np.radians(-60.0), np.radians(30.0)), **cut)
+    cutaway(ax, deep, scale=1e-3, surface="image", coastlines=True, **style)
+    ax.set_title(title)
+fig.suptitle("S40RTS on PREM, cut to each depth")
+out = FIGURES / "tutorial_14_cutaway_depths.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
+# The sphere shown as the surface need not be the outer one. `outer=`
+# names a radius, or an interface, within the body: the picture then
+# shows that sphere wearing the field at that depth, with the coastlines
+# on it if asked, and the faces of the cut still run out to the real
+# surface and stand proud of it, so that the sections through
+# everything above the sphere are kept. On the left the sphere 1000 km
+# deep; on the right the core-mantle boundary itself, its mantle side,
+# the cut going on down to the inner-core boundary.
+
+# %%
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+deep = slices.cutaway(on_prem, "vsv", longitudes=(np.radians(-60.0), np.radians(30.0)),
+                      colatitudes=(0.0, 0.5 * np.pi), inner="cmb",
+                      outer=6371e3 - 1000e3, n=1200, relative_to="reference")
+cutaway(ax, deep, scale=1e-3, clip=99.5, inner="0.8", coastlines=True, colorbar=True)
+ax.set_title("the sphere 1000 km deep, the sections above it kept")
+base = slices.cutaway(on_prem, "vsv", longitudes=(np.radians(-60.0), np.radians(30.0)),
+                      colatitudes=(0.0, 0.5 * np.pi), inner="icb", outer="cmb",
+                      side="above", n=1200, relative_to="reference")
+cutaway(bx, base, scale=1e-3, clip=99.5, inner="0.8", coastlines=True)
+bx.set_title("the core-mantle boundary, its mantle side")
+out = FIGURES / "tutorial_14_cutaway_inner.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
+# The other picture of the kind is `slices.discs`: discs through the
+# centre at chosen orientations, with a sphere at a depth, the discs
+# standing out of it. Each disc is given by the pole of its plane, the
+# direction normal to it: `(0, 0)` is the disc of the equator, and
+# `(pi/2, phi + pi/2)` the disc of the meridians at longitudes `phi` and
+# `phi + pi`. The sphere wears the field at its depth, with the
+# coastlines on it if asked, and `plotting.cutaway` draws the picture as
+# it draws a cutaway. On the left the sphere 150 km deep with the
+# coastlines; on the right the core-mantle boundary, its mantle side.
+
+# %%
+poles = [(0.0, 0.0), (0.5 * np.pi, np.radians(-20.0) + 0.5 * np.pi)]
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+shallow = slices.discs(on_prem, "vsv", poles=poles, outer=6371e3 - 150e3, n=1200,
+                       relative_to="reference")
+cutaway(ax, shallow, scale=1e-3, clip=99.5, coastlines=True, colorbar=True)
+ax.set_title("the discs of the equator and of 20 degrees west, the sphere 150 km deep")
+base = slices.discs(on_prem, "vsv", poles=poles, outer="cmb", side="above", n=1200,
+                    relative_to="reference")
+cutaway(bx, base, scale=1e-3, clip=99.5)
+bx.set_title("the same discs, the sphere the core-mantle boundary")
+out = FIGURES / "tutorial_14_discs.png"
+fig.savefig(out, dpi=200)
 print("figure written to", out)
 
 # %% [markdown]

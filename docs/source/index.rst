@@ -40,6 +40,17 @@ plotting and maps are extras:
 
    pip install "planetmodel[meshing,mfem,netcdf,plot,maps]"
 
+Learning the library
+====================
+
+The `tutorials <https://github.com/da380/planetmodel/tree/main/examples/tutorials>`_
+are fifteen scripts in order, from a skeleton and its geometry to
+published models and sensitivity kernels; each opens as a notebook and
+runs in Google Colab from its badge in the
+`examples README <https://github.com/da380/planetmodel/tree/main/examples>`_,
+which also lists the examples, short scripts of one idea each, and the
+mini-apps.
+
 File formats
 ============
 

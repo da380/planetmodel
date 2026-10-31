@@ -181,3 +181,31 @@ def test_eig_by_count_keeps_every_mode_asked_for():
         theta, Phi = fam.eig(0, count=k)
         assert theta.size == k == Phi.shape[1]
         assert np.allclose(theta, fam.eigvalsh(0)[:k], rtol=1e-9)
+
+
+def test_eigenvectors_keep_their_sign_across_meshes():
+    """Two meshes differing by one element give each kept eigenfunction
+    with the same sign at common interior radii, on an annulus and a ball,
+    at degree 0 and above; the pairs stay M-orthonormal and satisfy the
+    eigen-equation."""
+    from planetmodel.randomfield import SpectralBasis
+
+    for bp in ([0.5, 1.0], [0.0, 1.0]):
+        m1 = Mesh1D(bp, ngll=6, drmax=0.05)
+        m2 = Mesh1D(bp, ngll=6, drmax=0.05 * m1.nspec / (m1.nspec + 1))
+        assert m2.nspec == m1.nspec + 1
+        f1, f2 = (RadialOperatorFamily(m, kappa=0.04) for m in (m1, m2))
+        r = np.linspace(bp[0] + 0.05, 0.95, 7)
+        for l in (0, 3):
+            b1, b2 = (SpectralBasis(f, l, nmodes=12) for f in (f1, f2))
+            v1, v2 = b1.evaluate(r), b2.evaluate(r)
+            assert np.all(np.sign(v1) == np.sign(v2))
+            for fam in (f1, f2):
+                theta, Phi = fam.eig(l, count=12)
+                M = fam.mass(l)
+                assert np.allclose(Phi.T @ (M[:, None] * Phi), np.eye(12), atol=1e-10)
+                assert np.allclose(fam.apply(l, Phi), Phi * theta, atol=1e-8)
+                # the first component above the tolerance is positive
+                big = np.abs(Phi) > 1e-8 * np.abs(Phi).max(axis=0)
+                first = np.argmax(big, axis=0)
+                assert np.all(Phi[first, np.arange(12)] > 0.0)

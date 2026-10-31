@@ -6,6 +6,7 @@ from scipy.interpolate import BarycentricInterpolator
 
 from planetmodel import testing
 from planetmodel.harmonics import packing
+from planetmodel.mesh1d import Mesh1D
 from planetmodel.randomfield import (RadialOperatorFamily, SpectralBasis,
                                      SphericalBasis, matern_reach, padded_mesh,
                                      restriction)
@@ -175,3 +176,94 @@ def test_spherical_basis_refusals():
         sph.synthesise(np.ones(sph.size + 1))
     with pytest.raises(ValueError):
         sph.analyse(np.ones((2, 3, 3, R.r.size)))
+
+
+# -- the Galerkin block and the variance of a dense covariance ---------------------
+
+def _bilinear_form(family, l, modes):
+    """a(u, v) for the columns of `modes` (full-mesh nodal values), by GLL
+    quadrature of the form of A_l on each element: u v + kappa_r u' v' +
+    kappa_h l(l+1) u v / r^2, against r^2 dr."""
+    mesh = family.mesh
+    U = modes[mesh.gmap]                                       # (nspec, ngll, k)
+    dU = np.einsum("qi,eik->eqk", mesh.deriv, U) / mesh.jac[:, None, None]
+    kr, kh = family._kr_nodal, family._kh_nodal
+    w = mesh.w[None, :] * mesh.jac[:, None] * mesh.r ** 2        # (nspec, ngll)
+    cent = l * (l + 1.0) / mesh.r ** 2
+    return (np.einsum("eq,eqi,eqj->ij", w, U, U)
+            + np.einsum("eq,eqi,eqj->ij", w * kr, dU, dU)
+            + np.einsum("eq,eqi,eqj->ij", w * kh * cent, U, U))
+
+
+@pytest.mark.parametrize("bp", [[0.5, 1.0], [0.0, 1.0]], ids=["annulus", "ball"])
+@pytest.mark.parametrize("l", [0, 12])
+def test_the_galerkin_block_of_the_own_family_is_the_eigenvalues(bp, l):
+    mesh = Mesh1D(bp, ngll=6, drmax=0.05)
+    fam = RadialOperatorFamily(mesh, kappa=0.03)
+    b = SpectralBasis(fam, l, nmodes=15)
+    B = b.galerkin(fam)
+    assert B.shape == (15, 15) and np.array_equal(B, B.T)
+    assert np.allclose(B, np.diag(b.theta), atol=1e-10 * b.theta[-1])
+    # another constant kappa, isotropic, is a function of the same Laplacian
+    other = RadialOperatorFamily(mesh, kappa=0.07)
+    want = np.diag(1.0 + (0.07 / 0.03) * (b.theta - 1.0))
+    assert np.allclose(b.galerkin(other), want, atol=1e-10 * want.max())
+
+
+def test_the_galerkin_block_of_an_anisotropic_family_is_the_quadrature():
+    """Against the bilinear form assembled by hand from the GLL weights and
+    the modes' derivatives on an annulus (measured at 4e-16 of the largest
+    entry)."""
+    mesh = Mesh1D([0.5, 1.0], ngll=6, drmax=0.05)
+    fam = RadialOperatorFamily(mesh, kappa=0.03)
+    kr = lambda r: 0.02 + 0.03 * r
+    kh = lambda r: 0.1 * r ** 2
+    other = RadialOperatorFamily(mesh, kappa=kr, kappa_h=kh)
+    other._kr_nodal, other._kh_nodal = kr(mesh.r), kh(mesh.r)
+    for l in (0, 5):
+        b = SpectralBasis(fam, l, nmodes=20)
+        B = b.galerkin(other)
+        want = _bilinear_form(other, l, b.modes())
+        assert np.allclose(B, want, atol=1e-11 * np.abs(want).max())
+        assert not np.allclose(B, np.diag(np.diag(B)), atol=1e-6 * np.abs(B).max())
+    # refusals name what differs
+    with pytest.raises(ValueError, match="weight"):
+        b.galerkin(RadialOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.05),
+                                        weight="one"))
+    with pytest.raises(ValueError, match="mesh"):
+        b.galerkin(RadialOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.04)))
+    with pytest.raises(TypeError):
+        b.galerkin(mesh)
+
+
+def test_the_variance_of_a_dense_covariance():
+    """diag(Phi C Phi^T): the diagonal case is `pointwise_variance`; for
+    the anisotropic family's covariance written in the isotropic basis
+    with every mode kept, the sum over degrees is the raw variance of
+    `SphericalGRF` with the same scales by its own route, the anisotropic
+    family's eigenbasis (at the sampler's truncation of 1e-10 it keeps
+    every mode too; measured at 3e-13 relative); and draws with the
+    covariance have it as their sample variance (20000 draws, measured
+    at 2 per cent)."""
+    from planetmodel.randomfield import SphericalGRF
+    g = SphericalGRF(0.5, 1.0, 1.0, 0.2, lam_h=0.1, lmax=4, drmax=0.05, tol=1e-10)
+    p = 2.0 * g.beta
+    iso = RadialOperatorFamily(g.mesh, kappa=0.2 ** 2)
+    total, raw = np.zeros(g.r.size), np.zeros(g.r.size)
+    for l in range(g.lmax + 1):
+        b = SpectralBasis(iso, l, restrict=g.restriction)
+        d = b.pointwise_variance_of(np.diag(b.theta ** -p))
+        assert np.allclose(d, b.pointwise_variance(p), rtol=1e-12)
+        with pytest.raises(ValueError, match="shape"):
+            b.pointwise_variance_of(np.eye(3))
+        B = b.galerkin(g.family)
+        w, V = np.linalg.eigh(B)
+        C = (V * w ** -p) @ V.T
+        total += (2 * l + 1) / (4.0 * np.pi) * b.pointwise_variance_of(C)
+        raw += (2 * l + 1) / (4.0 * np.pi) * g.basis[l].pointwise_variance(p)
+        if l == 2:
+            rng = np.random.default_rng(0)
+            z = np.linalg.cholesky(C) @ rng.standard_normal((b.nmodes, 20000))
+            u = b.synthesise(z)
+            assert np.allclose(u.var(axis=1), b.pointwise_variance_of(C), rtol=0.08)
+    assert np.allclose(total, raw, rtol=1e-10)

@@ -224,6 +224,48 @@ class SpectralBasis:
         Phi = self._modes[self.restriction.nodes]
         return (Phi ** 2) @ self.theta ** (-float(power))
 
+    def pointwise_variance_of(self, covariance: ArrayLike) -> np.ndarray:
+        """diag(Phi C Phi^T) at the physical nodes: the variance there of
+        a field of this degree whose coefficients have the covariance C,
+        a matrix (nmodes, nmodes).  `pointwise_variance(power)` is the
+        case C = diag(theta^-power)."""
+        C = np.asarray(covariance, dtype=float)
+        n = self.nmodes
+        if C.shape != (n, n):
+            raise ValueError(f"the covariance is a matrix of shape ({n}, {n}), "
+                             f"got {C.shape}")
+        Phi = self._modes[self.restriction.nodes]
+        return np.einsum("ij,ij->i", Phi @ C, Phi)
+
+    def galerkin(self, family: RadialOperatorFamily) -> np.ndarray:
+        """The matrix (nmodes, nmodes) of `family`'s member of this basis's
+        degree in the kept modes: Phi^T K'_l Phi, the bilinear form of A'_l
+        (u^T K'_l v, with K'_l its banded pencil) between pairs of the
+        M-orthonormal modes, so that for this basis's own family it is
+        diag(theta), and in general the Galerkin block of A'_l on the
+        span of the modes.  `family` must be on this basis's mesh with
+        the same weight.  The product is symmetrised explicitly,
+        (B + B^T) / 2, which removes its rounding asymmetry."""
+        own = self.family
+        if not isinstance(family, RadialOperatorFamily):
+            raise TypeError("family must be a RadialOperatorFamily")
+        if family.weight != own.weight:
+            raise ValueError(f"the family's weight is {family.weight!r}; this "
+                             f"basis's is {own.weight!r}")
+        mesh, other = own.mesh, family.mesh
+        if other is not mesh and (
+                other.nglob != mesh.nglob or other.ngll != mesh.ngll
+                or not np.array_equal(other.rglob, mesh.rglob)):
+            raise ValueError(f"the family's mesh ({other.nspec} elements of "
+                             f"{other.ngll} nodes on [{other.rglob[0]:g}, "
+                             f"{other.rglob[-1]:g}]) is not this basis's "
+                             f"({mesh.nspec} elements of {mesh.ngll} nodes on "
+                             f"[{mesh.rglob[0]:g}, {mesh.rglob[-1]:g}])")
+        l = self.degree
+        mass = family.mass(l)
+        B = self._Phi.T @ (mass[:, None] * family.apply(l, self._Phi))
+        return 0.5 * (B + B.T)
+
     def white_noise(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
         """Coefficients of white noise of the space, independent standard
         normals of shape (nmodes,) or (nmodes, size), column j of a batch

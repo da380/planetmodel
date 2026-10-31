@@ -484,3 +484,263 @@ def test_a_normalised_slice_is_divided_by_its_largest_value(kernel):
     assert np.isclose(np.nanmax(np.abs(dep.layers[1].values)), 1.0)
     with pytest.raises(ValueError, match="zero"):
         slices.normalised(slices.surface(kernel, lambda t, p: 0.0 * t, 1, grid=grid))
+
+
+# -- cutaways -----------------------------------------------------------------------
+
+def _solid(q, outer, inner, longitudes, colatitudes):
+    """Whether points lie in the cut body."""
+    r = np.linalg.norm(q, axis=-1)
+    theta = np.arccos(np.clip(q[..., 2] / np.where(r > 0, r, 1.0), -1.0, 1.0))
+    phi = np.arctan2(q[..., 1], q[..., 0])
+    start, end = longitudes
+    in_cut = ((np.mod(phi - start, 2 * np.pi) < np.mod(end - start, 2 * np.pi))
+              & (theta > colatitudes[0]) & (theta < colatitudes[1]))
+    return (r <= outer) & ~((r > inner) & in_cut)
+
+
+def _which_face(q, outer, inner, longitudes, colatitudes, tol):
+    """The one face a point lies on, or None where that is not clear."""
+    r = np.linalg.norm(q)
+    theta = np.arccos(np.clip(q[2] / r, -1.0, 1.0))
+    on = []
+    if abs(r - outer) < tol:
+        on.append("surface")
+    if abs(r - inner) < tol:
+        on.append("inner")
+    for name, phi in zip(("first", "second"), longitudes):
+        along = np.array([np.cos(phi), np.sin(phi), 0.0])
+        normal = np.array([-np.sin(phi), np.cos(phi), 0.0])
+        if abs(normal @ q) < tol and q @ along > tol:
+            on.append(name)
+    for name, lat in zip(("upper", "lower"), colatitudes):
+        if abs(theta - lat) * r < tol:
+            on.append(name)
+    return on[0] if len(on) == 1 else None
+
+
+@pytest.mark.parametrize("cut", [
+    dict(longitudes=(0.3, 1.8), colatitudes=(0.0, np.pi), inner=0.0),
+    dict(longitudes=(0.3, 1.8), colatitudes=(0.4, 2.5), inner=0.5),
+    dict(longitudes=(-1.0, 2.8), colatitudes=(0.5 * np.pi, np.pi), inner=0.5),
+    dict(longitudes=(2.0, 1.0), colatitudes=(0.0, 0.5 * np.pi), inner=0.3),
+])
+@pytest.mark.parametrize("view", [(1.1, 1.0), (0.5 * np.pi, 1.0), (2.4, 4.0),
+                                  (0.0, 0.0)])
+def test_each_pixel_of_a_cutaway_sees_the_first_point_of_the_cut_body(two, cut, view):
+    """Against a march along each of a sample of rays, from the viewer
+    into the body, to the first point of the cut body: the hit lies
+    within a step of it, on the face the march's point is on."""
+    outer, inner = 1.0, cut["inner"]
+    c = slices.cutaway(two, "vs", view=view, n=40, **cut)
+    assert c.face.shape == (40, 40) and set(np.unique(c.face)) <= set(range(7))
+    v = c.view[2]
+    rng = np.random.default_rng(0)
+    steps = np.linspace(outer, -outer, 20001)
+    checked = 0
+    for i, j in rng.integers(0, 40, size=(60, 2)):
+        X = c.reference[i, j]
+        x = -outer + (j + 0.5) * 2.0 * outer / 40
+        y = outer - (i + 0.5) * 2.0 * outer / 40
+        p = x * c.view[0] + y * c.view[1]
+        q = p[None] + steps[:, None] * v[None]
+        solid = _solid(q, outer, inner, cut["longitudes"], cut["colatitudes"])
+        if not np.any(solid):
+            assert c.face[i, j] == 0 and np.all(np.isnan(X))
+            continue
+        first = q[np.argmax(solid)]
+        if c.face[i, j] == 0:                         # a grazing ray
+            assert np.linalg.norm(first - q[0]) < 2e-3 or not solid[-1]
+            continue
+        assert np.linalg.norm(X - first) < 2e-4
+        face = _which_face(X, outer, inner, cut["longitudes"], cut["colatitudes"], 1e-6)
+        if face is not None:
+            assert slices.CUTAWAY_FACES[c.face[i, j]] == face
+            checked += 1
+    assert checked > 10
+
+
+def test_a_cutaway_holds_the_field_at_the_points_each_pixel_sees(two):
+    c = slices.cutaway(two, "vs", longitudes=(0.3, 1.8), colatitudes=(0.4, 2.5),
+                       inner=0.5, n=60)
+    assert c.label == "vs [m s-1]" and c.at == "reference" and c.side == "below"
+    assert c.n == 60 and c.extent == 1.0 and c.outer == 1.0
+    assert np.array_equal(c.boundaries, [0.0, 0.5, 1.0])
+    seen = c.face > 0
+    assert np.all(np.isnan(c.values[~seen])) and np.all(np.isnan(c.reference[~seen]))
+    assert np.array_equal(c.physical[seen], c.reference[seen])
+    r, t, p, _ = spherical_coordinates(c.reference[seen])
+    assert np.all(r <= 1.0 + 1e-12)
+    faces = (c.mask("first") | c.mask("second") | c.mask("upper") | c.mask("lower"))
+    for name in ("first", "second", "upper", "lower", "inner", "surface"):
+        assert np.any(c.mask(name)), name
+    r, t, p, _ = spherical_coordinates(c.reference[faces])
+    assert np.all((r > 0.5) & (r < 1.0))
+    assert np.allclose(c.values[faces], lateral(r, t, p), rtol=1e-12)
+    r, t, p, _ = spherical_coordinates(c.reference[c.mask("surface")])
+    assert np.allclose(r, 1.0) and np.allclose(c.values[c.mask("surface")],
+                                               lateral(1.0, t, p), rtol=1e-12)
+    assert np.allclose(np.linalg.norm(c.reference[c.mask("inner")], axis=-1), 0.5)
+    assert np.all(c.values[c.mask("inner")] == 4.0)      # the layer below
+    above = slices.cutaway(two, "vs", longitudes=(0.3, 1.8), colatitudes=(0.4, 2.5),
+                           inner=0.5, n=60, side="above")
+    r, t, p, _ = spherical_coordinates(above.reference[above.mask("inner")])
+    assert np.allclose(above.values[above.mask("inner")], lateral(0.5, t, p),
+                       rtol=1e-12)
+    assert above.side == "above"
+    # the inner radius off an interface takes no side
+    assert slices.cutaway(two, "vs", inner=0.7, n=20).side is None
+    # an interface by name
+    from planetmodel import PREM
+    prem = PREM()
+    assert slices.cutaway(prem, "vsv", inner="cmb", n=10).inner == 3480e3
+    assert slices.cutaway(prem, "vsv", inner="icb", n=10).inner == 1221.5e3
+    with pytest.raises(KeyError, match="no interface named"):
+        slices.cutaway(prem, "vsv", inner="core", n=10)
+    # a departure, a component, a normalised slice
+    d = slices.cutaway(two, "vs", inner=0.5, n=30, relative_to="mean",
+                       mean_grid=gauss_legendre(16))
+    assert d.shown.is_departure and "percent from the mean" in d.label
+    f = slices.cutaway(two, "flow", inner=0.5, n=30, component=2, frame="cartesian")
+    assert "flow[2]" in f.label
+    m = slices.normalised(c)
+    assert m.label == "vs, normalised" and np.nanmax(np.abs(m.values)) == 1.0
+    with pytest.raises(ValueError, match="name must be one of"):
+        c.mask("core")
+
+
+def test_a_cutaway_covers_the_disc_seen_from_the_equator_into_the_wedge(two):
+    """With the whole wedge cut to the centre and the viewer in the
+    equatorial plane at its middle, the faces fill the notch and the
+    silhouette is the whole disc: the coverage sums to its area."""
+    c = slices.cutaway(two, "rho", longitudes=(0.0, 0.5 * np.pi),
+                       view=(0.5 * np.pi, 0.25 * np.pi), n=200)
+    assert np.all((c.coverage >= 0.0) & (c.coverage <= 1.0))
+    assert np.all(c.coverage[c.face > 0] > 0.0)
+    area = c.coverage.sum() * (2.0 / 200) ** 2
+    assert abs(area - np.pi) < 2e-3 * np.pi
+    assert np.any((c.coverage > 0.0) & (c.coverage < 1.0))   # the limb
+    assert np.isclose(c.coverage[100, 100], 1.0) and c.coverage[0, 0] == 0.0
+    # what is seen: in front and not cut away, or on a face, and nothing behind
+    v = c.view[2]
+    assert not c.visible(v)                         # the surface in the wedge
+    assert not c.visible(-v)
+    assert c.visible(cartesian_points(1.0, 0.5 * np.pi, -0.5))   # outside the wedge
+    assert c.visible(cartesian_points(0.8, 0.5 * np.pi, 0.0))    # on the first face
+    assert not c.visible(cartesian_points(0.8, 0.5 * np.pi, np.pi))  # behind
+    assert not c.visible(0.5 * v)                   # inside the body
+
+
+def test_a_cutaway_refuses_what_cuts_nothing_or_cannot_be_seen(two):
+    with pytest.raises(ValueError, match="cut nothing"):
+        slices.cutaway(two, "vs", longitudes=(1.0, 1.0))
+    with pytest.raises(ValueError, match="colatitudes"):
+        slices.cutaway(two, "vs", colatitudes=(2.0, 1.0))
+    with pytest.raises(ValueError, match="inner"):
+        slices.cutaway(two, "vs", inner=1.0)
+    with pytest.raises(ValueError, match="n must"):
+        slices.cutaway(two, "vs", n=1)
+    with pytest.raises(ValueError, match="side"):
+        slices.cutaway(two, "vs", side="left")
+    with pytest.raises(ValueError, match="side='below' or 'above'"):
+        slices.cutaway(two, "vs", inner=0.5, n=10, side=None)
+    # a view along the axis is well defined
+    c = slices.cutaway(two, "vs", view=(0.0, 0.0), n=20)
+    assert np.allclose(c.view[2], [0.0, 0.0, 1.0]) and np.any(c.face > 0)
+
+
+def test_every_ray_aimed_at_the_equatorial_face_lands_on_it(two):
+    """The face on the equator is a plane, and its hit's z is zero to
+    rounding of either sign: that rounding must not decide whether the
+    hit stands, or rows of pixels fall through to the background."""
+    c = slices.cutaway(two, "vs", longitudes=(0.0, 0.5 * np.pi),
+                       colatitudes=(0.0, 0.5 * np.pi), n=20)
+    rng = np.random.default_rng(0)
+    r = np.sqrt(rng.uniform(0.01, 0.99, 4000))
+    phi = rng.uniform(0.01, 0.5 * np.pi - 0.01, 4000)
+    X = cartesian_points(r, 0.5 * np.pi, phi) * 6.371e6   # the Earth's scale
+    t, face, q = slices._cutaway_hits(X, c.view, 6.371e6, 0.0, c.longitudes,
+                                      c.colatitudes)
+    assert np.all(face == slices.CUTAWAY_FACES.index("lower"))
+    assert np.allclose(t, X @ c.view[2], atol=1e-9 * 6.371e6)
+    assert np.all(c.visible(X / 6.371e6))
+
+
+def test_a_sphere_within_the_body_wears_the_field_and_the_faces_stand_proud(two):
+    c = slices.cutaway(two, "vs", longitudes=(0.3, 1.8), colatitudes=(0.0, 0.5 * np.pi),
+                       inner=0.5, outer=0.8, n=80)
+    assert c.outer == 0.8 and c.top == 1.0 and c.extent == 1.0 and c.side == "below"
+    r, t, p, _ = spherical_coordinates(c.reference[c.mask("surface")])
+    assert np.allclose(r, 0.8)
+    assert np.allclose(c.values[c.mask("surface")], lateral(0.8, t, p), rtol=1e-12)
+    faces = c.mask("first") | c.mask("second") | c.mask("lower")
+    r, t, p, _ = spherical_coordinates(c.reference[faces])
+    assert np.any(r > 0.8) and np.all((r > 0.5) & (r < 1.0))
+    assert np.allclose(c.values[faces], lateral(r, t, p), rtol=1e-12)
+    # the sheets beyond the sphere are seen from behind too: the first face
+    # at longitude 0.3 is seen from the west, outside the wedge
+    west = slices.cutaway(two, "vs", longitudes=(0.3, 1.8),
+                          colatitudes=(0.0, 0.5 * np.pi), inner=0.5, outer=0.8, n=80,
+                          view=(1.2, -0.3))
+    r, t, p, _ = spherical_coordinates(west.reference[west.mask("first")])
+    assert np.any(r > 0.8) and np.allclose(p, 0.3)
+    # the sphere's field is on an interface by its side; refusals
+    cmb = slices.cutaway(two, "rho", inner=0.2, outer=0.5, n=20, side="above")
+    assert np.all(cmb.values[cmb.mask("surface")] == 4.0)
+    below = slices.cutaway(two, "rho", inner=0.2, outer=0.5, n=20)
+    assert np.all(below.values[below.mask("surface")] == 10.0)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.cutaway(two, "vs", inner=0.5, outer=0.4, n=10)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.cutaway(two, "vs", outer=1.5, n=10)
+
+
+def test_discs_through_the_body_with_a_sphere_within_it(two):
+    """The disc of the equator and the disc of the meridians at longitudes
+    0.3 and 0.3 + pi, with the sphere of radius 0.7: the sphere wears the
+    field at that radius, the discs the field where they stand out of
+    it, and a disc point inside the sphere is not seen."""
+    poles = [(0.0, 0.0), (0.5 * np.pi, 0.3 + 0.5 * np.pi)]
+    c = slices.discs(two, "vs", poles=poles, outer=0.7, n=80)
+    assert c.faces == ("none", "surface", "disc 1", "disc 2")
+    assert c.inner == 0.0 and c.outer == 0.7 and c.top == 1.0 and c.side is None
+    assert c.longitudes is None and len(c.arcs) == 2
+    for name in c.faces[1:]:
+        assert np.any(c.mask(name)), name
+    r, t, p, _ = spherical_coordinates(c.reference[c.mask("surface")])
+    assert np.allclose(r, 0.7)
+    assert np.allclose(c.values[c.mask("surface")], lateral(0.7, t, p), rtol=1e-12)
+    X = c.reference[c.mask("disc 1")]
+    assert np.allclose(X[:, 2], 0.0, atol=1e-9)
+    r, t, p, _ = spherical_coordinates(X)
+    assert np.all((r > 0.7) & (r < 1.0))
+    assert np.allclose(c.values[c.mask("disc 1")], lateral(r, t, p), rtol=1e-12)
+    X = c.reference[c.mask("disc 2")]
+    normal = cartesian_points(1.0, *poles[1])
+    assert np.allclose(X @ normal, 0.0, atol=1e-9)
+    assert np.all(np.linalg.norm(X, axis=-1) > 0.7)
+    # a point of a disc inside the sphere is hidden, outside it in front seen
+    assert not c.visible(cartesian_points(0.5, 0.5 * np.pi, 0.4))
+    assert c.visible(cartesian_points(0.9, 0.5 * np.pi, 0.4))
+    assert not c.visible(cartesian_points(0.9, 0.5 * np.pi, 0.4 + np.pi))  # behind
+    # the sphere on an interface by its side; refusals
+    above = slices.discs(two, "rho", poles=[(0.0, 0.0)], outer=0.5, n=20, side="above")
+    assert np.all(above.values[above.mask("surface")] == 4.0) and above.side == "above"
+    with pytest.raises(ValueError, match="at least one disc"):
+        slices.discs(two, "vs", poles=[], outer=0.5, n=10)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.discs(two, "vs", poles=[(0.0, 0.0)], outer=1.0, n=10)
+    assert slices.normalised(c).label == "vs, normalised"
+
+
+def test_a_shell_cut_to_the_centre_shows_its_inner_surface():
+    shell = LayeredIsotropicElastic([0.5, 1.0], rho=[4.0], vp=[7.0], vs=[3.0])
+    shell = shell.with_field(0, "vs", AnalyticField((0.5, 1.0), lateral, name="vs"),
+                             replace=True)
+    c = slices.cutaway(shell, "vs", inner=0.0, n=60, longitudes=(0.3, 1.8))
+    assert c.inner == 0.5 and c.side is None
+    assert np.all(np.isfinite(c.values[c.face > 0]))
+    core = c.mask("inner")
+    assert np.any(core)
+    r, t, p, _ = spherical_coordinates(c.reference[core])
+    assert np.allclose(r, 0.5) and np.allclose(c.values[core], lateral(0.5, t, p))
