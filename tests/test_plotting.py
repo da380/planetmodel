@@ -324,6 +324,24 @@ def test_a_cutaway_is_one_image_of_the_faces_with_the_edge_antialiased(layered):
     plt.close(fig)
 
 
+def test_discs_are_drawn_as_a_cutaway_is(layered):
+    c = slices.discs(layered, "vs", poles=[(0.0, 0.0), (0.5 * np.pi, 0.0)], outer=0.3,
+                     n=40)
+    fig, ax = plt.subplots()
+    image = cutaway(ax, c, surface="0.9", colorbar=True)
+    rgba = image.get_array()
+    assert np.allclose(rgba[..., 3], c.coverage)
+    discs = c.mask("disc 1") | c.mask("disc 2")
+    assert np.all(rgba[discs, 3] > 0.0) and np.any(rgba[discs, :3] != rgba[discs, :1])
+    top = rgba[c.mask("surface")]
+    assert np.all(top[:, 0] == top[:, 1]) and np.all(top[:, 0] <= 0.9)
+    lines = ax.get_lines()
+    assert len(lines) == 1                       # the interface circles on the discs
+    x, y = lines[0].get_data()
+    assert np.isfinite(x).sum() > 100 and np.all(np.hypot(x, y)[np.isfinite(x)] <= 0.5)
+    plt.close(fig)
+
+
 def test_a_cutaway_is_refused_on_the_wrong_axes_or_with_a_surface_it_cannot_draw(
         layered):
     c = slices.cutaway(layered, "vs", inner=0.5, n=20)

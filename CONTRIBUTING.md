@@ -51,7 +51,16 @@ recorded under `docs/notes/`.
 ## Tutorials
 
 The tutorials under `examples/tutorials/` are plain Python files with
-`# %%` cell markers, not notebooks, so there are no outputs to strip.
+`# %%` cell markers. The notebooks under `examples/tutorials/notebooks/`
+are generated from them by `examples/tutorials/make_notebooks.py`, which
+is run again after a tutorial is edited (a figure is saved by the three
+lines `out = FIGURES / "..."`, `fig.savefig(out, dpi=...)`,
+`print("figure written to", out)`, which the notebook leaves out to show
+the figure instead); `tests/test_tutorials.py` checks
+that they are current, and the nbstripout hook keeps them free of outputs
+should one be opened and saved. The badges in `examples/README.md` open
+them in Google Colab, where their first cell installs the library from
+GitHub's `main`.
 Every one of them runs headless in the test suite (`tests/test_tutorials.py`),
 the core ones with warnings as errors; a tutorial that starts failing is a
 test failure.

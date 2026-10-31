@@ -103,6 +103,25 @@ def test_a_map_is_refused_on_axes_other_than_cartopys():
     plt.close(fig)
 
 
+def test_discs_of_the_earth_wear_coastlines_on_their_sphere():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from planetmodel import PREM
+    from planetmodel.plotting import cutaway
+    c = slices.discs(PREM(), "vsv", poles=[(0.0, 0.0), (0.5 * np.pi, 0.5 * np.pi)],
+                     outer=6371e3 - 300e3, n=50)
+    fig, ax = plt.subplots()
+    cutaway(ax, c, surface="land", coastlines=True, interfaces=False, scale=1e-6)
+    lines = ax.get_lines()
+    assert len(lines) == 1
+    x, y = lines[0].get_data()
+    seen = np.isfinite(x)
+    assert seen.sum() > 100
+    assert np.all(np.hypot(x[seen], y[seen]) <= c.outer * 1e-6 * (1 + 1e-9))
+    plt.close(fig)
+
+
 def test_a_cutaway_of_the_earth_wears_its_relief_its_land_and_its_coastlines():
     import matplotlib
     matplotlib.use("Agg")

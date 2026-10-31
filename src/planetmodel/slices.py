@@ -82,7 +82,13 @@ what is settled exactly.  The slice keeps which face each pixel sees
 (`CutawaySlice.face`, by `CUTAWAY_FACES`), the point and the value,
 and the fraction of each pixel the body covers, for the edge of the
 picture; `visible` and `project` put anything else, a coastline say,
-into the same view.  A cutaway is taken at reference points.
+into the same view.  The sphere shown as the surface may be one within
+the body, wearing the field at that depth, the faces of the cut then
+standing proud of it out to the body's outer boundary.  `discs` is the
+other picture of the kind: discs through the centre at chosen
+orientations, the equator's and a meridian's say, with a sphere at a
+depth wearing the field, the discs standing out of it; it is the same
+slice, drawn the same way.  Both are taken at reference points.
 
 **Interfaces.**  A section or a profile keeps both sides of an
 interface, each layer's numbers including its own ends.  A sphere slice
@@ -94,7 +100,7 @@ points outside the body are NaN.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING
 
@@ -113,9 +119,10 @@ if TYPE_CHECKING:
 
 __all__ = ["AT", "SIDES", "DEPARTURES", "WEIGHTS", "NO_POWER", "Fields", "RelativeTo",
            "Slice", "Shown", "SliceLayer", "SphereSlice", "SectionSlice",
-           "ProfileSlice", "CutawaySlice", "CUTAWAY_FACES", "Spectrum",
-           "Correlation", "sphere", "section", "profile", "mean_profile",
-           "integrated", "surface", "cutaway", "normalised", "evaluate",
+           "ProfileSlice", "CutawaySlice", "CUTAWAY_FACES", "DISC_FACES", "Arc",
+           "Hits", "Spectrum", "Correlation", "sphere", "section", "profile",
+           "mean_profile", "integrated", "surface", "cutaway", "discs", "normalised",
+           "evaluate",
            "spectrum", "spectrum_of", "correlation"]
 
 #: Where a slice's points are: in the reference body, or the physical one.
@@ -311,6 +318,21 @@ class ProfileSlice:
 #: sphere left standing in the cut.
 CUTAWAY_FACES = ("none", "surface", "first", "second", "upper", "lower", "inner")
 
+#: What a pixel of a picture of discs looks at (`discs`): nothing, the
+#: sphere, and each disc in the order given, `"disc 1"` onward.
+DISC_FACES = ("none", "surface")
+
+#: An arc of a picture, on which an interface is drawn at each radius r:
+#: the points r (c + a cos s + b sin s) for s from the start to the end,
+#: with c the arc's centre and a, b its axes, all relative to the radius.
+type Arc = tuple[np.ndarray, np.ndarray, np.ndarray, float, float]
+
+#: The ray-cast of a picture's geometry: from reference points (..., 3),
+#: for the rays toward the viewer through them, the distance t along the
+#: view direction from the picture's plane of the first point met (-inf
+#: where none), its face code, and the point (NaN where none).
+type Hits = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]
+
 #: Subsamples across each side of a pixel when a cutaway's coverage is
 #: measured.
 _COVERAGE_SUBSAMPLES = 4
@@ -322,33 +344,40 @@ _VISIBLE_RTOL = 1e-9
 
 @dataclass(frozen=True)
 class CutawaySlice:
-    """A field on the faces of the body with a wedge cut from it, as the
-    pixels of an orthographic view.
+    """A field on the faces of a picture of the body seen from outside, as
+    the pixels of an orthographic view: the body with a wedge cut from it
+    (`cutaway`), or discs through it with a sphere (`discs`).
 
-    The wedge is the longitudes from `longitudes[0]` east to
-    `longitudes[1]` and the colatitudes between `colatitudes[0]` and
-    `colatitudes[1]`, in radians, at radii between `inner` and `outer`,
-    the body's outer boundary.  `view` (3, 3) holds, as rows, the unit
+    `inner` and `outer` are the radii of the spheres of the picture, the
+    one left standing in a cut (none where `inner` is zero) and the one
+    seen as the surface, and `top` the body's outer boundary, which the
+    faces reach; `faces` names what a pixel may look at, and `face`
+    (n, n) says what each does by its index into it (`mask(name)`);
+    `arcs` are the arcs an interface is drawn along at its radius (`Arc`),
+    and `hits` the ray-cast of the picture's geometry (`Hits`), which
+    `visible` asks.  For a cutaway, `longitudes` and `colatitudes` are
+    the wedge, in radians.  `view` (3, 3) holds, as rows, the unit
     vectors of the picture's right, its up and the direction toward the
     viewer, in reference Cartesian coordinates; the picture spans
     [-extent, extent] in both directions, `n` pixels across, rows from
-    the top.  `face` (n, n) says what each pixel looks at by its index
-    into `CUTAWAY_FACES`; `reference` and `physical` (n, n, 3) the point
-    it looks at in the two bodies, NaN where it looks at nothing;
+    the top.  `reference` and `physical` (n, n, 3) are the point each
+    pixel looks at in the two bodies, NaN where it looks at nothing;
     `values` (n, n) the field there, NaN likewise; `coverage` (n, n) the
     fraction of each pixel the body covers, 1 inside the picture of the
     body and 0 outside; `boundaries` the radii of the model's interfaces,
     for drawing them on the faces.  `side` is the side of an interface
-    the inner sphere was taken on, where it lies on one.
+    the spheres were taken on, where one lies on one.
     """
 
-    longitudes: tuple[float, float]
-    colatitudes: tuple[float, float]
     inner: float
     outer: float
+    top: float
     boundaries: np.ndarray
     view: np.ndarray
     extent: float
+    faces: tuple[str, ...]
+    arcs: tuple[Arc, ...]
+    hits: Hits
     face: np.ndarray
     reference: np.ndarray
     physical: np.ndarray
@@ -358,6 +387,8 @@ class CutawaySlice:
     _: KW_ONLY
     at: str = "reference"
     side: str | None = None
+    longitudes: tuple[float, float] | None = None
+    colatitudes: tuple[float, float] | None = None
 
     @property
     def label(self) -> str:
@@ -370,10 +401,10 @@ class CutawaySlice:
         return int(self.face.shape[0])
 
     def mask(self, name: str) -> np.ndarray:
-        """The pixels looking at the face `name`, one of `CUTAWAY_FACES`."""
-        if name not in CUTAWAY_FACES:
-            raise ValueError(f"name must be one of {CUTAWAY_FACES}, got {name!r}")
-        return self.face == CUTAWAY_FACES.index(name)
+        """The pixels looking at the face `name`, one of `faces`."""
+        if name not in self.faces:
+            raise ValueError(f"name must be one of {self.faces}, got {name!r}")
+        return self.face == self.faces.index(name)
 
     def project(self, points: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
         """The positions (x, y) in the picture of reference Cartesian
@@ -388,9 +419,8 @@ class CutawaySlice:
         behind the body, or inside it, is not."""
         X = np.asarray(points, dtype=float)
         depth = X @ self.view[2]
-        t, _, _ = _cutaway_hits(X, self.view, self.outer, self.inner, self.longitudes,
-                                self.colatitudes)
-        return np.isfinite(t) & (np.abs(t - depth) <= _VISIBLE_RTOL * self.outer)
+        t, _, _ = self.hits(X)
+        return np.isfinite(t) & (np.abs(t - depth) <= _VISIBLE_RTOL * self.top)
 
 
 #: A slice of any form, as `normalised` takes one.
@@ -1067,17 +1097,20 @@ def _in_cut(q: np.ndarray, longitudes: tuple[float, float],
 
 
 def _cutaway_hits(points: np.ndarray, view: np.ndarray, outer: float, inner: float,
-                  longitudes: tuple[float, float], colatitudes: tuple[float, float]
+                  longitudes: tuple[float, float], colatitudes: tuple[float, float],
+                  *, top: float | None = None
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """What the rays toward the viewer through reference points (..., 3)
     meet first on the cut body: the distance t along `view[2]` from the
     picture's plane of the first point met from the viewer's side (-inf
     where none), its face by `CUTAWAY_FACES`, and the point (NaN where
     none).  Each ray is cast against every piece of the body's boundary
-    as cut, the surface where it is not removed, the inner sphere where
-    it is exposed, the meridional faces and the faces at the
-    colatitudes between the radii, and the piece nearest the viewer
-    wins."""
+    as cut, the sphere of radius `outer` where it is not removed, the
+    inner sphere where it is exposed, the meridional faces and the faces
+    at the colatitudes between `inner` and `top` (`outer` itself by
+    default; beyond `outer` the faces are sheets seen from either side),
+    and the piece nearest the viewer wins."""
+    top = outer if top is None else top
     v = view[2]
     X = np.asarray(points, dtype=float)
     p = X - (X @ v)[..., None] * v                    # into the picture's plane
@@ -1094,7 +1127,7 @@ def _cutaway_hits(points: np.ndarray, view: np.ndarray, outer: float, inner: flo
 
     def between(q: np.ndarray) -> np.ndarray:
         r = np.linalg.norm(q, axis=-1)
-        return (r > inner) & (r < outer)
+        return (r > inner) & (r < top)
 
     for radius, code, exposed in ((outer, 1, False), (inner, 6, True)):
         if not radius > 0.0:
@@ -1119,7 +1152,8 @@ def _cutaway_hits(points: np.ndarray, view: np.ndarray, outer: float, inner: flo
     for code, theta in zip((4, 5), colatitudes):
         if not 0.0 < theta < np.pi:
             continue                                   # a pole: no face
-        if abs(theta - 0.5 * np.pi) < 1e-12:           # the equatorial plane
+        plane = abs(theta - 0.5 * np.pi) < 1e-12
+        if plane:                                      # the equatorial plane
             if abs(v[2]) < 1e-15:
                 continue
             roots = [-p[..., 2] / v[2]]
@@ -1140,8 +1174,66 @@ def _cutaway_hits(points: np.ndarray, view: np.ndarray, outer: float, inner: flo
             t = np.where(ok, t, 0.0)
             q = p + t[..., None] * v
             phi = np.arctan2(q[..., 1], q[..., 0])
-            nappe = q[..., 2] * np.cos(theta) >= 0.0
+            # the plane's hit is on it to rounding, which must not decide
+            nappe = True if plane else q[..., 2] * np.cos(theta) >= 0.0
             consider(t, q, ok & nappe & between(q) & _in_wedge(phi, longitudes), code)
+    return best_t, best_face, best_q
+
+
+def _picture_values(model: Model, values: _Values, face: np.ndarray, X: np.ndarray,
+                    side: str | None) -> tuple[np.ndarray, np.ndarray, bool]:
+    """The field at the points the pixels look at, their physical
+    positions, and whether a side was taken; NaN where a pixel looks at
+    nothing."""
+    hit = face > 0
+    s, _, _, _ = spherical_coordinates(X[hit])
+    layers, sided = _layers_of(model, s, side)
+    v = np.full(face.shape, np.nan)
+    v[hit] = _evaluate_layers(values, layers, X[hit])
+    physical = np.full(face.shape + (3,), np.nan)
+    physical[hit] = _forward(model, X[hit])
+    return v, physical, sided
+
+
+def _rays(view: np.ndarray, extent: float, count: int) -> np.ndarray:
+    """The points of the picture's plane at the centres of `count` pixels
+    across, rows from the top, shape (count, count, 3)."""
+    c = -extent + (np.arange(count) + 0.5) * (2.0 * extent / count)
+    return c[None, :, None] * view[0] - c[:, None, None] * view[1]
+
+
+def _disc_hits(points: np.ndarray, view: np.ndarray, outer: float, top: float,
+               normals: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """What the rays toward the viewer through reference points (..., 3)
+    meet first among a sphere of radius `outer` and the discs of radius
+    `top` through the centre with unit `normals` (k, 3), sheets seen from
+    either side: the distance t along `view[2]` from the picture's plane
+    (-inf where none), the face by `DISC_FACES` with disc j as code j + 2,
+    and the point (NaN where none)."""
+    v = view[2]
+    X = np.asarray(points, dtype=float)
+    p = X - (X @ v)[..., None] * v
+    d2 = np.einsum("...i,...i->...", p, p)
+    best_t = np.full(d2.shape, -np.inf)
+    best_face = np.zeros(d2.shape, dtype=np.int8)
+    best_q = np.full(d2.shape + (3,), np.nan)
+
+    def consider(t: np.ndarray, q: np.ndarray, ok: np.ndarray, code: int) -> None:
+        take = ok & (t > best_t)
+        best_t[take] = t[take]
+        best_face[take] = code
+        best_q[take] = q[take]
+
+    ok = d2 < outer * outer
+    t = np.sqrt(np.where(ok, outer * outer - d2, 0.0))
+    consider(t, p + t[..., None] * v, ok, 1)
+    for j, normal in enumerate(normals):
+        denominator = float(normal @ v)
+        if abs(denominator) < 1e-15:
+            continue                                   # the disc seen edge-on
+        t = -(p @ normal) / denominator
+        q = p + t[..., None] * v
+        consider(t, q, np.linalg.norm(q, axis=-1) < top, j + 2)
     return best_t, best_face, best_q
 
 
@@ -1160,7 +1252,8 @@ def _view_frame(theta: float, phi: float) -> np.ndarray:
 def cutaway(model: Model, fields: Fields, *,
             longitudes: tuple[float, float] = (0.0, 0.5 * np.pi),
             colatitudes: tuple[float, float] = (0.0, np.pi),
-            inner: float | str = 0.0, view: tuple[float, float] | None = None,
+            inner: float | str = 0.0, outer: float | str | None = None,
+            view: tuple[float, float] | None = None,
             n: int = 400, side: str | None = "below",
             component: int | str | None = None, frame: str | None = None,
             relative_to: RelativeTo = None, departure: str | None = None,
@@ -1175,17 +1268,20 @@ def cutaway(model: Model, fields: Fields, *,
     the interface there (`"cmb"`, `"icb"`), zero for the centre, so that
     the sphere of that radius is left standing in it, or the body's
     inner boundary where that is higher (a shell shows its inner
-    surface);
-    `view` the colatitude and longitude of the direction toward the
-    viewer, in radians, by default 25 degrees toward the pole of the
-    hemisphere the cut lies in (north where it straddles the equator)
-    and 20 degrees east of the cut's first longitude (a quarter of the
-    opening where that is narrower), so that the cut sits at the upper
-    right of the picture, its second face nearly square-on and its first
-    a sliver, as the classic picture has it; `n` the
-    pixels across the picture, which spans the body's outer radius each
-    way; `side` the side of an interface the inner sphere is taken on,
-    where it lies on one; the component, frame and departure as the
+    surface); `outer` the radius, or the interface, of the sphere the
+    picture shows as the surface, the body's outer boundary by default,
+    and within the body a sphere wearing the field at that depth, the
+    faces of the cut still running out to the body's outer boundary and
+    standing proud of it; `side` the side of an interface either sphere
+    is taken on, where it lies on one; `view` the colatitude and
+    longitude of the direction toward the viewer, in radians, by default
+    25 degrees toward the pole of the hemisphere the cut lies in (north
+    where it straddles the equator) and 20 degrees east of the cut's
+    first longitude (a quarter of the opening where that is narrower),
+    so that the cut sits at the upper right of the picture, its second
+    face nearly square-on and its first a sliver, as the classic picture
+    has it; `n` the pixels across the picture, which spans the body's
+    outer radius each way; the component, frame and departure as the
     module docstring says.
     """
     _check("reference", side)
@@ -1197,13 +1293,18 @@ def cutaway(model: Model, fields: Fields, *,
     if not 0.0 <= north < south <= np.pi:
         raise ValueError("colatitudes are a span within [0, pi], the first less "
                          f"than the second, got {colatitudes}")
-    outer = float(model.skeleton.boundaries[-1])
+    top = float(model.skeleton.boundaries[-1])
     if isinstance(inner, str):
         inner = model.geometry.interface(inner).radius
     inner = float(inner)
-    if not 0.0 <= inner < outer:
-        raise ValueError(f"inner must lie in [0, {outer:g}), got {inner}")
+    if not 0.0 <= inner < top:
+        raise ValueError(f"inner must lie in [0, {top:g}), got {inner}")
     inner = max(inner, float(model.skeleton.boundaries[0]))
+    if isinstance(outer, str):
+        outer = model.geometry.interface(outer).radius
+    outer = top if outer is None else float(outer)
+    if not inner < outer <= top:
+        raise ValueError(f"outer must lie in ({inner:g}, {top:g}], got {outer}")
     n = int(n)
     if n < 2:
         raise ValueError(f"n must be at least 2, got {n}")
@@ -1218,27 +1319,94 @@ def cutaway(model: Model, fields: Fields, *,
                                mean_grid=mean_grid)
 
     def rays(count: int) -> np.ndarray:
-        """The points of the picture's plane at the centres of `count`
-        pixels across, rows from the top, shape (count, count, 3)."""
-        c = -outer + (np.arange(count) + 0.5) * (2.0 * outer / count)
-        return (c[None, :, None] * frame_[0] - c[:, None, None] * frame_[1])
+        return _rays(frame_, top, count)
 
     wedge, span = (start, end), (north, south)
-    _, face, X = _cutaway_hits(rays(n), frame_, outer, inner, wedge, span)
-    hit = face > 0
-    s, _, _, _ = spherical_coordinates(X[hit])
-    layers, sided = _layers_of(model, s, side)
-    v = np.full((n, n), np.nan)
-    v[hit] = _evaluate_layers(values, layers, X[hit])
-    physical = np.full((n, n, 3), np.nan)
-    physical[hit] = _forward(model, X[hit])
+    _, face, X = _cutaway_hits(rays(n), frame_, outer, inner, wedge, span, top=top)
+    v, physical, sided = _picture_values(model, values, face, X, side)
     k = _COVERAGE_SUBSAMPLES
-    t, _, _ = _cutaway_hits(rays(n * k), frame_, outer, inner, wedge, span)
+    t, _, _ = _cutaway_hits(rays(n * k), frame_, outer, inner, wedge, span, top=top)
     coverage = np.isfinite(t).reshape(n, k, n, k).mean(axis=(1, 3))
-    taken = side if sided and np.any(face == CUTAWAY_FACES.index("inner")) else None
-    return CutawaySlice(wedge, span, inner, outer, np.array(model.skeleton.boundaries),
-                        frame_, outer, face, X, physical, v, coverage, shown,
-                        side=taken)
+    z = np.array([0.0, 0.0, 1.0])
+    arcs: list[Arc] = [(0.0 * z, z, np.array([np.cos(phi), np.sin(phi), 0.0]),
+                        north, south) for phi in wedge]
+    arcs += [(np.cos(lat) * z, np.sin(lat) * np.array([1.0, 0.0, 0.0]),
+              np.sin(lat) * np.array([0.0, 1.0, 0.0]), start,
+              start + float(wrapped(end - start)))
+             for lat in span if 0.0 < lat < np.pi]
+
+    def hits(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return _cutaway_hits(points, frame_, outer, inner, wedge, span, top=top)
+
+    return CutawaySlice(inner, outer, top, np.array(model.skeleton.boundaries), frame_,
+                        top, CUTAWAY_FACES, tuple(arcs), hits, face, X, physical, v,
+                        coverage, shown, side=side if sided else None,
+                        longitudes=wedge, colatitudes=span)
+
+
+def discs(model: Model, fields: Fields, *, poles: Sequence[tuple[float, float]],
+          outer: float | str, view: tuple[float, float] | None = None,
+          n: int = 400, side: str | None = "below",
+          component: int | str | None = None, frame: str | None = None,
+          relative_to: RelativeTo = None, departure: str | None = None,
+          mean_grid: AngularGrid | None = None) -> CutawaySlice:
+    """Discs through the body's centre, with a sphere within it, seen
+    from outside: a `CutawaySlice` whose faces are the sphere, as the
+    surface, and the discs in order, `"disc 1"` onward.
+
+    `poles` gives each disc by the colatitude and longitude, in radians,
+    of the direction normal to its plane: (0, 0) is the disc of the
+    equator, and (pi / 2, phi + pi / 2) the disc of the meridians at
+    longitudes phi and phi + pi.  Each disc reaches the body's outer
+    boundary and is seen from either side where the sphere does not
+    hide it.  `outer` is the radius, or the interface, of the sphere,
+    which wears the field at that depth, and `side` the side of an
+    interface it is taken on; `view` the colatitude and longitude of the
+    direction toward the viewer, by default 25 degrees north of the
+    equator at longitude 20 degrees; `n` the pixels across the picture,
+    which spans the body's outer radius each way; the component, frame
+    and departure as the module docstring says.
+    """
+    _check("reference", side)
+    poles = [(float(t), float(p)) for t, p in poles]
+    if not poles:
+        raise ValueError("give the pole of at least one disc")
+    top = float(model.skeleton.boundaries[-1])
+    if isinstance(outer, str):
+        outer = model.geometry.interface(outer).radius
+    outer = float(outer)
+    if not 0.0 < outer < top:
+        raise ValueError(f"outer must lie in (0, {top:g}), got {outer}")
+    n = int(n)
+    if n < 2:
+        raise ValueError(f"n must be at least 2, got {n}")
+    if view is None:
+        view = (np.radians(65.0), np.radians(20.0))
+    frame_ = _view_frame(float(view[0]), float(view[1]))
+    normals = np.array([cartesian_points(1.0, t, p) for t, p in poles])
+    values, shown = _evaluator(model, fields, component=component, frame=frame,
+                               relative_to=relative_to, departure=departure,
+                               mean_grid=mean_grid)
+    _, face, X = _disc_hits(_rays(frame_, top, n), frame_, outer, top, normals)
+    v, physical, sided = _picture_values(model, values, face, X, side)
+    k = _COVERAGE_SUBSAMPLES
+    t, _, _ = _disc_hits(_rays(frame_, top, n * k), frame_, outer, top, normals)
+    coverage = np.isfinite(t).reshape(n, k, n, k).mean(axis=(1, 3))
+    arcs: list[Arc] = []
+    for normal in normals:
+        a = np.cross(normal, [0.0, 0.0, 1.0])
+        if np.linalg.norm(a) < 1e-9:
+            a = np.array([1.0, 0.0, 0.0])
+        a = a / np.linalg.norm(a)
+        arcs.append((0.0 * a, a, np.cross(normal, a), 0.0, 2.0 * np.pi))
+
+    def hits(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return _disc_hits(points, frame_, outer, top, normals)
+
+    faces = DISC_FACES + tuple(f"disc {j + 1}" for j in range(len(poles)))
+    return CutawaySlice(0.0, outer, top, np.array(model.skeleton.boundaries), frame_,
+                        top, faces, tuple(arcs), hits, face, X, physical, v, coverage,
+                        shown, side=side if sided else None)
 
 
 def normalised(slice_: Slice) -> Slice:

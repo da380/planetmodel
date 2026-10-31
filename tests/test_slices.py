@@ -649,6 +649,90 @@ def test_a_cutaway_refuses_what_cuts_nothing_or_cannot_be_seen(two):
     assert np.allclose(c.view[2], [0.0, 0.0, 1.0]) and np.any(c.face > 0)
 
 
+def test_every_ray_aimed_at_the_equatorial_face_lands_on_it(two):
+    """The face on the equator is a plane, and its hit's z is zero to
+    rounding of either sign: that rounding must not decide whether the
+    hit stands, or rows of pixels fall through to the background."""
+    c = slices.cutaway(two, "vs", longitudes=(0.0, 0.5 * np.pi),
+                       colatitudes=(0.0, 0.5 * np.pi), n=20)
+    rng = np.random.default_rng(0)
+    r = np.sqrt(rng.uniform(0.01, 0.99, 4000))
+    phi = rng.uniform(0.01, 0.5 * np.pi - 0.01, 4000)
+    X = cartesian_points(r, 0.5 * np.pi, phi) * 6.371e6   # the Earth's scale
+    t, face, q = slices._cutaway_hits(X, c.view, 6.371e6, 0.0, c.longitudes,
+                                      c.colatitudes)
+    assert np.all(face == slices.CUTAWAY_FACES.index("lower"))
+    assert np.allclose(t, X @ c.view[2], atol=1e-9 * 6.371e6)
+    assert np.all(c.visible(X / 6.371e6))
+
+
+def test_a_sphere_within_the_body_wears_the_field_and_the_faces_stand_proud(two):
+    c = slices.cutaway(two, "vs", longitudes=(0.3, 1.8), colatitudes=(0.0, 0.5 * np.pi),
+                       inner=0.5, outer=0.8, n=80)
+    assert c.outer == 0.8 and c.top == 1.0 and c.extent == 1.0 and c.side == "below"
+    r, t, p, _ = spherical_coordinates(c.reference[c.mask("surface")])
+    assert np.allclose(r, 0.8)
+    assert np.allclose(c.values[c.mask("surface")], lateral(0.8, t, p), rtol=1e-12)
+    faces = c.mask("first") | c.mask("second") | c.mask("lower")
+    r, t, p, _ = spherical_coordinates(c.reference[faces])
+    assert np.any(r > 0.8) and np.all((r > 0.5) & (r < 1.0))
+    assert np.allclose(c.values[faces], lateral(r, t, p), rtol=1e-12)
+    # the sheets beyond the sphere are seen from behind too: the first face
+    # at longitude 0.3 is seen from the west, outside the wedge
+    west = slices.cutaway(two, "vs", longitudes=(0.3, 1.8),
+                          colatitudes=(0.0, 0.5 * np.pi), inner=0.5, outer=0.8, n=80,
+                          view=(1.2, -0.3))
+    r, t, p, _ = spherical_coordinates(west.reference[west.mask("first")])
+    assert np.any(r > 0.8) and np.allclose(p, 0.3)
+    # the sphere's field is on an interface by its side; refusals
+    cmb = slices.cutaway(two, "rho", inner=0.2, outer=0.5, n=20, side="above")
+    assert np.all(cmb.values[cmb.mask("surface")] == 4.0)
+    below = slices.cutaway(two, "rho", inner=0.2, outer=0.5, n=20)
+    assert np.all(below.values[below.mask("surface")] == 10.0)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.cutaway(two, "vs", inner=0.5, outer=0.4, n=10)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.cutaway(two, "vs", outer=1.5, n=10)
+
+
+def test_discs_through_the_body_with_a_sphere_within_it(two):
+    """The disc of the equator and the disc of the meridians at longitudes
+    0.3 and 0.3 + pi, with the sphere of radius 0.7: the sphere wears the
+    field at that radius, the discs the field where they stand out of
+    it, and a disc point inside the sphere is not seen."""
+    poles = [(0.0, 0.0), (0.5 * np.pi, 0.3 + 0.5 * np.pi)]
+    c = slices.discs(two, "vs", poles=poles, outer=0.7, n=80)
+    assert c.faces == ("none", "surface", "disc 1", "disc 2")
+    assert c.inner == 0.0 and c.outer == 0.7 and c.top == 1.0 and c.side is None
+    assert c.longitudes is None and len(c.arcs) == 2
+    for name in c.faces[1:]:
+        assert np.any(c.mask(name)), name
+    r, t, p, _ = spherical_coordinates(c.reference[c.mask("surface")])
+    assert np.allclose(r, 0.7)
+    assert np.allclose(c.values[c.mask("surface")], lateral(0.7, t, p), rtol=1e-12)
+    X = c.reference[c.mask("disc 1")]
+    assert np.allclose(X[:, 2], 0.0, atol=1e-9)
+    r, t, p, _ = spherical_coordinates(X)
+    assert np.all((r > 0.7) & (r < 1.0))
+    assert np.allclose(c.values[c.mask("disc 1")], lateral(r, t, p), rtol=1e-12)
+    X = c.reference[c.mask("disc 2")]
+    normal = cartesian_points(1.0, *poles[1])
+    assert np.allclose(X @ normal, 0.0, atol=1e-9)
+    assert np.all(np.linalg.norm(X, axis=-1) > 0.7)
+    # a point of a disc inside the sphere is hidden, outside it in front seen
+    assert not c.visible(cartesian_points(0.5, 0.5 * np.pi, 0.4))
+    assert c.visible(cartesian_points(0.9, 0.5 * np.pi, 0.4))
+    assert not c.visible(cartesian_points(0.9, 0.5 * np.pi, 0.4 + np.pi))  # behind
+    # the sphere on an interface by its side; refusals
+    above = slices.discs(two, "rho", poles=[(0.0, 0.0)], outer=0.5, n=20, side="above")
+    assert np.all(above.values[above.mask("surface")] == 4.0) and above.side == "above"
+    with pytest.raises(ValueError, match="at least one disc"):
+        slices.discs(two, "vs", poles=[], outer=0.5, n=10)
+    with pytest.raises(ValueError, match="outer must"):
+        slices.discs(two, "vs", poles=[(0.0, 0.0)], outer=1.0, n=10)
+    assert slices.normalised(c).label == "vs, normalised"
+
+
 def test_a_shell_cut_to_the_centre_shows_its_inner_surface():
     shell = LayeredIsotropicElastic([0.5, 1.0], rho=[4.0], vp=[7.0], vs=[3.0])
     shell = shell.with_field(0, "vs", AnalyticField((0.5, 1.0), lateral, name="vs"),

@@ -168,8 +168,9 @@ for b in sk.boundaries:
 bottom.set_xlabel("r")
 bottom.legend()
 fig.tight_layout()
-fig.savefig(FIGURES / "tutorial_03_radial_mesh.png", dpi=110)
-print("figure written to", FIGURES / "tutorial_03_radial_mesh.png")
+out = FIGURES / "tutorial_03_radial_mesh.png"
+fig.savefig(out, dpi=110)
+print("figure written to", out)
 
 # %% [markdown]
 # The next tutorial hands a geometry to the 3D mesher.

@@ -252,7 +252,7 @@ if plt is not None:
     fig.tight_layout()
     out = FIGURES / "tutorial_10_random_fields.png"
     fig.savefig(out, dpi=110)
-    print("wrote", out.name)
+    print("figure written to", out)
 
     # the first modes of the radial sampler on its padded mesh
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -267,4 +267,4 @@ if plt is not None:
     fig.tight_layout()
     out = FIGURES / "tutorial_10_basis.png"
     fig.savefig(out, dpi=110)
-    print("wrote", out.name)
+    print("figure written to", out)

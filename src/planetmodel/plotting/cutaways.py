@@ -1,9 +1,11 @@
-"""Cutaways: the body with a wedge cut from it, the field on the faces.
+"""Cutaways: the body with a wedge cut from it, or discs through it, the
+field on the faces.
 
-`cutaway` draws a `slices.CutawaySlice` on plain matplotlib axes as one
-image, the pixels of the slice's orthographic view coloured by what
-each looks at: the faces of the cut always show the field; the sphere
-left standing in the cut shows the field or a plain colour (`inner=`);
+`cutaway` draws a `slices.CutawaySlice`, of `slices.cutaway` or of
+`slices.discs`, on plain matplotlib axes as one image, the pixels of the
+slice's orthographic view coloured by what each looks at: the faces of
+the cut, or the discs, always show the field; the sphere left standing
+in a cut shows the field or a plain colour (`inner=`);
 and the surface shows the field (`surface="field"`), a plain colour, the
 land and the sea in two colours from Natural Earth's land polygons
 (`"land"`), Natural Earth's shaded relief, the raster cartopy ships
@@ -14,7 +16,9 @@ light of `LIGHT`, so that the sphere reads as one; the field's colours
 are never shaded.  `coastlines=True` draws Natural Earth's coastlines
 where they are seen, through `CutawaySlice.visible`, and
 `interfaces=True` the model's interfaces as faint arcs on the faces
-(`style.BOUNDARY_STYLE`).  The edge of the body is antialiased by the
+(`style.BOUNDARY_STYLE`); a slice showing a sphere within the body
+wears its dressing and coastlines on that sphere, the faces running
+past it.  The edge of the body is antialiased by the
 slice's coverage, a pixel of the edge whose centre misses the body
 taking the colour of its nearest neighbour that sees it.  The colour
 scale is `style.colour_scale`'s over every pixel that shows the field,
@@ -29,7 +33,7 @@ from typing import Any
 
 import numpy as np
 
-from ..frames import cartesian_points, from_geographic, geographic, wrapped
+from ..frames import cartesian_points, from_geographic, geographic
 from ..slices import CutawaySlice, normalised as _normalised
 from .style import BOUNDARY_STYLE, colour_extend, colour_scale
 
@@ -136,18 +140,13 @@ def _interface_arcs(slice_: CutawaySlice, scale: float
                     ) -> tuple[np.ndarray, np.ndarray]:
     """The model's interfaces between the cut's radii as arcs on the two
     faces, in the picture, the runs that are seen separated by NaN."""
-    north, south = slice_.colatitudes
-    start, end = slice_.longitudes
-    theta = np.linspace(north, south, _ARC_POINTS)
-    phi = start + np.linspace(0.0, float(wrapped(end - start)), _ARC_POINTS)
-    arcs = [(theta, lon) for lon in slice_.longitudes]
-    arcs += [(lat, phi) for lat in slice_.colatitudes if 0.0 < lat < np.pi]
     xs, ys = [], []
     for radius in slice_.boundaries:
-        if not slice_.inner < radius < slice_.outer:
+        if not slice_.inner < radius < slice_.top:
             continue
-        for t, p in arcs:
-            X = cartesian_points(radius, t, p)
+        for centre, a, b, start, end in slice_.arcs:
+            s = np.linspace(start, end, _ARC_POINTS)[:, None]
+            X = radius * (centre + a * np.cos(s) + b * np.sin(s))
             seen = slice_.visible(X)
             if not np.any(seen):
                 continue
@@ -218,12 +217,11 @@ def cutaway(ax: Any, slice_: CutawaySlice, *, surface: Any = "field",
         raise ValueError("a cutaway is drawn on plain axes")
     if normalised:
         slice_ = _normalised(slice_)
-    field = (slice_.mask("first") | slice_.mask("second") | slice_.mask("upper")
-             | slice_.mask("lower"))
-    if isinstance(surface, str) and surface == "field":
-        field |= slice_.mask("surface")
-    if isinstance(inner, str) and inner == "field":
-        field |= slice_.mask("inner")
+    field = slice_.face > 0
+    if not (isinstance(surface, str) and surface == "field"):
+        field &= ~slice_.mask("surface")
+    if not (isinstance(inner, str) and inner == "field") and "inner" in slice_.faces:
+        field &= ~slice_.mask("inner")
     values = slice_.values[field]
     cmap, lo, hi = colour_scale([values], slice_.shown, cmap=cmap, vmin=vmin,
                                 vmax=vmax, diverging=diverging, clip=clip)
@@ -235,7 +233,7 @@ def cutaway(ax: Any, slice_: CutawaySlice, *, surface: Any = "field",
     top = _surface_colours(slice_, surface, slice_.mask("surface"))
     if top is not None:
         rgba[slice_.mask("surface")] = top
-    if not (isinstance(inner, str) and inner == "field"):
+    if not (isinstance(inner, str) and inner == "field") and "inner" in slice_.faces:
         core = slice_.mask("inner")
         X = slice_.reference[core]
         r = np.linalg.norm(X, axis=-1)

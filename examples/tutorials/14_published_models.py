@@ -266,6 +266,58 @@ fig.savefig(out, dpi=200)
 print("figure written to", out)
 
 # %% [markdown]
+# The sphere shown as the surface need not be the outer one. `outer=`
+# names a radius, or an interface, within the body: the picture then
+# shows that sphere wearing the field at that depth, with the coastlines
+# on it if asked, and the faces of the cut still run out to the real
+# surface and stand proud of it, so that the sections through
+# everything above the sphere are kept. On the left the sphere 1000 km
+# deep; on the right the core-mantle boundary itself, its mantle side,
+# the cut going on down to the inner-core boundary.
+
+# %%
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+deep = slices.cutaway(on_prem, "vsv", longitudes=(np.radians(-60.0), np.radians(30.0)),
+                      colatitudes=(0.0, 0.5 * np.pi), inner="cmb",
+                      outer=6371e3 - 1000e3, n=1200, relative_to="reference")
+cutaway(ax, deep, scale=1e-3, clip=99.5, inner="0.8", coastlines=True, colorbar=True)
+ax.set_title("the sphere 1000 km deep, the sections above it kept")
+base = slices.cutaway(on_prem, "vsv", longitudes=(np.radians(-60.0), np.radians(30.0)),
+                      colatitudes=(0.0, 0.5 * np.pi), inner="icb", outer="cmb",
+                      side="above", n=1200, relative_to="reference")
+cutaway(bx, base, scale=1e-3, clip=99.5, inner="0.8", coastlines=True)
+bx.set_title("the core-mantle boundary, its mantle side")
+out = FIGURES / "tutorial_14_cutaway_inner.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
+# The other picture of the kind is `slices.discs`: discs through the
+# centre at chosen orientations, with a sphere at a depth, the discs
+# standing out of it. Each disc is given by the pole of its plane, the
+# direction normal to it: `(0, 0)` is the disc of the equator, and
+# `(pi/2, phi + pi/2)` the disc of the meridians at longitudes `phi` and
+# `phi + pi`. The sphere wears the field at its depth, with the
+# coastlines on it if asked, and `plotting.cutaway` draws the picture as
+# it draws a cutaway. On the left the sphere 150 km deep with the
+# coastlines; on the right the core-mantle boundary, its mantle side.
+
+# %%
+poles = [(0.0, 0.0), (0.5 * np.pi, np.radians(-20.0) + 0.5 * np.pi)]
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(14, 7), layout="constrained")
+shallow = slices.discs(on_prem, "vsv", poles=poles, outer=6371e3 - 150e3, n=1200,
+                       relative_to="reference")
+cutaway(ax, shallow, scale=1e-3, clip=99.5, coastlines=True, colorbar=True)
+ax.set_title("the discs of the equator and of 20 degrees west, the sphere 150 km deep")
+base = slices.discs(on_prem, "vsv", poles=poles, outer="cmb", side="above", n=1200,
+                    relative_to="reference")
+cutaway(bx, base, scale=1e-3, clip=99.5)
+bx.set_title("the same discs, the sphere the core-mantle boundary")
+out = FIGURES / "tutorial_14_discs.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
+
+# %% [markdown]
 # ## A model given as velocities
 #
 # S362ANI+M (Moulik and Ekström, 2014) is offered by the Earth Model

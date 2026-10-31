@@ -118,9 +118,11 @@ print(mesh.nodal(nd, "rho").shape)      # density at every mesh node
 
 ## Where to go next
 
-- `examples/tutorials/`: twelve walkthroughs, from a skeleton to random
-  fields, deck files and a laterally varying model in a model file, each
-  a `# %%` script that runs headless.
+- `examples/tutorials/`: fifteen walkthroughs, from a skeleton to random
+  fields, deck files, a laterally varying model in a model file, pictures,
+  published models and sensitivity kernels, each a `# %%` script that
+  runs headless and opens as a notebook, in Google Colab from the badges
+  in `examples/README.md`.
 - `docs/source/formats/`: the model file and the manifest beside every
   mesh, described for the codes that read them (also on Read the Docs).
 - `CONTRIBUTING.md`: the development setup, the hooks, the test
