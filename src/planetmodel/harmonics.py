@@ -39,6 +39,16 @@ with the Condon-Shortley phase; the real ones here are
 and that is the whole of the conversion.  ducc0 is imported where a
 transform is made, so that `import planetmodel` does not load it.
 
+**Many shells at once.**  A consumer holding a field on radial nodes
+times a grid -- a hundred shells, one band -- crosses into ducc0 once
+per shell.  `ShellTransform` instead tabulates the basis on one
+Gauss-Legendre grid's meridian, once per grid, and carries every shell
+together through two matrix products each way, agreeing with
+`synthesise_grid` and `analyse_grid` to rounding.  Its table is
+(lmax + 1)^3 numbers, so the grid transforms remain the route for a
+single field, a grid of another kind, or degrees where the table would
+not fit.
+
 **Other conventions.**  Published coefficients come in other
 normalisations and with or without the Condon-Shortley phase;
 `from_convention` gives the library's coefficients from them and
@@ -75,8 +85,8 @@ if TYPE_CHECKING:
     from .sampling import AngularGrid
 
 __all__ = ["real_harmonics", "synthesise", "synthesise_gradient", "synthesise_grid",
-           "analyse_grid", "packing", "from_convention", "to_convention",
-           "NORMALIZATIONS", "POINT_EPSILON"]
+           "analyse_grid", "ShellTransform", "packing", "from_convention",
+           "to_convention", "NORMALIZATIONS", "POINT_EPSILON"]
 
 #: The relative accuracy asked of ducc0's synthesis at arbitrary points.
 POINT_EPSILON = 1e-13
@@ -393,3 +403,102 @@ def real_harmonics(lmax: int, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
                     lam * (root2 * np.sin(angle))[None]])
     out[1, :, 0] = 0.0
     return out.reshape((2, lmax + 1, lmax + 1) + theta.shape)
+
+
+# -- many shells at once ----------------------------------------------------------
+
+class ShellTransform:
+    """Synthesis and analysis on one Gauss-Legendre grid, for any number
+    of radial shells at once.
+
+    The transform is separable: the basis on the prime meridian -- the
+    normalised Legendre functions, tabulated once through
+    `real_harmonics` -- contracts the degrees of every shell in one
+    matrix product, and the longitudes in a second; nothing loops over
+    shells.  Construction costs the table, (lmax + 1)^3 numbers; each
+    call after that is the matmuls.
+
+    The grid is the minimal Gauss-Legendre one of its band,
+    `gauss_legendre(lmax)`: lmax + 1 colatitudes and 2 lmax + 1
+    longitudes, from any phi0.  Any other grid is refused.  On it,
+    `synthesise` and `analyse` agree with `synthesise_grid` and
+    `analyse_grid` to rounding: exact for a field band-limited to the
+    grid's degree, a projection otherwise.
+    """
+
+    def __init__(self, grid: AngularGrid) -> None:
+        """Tabulate the basis on the meridian of `grid`."""
+        if (getattr(grid, "kind", None) != "gauss_legendre" or grid.lmax is None
+                or grid.weights is None):
+            raise ValueError(
+                f"ShellTransform tabulates the basis of a Gauss-Legendre grid "
+                f"and integrates with its weights; got a "
+                f"{getattr(grid, 'kind', None)!r} grid")
+        _rings(grid)            # the nodes are genuinely the kind's own
+        lmax = int(grid.lmax)
+        if grid.ntheta != lmax + 1 or grid.nphi != 2 * lmax + 1:
+            raise ValueError(
+                f"ShellTransform takes the minimal Gauss-Legendre grid of its "
+                f"band, gauss_legendre({lmax}): {lmax + 1} colatitudes and "
+                f"{2 * lmax + 1} longitudes, not {grid.ntheta} x {grid.nphi}")
+        self._lmax = lmax
+        # The basis on the prime meridian: the cosine harmonics there are the
+        # normalised Legendre functions, and the sine ones share them.
+        meridian = real_harmonics(lmax, grid.colatitudes, 0.0)[0]
+        # (order, colatitude, degree), so that a matmul contracts the degree.
+        self._legendre = np.ascontiguousarray(meridian.transpose(1, 2, 0))
+        # (order, degree, colatitude), the quadrature weights folded in.
+        self._weighted = np.ascontiguousarray(
+            (meridian * grid.weights).transpose(1, 0, 2))
+        angle = np.arange(lmax + 1)[:, None] * grid.longitudes[None, :]
+        self._cosines = np.cos(angle)                      # (order, longitude)
+        self._sines = np.sin(angle)
+        self._cell = 2.0 * np.pi / grid.nphi
+
+    @property
+    def lmax(self) -> int:
+        """The grid's band: the degree the table holds."""
+        return self._lmax
+
+    def synthesise(self, coefficients: ArrayLike) -> np.ndarray:
+        """Values on every shell from coefficient functions.
+
+        `coefficients` has shape (2, lmax + 1, lmax + 1, shells), a
+        coefficient array with one radial axis; the result has shape
+        (shells, ntheta, nphi), the layout of a sample.
+        """
+        c = np.asarray(coefficients, dtype=float)
+        n = self._lmax + 1
+        if c.ndim != 4 or c.shape[:3] != (2, n, n):
+            raise ValueError(f"coefficients must have shape (2, {n}, {n}, "
+                             f"shells), got {c.shape}")
+        shells = c.shape[3]
+        # (order, degree, shells) -> (order, colatitude, shells)
+        even = np.matmul(self._legendre, c[0].transpose(1, 0, 2))
+        odd = np.matmul(self._legendre, c[1].transpose(1, 0, 2))
+        # (longitude, colatitude * shells)
+        flat = self._cosines.T @ even.reshape(n, -1)
+        flat += self._sines.T @ odd.reshape(n, -1)
+        return np.ascontiguousarray(flat.reshape(-1, n, shells).transpose(2, 1, 0))
+
+    def analyse(self, values: ArrayLike) -> np.ndarray:
+        """Coefficient functions from values on every shell, by the grid's
+        own quadrature.
+
+        `values` has shape (shells, ntheta, nphi); the result has shape
+        (2, lmax + 1, lmax + 1, shells), zero where no harmonic is.
+        """
+        v = np.asarray(values, dtype=float)
+        n = self._lmax + 1
+        if v.ndim != 3 or v.shape[1:] != (n, 2 * self._lmax + 1):
+            raise ValueError(f"values must have shape (shells, {n}, "
+                             f"{2 * self._lmax + 1}), got {v.shape}")
+        shells = v.shape[0]
+        flat = v.transpose(2, 1, 0).reshape(v.shape[2], -1)  # (longitude, ...)
+        out = np.empty((2, n, n, shells))
+        for part, waves in enumerate((self._cosines, self._sines)):
+            fourier = (self._cell * waves) @ flat   # (order, colatitude * shells)
+            fourier = fourier.reshape(n, n, shells)
+            # (order, degree, colatitude) @ (order, colatitude, shells)
+            out[part] = np.matmul(self._weighted, fourier).transpose(1, 0, 2)
+        return out

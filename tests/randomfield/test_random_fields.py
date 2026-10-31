@@ -242,3 +242,23 @@ def test_layered_grf_as_model_fields():
     ratio = perturbed.layer(i)["rho"](r) / model.layer(i)["rho"](r) - 1.0
     assert ratio == pytest.approx(delta[i](r)) and abs(ratio) < 0.2
     assert perturbed.layer(0)["rho"](1e6) == model.layer(0)["rho"](1e6)
+
+
+def test_a_seeded_draw_survives_a_change_of_mesh():
+    """A seeded draw is the same field on two meshes differing by a few
+    elements when the truncation is unchanged: the eigenfunctions keep
+    their signs, so the draws differ only by the discretisation (measured
+    at 2.3e-4 of the largest value for the radial field and 2.8e-4 for
+    the shell, relative)."""
+    r = np.linspace(0.5, 1.0, 50)
+    g1 = RadialGRF(0.5, 1.0, 1.5, 0.08, drmax=0.02, tol=1e-4)
+    g2 = RadialGRF(0.5, 1.0, 1.5, 0.08, drmax=0.0196, tol=1e-4)
+    assert g1.mesh.nspec != g2.mesh.nspec and g1.nmodes == g2.nmodes
+    u1, u2 = (g.to_layer(g.sample(rng=3))(r) for g in (g1, g2))
+    assert np.abs(u1 - u2).max() < 1e-3 * np.abs(u1).max()
+
+    s1 = SphericalGRF(0.5, 1.0, 1.5, 0.15, lmax=6, drmax=0.02, tol=1e-8)
+    s2 = SphericalGRF(0.5, 1.0, 1.5, 0.15, lmax=6, drmax=0.0196, tol=1e-8)
+    assert s1.mesh.nspec != s2.mesh.nspec and np.array_equal(s1.nmodes, s2.nmodes)
+    c1, c2 = (s.coefficient_functions(s.sample(rng=5))(r) for s in (s1, s2))
+    assert np.abs(c1 - c2).max() < 1e-3 * np.abs(c1).max()

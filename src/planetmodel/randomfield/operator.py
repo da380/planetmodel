@@ -24,7 +24,10 @@ LAPACK's banded symmetric drivers, with select-by-value for spectral
 truncation.  Since A_l = M + K_l with K_l >= 0, every eigenvalue
 satisfies theta >= 1, so negative fractional powers of the family are
 uniformly well behaved.  Eigenvectors are M-orthonormal
-(Phi^T M Phi = I), so A_l^s = Phi Theta^s Phi^T M on nodal vectors and
+(Phi^T M Phi = I) and of a fixed sign, the first component above
+`SIGN_RTOL` of the largest positive, so that the same eigenfunction
+discretised on two meshes has one sign; A_l^s = Phi Theta^s Phi^T M on
+nodal vectors and
 <f, A_l^s g> with the L^2(w dr) pairing is the H^s inner product of the
 Sobolev scale built on A.  White noise of the space is M^-1/2 z with
 z standard normal, whose covariance is M^-1.
@@ -59,7 +62,11 @@ from scipy.linalg import eig_banded, eigvals_banded, solveh_banded
 
 from ..mesh1d import Mesh1D
 
-__all__ = ["RadialOperatorFamily", "Coefficient", "Robin", "WEIGHTS"]
+__all__ = ["RadialOperatorFamily", "Coefficient", "Robin", "WEIGHTS", "SIGN_RTOL"]
+
+#: The size, relative to an eigenvector's largest component, from which a
+#: component counts as nonzero when the vector's sign is fixed.
+SIGN_RTOL = 1e-8
 
 #: The measures a family may carry: "r2" for r^2 dr, the radial part of the
 #: volume element of an annulus or ball, and "one" for plain dr on an interval.
@@ -91,6 +98,16 @@ def _nodal_coefficient(mesh: Mesh1D, c: Coefficient) -> np.ndarray:
     if not np.all(np.isfinite(out)):
         raise ValueError("coefficient must be finite everywhere on the mesh")
     return out
+
+
+def _signed(Phi: np.ndarray) -> np.ndarray:
+    """The columns of Phi, each with its first component larger in size
+    than `SIGN_RTOL` of its largest made positive."""
+    size = np.abs(Phi)
+    big = size > SIGN_RTOL * size.max(axis=0, keepdims=True)
+    first = np.argmax(big, axis=0)
+    lead = Phi[first, np.arange(Phi.shape[1])]
+    return Phi * np.where(lead < 0.0, -1.0, 1.0)
 
 
 def _parse_robin(robin: Robin) -> tuple[float, float]:
@@ -309,7 +326,10 @@ class RadialOperatorFamily:
         """Eigenpairs (theta, Phi) of A_l Phi = M Phi Theta, cached.
 
         Phi has the active-dof eigenvectors in its columns, ascending in
-        theta and M-orthonormal.  With `theta_max`, only the eigenvalues
+        theta, M-orthonormal and each of a fixed sign: its first component
+        above `SIGN_RTOL` of its largest is positive, so that the same
+        eigenfunction on two meshes has the same sign (LAPACK's is
+        arbitrary).  With `theta_max`, only the eigenvalues
         theta <= theta_max are computed; with `count`, the `count`
         smallest, selected by index so that none is lost to the rounding
         of a bound.  The cache keeps the widest range requested so far
@@ -334,7 +354,7 @@ class RadialOperatorFamily:
                     theta, Y = eig_banded(S, lower=False, select="i",
                                           select_range=(0, count - 1))
                     have = float(theta[-1])
-                self._pairs[l] = (theta, s[:, None] * Y, have)
+                self._pairs[l] = (theta, _signed(s[:, None] * Y), have)
             theta, Phi, _ = self._pairs[l]
             return theta[:count], Phi[:, :count]
         want = np.inf if theta_max is None else float(theta_max)
@@ -348,7 +368,7 @@ class RadialOperatorFamily:
             else:
                 theta, Y = eig_banded(S, lower=False, select="v",
                                       select_range=(0.0, want))
-            Phi = s[:, None] * Y
+            Phi = _signed(s[:, None] * Y)
             self._pairs[l] = (theta, Phi, want)
         theta, Phi, have = self._pairs[l]
         if want < have:

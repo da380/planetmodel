@@ -13,7 +13,8 @@
 # This tutorial builds PREM with a perturbation of its shear velocity in
 # the lower mantle, and then draws it in every way the library offers: a
 # map at one depth, cross-sections, profiles, the spectrum of the
-# perturbation, and a comparison with a second model. It ends by writing
+# perturbation, a comparison with a second model, and a cutaway, the
+# body with an octant removed. It ends by writing
 # the model as files for ParaView, a program for looking at
 # three-dimensional data interactively, and says how to start with it.
 #
@@ -33,8 +34,8 @@ from scipy.interpolate import CubicSpline
 from planetmodel import PREM, HarmonicField, flattening, gauss_legendre, perturbed
 from planetmodel import slices
 from planetmodel.harmonics import packing
-from planetmodel.plotting import (correlation, correlation_total, profile, section,
-                                  spectrum, sphere_map, write_vtk)
+from planetmodel.plotting import (correlation, correlation_total, cutaway, profile,
+                                  section, spectrum, sphere_map, write_vtk)
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
@@ -283,6 +284,48 @@ fig.savefig(out, dpi=100)
 print("figure written to", out)
 print("correlation at degrees 1-6:", np.nanmean(compared.by_degree[:, 1:7]).round(3),
       "| at degrees 7-12:", np.nanmean(compared.by_degree[:, 7:]).round(3))
+
+# %% [markdown]
+# ## A cutaway
+#
+# The classic picture of a planet's interior is the body seen from
+# outside with a wedge cut from it, the field on the faces of the cut
+# and the surface around them. `slices.cutaway` makes one: the wedge is
+# a span of longitudes, here a quarter turn, and a span of colatitudes,
+# here the northern hemisphere, so that an octant is removed; the cut
+# stops at a radius, here the core-mantle boundary, so that the core is
+# left standing in it as a sphere. The picture is an orthographic view
+# toward a point given by its colatitude and longitude, north up,
+# rendered pixel by pixel: each pixel's ray is cast into the cut body
+# and the field is evaluated where it first lands, so that the slice
+# knows which face every pixel sees, and what hides what is settled
+# exactly. `plotting.cutaway` draws it on plain axes. The faces always
+# show the field; the surface shows the field too (the departure is
+# zero there, so it is white), or a plain colour, with the interfaces as
+# faint arcs on the faces and the core in a plain grey. Unless `view=`
+# says otherwise the viewer is 25 degrees north of the equator and a
+# little east of the cut's first face, which puts the cut at the upper
+# right of the picture with one face nearly square-on, the other a
+# sliver, and the face on the equator seen from above. For the Earth
+# the surface can also wear Natural Earth's relief, or its land and sea,
+# with the coastlines, which tutorial 14 shows on S40RTS. `n` is the
+# number of pixels across the picture, and the figure is saved at a
+# resolution that keeps them.
+
+# %%
+cut = slices.cutaway(model, "vsv", longitudes=(0.0, 0.5 * np.pi),
+                     colatitudes=(0.0, 0.5 * np.pi), inner=lo, n=1200,
+                     relative_to="mean", mean_grid=gauss_legendre(32))
+print(cut.label, "| faces seen:",
+      [name for name in slices.CUTAWAY_FACES if cut.mask(name).any()])
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(13, 6), layout="constrained")
+cutaway(ax, cut, scale=1e-3, inner="0.7", colorbar=True)
+ax.set_title("the northern octant removed, the field at the surface")
+cutaway(bx, cut, scale=1e-3, surface="0.9", inner="0.7")
+bx.set_title("the surface plain")
+out = FIGURES / "tutorial_13_cutaway.png"
+fig.savefig(out, dpi=200)
+print("figure written to", out)
 
 # %% [markdown]
 # ## Files for ParaView

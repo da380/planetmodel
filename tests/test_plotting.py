@@ -268,3 +268,87 @@ def test_a_correlation_is_an_image_by_degree_and_radius(layered):
     assert np.allclose(line.get_data()[1], 10.0 * cr.radii[order])
     assert fig.axes[-1].get_ylabel() == cr.label
     plt.close(fig)
+
+
+# -- cutaways -----------------------------------------------------------------------
+
+from planetmodel.plotting import cutaway  # noqa: E402
+
+
+def test_a_cutaway_is_one_image_of_the_faces_with_the_edge_antialiased(layered):
+    from matplotlib.colors import Normalize
+    c = slices.cutaway(layered, "vs", inner=0.3, n=50, longitudes=(0.2, 1.6))
+    fig, ax = plt.subplots()
+    image = cutaway(ax, c, scale=2.0, colorbar=True)
+    rgba = image.get_array()
+    assert rgba.shape == (50, 50, 4)
+    assert np.allclose(rgba[..., 3], c.coverage)
+    assert np.allclose(image.get_extent(), (-2.0, 2.0, -2.0, 2.0))
+    # every face shows the field on one colour scale
+    seen = c.face > 0
+    cmap, lo, hi = colour_scale([c.values[seen]], c.shown)
+    norm = Normalize(lo, hi)
+    assert np.allclose(rgba[seen][:, :3],
+                       plt.get_cmap(cmap)(norm(c.values[seen]))[:, :3])
+    assert ax.figure.axes[-1].get_ylabel() == c.label
+    assert ax.get_aspect() == 1.0 and not ax.axison
+    # the interfaces are faint arcs on the faces, drawn once
+    lines = ax.get_lines()
+    assert len(lines) == 1 and lines[0].get_color() == BOUNDARY_STYLE["color"]
+    x, y = lines[0].get_data()
+    assert np.any(np.isnan(x)) and np.isfinite(x).sum() > 50
+    assert np.all(np.hypot(x, y)[np.isfinite(x)] <= 2.0 * 0.5 * (1 + 1e-12))
+    plt.close(fig)
+
+    # a plain surface and a plain inner sphere, shaded, never the field's colours
+    fig, ax = plt.subplots()
+    image = cutaway(ax, c, surface="0.9", inner="red", interfaces=False, cmap="gray",
+                    vmin=0.0, vmax=10.0)
+    rgba = image.get_array()
+    top = rgba[c.mask("surface")]
+    assert np.all(top[:, :3] <= 0.9) and np.all(top[:, :3] > 0.4)
+    assert np.all(top[:, 0] == top[:, 1]) and np.any(top[:, 0] < 0.9)
+    core = rgba[c.mask("inner")]
+    assert np.all(core[:, 1:3] == 0.0) and np.all(core[:, 0] > 0.0)
+    faces = c.mask("first") | c.mask("second")
+    assert np.allclose(rgba[faces, 0], c.values[faces] / 10.0, atol=1e-2)
+    assert not ax.get_lines()
+    plt.close(fig)
+
+    # the scale is of the field's pixels alone, diverging and clipped as asked
+    fig, ax = plt.subplots()
+    d = slices.cutaway(layered, "vs", inner=0.5, n=30, relative_to="mean",
+                       mean_grid=gauss_legendre(16))
+    image = cutaway(ax, d, surface="w", clip=90.0, normalised=True)
+    assert image.get_array().shape == (30, 30, 4)
+    plt.close(fig)
+
+
+def test_a_cutaway_is_refused_on_the_wrong_axes_or_with_a_surface_it_cannot_draw(
+        layered):
+    c = slices.cutaway(layered, "vs", inner=0.5, n=20)
+    fig = plt.figure()
+    with pytest.raises(ValueError, match="plain axes"):
+        cutaway(fig.add_subplot(projection="polar"), c)
+    ax = fig.add_subplot()
+    with pytest.raises(ValueError, match="surface is"):
+        cutaway(ax, c, surface="nonesuch")
+    with pytest.raises(ValueError, match="RGB"):
+        cutaway(ax, c, surface=np.zeros((4, 8, 2)))
+    with pytest.raises(ValueError, match="surface is"):
+        cutaway(ax, c, surface=3.5)
+    # an image of the surface, rows from the north pole, columns from 180 west
+    image = np.zeros((2, 2, 3))
+    image[0] = [1.0, 0.0, 0.0]                     # the northern hemisphere red
+    image[1] = [0.0, 0.0, 1.0]                     # the southern blue
+    im = cutaway(ax, c, surface=image, interfaces=False)
+    rgba = im.get_array()
+    top = c.mask("surface")
+    north = top & (c.reference[..., 2] > 0.0)
+    south = top & (c.reference[..., 2] < 0.0)
+    assert np.all(rgba[north, 0] > 0.0) and np.all(rgba[north, 2] == 0.0)
+    assert np.all(rgba[south, 2] > 0.0) and np.all(rgba[south, 0] == 0.0)
+    eight = (255 * image).astype(np.uint8)
+    assert np.allclose(cutaway(ax, c, surface=eight, interfaces=False).get_array(),
+                       rgba)
+    plt.close(fig)
