@@ -1,10 +1,14 @@
 name: CI
 
+# Pull requests to main, and main itself once they merge: a branch is
+# tested once, on its pull request, rather than on every push to it and
+# again there.  Pushes to develop run nothing here; the pre-push hook runs
+# the fast suite locally.
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   # The meshing and MFEM tests need gmsh and PyMFEM, which are heavy; the
   # `meshing` job below runs them on Linux only, and `full-tests` runs the
   # whole suite on demand from the Actions tab.
@@ -12,8 +16,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Superseded pull request runs are pointless; pushes to a branch are kept so
-  # that main and develop keep a complete history of green and red commits.
+  # Superseded pull request runs are pointless; pushes to main are kept so
+  # that it has a complete history of green and red commits.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

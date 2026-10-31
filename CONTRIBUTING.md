@@ -18,6 +18,9 @@ work happens on `develop`.
 
 The same hooks run in CI (the `Lint (pre-commit)` job reads this very
 `.pre-commit-config.yaml`), so anything that passes locally passes there.
+CI runs on pull requests to `main` and on `main` once they merge, not on
+pushes to `develop`: a branch is tested once, on its pull request, and
+the pre-push hook covers the pushes before it.
 To check the whole repository by hand:
 
 ```bash
