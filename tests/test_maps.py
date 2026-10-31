@@ -104,7 +104,9 @@ def test_a_map_is_refused_on_axes_other_than_cartopys():
 
 
 def test_discs_of_the_earth_wear_coastlines_on_their_sphere():
-    import matplotlib
+    pytest.importorskip("cartopy", reason="needs the planetmodel[maps] extra")
+    pytest.importorskip("shapely", reason="needs the planetmodel[maps] extra")
+    matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from planetmodel import PREM
@@ -123,7 +125,9 @@ def test_discs_of_the_earth_wear_coastlines_on_their_sphere():
 
 
 def test_a_cutaway_of_the_earth_wears_its_relief_its_land_and_its_coastlines():
-    import matplotlib
+    pytest.importorskip("cartopy", reason="needs the planetmodel[maps] extra")
+    pytest.importorskip("shapely", reason="needs the planetmodel[maps] extra")
+    matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from planetmodel import PREM
