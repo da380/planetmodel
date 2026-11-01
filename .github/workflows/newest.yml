@@ -1,0 +1,58 @@
+name: Newest dependencies
+
+# The fast suite under the newest numpy, scipy, ducc0 and extras that the
+# pins in pyproject.toml admit, installed over the locked environment, so
+# that an upstream release breaking the library is seen here before a
+# fresh `pip install planetmodel` meets it.  The pins are read from
+# pyproject.toml by pip, so nothing here names a version.  On pull
+# requests to main and on main, as CI is, and weekly at an odd minute, so
+# that a release upstream is caught within the week whether or not
+# anything here has changed (scheduled runs start late at the top of the
+# hour; GitHub turns schedules off after 60 days without activity in the
+# repository, and a click turns them on).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Linux and one Python, as `lowest-pins` in ci.yml: the question is the
+  # libraries' API, not the platform.
+  newest-pins:
+    name: Test (newest dependencies the pins admit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.create false
+
+      - name: Install dependencies
+        run: poetry install --with dev --extras "plot netcdf maps"
+
+      - name: Raise every dependency to the newest the pins admit
+        run: pip install --upgrade --upgrade-strategy eager ".[plot,netcdf,maps]"
+
+      - name: Test with pytest
+        run: |
+          python -c "import numpy, scipy, ducc0; print(numpy.__version__, scipy.__version__, ducc0.__version__)"
+          poetry run pytest
