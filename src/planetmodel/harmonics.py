@@ -392,9 +392,10 @@ def real_harmonics(lmax: int, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
     at = start[mm] + l
     unit = np.ones((1, 1, lmax + 1), dtype=complex)
     legendre = np.zeros((rings.size, lmax + 1, lmax + 1))
+    # No index arrays: ducc0's default layout, every order up to lmax in
+    # healpy's order, is the one `start` indexes.
     for k, t in enumerate(rings):
-        a = sht.leg2alm(leg=unit, lmax=lmax, theta=np.array([t]), spin=0,
-                        mval=m.astype(np.int64), mstart=start.astype(np.int64))
+        a = sht.leg2alm(leg=unit, lmax=lmax, theta=np.array([t]), spin=0)
         legendre[k, l, mm] = a[0, at].real * (-1.0) ** mm
     lam = np.moveaxis(legendre[which], 0, -1)            # (l, m, points)
     angle = m[:, None] * wrapped(phi.ravel())[None, :]   # (m, points)

@@ -34,22 +34,33 @@ alone is the contract (`poetry run ruff check .`).
 ## Tests
 
 ```bash
-poetry run pytest                        # the fast suite, which is the default
-poetry run pytest -m "not slow"          # plus the gmsh unit geometries and MFEM exports
-poetry run pytest -m ""                  # everything
+poetry run pytest                                 # the fast suite, which is the default
+poetry run pytest -m "not slow and not network"   # plus the gmsh unit geometries and MFEM exports
+poetry run pytest -m "not network"                # everything off the network
+poetry run pytest -m network                      # the registry check: fetches every data set
 ```
 
-The default run is `-m "not gmsh and not mfem and not slow"`, set in
-`pyproject.toml`: it needs the dependencies (numpy, scipy and ducc0),
-and uses the `plot`, `netcdf` and `maps` extras where installed (the
-tests that need them skip otherwise). The `gmsh` and `mfem` tests need the `meshing` and `mfem`
-extras and are CI's `meshing` job, on Linux; `full-tests` runs everything
-on demand from the Actions tab (Actions -> CI -> Run workflow), and is
-worth running before a release.
+The default run is `-m "not gmsh and not mfem and not slow and not
+network"`, set in `pyproject.toml`: it needs the dependencies (numpy,
+scipy and ducc0), and uses the `plot`, `netcdf` and `maps` extras where
+installed (the tests that need them skip otherwise). The `gmsh` and
+`mfem` tests need the `meshing` and `mfem` extras and are CI's `meshing`
+job, on Linux; `full-tests` runs everything off the network on demand
+from the Actions tab (Actions -> CI -> Run workflow), and is worth
+running before a release. The `network` tests are the `Registry check`
+workflow, monthly and on demand; nothing else touches the network.
+
+CI installs the lock. Two jobs move the dependencies off it: CI's
+`lowest-pins` steps numpy, scipy and ducc0 down to the floors in
+`pyproject.toml`, and the `Newest dependencies` workflow raises every
+dependency to the newest the pins admit, on pull requests to `main`, on
+`main` and weekly, so that an upstream release that breaks the library
+is seen before a fresh `pip install` meets it. A floor that moves in
+`pyproject.toml` moves in `lowest-pins` too.
 
 No test builds a large mesh. Meshing is tested on unit geometries a few
-elements across; Earth-scale runs are the scripts under `scripts/` and are
-recorded under `docs/notes/`.
+elements across; Earth-scale runs are the scripts under `scripts/`, run by
+hand.
 
 ## Tutorials
 
@@ -80,9 +91,9 @@ make -C docs html                        # the pages land in docs/build/html
 ```
 
 `sphinx-apidoc` regenerates the per-module `.rst` stubs on every build
-(wired up in `docs/source/conf.py`), so the only sources under
-`docs/source/` are `conf.py` and `index.rst`; the stubs and the built
-pages are gitignored. The optional extras are not needed: `conf.py`
+(wired up in `docs/source/conf.py`), so the sources under `docs/source/`
+are `conf.py`, `index.rst`, `cpp.rst` and the file-format pages under
+`formats/`; the stubs and the built pages are gitignored. The optional extras are not needed: `conf.py`
 mocks them for autodoc.
 
 ## Releasing
@@ -93,63 +104,7 @@ mocks them for autodoc.
 3. Publish a GitHub release whose tag is `v<version>`. The `Publish to
    PyPI` workflow checks that the tag and `pyproject.toml` agree, builds
    the wheel and the sdist, and uploads them with the `PYPI_API_TOKEN`
-   repository secret. The workflow's release trigger is switched off
-   until the PyPI project and the token exist; the comment at the top
-   of `.github/workflows/publish.yml` says how to enable it.
+   repository secret.
 
 PyPI does not allow a version to be re-uploaded, so a release that goes
 wrong is fixed by a new version, never by force-pushing the tag.
-
-## Setting up PyPI for the first release
-
-Done once, before the first release. The name `planetmodel` was free on
-PyPI on 15 September 2026; a PyPI project comes into existence with its
-first upload, so there is nothing to create on the site beforehand.
-
-1. **Account.** Sign in at https://pypi.org (two-factor authentication
-   is required for uploading; the account settings page walks through a
-   TOTP app or a security key). Do the same at https://test.pypi.org if
-   a rehearsal is wanted; it is a separate account.
-2. **A token for the first upload.** Account settings -> API tokens ->
-   Add API token. The scope must be "Entire account" for the first
-   upload, because a project-scoped token can only be made for a project
-   that already exists. Copy the `pypi-...` string at once; PyPI shows it
-   only once.
-3. **The repository secret.** On GitHub, the repository's Settings ->
-   Secrets and variables -> Actions -> New repository secret, named
-   `PYPI_API_TOKEN`, with the token as its value.
-4. **Rehearsal, optional.** With a token from test.pypi.org:
-
-   ```bash
-   poetry config repositories.testpypi https://test.pypi.org/legacy/
-   poetry build
-   poetry publish -r testpypi --username __token__ --password pypi-...
-   pip install --index-url https://test.pypi.org/simple/ \
-       --extra-index-url https://pypi.org/simple/ planetmodel
-   ```
-
-   The extra index is there so that numpy and scipy come from the real
-   PyPI. A version uploaded to TestPyPI cannot be re-uploaded there
-   either, so rehearse with a `1.0.0rc1` rather than the release number.
-5. **Switch the workflow on.** In `.github/workflows/publish.yml`,
-   replace the `workflow_dispatch` trigger with the `release` trigger
-   given in the comment above it.
-6. **Release.** Set the version to `1.0.0` (step 1 above), merge to
-   `main`, then on GitHub: Releases -> Draft a new release -> tag
-   `v1.0.0` on `main`, a title and notes, Publish. The workflow runs;
-   its log ends with the upload, and https://pypi.org/project/planetmodel
-   shows the version within a minute.
-7. **Narrow the token.** Once the project exists, make a new token
-   scoped to `planetmodel` alone (Account settings -> API tokens -> Add
-   API token -> scope: Project: planetmodel), put it in the
-   `PYPI_API_TOKEN` secret in place of the account-wide one, and delete
-   the account-wide token on PyPI.
-
-The alternative to a token is PyPI's trusted publishing: on PyPI,
-Account settings -> Publishing -> Add a new pending publisher, with
-owner `da380`, repository `planetmodel`, workflow `publish.yml`, and no
-environment; the workflow then needs `permissions: id-token: write` and
-the upload step becomes `uses: pypa/gh-action-pypi-publish@release/v1`
-with no username or password. No secret to rotate, but a different
-workflow from pyslfp's; the token route above is the one the workflow
-is written for.

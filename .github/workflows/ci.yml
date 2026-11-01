@@ -92,13 +92,14 @@ jobs:
       - name: Build package
         run: poetry build
 
-  # The fast suite again under the oldest numpy and scipy that
+  # The fast suite again under the oldest numpy, scipy and ducc0 that
   # pyproject.toml admits, installed over the locked environment, so that
   # the lower bounds stay true.  Linux and one Python: the question is the
   # libraries' API, not the platform.  The versions here are the floors of
-  # `dependencies` in pyproject.toml and move with them.
+  # `dependencies` in pyproject.toml and move with them.  The newest
+  # versions the pins admit are newest.yml's.
   lowest-pins:
-    name: Test (lowest numpy and scipy)
+    name: Test (lowest numpy, scipy and ducc0)
     runs-on: ubuntu-latest
 
     steps:
@@ -117,12 +118,12 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev --extras "plot netcdf"
 
-      - name: Step numpy and scipy down to their floors
-        run: pip install "numpy==2.0.*" "scipy==1.15.*"
+      - name: Step numpy, scipy and ducc0 down to their floors
+        run: pip install "numpy==2.0.*" "scipy==1.15.*" "ducc0==0.41.*"
 
       - name: Test with pytest
         run: |
-          python -c "import numpy, scipy; print(numpy.__version__, scipy.__version__)"
+          python -c "import numpy, scipy, ducc0; print(numpy.__version__, scipy.__version__, ducc0.__version__)"
           poetry run pytest
 
   # The gmsh unit geometries and the MFEM exports, which the fast suite
