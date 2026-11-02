@@ -10,7 +10,7 @@
 #
 # What the columns are called and what the header lines mean is a
 # `DeckFormat`; `MINEOS` is the format of mineos and PREM decks, and
-# `GIA` that of a viscoelastic model with a viscosity column.
+# `MAXWELL` that of a viscoelastic model with a viscosity column.
 # `read_deck` turns a file into a `Deck`, which is the numbers and the
 # header and nothing else. `deck_layers` interpolates every column,
 # layer by layer, with a piecewise polynomial through the knots, so the
@@ -19,10 +19,10 @@
 # mixins then add everything else in the usual way.
 #
 # This tutorial reads PREM's own 200-knot deck as a `MineosModel` and
-# compares it with the polynomial `PREM`. It then writes a deck in a
-# format of its own, PREM's elastic part with a viscosity column on the
-# solid layers, and reads it back as a model type of its own, of the
-# kind used for glacial isostatic adjustment.
+# compares it with the polynomial `PREM`. It then writes PREM with a
+# viscous mantle as a `MAXWELL` deck, of the kind used for glacial
+# isostatic adjustment, and reads it back as a `MaxwellDeckModel`.
+# Last, it defines a format and a model type of its own.
 #
 # This tutorial plots, so it needs the `plot` extra (matplotlib). The
 # figure is written to `examples/figures/`.
@@ -33,10 +33,10 @@ from pathlib import Path
 
 import numpy as np
 
-from planetmodel import (GIA, PREM, Deck, Elastic, Geometry, MINEOS, MineosModel,
-                         Model, SelfGravitating, Tabulated, Viscoelastic, deck_layers,
-                         gravity, read_deck, testing, write_deck)
-from planetmodel.deck import deck_knots
+from planetmodel import (MAXWELL, MINEOS, PREM, Deck, DeckFormat, Elastic, Geometry,
+                         MaxwellDeckModel, MineosModel, Model, SelfGravitating,
+                         Tabulated, constant_field, deck_layers, gravity, read_deck,
+                         sample_deck, testing, write_deck)
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
@@ -103,90 +103,118 @@ for x in (3480e3, 6371e3):
           f"prem {gravity(prem, x):.6f}")
 
 # %% [markdown]
-# ## A deck of your own
+# ## A Maxwell deck
 #
-# A format is a set of column names and a description of the header.
-# The library ships one for glacial isostatic adjustment, `GIA`: seven
-# columns after the radius, PREM's elastic fields and a viscosity, and a
-# header of two lines, a title and the column names. A format of your
-# own is a `DeckFormat` given its column names, the number of header
-# lines and, if you want the header read into a mapping, the two
-# functions that read it and write it back.
-#
-# The deck itself is built from PREM's elastic part, with no attenuation
-# and no ocean, sampled on eight knots per layer. The viscosity column
-# is set on the solid layers and NaN on the fluid outer core. A column
+# The library ships a second format, `MAXWELL`, for the models used in
+# glacial isostatic adjustment. It has seven columns after the radius:
+# the density, the five elastic velocities of a transversely isotropic
+# medium, and a viscosity. The header is a title and a line naming the
+# columns, and after them, optionally, a `# layers` line and a
+# `# interfaces` line giving their names from the centre outward, with
+# `-` for one that has no name. A layer with a viscosity is a Maxwell
+# body in shear. A layer without one has NaN in that column; a column
 # that is NaN on every knot of a layer is absent from that layer's
 # fields, which is how a rectangular table carries a field that some
 # layers do not have.
+#
+# `sample_deck` turns any model into a deck. It samples the columns you
+# ask for on each layer, putting knots at the layer's ends, at every
+# breakpoint of its fields, and in between no further apart than a
+# two-hundredth of the outer radius, about 32 km for the Earth. A
+# velocity that a layer does not hold is computed from its density and
+# moduli. The header gets the model's name and the names of its layers
+# and interfaces, which `write_deck` puts on the naming lines.
+#
+# The model written here is PREM without attenuation and without its
+# ocean, with a viscosity of 10^22 Pa s below the 670 km discontinuity
+# and 10^21 Pa s above it, up to the top of the low-velocity zone. The
+# lid, the crust and the inner core stay elastic.
 
 # %%
-elastic = prem.elastic().truncated(6368e3, name="surface")   # no Q, no ocean
-viscosity = {"lower_mantle": 1e22, "upper_lower_mantle": 1e22,
-             "lowermost_mantle": 1e22, "inner_core": 1e21}
-radii, columns = [], {name: [] for name in GIA.columns}
-for layer in elastic.layers:
-    lo, hi = layer.interval
-    r = np.linspace(lo, hi, 8)
-    radii.append(r)
-    for name in GIA.columns:
-        if name == "viscosity":
-            eta = np.nan if elastic.is_fluid(layer.index) else viscosity.get(layer.name,
-                                                                            1e21)
-            columns[name].append(np.full(r.size, eta))
-        else:
-            columns[name].append(layer[name](r))
-gia_deck = Deck(np.concatenate(radii),
-                {n: np.concatenate(v) for n, v in columns.items()},
-                header={"title": "PREM, elastic, with a Maxwell viscosity"})
+viscosity = {"lowermost_mantle": 1e22, "lower_mantle": 1e22, "upper_lower_mantle": 1e22,
+             "transition_zone_lower": 1e21, "transition_zone_middle": 1e21,
+             "transition_zone_upper": 1e21, "low_velocity_zone": 1e21}
+viscous = prem.elastic().truncated(6368e3, name="surface")   # no Q, no ocean
+for name, eta in viscosity.items():
+    layer = viscous.layer(name)
+    viscous = viscous.with_field(name, "viscosity",
+                                 constant_field(layer.interval, eta, name="viscosity"))
+maxwell_deck = sample_deck(viscous, MAXWELL.columns)
 workdir = Path(tempfile.mkdtemp(prefix="planetmodel_"))
-path = write_deck(workdir / "prem_gia.deck", gia_deck, GIA)
-print(path.name, "written;", gia_deck)
-print("\n".join(path.read_text().splitlines()[:4]))
-
+path = write_deck(workdir / "prem_maxwell.deck", maxwell_deck, MAXWELL)
+print(path.name, "written;", maxwell_deck)
+print("\n".join(line[:96] for line in path.read_text().splitlines()[:5]))
 
 # %% [markdown]
-# The model type for that format is a short class. Its constructor
-# reads the deck, interpolates the layers, keeps the knots and the
-# header as the `Tabulated` mixin expects, and passes the geometry and
-# the layers to `Model`. The layer names are taken from the model the
-# deck was written from, since this format's header does not record
-# them. The elastic, gravity and viscoelastic mixins are the same as
-# before. A layer with a viscosity is a Maxwell body in shear, so
-# `frozen` gives the model with complex moduli at a chosen period. The
-# shear modulus of the lower mantle is its elastic value at ten years,
-# and has relaxed most of the way to zero at a hundred thousand years,
-# well past the Maxwell time of about two thousand years.
+# `MaxwellDeckModel` is the model type of that format. It reads the
+# deck, names the layers and interfaces from the naming lines, and joins
+# each layer's knots by a cubic spline, except the viscosity's, which
+# are joined by straight lines: a viscosity can change by orders of
+# magnitude across a layer, and a cubic through such values overshoots,
+# even below zero. The elastic, gravity and viscoelastic mixins are the
+# same as `PREM`'s, and `frozen` gives the model with complex moduli at
+# a chosen period. The shear modulus of the lower mantle keeps its
+# elastic value at ten years, and has relaxed most of the way to zero at
+# a hundred thousand years, well past the Maxwell time of about two
+# thousand years.
 
 # %%
-class GIAModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
-    """PREM's elastic part with a Maxwell viscosity on the solid layers."""
-
-    def __init__(self, source, *, kind="cubic"):
-        d = read_deck(source, GIA)
-        skeleton, layers = deck_layers(d, kind=kind)
-        names = [lay.name for lay in elastic.layers]          # the same layering
-        self.knots, self.header = deck_knots(d), d.header
-        super().__init__(Geometry(skeleton, layer_names=names), layers)
-
-
-gia = GIAModel(path)
-print(gia, "|", gia.header["title"])
+maxwell = MaxwellDeckModel(path)
+print(maxwell)
 print("viscoelastic layers:",
-      [lay.name for lay in gia.layers if gia.is_viscoelastic(lay.index)])
-print("the outer core holds no viscosity:", "viscosity" not in gia.layer("outer_core"))
+      [lay.name for lay in maxwell.layers if maxwell.is_viscoelastic(lay.index)])
+print("the outer core holds no viscosity:",
+      "viscosity" not in maxwell.layer("outer_core"))
 year = 3.15576e7
 x = 4500e3
 print(f"elastic L at {x / 1e3:.0f} km: "
-      f"{gia.layer('lower_mantle')['L'](x) / 1e9:.2f} GPa")
+      f"{maxwell.layer('lower_mantle')['L'](x) / 1e9:.2f} GPa")
 for period in (10.0, 1e3, 1e5):
-    at_period = gia.frozen(2 * np.pi / (period * year))
+    at_period = maxwell.frozen(2 * np.pi / (period * year))
     L = at_period.layer("lower_mantle")["L"](x) / 1e9
     print(f"L at {period:8.0f} years: {L.real:+8.2f} {L.imag:+8.2f}i GPa   "
           f"({type(at_period).__name__})")
-testing.check_model(gia)
-print("check_model passes; the deck it now is:",
-      gia.to_deck(columns=["rho", "viscosity"]))
+testing.check_model(maxwell)
+print("check_model passes")
+
+# %% [markdown]
+# ## A format of your own
+#
+# A format of your own is a `DeckFormat` given its column names and the
+# number of header lines. Without functions to read and write the
+# header, the header lines are kept as they are. The model type for it
+# is a short class: its constructor reads the deck, interpolates the
+# layers, keeps the deck with `keep_deck`, a method of the `Tabulated`
+# mixin, and passes the geometry and the layers to `Model`. Because the
+# deck is kept, `to_deck` gives the model back as a deck on the same
+# knots.
+#
+# Here the format holds the density and the isotropic velocities under
+# one title line, and the deck is PREM's isotropic average sampled on
+# six evenly spaced knots per layer.
+
+# %%
+SIMPLE = DeckFormat(("rho", "vp", "vs"), name="simple", header_lines=1)
+
+
+class SimpleDeckModel(Elastic, SelfGravitating, Tabulated, Model):
+    """An isotropic model from a deck of density and two velocities."""
+
+    def __init__(self, source):
+        d = read_deck(source, SIMPLE)
+        skeleton, layers = deck_layers(d)
+        self.keep_deck(d)
+        super().__init__(Geometry(skeleton), layers, name=d.header["lines"][0])
+
+
+iso = prem.isotropic()
+sampled = sample_deck(iso, SIMPLE.columns,
+                      knots=[np.linspace(*layer.interval, 6) for layer in iso.layers])
+simple = Deck(sampled.radius, sampled.columns, header={"lines": ("PREM, isotropic",)})
+own = SimpleDeckModel(write_deck(workdir / "prem_simple.deck", simple, SIMPLE))
+print(own)
+print(f"mass: {own.mass():.6e}, PREM {prem.mass():.6e}")
+print("its deck again:", own.to_deck())
 
 # %% [markdown]
 # ## A picture
@@ -213,9 +241,9 @@ left.set_xlabel("rho (g/cm^3)"); left.set_ylabel("r (km)"); left.legend()
 left.set_title("the deck's knots and its spline")
 radial_profile(middle, model, "L", scale=1e-3, value_scale=1e-9, lw=1.2)
 middle.set_xlabel("L (GPa)"); middle.set_title("a modulus, product of splines")
-radial_profile(right, gia, "viscosity", scale=1e-3, lw=1.2)
+radial_profile(right, maxwell, "viscosity", scale=1e-3, lw=1.2)
 right.set_xscale("log"); right.set_xlabel("viscosity (Pa s)")
-right.set_title("the custom column, absent in the fluid")
+right.set_title("a Maxwell deck's viscosity, absent where elastic")
 fig.tight_layout()
 out = FIGURES / "tutorial_11_models_from_decks.png"
 fig.savefig(out, dpi=120)

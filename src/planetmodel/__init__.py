@@ -17,7 +17,7 @@ Modules reached by name, one level down:
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   behaviours   the free functions as methods: `layer_method` and the mixins
-  catalogue    PREM, LayeredIsotropicElastic and MineosModel, model types
+  catalogue    PREM, LayeredIsotropicElastic, MineosModel and MaxwellDeckModel
   deck         tabulated models: decks, their formats, fields by interpolation
   sampling     a model on a radial mesh times an angular grid
   lateral      values between the nodes of an angular grid: the lateral rules
@@ -47,10 +47,10 @@ from .behaviours import (
     with_moduli,
     with_velocities,
 )
-from .catalogue import PREM, LayeredIsotropicElastic, MineosModel
+from .catalogue import PREM, LayeredIsotropicElastic, MaxwellDeckModel, MineosModel
 from .character import DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character, Symmetry
 from .deck import (
-    GIA,
+    MAXWELL,
     MINEOS,
     ND,
     TVEL,
@@ -59,6 +59,7 @@ from .deck import (
     Tabulated,
     deck_layers,
     read_deck,
+    sample_deck,
     write_deck,
 )
 from .displacement import (
@@ -129,7 +130,7 @@ from .units import EARTH_MEAN_DENSITY, G_SI, Dimensions, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec
 from . import testing  # noqa: F401
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 __all__ = [
     "Skeleton",
@@ -217,14 +218,16 @@ __all__ = [
     "PREM",
     "LayeredIsotropicElastic",
     "MineosModel",
+    "MaxwellDeckModel",
     "Deck",
     "DeckFormat",
     "MINEOS",
-    "GIA",
+    "MAXWELL",
     "ND",
     "TVEL",
     "read_deck",
     "write_deck",
+    "sample_deck",
     "deck_layers",
     "Tabulated",
     "flattening",

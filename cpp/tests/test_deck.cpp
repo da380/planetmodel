@@ -1,13 +1,17 @@
-// Decks: the shipped mineos decks, a GIA deck and one of short layers read
-// as the Python reads them, each kind of interpolant the Python's, and a
-// malformed deck refused by name.
+// Decks: the shipped mineos decks, a Maxwell deck, TauP's two tables and
+// one of short layers read as the Python reads them, each kind of interpolant the Python's, a
+// malformed deck refused by name; and every fixture written back, and a
+// Maxwell deck built here, left for the Python to read.
 #include "planetmodel/deck.hpp"
 
 #include <gtest/gtest.h>
 
 #include <charconv>
 #include <cmath>
+#include <format>
 #include <fstream>
+#include <limits>
+#include <optional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -34,19 +38,32 @@ std::string Unhex(const std::string& hex) {
   return out;
 }
 
+/// What names a deck's layers: no header, a mineos or Maxwell header, or
+/// a TauP table's labels.
+enum class Named { None, Mineos, Maxwell, Nd };
+
 /// The deck against the Python's expectations: the layering, the header
 /// and its names, and every kind's values and derivatives.
-void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, bool mineos) {
+void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, Named named) {
   auto in = std::ifstream(expect);
   auto values = 0;
   auto functions = std::map<std::string, planetmodel::DeckFunctions>{};
   for (const auto* kind : {"cubic", "natural", "linear"}) {
     functions.emplace(kind, planetmodel::DeckLayers(deck, kind));
   }
+  if (named == Named::Maxwell) {
+    functions.emplace("maxwell",
+                      planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS));
+  }
+  const auto mineos = named == Named::Mineos;
   const auto header = mineos ? std::optional{planetmodel::ReadMineosHeader(deck.Header(),
                                                                            deck.Source())}
                              : std::nullopt;
-  const auto names = mineos ? std::optional{planetmodel::MineosNames(deck)} : std::nullopt;
+  const auto names = mineos                       ? std::optional{planetmodel::MineosNames(deck)}
+                     : named == Named::Maxwell ? std::optional{planetmodel::MaxwellNames(deck)}
+                     : named == Named::Nd      ? std::optional{planetmodel::NdNames(deck)}
+                                               : std::nullopt;
+  auto label = std::size_t{0};
   for (auto line = std::string{}; std::getline(in, line);) {
     auto words = std::istringstream{line};
     auto key = std::string{};
@@ -76,6 +93,14 @@ void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, bo
                                                        {"noc", header->noc}};
         EXPECT_EQ(counts.at(field), std::stoi(value)) << field;
       }
+    } else if (key == "label") {
+      auto r = std::string{};
+      auto text = std::string{};
+      words >> r >> text;
+      ASSERT_LT(label, deck.Labels().size());
+      EXPECT_EQ(deck.Labels()[label].first, ToDouble(r));
+      EXPECT_EQ(deck.Labels()[label].second, text);
+      ++label;
     } else if (key == "extras2") {
       auto want = std::vector<std::string>{};
       for (auto w = std::string{}; words >> w;) want.push_back(w);
@@ -124,25 +149,198 @@ TEST(Deck, ReadsTheShippedMineosDecksAsThePythonDoes) {
     PLANETMODEL_FIXTURE(path, std::string{"deck_"} + label + ".txt");
     const auto deck = planetmodel::ReadDeck(path, planetmodel::MINEOS());
     ExpectAsThePython(deck, path.parent_path() / (std::string{"deck_"} + label + ".expect"),
-                      true);
+                      Named::Mineos);
   }
 }
 
-TEST(Deck, ReadsAGiaDeckWithAViscosityAbsentFromTheCore) {
-  PLANETMODEL_FIXTURE(path, "deck_gia.txt");
-  const auto deck = planetmodel::ReadDeck(path, planetmodel::GIA());
-  ExpectAsThePython(deck, path.parent_path() / "deck_gia.expect", false);
-  const auto layers = planetmodel::DeckLayers(deck);
+TEST(Deck, ReadsAMaxwellDeckWithItsNamesAndAViscosityAbsentFromTheCore) {
+  PLANETMODEL_FIXTURE(path, "deck_maxwell.txt");
+  const auto deck = planetmodel::ReadDeck(path, planetmodel::MAXWELL());
+  ExpectAsThePython(deck, path.parent_path() / "deck_maxwell.expect", Named::Maxwell);
+  const auto layers = planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS);
   EXPECT_FALSE(layers.layers[0].contains("viscosity"));
   EXPECT_TRUE(layers.layers[2].contains("viscosity"));
-  EXPECT_EQ(deck.Names(), planetmodel::GIA_COLUMNS);
+  EXPECT_EQ(deck.Names(), planetmodel::MAXWELL_COLUMNS);
+  EXPECT_EQ(deck.Header().size(), 4u);
+  const auto names = planetmodel::MaxwellNames(deck);
+  EXPECT_EQ(names.layers.at(2), "lowermost_mantle");
+  EXPECT_FALSE(names.layers.at(3).has_value());
+  EXPECT_EQ(names.interfaces.back(), "surface");
+}
+
+TEST(Deck, ReadsTauPTablesAsThePythonDoes) {
+  for (const auto& [label, format] :
+       std::vector<std::pair<std::string, planetmodel::DeckFormat>>{
+           {"nd", planetmodel::ND()}, {"tvel", planetmodel::TVEL()}}) {
+    SCOPED_TRACE(label);
+    PLANETMODEL_FIXTURE(path, "deck_" + label + ".txt");
+    const auto deck = planetmodel::ReadDeck(path, format);
+    ExpectAsThePython(deck, path.parent_path() / ("deck_" + label + ".expect"), Named::Nd);
+  }
+  PLANETMODEL_FIXTURE(path, "deck_nd.txt");
+  const auto deck = planetmodel::ReadDeck(path, planetmodel::ND());
+  EXPECT_EQ(deck.Names(), (std::vector<std::string>{"vp", "vs", "rho", "qp", "qmu"}));
+  EXPECT_EQ(deck.Radius().front(), 0.0);
+  EXPECT_EQ(deck.Radius().back(), 100e3);
+  EXPECT_EQ(deck.Column("vp").back(), 5.8e3);
+  const auto names = planetmodel::NdNames(deck);
+  EXPECT_EQ(names.layers.front(), "inner_core");
+  EXPECT_EQ(names.interfaces,
+            (std::vector<std::optional<std::string>>{"icb", "cmb", std::nullopt, std::nullopt,
+                                                     "moho", "surface"}));
+  const auto tvel = planetmodel::ReadDeck(path.parent_path() / "deck_tvel.txt",
+                                          planetmodel::TVEL());
+  EXPECT_EQ(tvel.Header(), (std::vector<std::string>{"a P model", "an S model"}));
+}
+
+TEST(Deck, RefusesAMalformedTauPTableByName) {
+  auto refusal = [](std::string_view text) {
+    try {
+      static_cast<void>(planetmodel::ReadDeckText(text, planetmodel::ND(), "t.nd"));
+    } catch (const Error& e) {
+      return std::string{e.what()};
+    }
+    return std::string{"accepted"};
+  };
+  const auto has = [](const std::string& got, std::string_view want) {
+    return got.find(want) != std::string::npos;
+  };
+  EXPECT_PRED2(has, refusal("0 5.8 3.4\n10 5.8\n"), "the same on every row");
+  EXPECT_PRED2(has, refusal("0 1 2 3 4 5 6\n10 1 2 3 4 5 6\n"), "three to six numbers");
+  EXPECT_PRED2(has, refusal("0 5.8 3.4\nlabel\n10 5.8 3.4\n"), "sits at no boundary");
+  EXPECT_PRED2(has, refusal("10 5.8 3.4\n0 5.8 3.4\n"), "must not decrease");
+  EXPECT_PRED2(has, refusal("0 5.8 x\n10 5.8 3.4\n"), "a row is numbers");
+  EXPECT_PRED2(has, refusal(""), "got widths none");
+  const auto absent = Deck({0.0, 1.0}, {{"vp", {1.0, std::nan("")}}, {"vs", {1.0, 1.0}}});
+  EXPECT_THROW(static_cast<void>(planetmodel::WriteDeckText(absent, planetmodel::ND())),
+               Error);
+}
+
+TEST(Deck, NamesAMaxwellDeckFromItsHeaderOrNotAtAll) {
+  const auto rows = std::string{
+      "0 10 9 0 9 0 1 nan\n1 10 9 0 9 0 1 nan\n1 4 8 4 8 4 1 1e21\n2 3 7 3 7 3 1 1e22\n"};
+  const auto read = [&](std::string_view naming) {
+    return planetmodel::ReadDeckText(
+        std::format("a body\nr rho vpv vsv vph vsh eta viscosity # (SI)\n{}{}", naming, rows),
+        planetmodel::MAXWELL(), "m.txt");
+  };
+  const auto named = planetmodel::MaxwellNames(read("# layers core -\n# interfaces cmb top\n"));
+  EXPECT_EQ(named.layers, (std::vector<std::optional<std::string>>{"core", std::nullopt}));
+  EXPECT_EQ(named.interfaces, (std::vector<std::optional<std::string>>{"cmb", "top"}));
+  const auto plain = planetmodel::MaxwellNames(read(""));
+  EXPECT_EQ(plain.layers, (std::vector<std::optional<std::string>>(2)));
+  EXPECT_EQ(plain.interfaces,
+            (std::vector<std::optional<std::string>>{std::nullopt, "surface"}));
+  // a comment of no keyword ends the header, and the naming line after it
+  // is a comment like any other
+  const auto noted = read("# a note\n# layers core mantle\n");
+  EXPECT_EQ(noted.Header().size(), 2u);
+  EXPECT_EQ(noted.NKnots(), 4u);
+  EXPECT_THROW(static_cast<void>(planetmodel::MaxwellNames(read("# layers a b c\n"))), Error);
+  EXPECT_THROW(static_cast<void>(planetmodel::MaxwellNames(read("# interfaces top\n"))),
+               Error);
+  EXPECT_THROW(static_cast<void>(read("# layers a b\n# layers c d\n")), Error);
+}
+
+TEST(Deck, JoinsAColumnByAKindOfItsOwn) {
+  const auto deck = Deck({0.0, 0.3, 0.5, 1.0}, {{"rho", {5.0, 4.0, 4.5, 3.0}},
+                                                {"viscosity", {1e20, 1e23, 1e21, 1e22}}});
+  const auto cubic = planetmodel::DeckLayers(deck);
+  const auto mixed = planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS);
+  auto lowest_cubic = 1e30;
+  auto lowest_mixed = 1e30;
+  for (auto i = 0; i <= 40; ++i) {
+    const auto r = i / 40.0;
+    EXPECT_EQ(mixed.layers[0].at("rho").Value(r), cubic.layers[0].at("rho").Value(r));
+    lowest_cubic = std::min(lowest_cubic, cubic.layers[0].at("viscosity").Value(r));
+    lowest_mixed = std::min(lowest_mixed, mixed.layers[0].at("viscosity").Value(r));
+  }
+  EXPECT_LT(lowest_cubic, 0.0);  // a cubic overshoots
+  EXPECT_GE(lowest_mixed, 1e20);
+  EXPECT_THROW(static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"qmu", "linear"}})),
+               Error);
+  EXPECT_THROW(
+      static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "pchip"}})),
+      Error);
+}
+
+TEST(Deck, WritesEveryFixtureBackForThePython) {
+  // tests/test_cpp_written_decks.py holds each to the Python's own writing
+  const auto cases = std::vector<std::pair<std::string, planetmodel::DeckFormat>>{
+      {"prem200", planetmodel::MINEOS()},
+      {"nocrust", planetmodel::MINEOS()},
+      {"maxwell", planetmodel::MAXWELL()},
+      {"nd", planetmodel::ND()},
+      {"tvel", planetmodel::TVEL()},
+      {"knots", planetmodel::ColumnsFormat({"rho", "vp"}, 1)}};
+  for (const auto& [label, format] : cases) {
+    SCOPED_TRACE(label);
+    PLANETMODEL_FIXTURE(path, "deck_" + label + ".txt");
+    const auto deck = planetmodel::ReadDeck(path, format);
+    const auto out = planetmodel::testing::WrittenDir() / ("deck_" + label + ".txt");
+    planetmodel::WriteDeck(out, deck, format);
+    const auto back = planetmodel::ReadDeck(out, format);
+    EXPECT_EQ(back.Radius(), deck.Radius());
+    EXPECT_EQ(back.Names(), deck.Names());
+    EXPECT_EQ(back.Labels(), deck.Labels());
+  }
+}
+
+TEST(Deck, WritesAMaxwellDeckBuiltHereForThePython) {
+  // two layers, a fluid core under a viscous mantle, as the Python's test
+  // rebuilds it
+  const auto nan = std::nan("");
+  const auto deck = Deck(
+      {0.0, 0.5e6, 1.0e6, 1.0e6, 1.5e6, 2.0e6},
+      {{"rho", {1.1e4, 1.05e4, 1.0e4, 4.5e3, 4.0e3, 3.5e3}},
+       {"vpv", {9e3, 8.9e3, 8.8e3, 8e3, 7.5e3, 7e3}},
+       {"vsv", {0.0, 0.0, 0.0, 4.5e3, 4.2e3, 4e3}},
+       {"vph", {9e3, 8.9e3, 8.8e3, 8.1e3, 7.6e3, 7.1e3}},
+       {"vsh", {0.0, 0.0, 0.0, 4.6e3, 4.3e3, 4.1e3}},
+       {"eta", {1.0, 1.0, 1.0, 0.95, 0.97, 1.0}},
+       {"viscosity", {nan, nan, nan, 1e23, 1e22, 1e21}}},
+      planetmodel::MaxwellHeader("a body built in C++", {"core", std::nullopt},
+                                 {"cmb", "surface"}));
+  const auto out = planetmodel::testing::WrittenDir() / "deck_maxwell_built.txt";
+  planetmodel::WriteDeck(out, deck, planetmodel::MAXWELL());
+  const auto names = planetmodel::MaxwellNames(planetmodel::ReadDeck(out, planetmodel::MAXWELL()));
+  EXPECT_EQ(names.layers.at(0), "core");
+  EXPECT_EQ(names.interfaces.at(0), "cmb");
+}
+
+TEST(Deck, WritesAsThePythonDoes) {
+  const auto nan = std::nan("");
+  const auto deck = Deck({0.0, 1.0, 1.0, 2.5},
+                         {{"rho", {13088.5, 12000.25, 4000.0, -0.0}},
+                          {"vpv", {1e21, 1.5e-5, 0.0001, std::numeric_limits<double>::infinity()}},
+                          {"vsv", {nan, -nan, 3.0, 2.0}},
+                          {"qkappa", {nan, nan, 1.0, 1.0}},
+                          {"qmu", {nan, nan, 100.0, 100.0}},
+                          {"vph", {1.0, 1.0, 1.0, 1.0}},
+                          {"vsh", {1.0, 1.0, 1.0, 1.0}},
+                          {"eta", {1.0, 1.0, 1.0, 1.0}},
+                          {"vp", {1.0, 1.0, 1.0, 1.0}},
+                          {"vs", {1.0, 1.0, 1.0, 1.0}}},
+                         {"a title"});
+  // the widest set of columns, the counts from the table, no loss as zero
+  const auto text = planetmodel::WriteDeckText(deck, planetmodel::MINEOS());
+  EXPECT_EQ(text,
+            "a title\n1 1 1\n4 2 2\n"
+            "         0.000         13088.5           1e+21             nan               0"
+            "               0               1               1               1\n"
+            "         1.000        12000.25         1.5e-05             nan               0"
+            "               0               1               1               1\n"
+            "         1.000            4000          0.0001               3               1"
+            "             100               1               1               1\n"
+            "         2.500              -0             inf               2               1"
+            "             100               1               1               1\n");
 }
 
 TEST(Deck, JoinsShortLayersAsThePythonDoes) {
   PLANETMODEL_FIXTURE(path, "deck_knots.txt");
   const auto deck = planetmodel::ReadDeck(path, planetmodel::ColumnsFormat({"rho", "vp"}, 1));
   EXPECT_EQ(deck.NLayers(), 4u);
-  ExpectAsThePython(deck, path.parent_path() / "deck_knots.expect", false);
+  ExpectAsThePython(deck, path.parent_path() / "deck_knots.expect", Named::None);
 }
 
 TEST(Deck, ReadsNumbersAsPythonDoesAndSkipsComments) {
@@ -190,8 +388,22 @@ TEST(Deck, RefusesWhatIsNotADeckByName) {
                             planetmodel::MINEOS()),
                "ifanis tref ifdeck");
   EXPECT_PRED2(has, refusal("t\nr rho\n0 1 2 3 4 5 6 7\n1 1 2 3 4 5 6 7\n",
-                            planetmodel::GIA()),
+                            planetmodel::MAXWELL()),
                "names its columns");
+  const auto one = Deck({0.0, 1.0}, {{"a", {1.0, 2.0}}}, {"t", "# extra"});
+  EXPECT_THROW(static_cast<void>(planetmodel::WriteDeckText(one, planetmodel::ColumnsFormat(
+                                                                     {"a"}, 1))),
+               Error);
+  auto keyed = planetmodel::ColumnsFormat({"a"}, 1);
+  keyed.header_comments = {"extra"};
+  EXPECT_EQ(planetmodel::WriteDeckText(one, keyed),
+            "t\n# extra\n         0.000               1\n         1.000               2\n");
+  EXPECT_THROW(static_cast<void>(planetmodel::WriteDeckText(one, planetmodel::MINEOS())),
+               Error);
+  for (const auto* bad : {"two words", "-", "a#b", ""}) {
+    EXPECT_THROW(static_cast<void>(planetmodel::MaxwellHeader("t", {"core", bad})), Error)
+        << bad;
+  }
   const auto partial = Deck({0.0, 0.5, 1.0}, {{"a", {1.0, std::nan(""), 2.0}}});
   EXPECT_THROW(static_cast<void>(planetmodel::DeckLayers(partial)), Error);
   const auto fine = Deck({0.0, 0.5, 1.0}, {{"a", {1.0, 1.5, 2.0}}});

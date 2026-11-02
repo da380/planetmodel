@@ -2,7 +2,7 @@
 
 The C++ side of [planetmodel](https://planetmodel.readthedocs.io): a
 header-only C++23 library that reads what the Python library writes, and
-writes model files that the Python reads. It reads and writes:
+writes files that the Python reads. It reads and writes:
 
 - **model files**, a model in one netCDF-4 file (`modelfile.hpp`):
   - reading gives the numbers as stored, each variable on each layer as
@@ -18,8 +18,10 @@ writes model files that the Python reads. It reads and writes:
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
   (`json.hpp`);
-- **decks**, mineos and GIA tables of knots (`deck.hpp`), each layer's
-  columns joined into functions of the radius;
+- **decks**, mineos and Maxwell tables of knots and TauP's `.nd` and
+  `.tvel` tables (`deck.hpp`), read and written as the Python does, with
+  the names their headers or labels give, each layer's columns joined
+  into functions of the radius;
 - the units, scales and vocabulary of the Python (`units.hpp`,
   `vocabulary.hpp`).
 

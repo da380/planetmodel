@@ -213,7 +213,9 @@ def test_to_deck_and_write_deck_round_trip(mineos, deck, tmp_path):
     back = mineos.to_deck()
     for name in deck.names:
         assert np.allclose(back[name], deck[name], rtol=1e-12, atol=1e-9)
-    assert "A" in back and np.isnan(back["A"]).sum() == 0
+    assert back.names == deck.names                 # the columns it was read with
+    full = mineos.to_deck(columns=[*deck.names, "A"])
+    assert np.isnan(full["A"]).sum() == 0
     assert back.header["name"] == "prem.200"
     path = write_deck(tmp_path / "prem.out", back, MINEOS)
     text = path.read_text().splitlines()
@@ -236,7 +238,7 @@ def test_to_deck_and_write_deck_round_trip(mineos, deck, tmp_path):
 
 def test_a_custom_format_and_a_model_type_of_ones_own(tmp_path):
     """PREM's elastic part with a viscosity in the solid regions, written
-    in a format of its own and read back as a GIA-style model type."""
+    in a format of its own and read back as a model type of its own."""
     prem = PREM(ocean=False)
     radii, cols = [], {n: [] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta",
                                        "viscosity")}
@@ -256,23 +258,23 @@ def test_a_custom_format_and_a_model_type_of_ones_own(tmp_path):
                 header={"title": "PREM with a Maxwell mantle"})
     assert np.isnan(deck["viscosity"]).sum() == 8
 
-    GIA = DeckFormat(("rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity"),
-                     name="gia", header_lines=2,
+    own = DeckFormat(("rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity"),
+                     name="own", header_lines=2,
                      parse_header=lambda lines: {"title": lines[0].strip(),
                                                  "columns": tuple(lines[1].split())},
                      write_header=lambda d: [d.header["title"],
                                              "r rho vpv vsv vph vsh eta viscosity"])
-    path = write_deck(tmp_path / "gia.deck", deck, GIA)
+    path = write_deck(tmp_path / "own.deck", deck, own)
     assert path.read_text().splitlines()[1].startswith("r rho")
 
-    class GIAModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
+    class OwnModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
         def __init__(self, source, *, kind="cubic"):
-            d = read_deck(source, GIA)
+            d = read_deck(source, own)
             sk, layers = deck_layers(d, kind=kind)
             self.knots, self.header = deck_knots(d), d.header
             super().__init__(Geometry(sk), layers)
 
-    m = GIAModel(path)
+    m = OwnModel(path)
     assert m.nlayers == prem.nlayers
     assert m.header["title"] == "PREM with a Maxwell mantle"
     assert "viscosity" not in m.layer(1) and m.layer(3)["viscosity"](5000e3) == 1e22
@@ -280,7 +282,7 @@ def test_a_custom_format_and_a_model_type_of_ones_own(tmp_path):
     assert np.isclose(m.mass(), prem.mass(), rtol=1e-4)
     omega = 2 * np.pi / (1000 * 3.15576e7)
     fz = m.frozen(omega)
-    assert type(fz) is GIAModel and fz.layer(3)["L"].dtype == np.complex128
+    assert type(fz) is OwnModel and fz.layer(3)["L"].dtype == np.complex128
     L = fz.layer(3)["L"](5000e3)
     assert abs(L) < m.layer(3)["L"](5000e3)        # relaxed at a thousand years
     testing.check_model(m)
@@ -289,16 +291,16 @@ def test_a_custom_format_and_a_model_type_of_ones_own(tmp_path):
     assert np.allclose(back["rho"], deck["rho"])
 
 
-def test_the_gia_format_round_trips(tmp_path):
-    from planetmodel import GIA, PREM
-    from planetmodel.deck import GIA_COLUMNS
+def test_the_maxwell_format_round_trips(tmp_path):
+    from planetmodel import MAXWELL, PREM
+    from planetmodel.deck import MAXWELL_COLUMNS
     elastic = PREM().elastic().truncated(6368e3, name="surface")
-    radii, columns = [], {name: [] for name in GIA_COLUMNS}
+    radii, columns = [], {name: [] for name in MAXWELL_COLUMNS}
     for layer in elastic.layers:
         lo, hi = layer.interval
         r = np.linspace(lo, hi, 5)
         radii.append(r)
-        for name in GIA_COLUMNS:
+        for name in MAXWELL_COLUMNS:
             if name == "viscosity":
                 eta = np.nan if elastic.is_fluid(layer.index) else 1e21
                 columns[name].append(np.full(r.size, eta))
@@ -306,22 +308,22 @@ def test_the_gia_format_round_trips(tmp_path):
                 columns[name].append(layer[name](r))
     deck = Deck(np.concatenate(radii),
                 {n: np.concatenate(v) for n, v in columns.items()},
-                header={"title": "PREM with a viscosity"})
-    path = write_deck(tmp_path / "gia.deck", deck, GIA)
+                header={"name": "PREM with a viscosity"})
+    path = write_deck(tmp_path / "maxwell.deck", deck, MAXWELL)
     lines = path.read_text().splitlines()
     assert lines[0] == "PREM with a viscosity"
-    assert lines[1].split() == ["r", *GIA_COLUMNS]
-    back = read_deck(path, GIA)
-    assert back.header["title"] == "PREM with a viscosity"
+    assert lines[1].split() == ["r", *MAXWELL_COLUMNS]
+    back = read_deck(path, MAXWELL)
+    assert back.header["name"] == "PREM with a viscosity"
     assert np.allclose(back.radius, deck.radius)
-    for name in GIA_COLUMNS:
+    for name in MAXWELL_COLUMNS:
         assert np.allclose(back.columns[name], deck.columns[name], equal_nan=True)
     _, layers = deck_layers(back)
     assert "viscosity" not in layers[1] and "viscosity" in layers[2]
     bad = tmp_path / "bad.deck"
     bad.write_text("title\nr rho vp vs\n" + "\n".join(lines[2:]) + "\n")
     with pytest.raises(ValueError, match="names its columns"):
-        read_deck(bad, GIA)
+        read_deck(bad, MAXWELL)
 
 
 def test_a_converted_deck_model_writes_its_deck_in_si(mineos, deck):
@@ -460,3 +462,264 @@ def test_a_tvel_table_keeps_its_two_header_lines(tmp_path):
     back = read_deck(write_deck(tmp_path / "body.tvel", d, TVEL), TVEL)
     assert np.array_equal(back.radius, d.radius)
     assert back.header["lines"] == d.header["lines"]
+
+
+# -- the Maxwell format: names in the header -------------------------------------
+
+def _maxwell_lines(*names: str,
+                   column_line: str = "r rho vpv vsv vph vsh eta viscosity"):
+    """A two-layer Maxwell deck, a fluid core under a viscous mantle, with
+    the given naming lines after the column line."""
+    rows = ["0 10 9 0 9 0 1 nan", "1 10 9 0 9 0 1 nan",
+            "1 4 8 4 8 4 1 1e21", "2 3 7 3 7 3 1 1e22"]
+    return ["a Maxwell body", column_line, *names, *rows]
+
+
+def test_the_naming_lines_name_the_layers_and_interfaces():
+    from planetmodel import MAXWELL
+    from planetmodel.deck import maxwell_names
+    d = read_deck(_maxwell_lines("# layers core -", "# interfaces cmb top"), MAXWELL)
+    assert d.header["name"] == "a Maxwell body"
+    assert d.header["layers"] == ("core", None)
+    assert maxwell_names(d) == (["core", None], ["cmb", "top"])
+    plain = read_deck(_maxwell_lines(), MAXWELL)
+    assert maxwell_names(plain) == ([None, None], [None, "surface"])
+    only = read_deck(_maxwell_lines("# layers core mantle"), MAXWELL)
+    assert maxwell_names(only) == (["core", "mantle"], [None, "surface"])
+    # a comment after the header's lines is a comment, wherever it sits
+    commented = read_deck(_maxwell_lines("# a note", "# layers core mantle"), MAXWELL)
+    assert "layers" not in commented.header and commented.nknots == 4
+
+
+def test_naming_lines_of_the_wrong_count_or_twice_are_refused():
+    from planetmodel import MAXWELL
+    from planetmodel.deck import maxwell_names
+    three = read_deck(_maxwell_lines("# layers a b c"), MAXWELL)
+    with pytest.raises(ValueError, match="names 3 layers; its table has 2"):
+        maxwell_names(three)
+    one = read_deck(_maxwell_lines("# interfaces top"), MAXWELL)
+    with pytest.raises(ValueError, match="names 1 interfaces; its table has 2"):
+        maxwell_names(one)
+    with pytest.raises(ValueError, match="one `# layers` line"):
+        read_deck(_maxwell_lines("# layers a b", "# layers c d"), MAXWELL)
+
+
+def test_the_column_line_may_end_in_a_comment():
+    from planetmodel import MAXWELL
+    d = read_deck(_maxwell_lines(
+        column_line="r rho vpv vsv vph vsh eta viscosity # (SI); an example"), MAXWELL)
+    assert d.names == MAXWELL.columns
+
+
+def test_names_are_written_where_the_header_has_any(tmp_path):
+    from planetmodel import MAXWELL
+    d = read_deck(_maxwell_lines("# layers core -", "# interfaces - surface"), MAXWELL)
+    lines = write_deck(tmp_path / "named.deck", d, MAXWELL).read_text().splitlines()
+    assert lines[2:4] == ["# layers core -", "# interfaces - surface"]
+    unnamed = Deck(d.radius, d.columns, header={"name": "x", "layers": (None, None)})
+    path = write_deck(tmp_path / "plain.deck", unnamed, MAXWELL)
+    lines = path.read_text().splitlines()
+    assert lines[1].startswith("r rho") and lines[2][0].isspace()
+    for bad in ("two words", "-", "a#b", ""):
+        named = Deck(d.radius, d.columns, header={"layers": ("core", bad)})
+        with pytest.raises(ValueError, match="one word"):
+            write_deck(tmp_path / "bad.deck", named, MAXWELL)
+    wrong = Deck(d.radius, d.columns, header={"layers": ("core",)})
+    with pytest.raises(ValueError, match="names 1 layers"):
+        write_deck(tmp_path / "bad.deck", wrong, MAXWELL)
+
+
+def test_a_header_writer_may_only_add_its_own_comment_lines(tmp_path):
+    d = Deck([0.0, 1.0], {"a": [1.0, 2.0]}, header={"lines": ("t", "# extra")})
+    with pytest.raises(ValueError, match="1 header lines; 2 were produced"):
+        write_deck(tmp_path / "x", d, DeckFormat(("a",), header_lines=1))
+    keyed = DeckFormat(("a",), header_lines=1, header_comments=("extra",))
+    path = write_deck(tmp_path / "y", d, keyed)
+    assert read_deck(path, keyed).header["lines"] == ("t", "# extra")
+    with pytest.raises(ValueError, match="up to 1 `#` lines"):
+        write_deck(tmp_path / "z", Deck([0.0, 1.0], {"a": [1.0, 2.0]},
+                                        header={"lines": ("t", "# other")}), keyed)
+
+
+# -- writing: the widest column set, and fill values -----------------------------
+
+def test_a_mineos_deck_is_written_with_its_widest_columns_and_no_loss_as_zero(tmp_path):
+    from planetmodel import MAXWELL
+    from planetmodel.deck import MINEOS_COLUMNS, MINEOS_ISOTROPIC_COLUMNS
+    names = set(MINEOS_COLUMNS) | set(MINEOS_ISOTROPIC_COLUMNS)
+    columns = {n: np.full(4, 2.0) for n in names}
+    columns["qmu"] = np.array([np.nan, np.nan, 100.0, 100.0])
+    d = Deck([0.0, 1.0, 1.0, 2.0], columns, header={"name": "both"})
+    back = read_deck(write_deck(tmp_path / "both.deck", d, MINEOS), MINEOS)
+    assert back.names == MINEOS_COLUMNS
+    assert list(back["qmu"]) == [0.0, 0.0, 100.0, 100.0]
+    viscous = Deck(d.radius, {n: d[n] for n in MAXWELL.columns if n in d}
+                   | {"viscosity": columns["qmu"]})
+    text = write_deck(tmp_path / "v.deck", viscous, MAXWELL).read_text()
+    assert "nan" in text                     # a Maxwell deck fills nothing
+
+
+# -- per-column kinds ---------------------------------------------------------------
+
+def test_a_column_may_be_joined_by_a_kind_of_its_own():
+    d = Deck([0.0, 0.3, 0.5, 1.0], {"rho": [5.0, 4.0, 4.5, 3.0],
+                                    "viscosity": [1e20, 1e23, 1e21, 1e22]})
+    _, cubic = deck_layers(d)
+    _, mixed = deck_layers(d, kinds={"viscosity": "linear"})
+    r = np.linspace(0.0, 1.0, 41)
+    assert np.array_equal(mixed[0]["rho"](r), cubic[0]["rho"](r))
+    assert np.min(cubic[0]["viscosity"](r)) < 0.0          # a cubic overshoots
+    assert np.min(mixed[0]["viscosity"](r)) >= 1e20
+    assert mixed[0]["viscosity"].function.degree == 1
+    with pytest.raises(ValueError, match="lacks"):
+        deck_layers(d, kinds={"qmu": "linear"})
+    with pytest.raises(ValueError, match="kind must be one of"):
+        deck_layers(d, kinds={"viscosity": "quintic"})
+
+
+# -- any model as a deck ------------------------------------------------------------
+
+def _maxwell_prem():
+    """PREM without its ocean, a viscosity on every mantle layer below the
+    low-velocity zone: 1e22 Pa s below 670 km, 1e21 above."""
+    from planetmodel.fields import constant_field
+    model = PREM(ocean=False)
+    for i, layer in enumerate(model.layers):
+        if 2 <= i <= 7:
+            eta = 1e22 if i <= 4 else 1e21
+            field = constant_field(layer.interval, eta, name="viscosity")
+            model = model.with_field(i, "viscosity", field)
+    return model
+
+
+def test_a_sampled_deck_holds_the_model_exactly_on_cubic_layers():
+    """PREM's layers are each one polynomial of degree three at most, so a
+    not-a-knot cubic through four or more knots a piece gives them back."""
+    from planetmodel import sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS, SAMPLE_SPACING
+    model = _maxwell_prem()
+    d = sample_deck(model, MAXWELL_COLUMNS)
+    assert d.nlayers == model.nlayers
+    assert np.allclose(d.boundaries, model.skeleton.boundaries, rtol=0, atol=0)
+    gaps = np.diff(d.radius)
+    assert np.max(gaps) <= SAMPLE_SPACING * 6368e3 * (1 + 1e-12)
+    assert min(s.stop - s.start for s in d.layers()) >= 4
+    assert d.header["layers"][0] == "inner_core"
+    assert d.header["interfaces"][-1] == "surface"
+    assert d.header["name"] == "PREM (no ocean)"
+    _, layers = deck_layers(d, kinds={"viscosity": "linear"})
+    for i, layer in enumerate(model.layers):
+        lo, hi = layer.interval
+        r = np.linspace(lo, hi, 29)
+        for name in ("rho", "vpv", "vsv", "vph", "vsh", "eta"):
+            assert np.allclose(layers[i][name](r), layer[name](r), rtol=1e-12,
+                               atol=1e-9), (i, name)
+        assert ("viscosity" in layers[i]) == ("viscosity" in layer)
+
+
+def test_a_velocity_a_layer_lacks_comes_from_its_moduli():
+    """pyslfp's Maxwell PREM is made isotropic first, so it holds vp and vs;
+    a Maxwell deck asks for the transversely isotropic five."""
+    from planetmodel import sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS
+    iso = _maxwell_prem().isotropic().without_field("qmu").without_field("qkappa")
+    assert "vpv" not in iso.layer("lid")
+    d = sample_deck(iso, MAXWELL_COLUMNS)
+    s = d.layers()[iso.layer("lid").index]
+    r = d.radius[s]
+    assert np.allclose(d["vpv"][s], iso.layer("lid")["vp"](r), rtol=1e-14)
+    assert np.allclose(d["vsh"][s], iso.layer("lid")["vs"](r), rtol=1e-14)
+    assert np.allclose(d["eta"][s], 1.0, rtol=1e-14)
+    with pytest.raises(ValueError, match="transversely isotropic"):
+        sample_deck(PREM(), ["rho", "vp"])          # PREM's lid is not isotropic
+    blank = sample_deck(iso, ["rho", "qmu"])
+    assert np.isnan(blank["qmu"]).all()
+
+
+def test_sampling_refuses_what_is_not_a_column_or_a_layering():
+    from planetmodel import sample_deck
+    prem = PREM()
+    with pytest.raises(ValueError, match="once"):
+        sample_deck(prem, ["rho", "rho"])
+    with pytest.raises(ValueError, match="positive"):
+        sample_deck(prem, ["rho"], spacing=0.0)
+    with pytest.raises(ValueError, match="no longer matches"):
+        sample_deck(prem, ["rho"], knots=[np.array([0.0, 1.0])])
+    frozen = prem.frozen(2 * np.pi / 100.0)
+    with pytest.raises(ValueError, match="not a real radial field"):
+        sample_deck(frozen, ["L"])
+    frozen_iso = prem.isotropic().frozen(2 * np.pi / 100.0)
+    with pytest.raises(ValueError, match="moduli of layer 0 are not real"):
+        sample_deck(frozen_iso, ["vpv"])
+
+
+def test_a_model_in_other_scales_is_sampled_in_si():
+    from planetmodel import sample_deck
+    model = _maxwell_prem()
+    nd = model.nondimensionalised()
+    d = sample_deck(nd, ["rho", "viscosity"])
+    si = sample_deck(model, ["rho", "viscosity"])
+    assert np.allclose(d.radius, si.radius, rtol=1e-13)
+    assert np.allclose(d["rho"], si["rho"], rtol=1e-12)
+    assert np.allclose(d["viscosity"], si["viscosity"], rtol=1e-12, equal_nan=True)
+    k = [np.linspace(*L.interval, 5) for L in nd.layers]
+    given = sample_deck(nd, ["rho"], knots=k)
+    assert np.isclose(given.radius[-1], 6368e3, rtol=1e-13)
+
+
+def test_prem_writes_as_a_mineos_deck(tmp_path):
+    from planetmodel import sample_deck
+    prem = PREM()
+    path = write_deck(tmp_path / "prem.deck", sample_deck(prem, MINEOS.columns[8]),
+                      MINEOS)
+    m = MineosModel(path)
+    assert m.nlayers == prem.nlayers and m.name == "PREM"
+    assert m.layer(0).name == "inner_core" and m.layer(1).name == "outer_core"
+    assert m.layer("outer_core")["qmu"](2000e3) == 0.0          # no loss, as zero
+    assert np.isclose(m.reference_omega(), 2 * np.pi)
+    assert np.isclose(m.mass(), prem.mass(), rtol=1e-7)
+    # a model's declared reference period is written as the mineos tref
+    assert np.isclose(sample_deck(m, ["rho"]).header["tref"], 1.0)
+
+
+# -- the Maxwell deck model ---------------------------------------------------------
+
+def test_a_maxwell_deck_model_reads_back_what_was_written(tmp_path):
+    from planetmodel import MAXWELL, MaxwellDeckModel, sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS
+    model = _maxwell_prem()
+    path = write_deck(tmp_path / "maxwell.deck", sample_deck(model, MAXWELL_COLUMNS),
+                      MAXWELL)
+    m = MaxwellDeckModel(path)
+    assert m.name == "PREM (no ocean)" and m.nlayers == model.nlayers
+    assert [L.name for L in m.layers] == [L.name for L in model.layers]
+    assert ([f.name for f in m.geometry.interfaces]
+            == [f.name for f in model.geometry.interfaces])
+    for i, layer in enumerate(model.layers):
+        assert ("viscosity" in m.layer(i)) == ("viscosity" in layer)
+        lo, hi = layer.interval
+        r = np.linspace(lo, hi, 13)
+        assert np.allclose(m.layer(i)["rho"](r), layer["rho"](r), rtol=1e-7)
+    assert m.layer("lower_mantle")["viscosity"].function.degree == 1
+    assert m.columns == MAXWELL_COLUMNS
+    testing.check_model(m)
+    again = MaxwellDeckModel(write_deck(tmp_path / "again.deck", m.to_deck(), MAXWELL))
+    assert [L.name for L in again.layers] == [L.name for L in m.layers]
+
+
+def test_a_maxwell_deck_model_relaxes_its_mantle_at_glacial_periods(tmp_path):
+    from planetmodel import MAXWELL, MaxwellDeckModel, sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS
+    path = write_deck(tmp_path / "maxwell.deck",
+                      sample_deck(_maxwell_prem(), MAXWELL_COLUMNS), MAXWELL)
+    m = MaxwellDeckModel(path)
+    assert m.is_viscoelastic("lower_mantle") and not m.is_viscoelastic("lid")
+    omega = 2 * np.pi / (1000 * 3.15576e7)
+    fz = m.frozen(omega)
+    assert type(fz) is MaxwellDeckModel
+    assert fz.layer("lower_mantle")["L"].dtype == np.complex128
+    r = 5000e3
+    assert abs(fz.layer("lower_mantle")["L"](r)) < m.layer("lower_mantle")["L"](r)
+    assert np.isclose(fz.layer("lid")["L"](6300e3), m.layer("lid")["L"](6300e3))
+    nd = m.nondimensionalised()
+    assert type(nd) is MaxwellDeckModel and np.isclose(nd.knots[-1][-1], 1.0)
