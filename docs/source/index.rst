@@ -63,6 +63,8 @@ for their readers:
   or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what
   the mesh's numbered attributes and the field files beside it are.
+* :doc:`formats/maxwell_deck`: a radial viscoelastic body as a plain-text
+  table, density and elastic velocities beside a viscosity.
 
 .. toctree::
    :maxdepth: 2
@@ -72,12 +74,13 @@ for their readers:
    formats/model_file
    formats/surface_file
    formats/mesh_manifest
+   formats/maxwell_deck
 
 The C++ library
 ===============
 
 :doc:`cpp` reads the model file, the mesh manifest and decks in C++, and
-writes model files, so that a solver in C++ can take a model from the
+writes model files and decks, so that a solver in C++ can take a model from the
 Python and hand its own fields back; its reference is built beside these
 pages.
 
