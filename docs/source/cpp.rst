@@ -2,12 +2,12 @@ The C++ library
 ===============
 
 The repository holds a C++ library beside the Python one, in ``cpp/``. It
-reads what the Python writes and writes model files that the Python
-reads, so that a solver written in C++ can take a model from planetmodel
-and hand its own fields back. It is header-only C++23, and its version is
+reads what the Python writes and writes files that the Python reads, so
+that a solver written in C++ can take a model from planetmodel and hand
+its own fields back. It is header-only C++23, and its version is
 the Python package's.
 
-It reads and writes three of the Python's files:
+It reads and writes four of the Python's files:
 
 * **Model files** (:doc:`formats/model_file`). Reading gives the numbers
   as stored, and each variable on each layer as a field that can be
@@ -16,10 +16,17 @@ It reads and writes three of the Python's files:
   gives each layer's values as a function or as values at the points the
   library lists, and the library forms the file and checks it as the
   readers will.
+* **Surface files** (:doc:`formats/surface_file`). Reading gives the
+  fields on the surface, static or in time, each served at any date by
+  its own time rule; writing builds a file from a code's own fields.
 * **Mesh manifests** (:doc:`formats/mesh_manifest`). The library reads
   these on a strict JSON reader of its own.
-* **Decks**, the mineos and GIA tables of knots. Each layer's columns are
-  joined into functions of the radius by the rules the Python uses.
+* **Decks**, the mineos and Maxwell tables of knots
+  (:doc:`formats/maxwell_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
+  with the names of the layers and interfaces their headers or labels
+  give. Each layer's columns are joined into
+  functions of the radius by the rules the Python uses, and a deck is
+  written as the Python writes it, character for character.
 
 The units, scales and vocabulary are the Python's, restated in C++. Tests
 hold the two sides equal, against fixtures that the Python writes.
