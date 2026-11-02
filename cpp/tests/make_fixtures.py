@@ -91,15 +91,22 @@ to round-trip; a string's UTF-8 bytes in hexadecimal; the length of an
 array or an object).
 
 **Decks** (`deck_*.txt`): the two shipped mineos decks as they are
-(nine and six columns), a GIA deck, and a small custom one with layers
-of two, three, four and six knots; each with `<deck>.expect` beside it,
-one fact per line: `format`, `knots`, `boundaries`, the mineos
-`header` fields (a string in hexadecimal), the `layer_name` and
-`interface_name` of every layer and interface that `mineos_names`
-gives (`-` for none) and the count of what it `ignored`, and for each
-kind the C++ reads, `value <kind> <layer> <column> <r> <value>
+(nine and six columns), a Maxwell deck naming its layers and
+interfaces, its viscosity varying by two orders of magnitude across a
+layer, a TauP `.nd` table with labels and comments of the three kinds
+and a `.tvel` one, and a small custom one with layers of two, three,
+four and six knots; each with `<deck>.expect` beside it, one fact per
+line: `knots`, `boundaries`, a TauP table's `label`s (radius and
+label), the mineos `header` fields (a string in hexadecimal), the
+`layer_name` and `interface_name` of every layer and interface that
+`mineos_names`, `maxwell_names` or `nd_names` gives (`-` for none) and
+the count of what the first `ignored`, and for each kind the C++
+reads (and for a Maxwell deck `maxwell`, the default kind with
+`MAXWELL_KINDS`), `value <kind> <layer> <column> <r> <value>
 <derivative>` at the layer's ends and between its knots, or `absent
-<layer> <column>`.
+<layer> <column>`.  The C++ tests write each deck back, and
+`tests/test_cpp_written_decks.py` holds what they wrote to the Python's
+own writing, character for character.
 
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
@@ -479,14 +486,23 @@ def manifests(directory: Path) -> list[Path]:
 _CPP_KINDS = ("cubic", "natural", "linear")
 
 
-def _expect_deck(path: Path, deck: Any, *, mineos: bool) -> Path:
-    """The expectation file of a deck, by the module docstring."""
+def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
+    """The expectation file of a deck, by the module docstring; `names` is
+    the format whose header or labels name its layers, `mineos`, `maxwell`
+    or `nd`."""
     import warnings
 
-    from planetmodel.deck import deck_layers, mineos_names
+    from planetmodel.deck import (MAXWELL_KINDS, deck_layers, maxwell_names,
+                                  mineos_names, nd_names)
     lines = [f"knots {deck.nknots}",
              "boundaries " + " ".join(repr(float(b)) for b in deck.boundaries)]
-    if mineos:
+    if names == "nd":
+        lines += [f"label {float(r)!r} {label}" for r, label in deck.header["labels"]]
+    if names in ("maxwell", "nd"):
+        layers, faces = (maxwell_names if names == "maxwell" else nd_names)(deck)
+        lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
+        lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
+    if names == "mineos":
         h = deck.header
         lines.append(f"header name {h['name'].encode('utf-8').hex()}")
         lines += [f"header {k} {h[k]!r}" for k in
@@ -499,8 +515,12 @@ def _expect_deck(path: Path, deck: Any, *, mineos: bool) -> Path:
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
         lines.append(f"ignored {len(caught)}")
     rng = np.random.default_rng(len(deck.radius))
-    for kind in _CPP_KINDS:
-        _, fields = deck_layers(deck, kind=kind)
+    joined = [(kind, {}) for kind in _CPP_KINDS]
+    if names == "maxwell":
+        joined.append(("maxwell", dict(MAXWELL_KINDS)))
+    for label, kinds in joined:
+        kind = "cubic" if label == "maxwell" else label
+        _, fields = deck_layers(deck, kind=kind, kinds=kinds)
         for i, s in enumerate(deck.layers()):
             r = deck.radius[s]
             between = np.sort(rng.uniform(r[0], r[-1], 3))
@@ -511,32 +531,60 @@ def _expect_deck(path: Path, deck: Any, *, mineos: bool) -> Path:
                     continue
                 f, df = fields[i][name], fields[i][name].derivative()
                 for x in radii:
-                    lines.append(f"value {kind} {i} {name} {float(x)!r} "
+                    lines.append(f"value {label} {i} {name} {float(x)!r} "
                                  f"{float(f(x))!r} {float(df(x))!r}")
     out = path.with_name(path.name.removesuffix(".txt") + ".expect")
     out.write_text("\n".join(lines) + "\n")
     return out
 
 
+#: A small body in TauP's form: a label before the first row, labels
+#: between repeated depths (TauP's own and one of words), an unlabelled
+#: repeat, comments of the three kinds, six numbers a row.
+_ND_LINES = (
+    "# a test body, 100 km in radius", "/* a block", "   comment */", "crust",
+    "0 5.8 3.4 2.7 1400 600   // a row", "10 5.8 3.4 2.7 1400 600", "mantle",
+    "10 7.8 4.4 3.3 1000 400", "40 7.9 4.5 3.4 1000 400", "40 8 4.6 3.45 900 350",
+    "60 8.1 4.7 3.5 900 350", "Lower Mantle", "60 8.2 4.8 3.6 800 300",
+    "80 8.3 4.9 3.7 800 300", "outer-core", "80 6 0 9 50000 0",
+    "95 6.5 0 9.5 50000 0", "inner-core", "95 7 3 11 500 100",
+    "100 7.1 3.1 11.1 500 100")
+
+#: The same body's tabled velocities: two header lines, four numbers a
+#: row, the cores labelled.
+_TVEL_LINES = (
+    "a P model", "an S model", "0 5.8 3.4 2.7", "10 5.8 3.4 2.7", "10 7.8 4.4 3.3",
+    "80 8.3 4.9 3.7", "outer-core", "80 6 0 9", "95 6.5 0 9.5", "inner-core",
+    "95 7 3 11", "100 7.1 3.1 11.1")
+
+
 def decks(directory: Path) -> list[Path]:
     """The decks of the module docstring, each with its expectations."""
-    from planetmodel.deck import GIA, MINEOS, Deck, DeckFormat, read_deck, write_deck
+    from planetmodel.deck import (MAXWELL, MINEOS, ND, TVEL, Deck, DeckFormat,
+                                  read_deck, write_deck)
     data = Path(__file__).resolve().parents[2] / "examples" / "data"
     out = []
     for label, source in (("prem200", "prem.200"), ("nocrust", "prem.nocrust")):
         path = directory / f"deck_{label}.txt"
         shutil.copyfile(data / source, path)
-        out += [path, _expect_deck(path, read_deck(path, MINEOS), mineos=True)]
+        out += [path, _expect_deck(path, read_deck(path, MINEOS), names="mineos")]
     prem = read_deck(data / "prem.200", MINEOS)
     viscosity = np.full(prem.nknots, np.nan)
     for i, s in enumerate(prem.layers()):
-        if i >= 2:
-            viscosity[s] = 1e21 * (1.0 + 0.5 * (prem.radius[s] / 6371e3))
-    gia = Deck(prem.radius, {**{n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh",
-                                                      "eta")},
-                             "viscosity": viscosity}, header={"title": "a GIA deck"})
-    path = write_deck(directory / "deck_gia.txt", gia, GIA)
-    out += [path, _expect_deck(path, read_deck(path, GIA), mineos=False)]
+        if i >= 2:          # 1e21 to 1e23 Pa s across each solid layer
+            x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
+            viscosity[s] = 10.0 ** (21.0 + 2.0 * x ** 2)
+    layer_names = [None] * prem.nlayers
+    layer_names[:4] = ["inner_core", "outer_core", "lowermost_mantle", None]
+    faces = [None] * prem.nlayers
+    faces[:2], faces[-1] = ["icb", "cmb"], "surface"
+    maxwell = Deck(prem.radius,
+                   {**{n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta")},
+                    "viscosity": viscosity},
+                   header={"name": "a Maxwell deck", "layers": tuple(layer_names),
+                           "interfaces": tuple(faces)})
+    path = write_deck(directory / "deck_maxwell.txt", maxwell, MAXWELL)
+    out += [path, _expect_deck(path, read_deck(path, MAXWELL), names="maxwell")]
     knots = Deck([0.0, 0.4, 0.4, 0.5, 0.7, 0.7, 0.75, 0.8, 0.9, 0.9, 0.92, 0.94, 0.95,
                   0.97, 0.98, 1.0],
                  {"rho": [9.0, 8.5, 6.0, 5.8, 5.5, 4.0, 3.9, 3.8, 3.6, 3.0, 2.95, 2.9,
@@ -544,10 +592,16 @@ def decks(directory: Path) -> list[Path]:
                   "vp": [10.0, 9.9, 8.0, 8.1, 7.9, 7.0, 7.05, 6.9, 6.8, 6.0, 6.01, 5.99,
                          5.97, 5.9, 5.8, 5.7]},
                  header={"lines": ("layers of two, three, four and six knots",)})
+    path = directory / "deck_nd.txt"
+    path.write_text("\n".join(_ND_LINES) + "\n")
+    out += [path, _expect_deck(path, read_deck(path, ND), names="nd")]
+    path = directory / "deck_tvel.txt"
+    path.write_text("\n".join(_TVEL_LINES) + "\n")
+    out += [path, _expect_deck(path, read_deck(path, TVEL), names="nd")]
     custom = DeckFormat(("rho", "vp"), header_lines=1)
     path = write_deck(directory / "deck_knots.txt", knots, custom)
     out += [path, _expect_deck(path, read_deck(path, ("rho", "vp"), header_lines=1),
-                               mineos=False)]
+                               names=None)]
     return out
 
 

@@ -65,6 +65,7 @@ def test_the_published_models_tutorial():
     """Fetches its data sets, so it runs with the registry check (`-m
     network`); not strict, since netCDF4 1.7.4 warns under numpy 2.5."""
     pytest.importorskip("netCDF4")
+    pytest.importorskip("cartopy")
     run("14_published_models.py", strict=False)
 
 

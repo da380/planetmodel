@@ -215,11 +215,11 @@ jobs:
           PLANETMODEL_REQUIRE_FIXTURES: "1"
         run: ctest --test-dir build/cpp --output-on-failure -j 4
 
-      # What the C++ writer wrote, validated and read by the Python.
+      # What the C++ writers wrote, validated and read by the Python.
       - name: The Python reads what the C++ wrote
         env:
           PLANETMODEL_CPP_WRITTEN: build/cpp/tests/written
-        run: poetry run pytest -q tests/test_cpp_written.py
+        run: poetry run pytest -q tests/test_cpp_written.py tests/test_cpp_written_decks.py
 
       # The example reader, on a file the Python wrote.
       - name: The example reads a Python model file

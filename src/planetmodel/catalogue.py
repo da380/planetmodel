@@ -30,7 +30,11 @@ polynomial in r / scale, a fluid layer being one with vs = 0; its
 (`examples/data/prem.200`) or any other: the table's columns become the
 base fields by interpolation (`planetmodel.deck`), the header names
 the core layers and sets the reference period of the constant-Q band,
-and the mixins add the rest.
+and the mixins add the rest.  `MaxwellDeckModel` is the model of a
+Maxwell deck, a radial Earth for glacial isostatic adjustment: density
+and the unrelaxed elastic velocities beside a viscosity, a Maxwell body
+in shear, with no quality factors, since a constant-Q dispersion about
+a seismic reference period would otherwise reach glacial periods.
 """
 from __future__ import annotations
 
@@ -41,8 +45,8 @@ import numpy as np
 
 from .behaviours import ConstantQ, Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
-from .deck import (MINEOS, Deck, Tabulated, deck_knots, deck_layers, mineos_names,
-                   read_deck)
+from .deck import (MAXWELL, MAXWELL_KINDS, MINEOS, Deck, Tabulated, deck_layers,
+                   maxwell_names, mineos_names, read_deck)
 from .fields import RadialField, constant_field
 from .geometry import Geometry
 from .layerfunction import polynomial_layer
@@ -51,7 +55,8 @@ from .skeleton import Skeleton
 from .units import FREQUENCY, Scales
 from .vocabulary import Constant
 
-__all__ = ["PREM", "LayeredIsotropicElastic", "MineosModel", "PREM_RADIUS"]
+__all__ = ["PREM", "LayeredIsotropicElastic", "MineosModel", "MaxwellDeckModel",
+           "PREM_RADIUS"]
 
 #: The normalisation radius a of PREM's polynomials, metres.
 PREM_RADIUS = 6371e3
@@ -267,9 +272,10 @@ class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, 
     inner and outer core and their boundaries, its `tref`, in seconds,
     becomes the constant `omega_ref` that `moduli_at` and `frozen`
     disperse about, and its title is the model's name.  The deck is
-    kept as `deck`, its knots per layer as `knots` and its header as
-    `header`, so `to_deck` writes the model back out.  The model is in
-    SI, as the deck is; `converted` gives it in other scales.
+    kept as `deck`, its knots per layer as `knots`, its header as
+    `header` and its columns as `columns`, so `to_deck` writes the model
+    back out.  The model is in SI, as the deck is; `converted` gives it
+    in other scales.
     """
 
     def __init__(self, source: str | os.PathLike[str] | Deck, *,
@@ -285,8 +291,38 @@ class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, 
             constants["omega_ref"] = Constant(
                 2.0 * np.pi / tref, FREQUENCY,
                 meaning="reference angular frequency of the deck's elastic values")
-        self.deck = deck
-        self.knots = deck_knots(deck)
-        self.header = deck.header
+        self.keep_deck(deck)
         super().__init__(geometry, layers, constants=constants,
+                         name=str(deck.header.get("name", "")) or None)
+
+
+class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
+    """The model of a Maxwell deck: `r rho vpv vsv vph vsh eta viscosity`
+    in SI under a title and the line naming the columns, NaN where a
+    layer lacks a field.
+
+    The columns are interpolated layer by layer by `kind`, and by the
+    kind `kinds` gives a column where it gives one (see
+    `planetmodel.deck.KINDS`); by default the viscosity is joined by
+    straight lines, `MAXWELL_KINDS`, which keep it positive between
+    knots.  The elastic values are the unrelaxed moduli of the Maxwell
+    body, so `frozen(omega)` relaxes each layer holding a viscosity with
+    tau = viscosity / mu, and the deck holds no quality factors.  The
+    `# layers` and `# interfaces` lines of the header name the layers
+    and interfaces (`maxwell_names`); its title is the model's name.
+    The deck is kept as `deck`, its knots per layer as `knots`, its
+    header as `header` and its columns as `columns`, so `to_deck` writes
+    the model back out.  The model is in SI, as the deck is; `converted`
+    gives it in other scales.
+    """
+
+    def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
+                 kinds: Mapping[str, str] = MAXWELL_KINDS) -> None:
+        deck = source if isinstance(source, Deck) else read_deck(source, MAXWELL)
+        skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
+        layer_names, interface_names = maxwell_names(deck)
+        geometry = Geometry(skeleton, layer_names=layer_names,
+                            interface_names=interface_names)
+        self.keep_deck(deck)
+        super().__init__(geometry, layers,
                          name=str(deck.header.get("name", "")) or None)
