@@ -63,8 +63,8 @@ def test_a_batch_is_successive_draws():
 
 def test_the_samplers_are_built_on_their_bases():
     """The samplers hold the bases they are made of, and their covariances
-    are what they were before the bases existed: numbers recorded then,
-    chosen so that the sign of an eigenvector does not enter."""
+    match recorded reference values, chosen so that the sign of an
+    eigenvector does not enter."""
     from planetmodel.randomfield import SpectralBasis, SphericalBasis
 
     g = RadialGRF(0.3, 1.0, 1.5, 0.2, sigma=lambda r: 1.0 + r, drmax=0.05)
