@@ -39,6 +39,9 @@ if TYPE_CHECKING:
 
 __all__ = ["spherical_mean", "quadrature_mean", "spherically_averaged"]
 
+# The most field values a quadrature mean evaluates at once (32 MB of doubles).
+_BLOCK_VALUES = 1 << 22
+
 
 def quadrature_mean(field: Field, grid: AngularGrid) -> RadialField:
     """The mean of a scalar field by `grid`'s quadrature at every radius it
@@ -46,10 +49,20 @@ def quadrature_mean(field: Field, grid: AngularGrid) -> RadialField:
     theta = grid.colatitudes[None, :, None]
     phi = grid.longitudes[None, None, :]
 
+    # The field is evaluated on the whole grid at each DISTINCT radius, a
+    # bounded number of radii at a time: the work is the number of distinct
+    # radii times the grid's size, whatever the shape or repetition of r.
+    per_block = max(1, _BLOCK_VALUES // (grid.ntheta * grid.nphi))
+
     def fbar(r: np.ndarray) -> np.ndarray:
         r = np.asarray(r, dtype=float)
-        values = field.evaluate(r.ravel()[:, None, None], theta, phi)
-        return grid.mean(values).reshape(r.shape)
+        radii, inverse = np.unique(r.ravel(), return_inverse=True)
+        means = np.empty(radii.shape)
+        for start in range(0, radii.size, per_block):
+            block = radii[start:start + per_block]
+            values = field.evaluate(block[:, None, None], theta, phi)
+            means[start:start + per_block] = grid.mean(values)
+        return means[inverse.ravel()].reshape(r.shape)
 
     grid.mean(np.zeros((grid.ntheta, grid.nphi)))       # refuses a grid without weights
     return RadialField(field.interval, NumericLayer(field.interval, fbar),

@@ -99,6 +99,35 @@ def test_a_field_without_a_mean_of_its_own_needs_a_grid():
             np.broadcast_arrays(r, t, p), -1), character=VECTOR))
 
 
+def test_a_quadrature_mean_costs_its_distinct_radii(monkeypatch):
+    """The field is evaluated on the grid once for each distinct radius,
+    however often a radius repeats, and a bounded number of values at a
+    time; the mean has the shape of the radii asked for."""
+    from planetmodel import means
+
+    sizes = []
+
+    def counted(r, t, p):
+        sizes.append(np.broadcast(r, t, p).size)
+        return r + r ** 2 * np.cos(t) + 0 * p
+
+    grid = gauss_legendre(4)
+    nodes = grid.ntheta * grid.nphi
+    fbar = spherical_mean(AnalyticField(INTERVAL, counted), grid=grid)
+    r = np.array([[0.6, 0.9, 0.6], [0.9, 0.9, 0.6]])
+    sizes.clear()
+    assert np.allclose(fbar(np.tile(r, (50, 1))), np.tile(r, (50, 1)), atol=1e-14)
+    assert sum(sizes) == 2 * nodes
+
+    monkeypatch.setattr(means, "_BLOCK_VALUES", 3 * nodes)
+    fbar = spherical_mean(AnalyticField(INTERVAL, counted), grid=grid)
+    r = np.linspace(0.5, 1.0, 10).reshape(2, 5)
+    sizes.clear()
+    assert np.allclose(fbar(r), r, atol=1e-14)
+    assert sum(sizes) == r.size * nodes and max(sizes) <= 3 * nodes
+    assert fbar(np.float64(0.7)).shape == ()
+
+
 REF = RadialField(INTERVAL, lambda r: 3.0 + r ** 2, character=DENSITY, name="rho")
 
 
