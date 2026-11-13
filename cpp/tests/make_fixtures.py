@@ -111,11 +111,30 @@ own writing, character for character.
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
 `base.json`; variants the reader accepts (`accept_*.json`: the keys
-added within the schema left out, an unknown key added); and one
-malformed copy per check `validate_structure` makes (`bad_*.json`),
-listed in `bad.txt`, one per line, as the case, a tab, the JSON path
-the fault lies at (empty for the document itself), a tab, and a phrase
-the refusal says.  None needs gmsh.
+added within the schema left out, an unknown key added, two faults
+meeting along a junction added); and one malformed copy per check
+`validate_structure` makes (`bad_*.json`, the faults' checks on the
+copy with faults), listed in `bad.txt`, one per line, as the case, a
+tab, the JSON path the fault lies at (empty for the document itself),
+a tab, and a phrase the refusal says.  None needs gmsh.
+
+**Meshes with faults** (`fault_meshes/<case>/`, which need gmsh and are
+left out with a note without it): a unit ball of two layers under a
+bump of relief, meshed at order one, with a plane reaching the surface
+(`surface`: a tip and a free edge) and with a splay meeting its main
+fault (`splay`: a junction), each held to `testing.check_fault_mesh`
+first.  Beside each manifest (`<case>.json`), `<case>.mesh.txt` holds
+the mesh as plain arrays (as `mesh3d.read_mesh` reads it), one per
+line: `vertex x y z` (the physical positions, the mapping applied, in
+index order), `cell a b c d attribute` (each tetrahedron's corners)
+and `boundary a b c attribute` (each boundary triangle's corners in
+the order the mesh holds them);
+and `<case>.expect` the answers of the Python's rules
+(`mesh3d.manifest.plus_cell`, `fault_curves`): `pair <boundary> <cell>
+<cell> <0|1>` for each face of a fault, its two cells (indices among
+the `cell` lines, the smaller first) and which of them is the plus
+one, and `edge <fault> <tip|free_edge|junction> a b` for each edge on
+a fault's curves.
 
 **The facts the C++ restates** (`constants.txt`), one per line, a key
 and its value separated by spaces: the version, `G_SI`,
@@ -482,6 +501,104 @@ def manifests(directory: Path) -> list[Path]:
     return written
 
 
+def _fault_cases() -> dict[str, dict[str, Any]]:
+    """The faults of the meshes with faults, by case and name: planes on a
+    unit sphere, with no slip."""
+    from planetmodel.fault import Fault, GeographicFrame, Plane, Slip
+
+    unit, zero = GeographicFrame(1.0), Slip(np.zeros((1, 1, 3)))
+
+    def plane(depth: float, **kw: Any) -> Any:
+        return Plane.at_depth(unit, 30.0, 40.0, depth, slip=zero, **kw)
+
+    # a plane whose up-dip edge is at the reference surface
+    trace = plane(0.15 * np.sin(np.deg2rad(60.0)), strike=20.0, dip=60.0, length=0.3,
+                  width=0.3)
+    # a main fault, and a splay whose down-dip edge lies on it
+    main = plane(0.2, strike=0.0, dip=60.0, length=0.4, width=0.3)
+    foot = main.cartesian(0.0, -0.1)
+    splay = Plane(unit, unit.coordinates(foot), strike=0.0, dip=30.0, length=0.3,
+                  width=0.15, slip=zero)
+    splay = Plane(unit, unit.coordinates(splay.cartesian(0.0, 0.0) + foot
+                                         - splay.cartesian(0.0, 0.5)),
+                  strike=0.0, dip=30.0, length=0.3, width=0.15, slip=zero)
+    return {"surface": {"trace": Fault([trace])},
+            "splay": {"main": Fault([main]), "splay": Fault([splay])}}
+
+
+def fault_meshes(directory: Path) -> list[Path]:
+    """The meshes with faults of the module docstring, under
+    `fault_meshes/`, each held to `testing.check_fault_mesh` and the
+    answers of the Python's rules written beside it.  None without
+    gmsh."""
+    from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
+                                    UniformInterfaces, read_mesh)
+    from planetmodel.mesh3d import manifest as mf
+    try:
+        from planetmodel.mesh3d import build_layered_mesh
+    except ImportError as error:
+        print(f"no meshes with faults without gmsh: {error}", file=sys.stderr)
+        return []
+    from planetmodel import testing
+
+    def h(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
+        c = (np.cos(theta) * np.cos(np.deg2rad(60.0)) + np.sin(theta)
+             * np.sin(np.deg2rad(60.0)) * np.cos(phi - np.deg2rad(40.0)))
+        return 0.05 * r ** 2 * np.exp(-(1.0 - c) / 0.05)
+
+    geometry = pm.Geometry(pm.Skeleton([0.0, 0.6, 1.0]), layer_names=["core", "mantle"],
+                           interface_names=["cmb", "surface"]).with_mapping(
+        pm.RadialStretch(pm.CallableDisplacement(h, name="bump"), rmax=1.0))
+    near = InterfaceSizing(0.07, 0.3, 0.1)
+    root = directory / "fault_meshes"
+    shutil.rmtree(root, ignore_errors=True)
+    written = []
+    with tempfile.TemporaryDirectory() as scratch:
+        for label, faults in _fault_cases().items():
+            spec = MeshSpec(geometry, UniformInterfaces(0.15, 0.3, 0.3), order=1,
+                            faults=[EmbeddedFault(f, name=n, sizing=near)
+                                    for n, f in faults.items()])
+            res = build_layered_mesh(spec, Path(scratch) / label / label)
+            offset = max(p.offset for v in res.preimages.values() for p in v)
+            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+                                     distance=2.0 * offset + 1e-12)
+            card = mf.read(res.manifest_path)
+            mesh = read_mesh(res.msh_path)
+            cells, layers = mesh.cells, mesh.cell_attributes
+            boundary, attributes = mesh.faces, mesh.face_attributes
+            x = np.asarray(res.mapping(mesh.points), dtype=float)
+            faces = np.flatnonzero(np.isin(attributes, [f["attribute"]
+                                                         for f in card.faults]))
+            pairs = mesh.face_cells(boundary[faces])
+            plus = mf.plus_cell(x, boundary[faces], cells[pairs])
+            curves = mf.fault_curves([boundary[attributes == f["attribute"]]
+                                      for f in card.faults],
+                                     boundary[attributes == card.surface_attribute])
+
+            target = root / label
+            target.mkdir(parents=True)
+            manifest_path = target / f"{label}.json"
+            shutil.copyfile(res.manifest_path, manifest_path)
+            lines = [f"vertex {a!r} {b!r} {c!r}" for a, b, c in x.tolist()]
+            lines += [f"cell {a} {b} {c} {d} {g}"
+                      for (a, b, c, d), g in zip(cells.tolist(), layers.tolist())]
+            lines += [f"boundary {a} {b} {c} {g}"
+                      for (a, b, c), g in zip(boundary.tolist(), attributes.tolist())]
+            mesh_path = target / f"{label}.mesh.txt"
+            mesh_path.write_text("\n".join(lines) + "\n")
+            expect = [f"pair {b} {p} {q} {k}"
+                      for b, (p, q), k in zip(faces.tolist(), pairs.tolist(),
+                                              plus.tolist())]
+            for record, edges in zip(card.faults, curves):
+                for key in ("tip", "free_edge", "junction"):
+                    expect += [f"edge {record['name']} {key} {a} {b}"
+                               for a, b in getattr(edges, key).tolist()]
+            expect_path = target / f"{label}.expect"
+            expect_path.write_text("\n".join(expect) + "\n")
+            written += [manifest_path, mesh_path, expect_path]
+    return written
+
+
 #: The kinds of deck interpolant the C++ reads, of `deck.KINDS`.
 _CPP_KINDS = ("cubic", "natural", "linear")
 
@@ -680,8 +797,29 @@ def _both(*edits: Any) -> Any:
     return edit
 
 
+#: Two faults of the base manifest, meeting along a junction: a fault
+#: reaching the surface, pulled back and refined towards, and a splay of
+#: two patches.
+_FAULTS: list[dict[str, Any]] = [
+    {"name": "megathrust", "attribute": 4, "layers": [2], "tip": 1, "free_edge": 2,
+     "junction": 3, "meets": ["splay"], "controls": [[17, 17]], "offset": 3.3e-08,
+     "sizing": {"size": 0.05, "far_size": 0.3, "decay_width": 0.2}},
+    {"name": "splay", "attribute": 5, "layers": [1, 2], "tip": 4, "free_edge": None,
+     "junction": 6, "meets": ["megathrust"], "controls": [[9, 9], [5, 17]],
+     "offset": 0, "sizing": None}]
+
+
+def _faulted(*edits: Any) -> Any:
+    """An edit adding `_FAULTS` to the base, then doing `edits` in turn."""
+    def edit(card: dict[str, Any]) -> None:
+        card["faults"] = json.loads(json.dumps(_FAULTS))
+        for e in edits:
+            e(card)
+    return edit
+
+
 #: The variants the reader accepts: the keys added within the schema left
-#: out, and an unknown key added.
+#: out, an unknown key added, and faults added.
 _ACCEPTED_MANIFESTS = {
     "optional_keys_absent": _both(_drop("refinements"), _drop("model"),
                                   _drop("scales", "temperature"), _drop("meta"),
@@ -694,6 +832,7 @@ _ACCEPTED_MANIFESTS = {
                            *(_set("interfaces", i, "values", value=None)
                              for i in range(3)),
                            _set("scales", value=None), _set("constants", value={})),
+    "faults": _faulted(),
 }
 
 #: The malformed variants: (edit, where the fault lies, what the refusal says).
@@ -765,6 +904,68 @@ _BAD_MANIFESTS = {
     "constants_value": (_set("constants", "G", value="one"), "constants.G",
                         "expected a number"),
     "meta_not_an_object": (_set("meta", value=[]), "meta", "expected an object"),
+    "faults_not_a_list": (_set("faults", value={}), "faults", "expected an array"),
+    "fault_missing_key": (_faulted(_drop("faults", 1, "meets")), "faults[1]",
+                          'no member "meets"'),
+    "fault_name_type": (_faulted(_set("faults", 0, "name", value=4)), "faults[0].name",
+                        "expected a string"),
+    "fault_name_repeated": (_faulted(_set("faults", 1, "name", value="megathrust")),
+                            "faults[0].name", "is repeated"),
+    "fault_name_interface": (_faulted(_set("faults", 1, "name", value="cmb")),
+                             "faults[1].name", "shares its name with an interface"),
+    "fault_attribute": (_faulted(_set("faults", 0, "attribute", value=3)),
+                        "faults[0].attribute", "expected 4, after the 3 interfaces"),
+    "fault_attributes_swapped": (_faulted(_set("faults", 0, "attribute", value=5),
+                                          _set("faults", 1, "attribute", value=4)),
+                                 "faults[0].attribute", "expected 4"),
+    "fault_layers_shell": (_faulted(_set("faults", 0, "layers", value=[2, 3])),
+                           "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_empty": (_faulted(_set("faults", 0, "layers", value=[])),
+                           "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_float": (_faulted(_set("faults", 0, "layers", value=[2.0])),
+                           "faults[0].layers[0]", "expected an integer"),
+    "fault_tip_group": (_faulted(_set("faults", 1, "tip", value=1)), "faults[1].tip",
+                        "is 1, expected 4 or null"),
+    "fault_tip_type": (_faulted(_set("faults", 0, "tip", value="1")), "faults[0].tip",
+                       "expected a number"),
+    "fault_free_edge_group": (_faulted(_set("faults", 0, "free_edge", value=5)),
+                              "faults[0].free_edge", "expected 2 or null"),
+    "fault_junction_group": (_faulted(_set("faults", 0, "junction", value=6)),
+                             "faults[0].junction", "expected 3 or null"),
+    "fault_meets_unknown": (_faulted(_set("faults", 0, "meets", value=["slab"])),
+                            "faults[0].meets", "not the names of other faults"),
+    "fault_meets_itself": (_faulted(_set("faults", 0, "meets", value=["megathrust"])),
+                           "faults[0].meets", "not the names of other faults"),
+    "fault_meets_type": (_faulted(_set("faults", 0, "meets", value=[1])),
+                         "faults[0].meets[0]", "expected a string"),
+    "fault_meets_one_way": (_faulted(_set("faults", 1, "meets", value=[]),
+                                     _set("faults", 1, "junction", value=None)),
+                            "faults[0].meets", "not every one of them meets"),
+    "fault_junction_alone": (_faulted(_set("faults", 0, "meets", value=[]),
+                                      _set("faults", 1, "meets", value=[])),
+                             "faults[0].junction", "a junction is where it meets"),
+    "fault_meets_without_junction": (
+        _faulted(_set("faults", 0, "junction", value=None)), "faults[0].junction",
+        "a junction is where it meets"),
+    "fault_controls_small": (
+        _faulted(_set("faults", 1, "controls", value=[[9, 9], [3, 17]])),
+        "faults[1].controls", "each at least 4"),
+    "fault_controls_shape": (_faulted(_set("faults", 0, "controls", value=[[17]])),
+                             "faults[0].controls", "not [n_u, n_v] per patch"),
+    "fault_controls_float": (
+        _faulted(_set("faults", 0, "controls", value=[[17.0, 17]])),
+        "faults[0].controls[0][0]", "expected an integer"),
+    "fault_offset": (_faulted(_set("faults", 0, "offset", value=-1e-9)),
+                     "faults[0].offset", "not a distance"),
+    "fault_offset_type": (_faulted(_set("faults", 0, "offset", value="0")),
+                          "faults[0].offset", "expected a number"),
+    "fault_sizing": (_faulted(_set("faults", 0, "sizing", "size", value=0.5)),
+                     "faults[0].sizing", "not 0 < size <= far_size"),
+    "fault_sizing_decay": (
+        _faulted(_set("faults", 0, "sizing", "decay_width", value=0)),
+        "faults[0].sizing", "with a positive decay_width"),
+    "fault_sizing_missing": (_faulted(_drop("faults", 0, "sizing", "far_size")),
+                             "faults[0].sizing", 'no member "far_size"'),
 }
 
 
@@ -1241,7 +1442,8 @@ def surface_files(directory: Path) -> list[Path]:
 
 def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
     """Every fixture into `directory`, each model file validated; the
-    manifests, which build meshes, only where `meshes` is true."""
+    manifests and the meshes with faults, which build meshes, only where
+    `meshes` is true."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     models = model_files(directory)
@@ -1252,7 +1454,7 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
             + manifest_cases(directory) + decks(directory)
-            + (manifests(directory) if meshes else []))
+            + (manifests(directory) + fault_meshes(directory) if meshes else []))
 
 
 if __name__ == "__main__":

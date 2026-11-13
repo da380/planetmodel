@@ -254,3 +254,22 @@ def test_mesh_result_summary_is_one_line(tmp_path):
 
 def test_the_geometry_type_is_the_core_one():
     assert isinstance(MeshSpec(full_geometry(), COARSE).geometry, Geometry)
+
+
+def test_the_report_shows_the_fault_checks_and_warnings_where_there_are_faults(
+        tmp_path):
+    plain = ValidationReport(dimension=3, min_sicn=0.4, warnings=["slow"])
+    assert repr(plain) == "ValidationReport(ok, minSICN 0.4, max interface error 0)"
+    faulted = ValidationReport(dimension=3, min_sicn=0.4, group_counts={"faults": 2},
+                               misoriented_fault_faces=1,
+                               warnings=["Netgen skipped", "poor elements"])
+    assert repr(faulted) == (
+        "ValidationReport(ok, minSICN 0.4, max interface error 0; 2 faults, 1 "
+        "misoriented and 0 nonconforming faces; warning: Netgen skipped; warning: "
+        "poor elements)")
+    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+                   geometry=None, counts={"elements": 3, "nodes": 5, "layers": 1},
+                   validation=faulted, timings={"mesh": 0.5})
+    line = r.summary()
+    assert "\n" not in line and "2 faults, 1 misoriented" in line
+    assert "warning: poor elements; 0.5 s" in line

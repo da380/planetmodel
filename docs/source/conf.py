@@ -41,8 +41,9 @@ default_role = "code"
 napoleon_use_ivar = True
 
 # The optional extras are not installed where the docs are built; their
-# importers (gmsh at the top of planetmodel.mesh3d, the rest inside the
-# functions that need them) document against these stand-ins.
+# importers (gmsh at the top of the mesh3d modules that build meshes, the
+# rest inside the functions that need them) document against these
+# stand-ins.
 autodoc_mock_imports = ["gmsh", "mfem", "matplotlib"]
 
 

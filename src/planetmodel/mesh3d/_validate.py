@@ -6,6 +6,10 @@ that does not match its own manifest) produces a solve that runs to
 completion and answers the wrong question.  Every check here exists
 because its failure would otherwise be invisible.  The report lives in
 `spec` so the result's type is public.
+
+A fault is held to two more: each of its faces is a face of exactly
+two cells (the mesh conforms to it, and no node is split), and each
+points from the footwall into the hanging wall.
 """
 from __future__ import annotations
 
@@ -15,12 +19,12 @@ import gmsh
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ._orient import (Centres, element_quality, node_positions, outward_dots,
-                      signed_measures)
+from ._orient import (Centres, FaultSurfaces, element_quality, fault_dots,
+                      node_positions, outward_dots, signed_measures)
 from ._tagging import Tagging, mean_radius_of_entity
 from .spec import QUALITY_FLOOR, ValidationReport
 
-__all__ = ["check_interface_radii", "validate_mesh"]
+__all__ = ["check_interface_radii", "nonconforming_faces", "validate_mesh"]
 
 
 def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
@@ -55,35 +59,87 @@ def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
     return worst, failures
 
 
+def _corners(dimension: int, tag: int) -> np.ndarray:
+    """The corner nodes of an entity's simplices, (n, dimension + 1),
+    whatever their order."""
+    _, tags, nodes = gmsh.model.mesh.getElements(dimension, tag)
+    blocks = [np.asarray(block, dtype=np.int64).reshape(len(t), -1)[:, :dimension + 1]
+              for t, block in zip(tags, nodes) if len(t)]
+    return (np.concatenate(blocks) if blocks
+            else np.empty((0, dimension + 1), dtype=np.int64))
+
+
+def _rows_in(rows: np.ndarray, table: np.ndarray) -> np.ndarray:
+    """The index of each row of `rows` among the rows of `table`, or -1
+    where it is absent."""
+    view = np.dtype((np.void, table.dtype.itemsize * table.shape[1]))
+    keys = np.ascontiguousarray(table).view(view).ravel()
+    want = np.ascontiguousarray(rows).view(view).ravel()
+    if not keys.size:
+        return np.full(want.size, -1)
+    order = np.argsort(keys)
+    at = np.clip(np.searchsorted(keys[order], want), 0, keys.size - 1)
+    return np.where(keys[order][at] == want, order[at], -1)
+
+
+def nonconforming_faces(dimension: int, faces: Sequence[int]) -> int:
+    """How many elements of the given (d-1)-dimensional entities are not a
+    face of exactly two d-dimensional cells, matched by their corners."""
+    conn = np.concatenate([_corners(dimension, tag)
+                           for _, tag in gmsh.model.getEntities(dimension)])
+    sides = np.sort(np.concatenate([np.delete(conn, j, axis=1)
+                                    for j in range(dimension + 1)]), axis=1)
+    known, counts = np.unique(sides, axis=0, return_counts=True)
+    bad = 0
+    for tag in faces:
+        own = np.sort(_corners(dimension - 1, tag), axis=1)
+        at = _rows_in(own, known)
+        bad += int(np.count_nonzero((at < 0) | (counts[np.maximum(at, 0)] != 2)))
+    return bad
+
+
 def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
                   layer_names: Sequence[str | None] = (),
                   interface_names: Sequence[str | None] = (),
                   radius_tolerance: float | None = None,
                   quality_warn: float = QUALITY_FLOOR,
-                  centres: Centres | None = None) -> ValidationReport:
+                  centres: Centres | None = None,
+                  faults: FaultSurfaces | None = None,
+                  fault_names: Sequence[str] = ()) -> ValidationReport:
     """Check a finished mesh against what was asked for.
 
     `expected_radii` are the interface radii the mesh was built at.
     `centres` maps a surface's
     entity tag to the point it encloses, for surfaces not centred on
-    the origin.
+    the origin.  `faults` maps each face of a fault to the patch it was
+    built from, and `fault_names` names the faults, whose boundary
+    groups follow the interfaces'.
     """
     d = tagging.dimension
     rep = ValidationReport(dimension=d)
+    faults = faults or {}
 
     expected = np.asarray(expected_radii, dtype=float)
 
     # -- physical groups match the tagging ---------------------------------
     for dim, what, wanted in ((d, "layers", len(tagging.cells)),
-                              (d - 1, "interfaces", len(tagging.faces))):
+                              (d - 1, "interfaces",
+                               len(tagging.faces) + len(fault_names))):
         got = [tag for _, tag in gmsh.model.getPhysicalGroups(dim)]
         rep.group_counts[what] = len(got)
         if sorted(got) != list(range(1, wanted + 1)):
             rep.failures.append(
                 f"{what}: physical groups are {sorted(got)}, expected "
-                f"1..{wanted} numbered from the centre outward")
+                f"1..{wanted} numbered from the centre outward"
+                + (", the faults' after the interfaces'" if fault_names else ""))
+    if fault_names:
+        rep.group_counts["interfaces"] -= len(fault_names)
+        rep.group_counts["faults"] = len(fault_names)
 
-    names = {"layers": layer_names, "interfaces": interface_names}
+    m = len(tagging.faces)
+    boundary = list(interface_names)[:m]
+    boundary += [None] * (m - len(boundary)) + list(fault_names)
+    names = {"layers": layer_names, "interfaces": boundary}
     for dim, what in ((d, "layers"), (d - 1, "interfaces")):
         for i, want in enumerate(names[what]):
             if not want:
@@ -126,9 +182,24 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
         rep.inward_faces = sum(
             int((outward_dots(tag, pos, centre=centres.get(tag, (0.0, 0.0, 0.0)))[1]
                  < 0.0).sum())
-            for _, tag in gmsh.model.getEntities(2))
+            for _, tag in gmsh.model.getEntities(2) if tag not in faults)
         if rep.inward_faces:
             rep.failures.append(
                 f"{rep.inward_faces} boundary face(s) point inward")
+
+    # -- every fault is an oriented interior surface -----------------------
+    if faults:
+        rep.misoriented_fault_faces = sum(
+            int((fault_dots(tag, patch, pos)[1] <= 0.0).sum())
+            for tag, patch in faults.items())
+        if rep.misoriented_fault_faces:
+            rep.failures.append(
+                f"{rep.misoriented_fault_faces} fault face(s) do not point from "
+                "the footwall into the hanging wall")
+        rep.nonconforming_fault_faces = nonconforming_faces(d, list(faults))
+        if rep.nonconforming_fault_faces:
+            rep.failures.append(
+                f"{rep.nonconforming_fault_faces} fault face(s) are not a face of "
+                "exactly two cells: the mesh does not conform to the fault")
 
     return rep

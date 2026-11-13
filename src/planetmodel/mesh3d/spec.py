@@ -20,9 +20,18 @@ so it can only refine, never coarsen; NearPoints and near_curve are
 the shipped kinds, and anything with the Refinement protocol's two
 attributes serves.
 
+Faults are built into the mesh from the start (`EmbeddedFault`): each
+is pulled back through the geometry's mapping, fragmented into the
+shells with them so that the mesh conforms to it, and labelled with a
+boundary attribute of its own after the interfaces' (the manifest's
+`faults[]`).  A fault is a surface of a 3D domain on a sphere, so a
+spec with faults is three-dimensional and its faults are in a
+geographic frame.
+
 Nothing here knows about units.  Every length is a number in the
 geometry's own lengths, and the builder hands those numbers to gmsh
-unchanged: a geometry of radius 6.4e6 is meshed at radius 6.4e6.
+unchanged: a geometry of radius 6.4e6 is meshed at radius 6.4e6.  A
+fault's positions are taken in those same numbers.
 """
 from __future__ import annotations
 
@@ -30,19 +39,23 @@ import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
+from ..fault import Fault
 from ..geometry import Geometry, InterfaceInfo, LayerInfo
 from ..mapping import Mapping
+
+if TYPE_CHECKING:
+    from ..fault import Preimage
 
 __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "CappedInterfaces", "PerInterface", "Refinement",
-    "NearPoints", "near_curve", "MeshSpec",
+    "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec",
     "MeshResult", "ValidationReport", "optimise_methods", "DELIVERIES",
     "OUTER_BOUNDARIES", "QUALITY_FLOOR",
 ]
@@ -467,6 +480,88 @@ class PerInterface:
 
 
 @dataclass(frozen=True)
+class EmbeddedFault:
+    """A fault to build into the mesh: its faces conform to it, carry a
+    boundary attribute of their own and are oriented with its normal.
+
+    The fault is where it physically is, in the geometry's lengths, and
+    the mesh is the reference one, so each patch is pulled back through
+    the geometry's mapping first (`fault.pull_back`) through `controls`
+    nodes each way, or, where `controls` is None, through the fewest of
+    `fault.PULL_BACK_CONTROLS` that bring it within `rtol` of its size.
+    An edge of a patch whose preimage lies nowhere more than `reach`
+    below the geometry's outer boundary is carried across it and
+    trimmed there, so that the fault meets the surface exactly; None
+    takes for `reach` the relief of the outer boundary over the edge
+    (the largest displacement the mapping gives the boundary's points
+    above it) plus the CAD kernel's tolerance, so that under the
+    identity only an edge at the surface or above it is carried across.
+    A fault crosses every interface it reaches or stops clear of it (a
+    tenth of the element size there): one that comes closer without
+    crossing, passes through the centre, leaves a hollow domain through
+    its inner boundary, lies wholly outside the geometry, cuts a layer
+    or an interface right through, or overlaps another fault on a
+    surface is refused by name.
+    `sizing` refines the mesh towards the fault, `size` on it growing to
+    `far_size` over `decay_width`; None leaves the sizing to the
+    interfaces' rule, the fault's faces conforming to it at whatever
+    size that gives.  `name` names the fault in the mesh and the
+    manifest: by default `fault_<k>`, k counted from one in the spec's
+    order.  Every patch must give its map as a spline (`spline`), and
+    the frame must be geographic: the layered mesh is a sphere.
+    """
+
+    #: The fault, in the geometry's lengths.
+    fault: Fault
+    _: KW_ONLY
+    #: The fault's name in the mesh and the manifest; None for the default.
+    name: str | None = None
+    #: The refinement towards the fault, or None for none.
+    sizing: InterfaceSizing | None = None
+    #: The pull-back's control nodes each way on every patch; None to
+    #: choose them by `rtol`.
+    controls: int | None = None
+    #: The pull-back's offset, as a fraction of each patch's size, met
+    #: when `controls` is None.
+    rtol: float = 1e-6
+    #: How far below the outer boundary an edge may lie and still be
+    #: carried across it; None for the mapping's relief there.
+    reach: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fault, Fault):
+            raise TypeError(f"fault must be a planetmodel.fault.Fault, got "
+                            f"{type(self.fault).__name__}")
+        frame = self.fault.frame
+        if getattr(frame, "radius", None) is None:
+            raise ValueError(
+                f"the fault is in a {type(frame).__name__}, and the layered mesh is "
+                "a sphere: a fault in a Cartesian frame belongs in a regional box "
+                "mesh, which this builder does not make; give it in a "
+                "GeographicFrame")
+        for k, patch in enumerate(self.fault.patches):
+            if not callable(getattr(patch, "spline", None)):
+                raise TypeError(f"patch {k} ({type(patch).__name__}) gives no "
+                                "spline of its map to build the mesh from")
+        if self.name is not None and (not isinstance(self.name, str)
+                                      or not self.name):
+            raise ValueError(f"a fault's name is a non-empty string, got "
+                             f"{self.name!r}")
+        if self.sizing is not None and not isinstance(self.sizing, InterfaceSizing):
+            raise TypeError(f"sizing must be an InterfaceSizing, got "
+                            f"{type(self.sizing).__name__}")
+        if self.controls is not None and (isinstance(self.controls, bool)
+                                          or not isinstance(self.controls, int)
+                                          or self.controls < 4):
+            raise ValueError(f"controls must be an integer of at least 4 (a "
+                             f"bicubic patch), got {self.controls!r}")
+        if not self.rtol > 0.0:
+            raise ValueError(f"rtol must be positive, got {self.rtol}")
+        if self.reach is not None and not self.reach >= 0.0:
+            raise ValueError(f"reach must not be negative, got {self.reach}")
+
+
+@dataclass(frozen=True)
 class MeshSpec:
     """The complete description of a mesh to build.
 
@@ -474,7 +569,8 @@ class MeshSpec:
     computational domain is the geometry followed by the shells; its
     layers are numbered 1..N from the centre and its interfaces 1..M in
     the order of `geometry.interfaces`, then the shells' outer
-    boundaries.
+    boundaries.  The faults' faces take boundary attributes M + 1..M + F
+    in the order of `faults`.
     """
 
     #: The geometry to mesh: a skeleton, a mapping and names.
@@ -491,6 +587,8 @@ class MeshSpec:
     #: Extra size fields composed into the sizing by minimum; each can
     #: only refine, never coarsen.
     refinements: Sequence[Refinement] = ()
+    #: Faults built into the mesh, each within the geometry's layers.
+    faults: Sequence[EmbeddedFault] = ()
     #: "free": the outer boundary of the computational domain may carry
     #: topography; "spherical": the mapping must be the identity on it.
     outer_boundary: str = "free"
@@ -502,6 +600,8 @@ class MeshSpec:
     #: curved: a method name, a sequence applied in order, or None for
     #: none.  3D only; the Delaunay mesher leaves slivers between
     #: interfaces that a Netgen pass removes without moving their nodes.
+    #: With faults the Netgen pass is skipped, with a warning: it crashes
+    #: on a solid with a surface embedded in it.
     optimise: str | Sequence[str] | None = "Netgen"
     #: False writes a failing mesh; the failures are on the result's report.
     validate: bool = True
@@ -562,7 +662,25 @@ class MeshSpec:
                     f"shell {name!r} has outer radius {outer:g}, not above "
                     f"the boundary it is attached to at {inner:g}")
             inner = outer
-        self.domain     # names must be unique across the geometry and the shells
+        domain = self.domain    # names must be unique across geometry and shells
+        object.__setattr__(self, "faults", tuple(self.faults))
+        for i, item in enumerate(self.faults):
+            if not isinstance(item, EmbeddedFault):
+                raise TypeError(
+                    f"faults[{i}] is {type(item).__name__}; wrap a Fault in an "
+                    "EmbeddedFault")
+        if self.faults and self.dimension != 3:
+            raise ValueError("faults are surfaces of a 3D domain; a 2D mesh "
+                             "takes none")
+        names = self.fault_names
+        if len(set(names)) != len(names):
+            raise ValueError(f"fault names must be unique, got {names}")
+        taken = {f.name for f in domain.interfaces if f.name} | {
+            f"interface_{k + 1}" for k in range(len(domain.interfaces))}
+        clash = sorted(taken.intersection(names))
+        if clash:
+            raise ValueError(f"faults named {clash} would share a name with an "
+                             "interface, and both label boundary elements")
 
     @property
     def shell_radii(self) -> tuple[float, ...]:
@@ -581,6 +699,12 @@ class MeshSpec:
         return [shell.name if shell.name is not None
                 else (f"buffer_{k}" if many else "buffer")
                 for k, shell in enumerate(self.shells, start=1)]
+
+    @property
+    def fault_names(self) -> list[str]:
+        """The names of the faults, the default `fault_<k>` filled in."""
+        return [item.name if item.name is not None else f"fault_{k}"
+                for k, item in enumerate(self.faults, start=1)]
 
     @property
     def outer_radius(self) -> float:
@@ -632,6 +756,11 @@ class ValidationReport:
     negative_cells: int = 0
     #: Boundary faces whose normal points towards the centre they enclose.
     inward_faces: int = 0
+    #: Faces of a fault whose normal does not run from its footwall into
+    #: its hanging wall.
+    misoriented_fault_faces: int = 0
+    #: Faces of a fault that are not a face of exactly two cells.
+    nonconforming_fault_faces: int = 0
     #: The largest distance of a tagged interface's mean radius from the
     #: radius asked for, in the mesh's lengths.
     max_interface_radius_error: float = 0.0
@@ -655,10 +784,22 @@ class ValidationReport:
                 + "\n  - ".join(self.failures))
         return self
 
+    def _faults_text(self) -> str:
+        """The faults' checks and the warnings, for a mesh with faults: ""
+        for one without."""
+        faults = self.group_counts.get("faults", 0)
+        if not faults:
+            return ""
+        text = (f"; {faults} fault{'s' if faults > 1 else ''}, "
+                f"{self.misoriented_fault_faces} misoriented and "
+                f"{self.nonconforming_fault_faces} nonconforming faces")
+        return text + "".join(f"; warning: {w}" for w in self.warnings)
+
     def __repr__(self) -> str:
         state = "ok" if self.ok else f"{len(self.failures)} FAILED"
         return (f"ValidationReport({state}, minSICN {self.min_sicn:.4g}, "
-                f"max interface error {self.max_interface_radius_error:.3g})")
+                f"max interface error {self.max_interface_radius_error:.3g}"
+                f"{self._faults_text()})")
 
 
 @dataclass(frozen=True)
@@ -689,10 +830,13 @@ class MeshResult:
     spec: MeshSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
+    #: Each fault's name -> its patches' preimages, the surfaces built in.
+    preimages: dict[str, tuple[Preimage, ...]] = field(default_factory=dict)
 
     def summary(self) -> str:
         """The build in one line: counts, worst quality, worst interface
-        error, and seconds in all and by stage."""
+        error, for a mesh with faults the faults' checks and the warnings,
+        and seconds in all and by stage."""
         v = self.validation
         stages = ", ".join(f"{k} {t:.2g}" for k, t in self.timings.items())
         total = sum(self.timings.values())
@@ -700,7 +844,7 @@ class MeshResult:
                 f"{self.counts.get('nodes', '?')} nodes in "
                 f"{self.counts.get('layers', '?')} layers; "
                 f"minSICN {v.min_sicn:.3g}, max interface error "
-                f"{v.max_interface_radius_error:.3g}; "
+                f"{v.max_interface_radius_error:.3g}{v._faults_text()}; "
                 f"{total:.3g} s ({stages})")
 
     def __repr__(self) -> str:

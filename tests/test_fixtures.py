@@ -26,6 +26,7 @@ def test_the_fixtures_are_written_and_validate(tmp_path):
         assert ds.variables["expected"].shape == ds.variables["query_colatitude"].shape
     assert {"constants.txt", "json_corners.json", "json_corners.json.walk"} <= names
     assert not (tmp_path / "manifests").exists()
+    assert not (tmp_path / "fault_meshes").exists()
 
 
 @pytest.mark.gmsh
@@ -47,6 +48,39 @@ def test_the_manifests_are_written_with_their_walks(tmp_path):
     for path in manifests:
         manifest.read(path)          # which validates
         assert path.with_name(path.name + ".walk").stat().st_size > 0
+
+
+@pytest.mark.gmsh
+def test_the_fault_meshes_are_written_with_their_answers(tmp_path):
+    """The meshes with faults the C++ rules are held to: each manifest
+    valid, a face of each fault with its two cells and its plus one, and
+    the curves the fault's record names."""
+    pytest.importorskip("gmsh")
+    from planetmodel.mesh3d import manifest
+    spec = importlib.util.spec_from_file_location("make_fixtures", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    written = module.fault_meshes(tmp_path)
+    assert {p.name for p in written} == {
+        f"{case}{suffix}" for case in ("surface", "splay")
+        for suffix in (".json", ".mesh.txt", ".expect")}
+    for case, kinds in (("surface", {"tip", "free_edge"}),
+                        ("splay", {"tip", "junction"})):
+        root = tmp_path / "fault_meshes" / case
+        card = manifest.read(root / f"{case}.json")
+        lines = (root / f"{case}.expect").read_text().splitlines()
+        faces = {int(line.split()[1]) for line in lines if line.startswith("pair ")}
+        boundary = [line.split() for line in (root / f"{case}.mesh.txt").read_text()
+                    .splitlines() if line.startswith("boundary ")]
+        on_faults = {i for i, b in enumerate(boundary)
+                     if int(b[4]) in {f["attribute"] for f in card.faults}}
+        assert faces == on_faults and faces
+        edges = {(line.split()[1], line.split()[2]) for line in lines
+                 if line.startswith("edge ")}
+        assert {kind for _, kind in edges} == kinds
+        for record in card.faults:
+            for kind in ("tip", "free_edge", "junction"):
+                assert ((record["name"], kind) in edges) == (record[kind] is not None)
 
 
 @pytest.mark.gmsh

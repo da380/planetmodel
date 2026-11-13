@@ -24,6 +24,8 @@ Modules reached by name, one level down:
   modelfile    the model file: a model in one netCDF file (netCDF4, optional)
   surfacefile  the surface file: fields on one spherical surface, static or
                in time (netCDF4, optional)
+  fault        faults: patches of surface inside a body, the slip on them in
+               time, and their quadrature
   harmonics    real spherical harmonics, through ducc0
   slices       a field on a sphere, a section or a profile; spectra and
                correlations by degree

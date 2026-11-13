@@ -16,6 +16,9 @@ The schema is `planetmodel.mesh.manifest/5`, with these blocks:
   layers[]      attribute, name, r_inner, r_outer, in_geometry, fluid
   interfaces[]  attribute, name, radius, between_layers, kind, values
   refinements[] name, size, far_size, decay_width, points, digest
+  faults[]      name, attribute, layers, tip, free_edge, junction, meets,
+                controls, offset, sizing; written only where the mesh
+                has faults
   fields[]      name, file, fe_space, vdim, ordering, rank, weight,
                 voigt, unit, layers, radial_degree
   scales        length, mass, time, temperature in SI; null until a model
@@ -54,6 +57,36 @@ one was written, and `mesh.nodes` says whether the mesh's coordinates
 are reference coordinates or already carry it.  Flat and boring on
 purpose: a C++ reader will parse it, nested objects only where the
 nesting carries meaning, no polymorphism, every number a number.
+
+A fault is an interior surface of the mesh, one conforming sheet of
+faces with no nodes split, labelled by local sides.  Its faces are the
+boundary elements of attribute `attribute`, M + k for the k-th fault
+after the M interfaces, every one oriented with the fault's normal:
+its vertices, in the order written, run so that (v1 - v0) x (v2 - v0)
+points from the footwall into the hanging wall, so the cell on that
+side of a face is the hanging-wall (plus) one and the other the
+footwall (minus) one.  `layers` are the attributes of the layers its
+faces lie in.  The curves bounding it are dimension-1 physical groups
+of the MSH file (an MFEM mesh keeps no curves; the same curves are the
+edges of the fault's faces by the rule the format page gives): `tip`,
+its buried tip, where its sides are joined; `free_edge`, where it meets
+the model's outer surface and its sides are free; `junction`, where it
+meets another fault, whose names `meets` lists; each null where there
+is none.  Fault k's curve groups are numbered 3k - 2, 3k - 1 and 3k
+whether or not they exist.  `controls` are the control nodes [n_u,
+n_v] of each patch's pull-back through the mapping, null under the
+identity, where the fault is built in as given; `offset` the largest
+distance found between the fault and its pull-back mapped forward,
+zero under the identity; `sizing` the refinement towards it, {size,
+far_size, decay_width}, or null.
+
+Two rules turn a fault's faces into what a split-node code needs, and
+are the format page's: which of a face's two cells is the plus one
+(`fault_side`, `plus_cell`), and which edges of a fault's faces are its
+tip, free edge and junction, read from the faces alone where the mesh
+format keeps no curves (`fault_curves`).  Both take plain arrays (the
+vertices' coordinates, corners as indices into them), so they apply to
+a mesh however it was read; the C++ library states them again.
 """
 from __future__ import annotations
 
@@ -64,6 +97,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ..character import Character
 from ..fields import stored_shape
@@ -76,10 +110,11 @@ if TYPE_CHECKING:
     from .spec import Refinement
 
 __all__ = ["SCHEMA", "FORMATS", "NODES", "KINDS", "MeshManifest", "LayerEntry",
-           "InterfaceEntry", "RefinementEntry", "FieldEntry", "write", "read",
-           "beside",
-           "mesh_block", "scales_block", "constants_block",
-           "validate_structure", "validate_against"]
+           "InterfaceEntry", "RefinementEntry", "FaultEntry", "FieldEntry",
+           "write", "read", "beside",
+           "mesh_block", "scales_block", "constants_block", "fault_curve_groups",
+           "validate_structure", "validate_against", "fault_side", "plus_cell",
+           "CurveEdges", "fault_curves"]
 
 #: Bump only for an incompatible change; consumers check it.
 SCHEMA = "planetmodel.mesh.manifest/5"
@@ -223,6 +258,51 @@ class RefinementEntry:
                    digest=None if digest is None else str(digest))
 
 
+def fault_curve_groups(k: int) -> tuple[int, int, int]:
+    """The dimension-1 physical groups of fault k (from one): its tip,
+    free edge and junction curves, numbered 3k - 2, 3k - 1 and 3k."""
+    return 3 * k - 2, 3 * k - 1, 3 * k
+
+
+@dataclass
+class FaultEntry:
+    """One `faults[]` record: a fault built into the mesh as an interior
+    surface (module docstring).
+
+    `attribute` is the boundary attribute of its faces and `layers` the
+    attributes of the layers they lie in; `tip`, `free_edge` and
+    `junction` are the dimension-1 physical groups of its curves in the
+    MSH file, null where it has none, and `meets` the names of the
+    faults it meets along its junction curves.  `controls` holds each
+    patch's pull-back grid [n_u, n_v], null where the mapping is the
+    identity; `offset` is the largest distance found between the fault
+    and its pull-back mapped forward, in the mesh's lengths; `sizing`
+    the refinement towards it, {size, far_size, decay_width}, or null.
+    """
+
+    #: The fault's name; `fault_<k>` where none was given.
+    name: str
+    #: The boundary attribute of its faces: M + k, after the interfaces.
+    attribute: int
+    #: The attributes of the layers its faces lie in.
+    layers: list
+    _: KW_ONLY
+    #: The physical group of its buried tip curves, or null.
+    tip: int | None = None
+    #: The physical group of its curves on the outer surface, or null.
+    free_edge: int | None = None
+    #: The physical group of its curves shared with other faults, or null.
+    junction: int | None = None
+    #: The names of the faults it meets.
+    meets: list = field(default_factory=list)
+    #: Each patch's pull-back control nodes [n_u, n_v]; null under the identity.
+    controls: list | None = None
+    #: The largest distance between the fault and its pull-back mapped forward.
+    offset: float = 0.0
+    #: The refinement towards the fault, {size, far_size, decay_width}, or null.
+    sizing: dict | None = None
+
+
 @dataclass
 class FieldEntry:
     """One `fields[]` record: a file beside the mesh and what it holds.
@@ -275,6 +355,7 @@ _JSON_TYPES = {int: (int,), float: (int, float), bool: (bool,), str: (str,),
                list: (list,), dict: (dict,),
                int | None: (int, type(None)), bool | None: (bool, type(None)),
                str | None: (str, type(None)), dict | None: (dict, type(None)),
+               list | None: (list, type(None)),
                float | None: (int, float, type(None))}
 
 
@@ -331,6 +412,9 @@ class MeshManifest:
     #: One record per refinement the mesh was sized under; see
     #: `RefinementEntry`.
     refinements: list[dict[str, Any]] = field(default_factory=list)
+    #: One record per fault built into the mesh; see `FaultEntry`.  The
+    #: key is written only where there is one.
+    faults: list[dict[str, Any]] = field(default_factory=list)
     #: One record per field written beside the mesh; see `FieldEntry`.
     fields: list[dict[str, Any]] = field(default_factory=list)
     #: The scales the field values are in, or None until a model is exported.
@@ -347,6 +431,7 @@ class MeshManifest:
     def from_build(cls, *, mesh: Mapping[str, Any], layers: Sequence[LayerEntry],
                    interfaces: Sequence[InterfaceEntry],
                    refinements: Sequence[RefinementEntry] = (),
+                   faults: Sequence[FaultEntry] = (),
                    meta: Mapping[str, Any] | None = None) -> "MeshManifest":
         """A manifest from the mesh block and the typed entries.
 
@@ -356,6 +441,7 @@ class MeshManifest:
         card = cls(mesh=dict(mesh), layers=[asdict(e) for e in layers],
                    interfaces=[asdict(e) for e in interfaces],
                    refinements=[asdict(e) for e in refinements],
+                   faults=[asdict(e) for e in faults],
                    meta=dict(meta or {}))
         validate_structure(card)
         return card
@@ -378,6 +464,15 @@ class MeshManifest:
             f"no interface named {name!r}; interfaces are "
             f"{[e.get('name') for e in self.interfaces]}")
 
+    def fault_record(self, name: str) -> dict[str, Any]:
+        """The record of a named fault."""
+        for entry in self.faults:
+            if entry.get("name") == name:
+                return entry
+        raise KeyError(
+            f"no fault named {name!r}; faults are "
+            f"{[e.get('name') for e in self.faults]}")
+
     def field_record(self, name: str) -> dict[str, Any]:
         """The record of a named field."""
         for entry in self.fields:
@@ -392,6 +487,17 @@ class MeshManifest:
         """Attributes of the layers outside the geometry: the shells."""
         return tuple(int(e["attribute"]) for e in self.layers
                      if not e.get("in_geometry", True))
+
+    @property
+    def surface_attribute(self) -> int:
+        """The attribute of the geometry's outer surface: the interface
+        with the geometry's outermost layer below it, a fault's free edge
+        lying on it."""
+        body = [int(e["attribute"]) for e in self.layers if e.get("in_geometry", True)]
+        for e in self.interfaces:
+            if body and int(e["between_layers"][0]) + 1 == body[-1]:
+                return int(e["attribute"])
+        raise ValueError("the manifest lists no surface of the geometry")
 
     @property
     def inner_radius(self) -> float:
@@ -443,6 +549,18 @@ class MeshManifest:
                      str(e.get("digest") or ""))
                     for e in self.refinements]
             lines.extend(_table(rows, numbered=False))
+        if self.faults:
+            lines.append("  faults")
+            rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
+                     f"in layers {list(e.get('layers', []))}",
+                     ", ".join(f"{what} {e[key]}" for key, what in
+                               (("tip", "tip"), ("free_edge", "free edge"),
+                                ("junction", "junction"))
+                               if e.get(key) is not None),
+                     f"meets {', '.join(e['meets'])}" if e.get("meets") else "",
+                     f"offset {_num(e.get('offset'))}")
+                    for e in self.faults]
+            lines.extend(_table(rows))
         if self.fields:
             lines.append("  fields")
             rows = [(str(e.get("name", "?")), str(e.get("file", "?")),
@@ -469,9 +587,10 @@ class MeshManifest:
         return self.describe()
 
     def __repr__(self) -> str:
+        faults = f"{len(self.faults)} faults, " if self.faults else ""
         return (f"MeshManifest({self.schema}, {self.mesh.get('file', '?')}, "
                 f"{len(self.layers)} layers, {len(self.interfaces)} interfaces, "
-                f"{len(self.fields)} fields)")
+                f"{faults}{len(self.fields)} fields)")
 
 
 def _num(value: object) -> str:
@@ -500,14 +619,18 @@ def _table(rows: Sequence[Sequence[str]], *, numbered: bool = True) -> list[str]
 
 
 def write(path: str | Path, manifest: MeshManifest) -> Path:
-    """Write the manifest beside its mesh, and return the path."""
+    """Write the manifest beside its mesh, and return the path.  The
+    `faults` key is written only where the mesh has a fault, so a mesh
+    without one has the manifest it always had."""
     path = beside(path, ".json")
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(manifest)
+    if not data["faults"]:
+        del data["faults"]
     with open(path, "w") as fh:
         # allow_nan=False: a strict parser cannot read NaN or Infinity, so
         # a manifest carrying one fails here, where the cause is known.
-        json.dump(asdict(manifest), fh, indent=2, sort_keys=False,
-                  allow_nan=False)
+        json.dump(data, fh, indent=2, sort_keys=False, allow_nan=False)
         fh.write("\n")
     return path
 
@@ -582,6 +705,7 @@ def validate_structure(manifest: MeshManifest) -> None:
                                 InterfaceEntry),
                                ("refinements", manifest.refinements,
                                 RefinementEntry),
+                               ("faults", manifest.faults, FaultEntry),
                                ("fields", manifest.fields, FieldEntry)):
         if not isinstance(entries, list):
             fail(f"{what} must be a list of objects")
@@ -640,6 +764,8 @@ def validate_structure(manifest: MeshManifest) -> None:
         if e["points"] is not None and e["points"] < 1:
             fail(f"refinements[{i}].points is {e['points']}, not a count")
 
+    _check_faults(manifest, fail)
+
     names = [e["name"] for e in manifest.fields]
     if len(set(names)) != len(names):
         fail(f"field names repeat: {names}")
@@ -689,13 +815,78 @@ def validate_structure(manifest: MeshManifest) -> None:
         fail("meta must be an object")
 
 
+#: What a fault's `sizing` holds where it is not null.
+_SIZING_FIELDS = {"size": (int, float), "far_size": (int, float),
+                  "decay_width": (int, float)}
+
+
+def _check_faults(manifest: MeshManifest, fail: Fail) -> None:
+    """The `faults[]` records against each other and the skeleton: the
+    attributes running on from the interfaces', names unique and not an
+    interface's, layers of the geometry, the curve groups fault k's,
+    meetings mutual and with a junction to show for them, and the
+    pull-back and sizing records well formed."""
+    faults = manifest.faults
+    n_faces = len(manifest.interfaces)
+    names = [e["name"] for e in faults]
+    if len(set(names)) != len(names):
+        fail(f"fault names repeat: {names}")
+    taken = {f["name"] for f in manifest.interfaces}
+    if taken.intersection(names):
+        fail(f"faults {sorted(taken.intersection(names))} share a name with an "
+             "interface")
+    inside = {int(e["attribute"]) for e in manifest.layers if e["in_geometry"]}
+    meets = {e["name"]: set(e["meets"]) for e in faults}
+    for i, e in enumerate(faults):
+        k = i + 1
+        if e["attribute"] != n_faces + k:
+            fail(f"faults[{i}].attribute is {e['attribute']}, expected "
+                 f"{n_faces + k}, after the {n_faces} interfaces")
+        if not e["layers"] or not all(_typed(a, (int,)) and a in inside
+                                      for a in e["layers"]):
+            fail(f"faults[{i}].layers is {e['layers']}, not attributes of "
+                 f"layers of the geometry, {sorted(inside)}")
+        for key, want in zip(("tip", "free_edge", "junction"),
+                             fault_curve_groups(k)):
+            if e[key] is not None and e[key] != want:
+                fail(f"faults[{i}].{key} is {e[key]}, expected {want} or null")
+        if not all(isinstance(m, str) and m in meets and m != e["name"]
+                   for m in e["meets"]):
+            fail(f"faults[{i}].meets is {e['meets']}, not the names of other "
+                 "faults")
+        if any(e["name"] not in meets[m] for m in e["meets"]):
+            fail(f"faults[{i}] meets {e['meets']}, and not every one of them "
+                 f"meets {e['name']!r}")
+        if bool(e["meets"]) != (e["junction"] is not None):
+            fail(f"faults[{i}] has junction {e['junction']} but meets "
+                 f"{e['meets']}: a junction is where it meets another fault")
+        controls = e["controls"]
+        if controls is not None and not all(
+                isinstance(pair, list) and len(pair) == 2
+                and all(_typed(n, (int,)) and n >= 4 for n in pair)
+                for pair in controls):
+            fail(f"faults[{i}].controls is {controls!r}, not [n_u, n_v] per "
+                 "patch, each at least 4")
+        if not e["offset"] >= 0.0:
+            fail(f"faults[{i}].offset is {e['offset']}, not a distance")
+        sizing = e["sizing"]
+        if sizing is not None:
+            _check_record(sizing, _SIZING_FIELDS, f"faults[{i}].sizing", fail)
+            if not 0.0 < sizing["size"] <= sizing["far_size"] \
+                    or not sizing["decay_width"] > 0.0:
+                fail(f"faults[{i}].sizing is {sizing}, not 0 < size <= "
+                     "far_size with a positive decay_width")
+
+
 def validate_against(manifest: MeshManifest, *, layer_count: int,
-                     interface_count: int,
+                     interface_count: int, fault_count: int = 0,
                      groups: Mapping[str, Iterable[int]] | None = None) -> None:
     """Check a manifest describes the mesh it was written beside.
 
     `groups` maps "layers" and "interfaces" to the physical group
-    numbers the mesh carries; both must run 1..N from the centre.
+    numbers the mesh carries, both of which must run 1..N from the
+    centre, and "faults" to those of the faults' faces, which run on
+    from the interfaces'.
     """
     if len(manifest.layers) != layer_count:
         raise ValueError(
@@ -705,6 +896,10 @@ def validate_against(manifest: MeshManifest, *, layer_count: int,
         raise ValueError(
             f"manifest lists {len(manifest.interfaces)} interfaces, the mesh "
             f"has {interface_count}")
+    if len(manifest.faults) != fault_count:
+        raise ValueError(
+            f"manifest lists {len(manifest.faults)} faults, the mesh has "
+            f"{fault_count}")
     for what, entries in (("layer", manifest.layers),
                           ("interface", manifest.interfaces)):
         attrs = [int(e["attribute"]) for e in entries]
@@ -713,10 +908,155 @@ def validate_against(manifest: MeshManifest, *, layer_count: int,
                 f"manifest {what} attributes are {attrs}, expected "
                 f"1..{len(entries)} from the centre outward")
     if groups is not None:
-        counts = {"layers": layer_count, "interfaces": interface_count}
+        first = {"layers": 1, "interfaces": 1, "faults": interface_count + 1}
+        counts = {"layers": layer_count, "interfaces": interface_count,
+                  "faults": fault_count}
         for what, wanted in groups.items():
             got = sorted(wanted)
-            if got != list(range(1, counts.get(what, len(got)) + 1)):
+            start = first.get(what, 1)
+            if got != list(range(start, start + counts.get(what, len(got)))):
                 raise ValueError(
                     f"the mesh's {what} physical groups are {got}; the manifest "
-                    f"describes {counts.get(what)} numbered from 1")
+                    f"describes {counts.get(what)} numbered from {start}")
+
+
+# ----------------------------------------------- the rules for a fault's faces
+
+def fault_side(points: ArrayLike, faces: ArrayLike, cells: ArrayLike) -> np.ndarray:
+    """The side of a fault's face each cell lies on: +1 the hanging wall
+    (plus), -1 the footwall (minus).
+
+    `points` are the mesh's vertices, (n, 3); `faces` the corners of
+    faces of a fault, (..., 3), indices into `points` in the order the
+    mesh holds them; `cells` the corners of a tetrahedron holding each
+    face, (..., 4) in any order, the leading shapes broadcasting.  With
+    v0, v1, v2 a face's corners in order and x the cell's corner not on
+    it, the cell is on the hanging-wall side where
+    (x - v0) . ((v1 - v0) x (v2 - v0)) > 0 and on the footwall side
+    where it is negative (the format page's rule).  Refused where a
+    cell does not hold its face's three corners, or where x lies in the
+    face's plane.  The rule holds for reference and physical
+    coordinates alike, the mapping preserving orientation.
+    """
+    x = np.asarray(points, dtype=float)
+    f = np.asarray(faces)
+    c = np.asarray(cells)
+    if x.ndim != 2 or x.shape[1] != 3:
+        raise ValueError(f"points have shape (n, 3), got {x.shape}")
+    if f.shape[-1:] != (3,) or c.shape[-1:] != (4,):
+        raise ValueError(f"faces have shape (..., 3) and cells (..., 4), got "
+                         f"{f.shape} and {c.shape}")
+    if not (np.issubdtype(f.dtype, np.integer) and np.issubdtype(c.dtype, np.integer)):
+        raise ValueError("faces and cells are corner indices, integers")
+    shape = np.broadcast_shapes(f.shape[:-1], c.shape[:-1])
+    f = np.broadcast_to(f, shape + (3,))
+    c = np.broadcast_to(c, shape + (4,))
+    for what, idx in (("faces", f), ("cells", c)):
+        if idx.size and (idx.min() < 0 or idx.max() >= len(x)):
+            raise ValueError(f"{what} index vertices outside 0..{len(x) - 1}")
+    on_face = np.any(c[..., :, None] == f[..., None, :], axis=-1)       # (..., 4)
+    held = np.all(np.any(f[..., :, None] == c[..., None, :], axis=-1), axis=-1)
+    bad = ~held | (np.count_nonzero(~on_face, axis=-1) != 1)
+    if np.any(bad):
+        raise ValueError(f"{int(np.count_nonzero(bad))} of {bad.size} cells do not "
+                         "hold their face's three corners")
+    fourth = np.take_along_axis(c, np.argmax(~on_face, axis=-1)[..., None],
+                                axis=-1)[..., 0]
+    v0, v1, v2 = (x[f[..., k]] for k in range(3))
+    s = np.einsum("...i,...i->...", x[fourth] - v0, np.cross(v1 - v0, v2 - v0))
+    if np.any(s == 0.0):
+        raise ValueError(f"{int(np.count_nonzero(s == 0.0))} cells have their "
+                         "fourth corner in their face's plane")
+    return np.where(s > 0.0, 1, -1)
+
+
+def plus_cell(points: ArrayLike, faces: ArrayLike, cells: ArrayLike) -> np.ndarray:
+    """Which of each fault face's two cells is the plus (hanging-wall)
+    one: 0 or 1 for each face, (m,); the other is the minus (footwall)
+    cell.
+
+    `faces` (m, 3) as `fault_side` takes them, and `cells` (m, 2, 4) the
+    corners of the two tetrahedra sharing each face (in MFEM,
+    `GetFaceElements` of the face `GetBdrElementFaceIndex` gives).
+    Refused where a face's two cells do not lie one on each side of it,
+    as the cells of a conforming mesh do.
+    """
+    f = np.asarray(faces)
+    c = np.asarray(cells)
+    if f.ndim != 2 or c.shape != (len(f), 2, 4):
+        raise ValueError(f"faces have shape (m, 3) and cells (m, 2, 4), got "
+                         f"{f.shape} and {c.shape}")
+    side = fault_side(points, f[:, None, :], c)
+    one_each = side[:, 0] == -side[:, 1]
+    if not np.all(one_each):
+        raise ValueError(f"{int(np.count_nonzero(~one_each))} of {len(f)} faces "
+                         "have both their cells on one side")
+    return np.where(side[:, 0] > 0, 0, 1)
+
+
+@dataclass(frozen=True, eq=False)
+class CurveEdges:
+    """The edges of one fault's faces that lie on its curves
+    (`fault_curves`): each (k, 2), the two corners of an edge as vertex
+    indices with the smaller first, the rows in increasing order."""
+
+    #: Its buried tip, where its sides are joined.
+    tip: np.ndarray
+    #: Its edge on the model's outer surface, where its sides are free.
+    free_edge: np.ndarray
+    #: Where it meets another fault.
+    junction: np.ndarray
+
+
+def _edge_counts(faces: np.ndarray) -> dict[tuple[int, int], int]:
+    """Each edge of a set of triangles, its corners sorted, with how many
+    of them use it."""
+    out: dict[tuple[int, int], int] = {}
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        for lo, hi in np.sort(faces[:, [a, b]], axis=1).tolist():
+            out[(lo, hi)] = out.get((lo, hi), 0) + 1
+    return out
+
+
+def _triangles(faces: ArrayLike, what: str) -> np.ndarray:
+    """Faces as an (m, 3) array of integer corners."""
+    f = np.asarray(faces)
+    if f.size == 0:
+        return np.empty((0, 3), dtype=np.int64)
+    if f.ndim != 2 or f.shape[1] != 3 or not np.issubdtype(f.dtype, np.integer):
+        raise ValueError(f"{what} are (m, 3) corner indices, got {f.shape} of "
+                         f"{f.dtype}")
+    return f
+
+
+def fault_curves(faults: Sequence[ArrayLike], surface: ArrayLike) -> list[CurveEdges]:
+    """The tip, free-edge and junction edges of each fault, read from the
+    faces alone: the rule a consumer of a mesh that keeps no curves
+    applies (the format page), and the edges the MSH file's curve
+    groups hold.
+
+    `faults` holds each fault's faces, (m_k, 3) corner indices, and
+    `surface` the faces of the geometry's outer surface (the boundary
+    elements of `MeshManifest.surface_attribute`), all in one numbering
+    of the vertices.  An edge is a pair of corners.  The edges of a
+    fault's faces that are also edges of another fault's faces are its
+    junction; of the rest, an edge one of its faces uses alone is in
+    its free edge where it is also an edge of the surface, and in its
+    tip otherwise; an edge two of its faces use lies inside it.  The
+    answer is one `CurveEdges` a fault, in the order given.
+    """
+    counts = [_edge_counts(_triangles(f, "a fault's faces")) for f in faults]
+    outer = set(_edge_counts(_triangles(surface, "the surface's faces")))
+
+    def array(edges: set[tuple[int, int]]) -> np.ndarray:
+        return np.array(sorted(edges), dtype=np.int64).reshape(-1, 2)
+
+    out = []
+    for k, own in enumerate(counts):
+        shared = {e for e in own if any(e in other for j, other in enumerate(counts)
+                                        if j != k)}
+        once = {e for e, n in own.items() if n == 1} - shared
+        free = once & outer
+        out.append(CurveEdges(tip=array(once - free), free_edge=array(free),
+                              junction=array(shared)))
+    return out

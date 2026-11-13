@@ -12,16 +12,24 @@ its own convention, which can point inward, and consistency here is
 what lets a consumer treat interface i as the outer boundary of layer i
 without inspecting normals itself.
 
-Both run at element order 1, before the order is raised: permuting the
-vertices of a straight simplex is trivial, permuting a curved element's
-interior nodes consistently is not.  `raise_order` then curves the mesh
-and repairs what curving folded.
+A fault's faces enclose nothing and take no outward rule: each is
+oriented with the fault's own normal, from its footwall into its
+hanging wall, read from the surface it was built from at the point of
+it nearest the face's centroid.  That makes the order of a face's
+vertices say which of its two cells is on the hanging-wall side, which
+MFEM, reading an interior boundary element, neither checks nor
+changes.
+
+All of it runs at element order 1, before the order is raised:
+permuting the vertices of a straight simplex is trivial, permuting a
+curved element's interior nodes consistently is not.  `raise_order`
+then curves the mesh and repairs what curving folded.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import KW_ONLY, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import gmsh
 import numpy as np
@@ -29,13 +37,21 @@ from numpy.typing import ArrayLike
 
 from .spec import QUALITY_FLOOR
 
+if TYPE_CHECKING:
+    from ..fault import Patch
+
 __all__ = ["OrientationReport", "node_positions", "signed_measures",
-           "outward_dots", "orient_cells", "orient_boundary", "orient_mesh",
-           "raise_order", "element_quality", "Centres"]
+           "outward_dots", "fault_dots", "orient_cells", "orient_boundary",
+           "orient_faults", "orient_mesh", "raise_order", "element_quality",
+           "Centres", "FaultSurfaces"]
 
 #: The point each surface encloses, by entity tag, where it is not the
 #: origin: an offset inclusion encloses its own centre.
 type Centres = Mapping[int, ArrayLike]
+
+#: The surface each face of a fault was built from, by entity tag: the
+#: patch whose normal the face is oriented with.
+type FaultSurfaces = Mapping[int, Patch]
 
 
 @dataclass(frozen=True)
@@ -47,16 +63,22 @@ class OrientationReport:
     cells_flipped: int = 0
     faces_checked: int = 0
     faces_flipped: int = 0
+    fault_faces_checked: int = 0
+    fault_faces_flipped: int = 0
 
     @property
     def clean(self) -> bool:
-        """Whether the mesh was already consistently oriented."""
+        """Whether the cells and the boundary were already consistently
+        oriented; a fault's faces have no orientation until it is given."""
         return self.cells_flipped == 0 and self.faces_flipped == 0
 
     def __repr__(self) -> str:
+        faults = (f", fault faces {self.fault_faces_flipped}/"
+                  f"{self.fault_faces_checked} flipped"
+                  if self.fault_faces_checked else "")
         return (f"OrientationReport(cells {self.cells_flipped}/"
                 f"{self.cells_checked} flipped, faces {self.faces_flipped}/"
-                f"{self.faces_checked} flipped)")
+                f"{self.faces_checked} flipped{faults})")
 
 
 def node_positions() -> dict[int, np.ndarray]:
@@ -144,13 +166,54 @@ def outward_dots(tag: int, pos: Mapping[int, np.ndarray], *,
     return np.concatenate(all_tags), np.concatenate(all_dots)
 
 
+def fault_dots(tag: int, patch: Patch, pos: Mapping[int, np.ndarray]
+               ) -> tuple[np.ndarray, np.ndarray]:
+    """(element tags, normal . n) for the faces of a fault's surface, n
+    the patch's unit normal at its point nearest each face's centroid.
+
+    Positive means the face's normal points, as the patch's does, from
+    the footwall into the hanging wall.  The patch is the one the
+    surface was built from, in the mesh's own coordinates.
+    """
+    all_tags, all_dots = [], []
+    for tags, pts in _corner_blocks(2, tag, pos):
+        normal = np.cross(pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0])
+        where = patch.locate(pts.mean(axis=1), strict=False)
+        all_tags.append(tags)
+        all_dots.append(np.einsum("ij,ij->i", normal,
+                                  patch.normal(where.u, where.v)))
+    if not all_tags:
+        return np.empty(0, dtype=np.int64), np.empty(0)
+    return np.concatenate(all_tags), np.concatenate(all_dots)
+
+
+def orient_faults(faults: FaultSurfaces, *,
+                  pos: Mapping[int, np.ndarray] | None = None) -> tuple[int, int]:
+    """Point every face of every fault from its footwall into its hanging
+    wall: `faults` maps each face's entity tag to the patch it was built
+    from (`fault_dots`)."""
+    pos = node_positions() if pos is None else pos
+    checked = flipped = 0
+    for tag, patch in faults.items():
+        tags, dots = fault_dots(tag, patch, pos)
+        checked += tags.size
+        bad = tags[dots < 0.0]
+        if bad.size:
+            gmsh.model.mesh.reverseElements(bad)
+            flipped += bad.size
+    return checked, flipped
+
+
 def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None,
-                    centres: Centres | None = None) -> tuple[int, int]:
+                    centres: Centres | None = None,
+                    skip: Collection[int] = ()) -> tuple[int, int]:
     """Point every surface's normals away from the centre it encloses.
 
     `centres` maps a surface's entity tag to the point it encloses; the
-    origin otherwise.  2D is skipped: a curve's orientation carries no
-    outward normal in the same sense, and no consumer asks for one.
+    origin otherwise.  `skip` names surfaces that enclose nothing, a
+    fault's faces, which keep the orientation they have.  2D is skipped:
+    a curve's orientation carries no outward normal in the same sense,
+    and no consumer asks for one.
     """
     if dimension != 3:
         return 0, 0
@@ -158,6 +221,8 @@ def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = No
     centres = centres or {}
     checked = flipped = 0
     for _, tag in gmsh.model.getEntities(2):
+        if tag in skip:
+            continue
         tags, dots = outward_dots(tag, pos, centre=centres.get(tag, (0.0, 0.0, 0.0)))
         checked += tags.size
         bad = tags[dots < 0.0]
@@ -167,17 +232,22 @@ def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = No
     return checked, flipped
 
 
-def orient_mesh(dimension: int, *, centres: Centres | None = None
-                ) -> OrientationReport:
-    """Repair cell and boundary orientation; call before raising the order."""
+def orient_mesh(dimension: int, *, centres: Centres | None = None,
+                faults: FaultSurfaces | None = None) -> OrientationReport:
+    """Repair cell and boundary orientation, and orient the faults' faces
+    with their normals (`orient_faults`); call before raising the order."""
     pos = node_positions()
+    faults = faults or {}
     cells_checked, cells_flipped = orient_cells(dimension, pos=pos)
     faces_checked, faces_flipped = orient_boundary(dimension, pos=pos,
-                                                   centres=centres)
+                                                   centres=centres, skip=faults)
+    fault_checked, fault_flipped = orient_faults(faults, pos=pos)
     return OrientationReport(cells_checked=cells_checked,
                              cells_flipped=cells_flipped,
                              faces_checked=faces_checked,
-                             faces_flipped=faces_flipped)
+                             faces_flipped=faces_flipped,
+                             fault_faces_checked=fault_checked,
+                             fault_faces_flipped=fault_flipped)
 
 
 def element_quality(dimension: int) -> tuple[float, int, int]:

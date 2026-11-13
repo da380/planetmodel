@@ -1,8 +1,10 @@
-"""Pictures of models: profiles, sections, maps, spectra and VTK files.
+"""Pictures of models and meshes: profiles, sections, maps, spectra, VTK
+files, and a mesh cut by a plane.
 
 Making a picture is kept apart from drawing it: the numbers are
 `planetmodel.slices`' (a sphere, a section, a profile, a spectrum),
-sampled in the core for any model, and the functions here draw them on
+sampled in the core for any model, or for a mesh `plane_cut`'s, and the
+functions here draw them on
 matplotlib axes they are given, returning what they drew and leaving
 the figure to the caller.  Nothing here is particular to the Earth.
 
@@ -17,7 +19,11 @@ or its shaded relief, with coastlines (`cutaways`, cartopy where the
 Earth's surface is drawn); `spectrum`,
 `correlation` and `correlation_total` draw spectra and correlations by
 degree and radius (`spectra`); `write_vtk` writes a model as VTK files
-for ParaView (`vtk`, no extra needed); `style` holds the look they
+for ParaView (`vtk`, no extra needed); `plane_cut` cuts the cells or
+faces of a simplex mesh by a plane and `mesh_section` draws the cut,
+the elements' sections coloured as asked and the faces' as curves, and
+`clip_polygons` keeps the part of polygons on one side of a plane, for
+a cutaway in three dimensions (`meshes`); `style` holds the look they
 share, a signed field such as a sensitivity kernel drawn symmetric about
 zero with `diverging=True`, its limits at a percentile with `clip=`, and
 divided by its largest value with `normalised=True`, on maps and
@@ -26,6 +32,7 @@ made with the `plot` extra, and cartopy only where a map is drawn.
 """
 from .cutaways import COASTLINE_STYLE, LAND, LIGHT, SEA, cutaway
 from .maps import cell_edges, sphere_map
+from .meshes import PlaneCut, clip_polygons, mesh_section, plane_cut
 from .profiles import profile, radial_profile
 from .sections import section
 from .spectra import correlation, correlation_total, spectrum
@@ -34,5 +41,6 @@ from .vtk import write_vtk
 
 __all__ = ["profile", "radial_profile", "section", "sphere_map", "cell_edges",
            "cutaway", "spectrum", "correlation", "correlation_total", "write_vtk",
+           "PlaneCut", "plane_cut", "mesh_section", "clip_polygons",
            "BOUNDARY_STYLE", "DIVERGING", "SEQUENTIAL", "LIGHT", "LAND", "SEA",
            "COASTLINE_STYLE", "colour_scale", "colour_extend"]

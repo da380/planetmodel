@@ -304,8 +304,11 @@ def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
     among the `fields` where one was written; the displacement's unit
     is "1" until a model's scales are known.  What only a model can say
     (`fluid`, `kind`, `values`, the `model` block) is null, whatever the
-    manifest read had.  The manifest is validated before any file is
-    written.
+    manifest read had.  The faults' records pass through unchanged: a
+    fault's faces are boundary elements of its attribute, which MFEM
+    reads, and the order of their vertices, which it keeps, says which
+    of each face's two elements is on the fault's hanging-wall side.
+    The manifest is validated before any file is written.
     """
     mfem = _mfem()
     path_base = Path(path_base)

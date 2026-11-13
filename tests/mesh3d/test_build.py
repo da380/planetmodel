@@ -8,12 +8,10 @@ import json
 import numpy as np
 import pytest
 
-import gmsh
-
 from planetmodel import Geometry, Skeleton
 from planetmodel.mesh3d import (CappedInterfaces, InterfaceSizing, MeshSpec,
                                 Shell, UniformInterfaces, build_layered_mesh,
-                                manifest as sc)
+                                manifest as sc, read_mesh)
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._writer import read_groups
 from planetmodel.mesh3d.layered import (require_mapping_on_shells,
@@ -27,10 +25,7 @@ pytestmark = pytest.mark.gmsh
 
 def node_radii(msh_path):
     """The radii of every node in a written mesh."""
-    with session(name="nodes"):
-        gmsh.merge(str(msh_path))
-        _, coords, _ = gmsh.model.mesh.getNodes()
-    return np.linalg.norm(coords.reshape(-1, 3), axis=1)
+    return np.linalg.norm(read_mesh(msh_path).points, axis=1)
 
 
 @pytest.fixture(scope="module")
@@ -233,11 +228,8 @@ def test_the_geometry_is_meshed_in_its_own_numbers(tmp_path):
     assert r.max() == pytest.approx(a, rel=1e-9)
     assert r.min() < 1.5e6                      # the core is meshed, not a hole
     # the nodes of the Moho sit on a circle of radius 5.7e6, in metres
-    with session(name="moho"):
-        gmsh.merge(str(res.msh_path))
-        (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, 2)
-        _, coords, _ = gmsh.model.mesh.getNodes(1, curve, includeBoundary=True)
-    moho = np.linalg.norm(coords.reshape(-1, 3), axis=1)
+    mesh = read_mesh(res.msh_path)
+    moho = np.linalg.norm(mesh.points[np.unique(mesh.faces_with(2))], axis=1)
     assert np.allclose(moho, 5.7e6, rtol=1e-9)
     # element sizes are in the same numbers: a coarse mesh, a few across
     assert 10 < res.counts["elements"] < 400

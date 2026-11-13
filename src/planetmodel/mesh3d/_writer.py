@@ -6,7 +6,7 @@ than assumed to be still in place from whatever ran before.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import gmsh
@@ -44,12 +44,16 @@ def read_groups(path: str | Path) -> dict[int, dict[int, str]]:
 
 def confirm_reread(msh_path: str | Path, manifest_path: str | Path, dimension: int,
                    layer_names: Sequence[str | None],
-                   interface_names: Sequence[str | None]) -> None:
+                   interface_names: Sequence[str | None], *,
+                   curves: Mapping[int, str] | None = None) -> None:
     """Merge the written file in a fresh session and check its groups.
 
     A fresh session merging the file is the only evidence a consumer's
-    reader will have.  On a mismatch both files are removed, since a
-    pair that failed this is exactly the pair nobody should find later.
+    reader will have.  `interface_names` names every boundary group,
+    the faults' after the interfaces', and `curves` the dimension-1
+    groups by number, where a 3D mesh has any.  On a mismatch both files
+    are removed, since a pair that failed this is exactly the pair
+    nobody should find later.
     """
     msh_path, manifest_path = Path(msh_path), Path(manifest_path)
     with session(name="reread"):
@@ -66,6 +70,14 @@ def confirm_reread(msh_path: str | Path, manifest_path: str | Path, dimension: i
             raise RuntimeError(
                 f"the written mesh re-reads with dimension-{dim} groups {got}, "
                 f"not {dict(enumerate(names, 1))}; both files were removed")
+    if curves:
+        got = groups.get(1, {})
+        if any(got.get(tag) != name for tag, name in curves.items()):
+            msh_path.unlink(missing_ok=True)
+            manifest_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"the written mesh re-reads with dimension-1 groups {got}, not "
+                f"{dict(curves)}; both files were removed")
 
 
 def element_counts(*, dimension: int = 3) -> dict[str, int]:
