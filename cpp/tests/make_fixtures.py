@@ -110,31 +110,37 @@ own writing, character for character.
 
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
-`base.json`; variants the reader accepts (`accept_*.json`: the keys
-added within the schema left out, an unknown key added, two faults
-meeting along a junction added); and one malformed copy per check
-`validate_structure` makes (`bad_*.json`, the faults' checks on the
-copy with faults), listed in `bad.txt`, one per line, as the case, a
-tab, the JSON path the fault lies at (empty for the document itself),
-a tab, and a phrase the refusal says.  None needs gmsh.
+`base.json` (schema 5); variants the reader accepts (`accept_*.json`:
+the keys added within the schema left out, an unknown key added, and
+two faults meeting along a junction added with their collars, schema
+6); and one malformed copy per check `validate_structure` makes
+(`bad_*.json`, the faults' and collars' checks on the copy with
+faults), listed in `bad.txt`, one per line, as the case, a tab, the
+JSON path the fault lies at (empty for the document itself), a tab,
+and a phrase the refusal says.  None needs gmsh.
 
 **Meshes with faults** (`fault_meshes/<case>/`, which need gmsh and are
 left out with a note without it): a unit ball of two layers under a
 bump of relief, meshed at order one, with a plane reaching the surface
-(`surface`: a tip and a free edge) and with a splay meeting its main
-fault (`splay`: a junction), each held to `testing.check_fault_mesh`
-first.  Beside each manifest (`<case>.json`), `<case>.mesh.txt` holds
+(`surface`: a tip and a free edge), with a splay ending on its main
+fault (`splay`: a junction, on the splay's boundary and inside the
+main fault), and with two planes crossing (`crossing`: a junction inside
+both), each held to `testing.check_fault_mesh` first.  Beside each
+manifest (`<case>.json`), `<case>.mesh.txt` holds
 the mesh as plain arrays (as `mesh3d.read_mesh` reads it), one per
 line: `vertex x y z` (the physical positions, the mapping applied, in
-index order), `cell a b c d attribute` (each tetrahedron's corners)
+index order), `cell a b c d attribute` (each tetrahedron's corners and
+its element attribute, a collar's where it is in one)
 and `boundary a b c attribute` (each boundary triangle's corners in
 the order the mesh holds them);
 and `<case>.expect` the answers of the Python's rules
-(`mesh3d.manifest.plus_cell`, `fault_curves`): `pair <boundary> <cell>
-<cell> <0|1>` for each face of a fault, its two cells (indices among
-the `cell` lines, the smaller first) and which of them is the plus
-one, and `edge <fault> <tip|free_edge|junction> a b` for each edge on
-a fault's curves.
+(`mesh3d.manifest.plus_cell`, `fault_curves`, `fault_walls`): `pair
+<boundary> <cell> <cell> <0|1>` for each face of a fault, its two cells
+(indices among the `cell` lines, the smaller first) and which of them
+is the plus one; `edge <fault> <tip|free_edge|junction|junction_end> a
+b` for each edge on a fault's curves; `ends <fault> <fault>` for each
+fault a fault ends on; and `wall <fault> <cell> <1|-1>` for each cell
+in a wall of a fault, every other cell in neither.
 
 **The facts the C++ restates** (`constants.txt`), one per line, a key
 and its value separated by spaces: the version, `G_SI`,
@@ -502,9 +508,9 @@ def manifests(directory: Path) -> list[Path]:
 
 
 def _fault_cases() -> dict[str, dict[str, Any]]:
-    """The faults of the meshes with faults, by case and name: planes on a
-    unit sphere, with no slip."""
-    from planetmodel.fault import Fault, GeographicFrame, Plane, Slip
+    """The faults of the meshes with faults, by case and name: planes and
+    a bilinear patch on a unit sphere, with no slip."""
+    from planetmodel.fault import Fault, GeographicFrame, Plane, Slip, StructuredPatch
 
     unit, zero = GeographicFrame(1.0), Slip(np.zeros((1, 1, 3)))
 
@@ -514,16 +520,23 @@ def _fault_cases() -> dict[str, dict[str, Any]]:
     # a plane whose up-dip edge is at the reference surface
     trace = plane(0.15 * np.sin(np.deg2rad(60.0)), strike=20.0, dip=60.0, length=0.3,
                   width=0.3)
-    # a main fault, and a splay whose down-dip edge lies on it
+    # a main fault, and a splay whose down-dip edge lies in it exactly: a
+    # bilinear patch through two of its points and the same two moved up
+    # dip and into its hanging wall
     main = plane(0.2, strike=0.0, dip=60.0, length=0.4, width=0.3)
-    foot = main.cartesian(0.0, -0.1)
-    splay = Plane(unit, unit.coordinates(foot), strike=0.0, dip=30.0, length=0.3,
-                  width=0.15, slip=zero)
-    splay = Plane(unit, unit.coordinates(splay.cartesian(0.0, 0.0) + foot
-                                         - splay.cartesian(0.0, 0.5)),
-                  strike=0.0, dip=30.0, length=0.3, width=0.15, slip=zero)
+    foot = main.cartesian(np.array([-0.3, 0.3]), np.array([0.1, 0.1]))
+    rise = (0.08 * main.normal(0.0, 0.0)
+            + 0.2 * (main.cartesian(0.0, -0.5) - main.cartesian(0.0, 0.5)))
+    splay = StructuredPatch(unit, unit.coordinates(np.stack([foot + rise, foot],
+                                                            axis=1)),
+                            slip=zero, interpolation="linear")
+    # two planes crossing at their centres
+    a = plane(0.2, strike=0.0, dip=60.0, length=0.3, width=0.3)
+    b = Plane(unit, a.centroid, strike=90.0, dip=60.0, length=0.3, width=0.3,
+              slip=zero)
     return {"surface": {"trace": Fault([trace])},
-            "splay": {"main": Fault([main]), "splay": Fault([splay])}}
+            "splay": {"main": Fault([main]), "splay": Fault([splay])},
+            "crossing": {"a": Fault([a]), "b": Fault([b])}}
 
 
 def fault_meshes(directory: Path) -> list[Path]:
@@ -574,6 +587,7 @@ def fault_meshes(directory: Path) -> list[Path]:
             curves = mf.fault_curves([boundary[attributes == f["attribute"]]
                                       for f in card.faults],
                                      boundary[attributes == card.surface_attribute])
+            walls = mesh.walls(card)
 
             target = root / label
             target.mkdir(parents=True)
@@ -589,10 +603,15 @@ def fault_meshes(directory: Path) -> list[Path]:
             expect = [f"pair {b} {p} {q} {k}"
                       for b, (p, q), k in zip(faces.tolist(), pairs.tolist(),
                                               plus.tolist())]
-            for record, edges in zip(card.faults, curves):
-                for key in ("tip", "free_edge", "junction"):
+            for record, edges, wall in zip(card.faults, curves, walls):
+                for key in ("tip", "free_edge", "junction", "junction_end"):
                     expect += [f"edge {record['name']} {key} {a} {b}"
                                for a, b in getattr(edges, key).tolist()]
+                expect += [f"ends {record['name']} {card.faults[j]['name']}"
+                           for j in edges.ends_on]
+                expect += [f"wall {record['name']} {c} {w}"
+                           for c, w in zip(np.flatnonzero(wall).tolist(),
+                                           wall[wall != 0].tolist())]
             expect_path = target / f"{label}.expect"
             expect_path.write_text("\n".join(expect) + "\n")
             written += [manifest_path, mesh_path, expect_path]
@@ -801,18 +820,30 @@ def _both(*edits: Any) -> Any:
 #: reaching the surface, pulled back and refined towards, and a splay of
 #: two patches.
 _FAULTS: list[dict[str, Any]] = [
-    {"name": "megathrust", "attribute": 4, "layers": [2], "tip": 1, "free_edge": 2,
-     "junction": 3, "meets": ["splay"], "controls": [[17, 17]], "offset": 3.3e-08,
+    {"name": "megathrust", "attribute": 4, "layers": [2], "hanging_wall": [5, 6],
+     "tip": 1, "free_edge": 2, "junction": 3, "meets": ["splay"], "ends_on": [],
+     "controls": [[17, 17]], "offset": 3.3e-08,
      "sizing": {"size": 0.05, "far_size": 0.3, "decay_width": 0.2}},
-    {"name": "splay", "attribute": 5, "layers": [1, 2], "tip": 4, "free_edge": None,
-     "junction": 6, "meets": ["megathrust"], "controls": [[9, 9], [5, 17]],
-     "offset": 0, "sizing": None}]
+    {"name": "splay", "attribute": 5, "layers": [1, 2], "hanging_wall": [4, 6, 7],
+     "tip": 4, "free_edge": None, "junction": 6, "meets": ["megathrust"],
+     "ends_on": ["megathrust"], "controls": [[9, 9], [5, 17]], "offset": 0,
+     "sizing": None}]
+
+
+#: The element attributes the base's layers carry beside `_FAULTS`: the
+#: splay's collar in the core (4), and in the mantle the megathrust's (5),
+#: both's (6) and the splay's (7).
+_COLLARS = [[1, 4], [2, 5, 6, 7], [3]]
 
 
 def _faulted(*edits: Any) -> Any:
-    """An edit adding `_FAULTS` to the base, then doing `edits` in turn."""
+    """An edit adding `_FAULTS` and their collars to the base, under the
+    schema of a manifest with faults, then doing `edits` in turn."""
     def edit(card: dict[str, Any]) -> None:
         card["faults"] = json.loads(json.dumps(_FAULTS))
+        card["schema"] = "planetmodel.mesh.manifest/6"
+        for layer, attributes in zip(card["layers"], _COLLARS):
+            layer["attributes"] = list(attributes)
         for e in edits:
             e(card)
     return edit
@@ -920,6 +951,8 @@ _BAD_MANIFESTS = {
                                  "faults[0].attribute", "expected 4"),
     "fault_layers_shell": (_faulted(_set("faults", 0, "layers", value=[2, 3])),
                            "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_collar": (_faulted(_set("faults", 0, "layers", value=[5])),
+                            "faults[0].layers", "not attributes of layers of the"),
     "fault_layers_empty": (_faulted(_set("faults", 0, "layers", value=[])),
                            "faults[0].layers", "not attributes of layers of the"),
     "fault_layers_float": (_faulted(_set("faults", 0, "layers", value=[2.0])),
@@ -966,6 +999,49 @@ _BAD_MANIFESTS = {
         "faults[0].sizing", "with a positive decay_width"),
     "fault_sizing_missing": (_faulted(_drop("faults", 0, "sizing", "far_size")),
                              "faults[0].sizing", 'no member "far_size"'),
+    "schema_5_with_faults": (_faulted(_set("schema",
+                                           value="planetmodel.mesh.manifest/5")),
+                             "faults", "a manifest with faults is"),
+    "schema_6_without_faults": (_set("schema", value="planetmodel.mesh.manifest/6"),
+                                "faults", "has faults"),
+    "fault_ends_on_unmet": (_faulted(_set("faults", 0, "ends_on", value=["slab"])),
+                            "faults[0].ends_on", "not faults it meets"),
+    "fault_ends_on_twice": (_faulted(_set("faults", 1, "ends_on",
+                                          value=["megathrust", "megathrust"])),
+                            "faults[1].ends_on", "each once"),
+    "fault_ends_on_type": (_faulted(_set("faults", 1, "ends_on", value=[4])),
+                           "faults[1].ends_on[0]", "expected a string"),
+    "fault_hanging_wall_missing": (_faulted(_drop("faults", 0, "hanging_wall")),
+                                   "faults[0]", 'no member "hanging_wall"'),
+    "fault_hanging_wall_layer": (_faulted(_set("faults", 0, "hanging_wall",
+                                               value=[2, 5])),
+                                 "faults[0].hanging_wall", "not collar attributes"),
+    "fault_hanging_wall_order": (_faulted(_set("faults", 1, "hanging_wall",
+                                               value=[6, 4, 7])),
+                                 "faults[1].hanging_wall", "in increasing order"),
+    "layer_attributes_missing": (_faulted(_drop("layers", 1, "attributes")),
+                                 "layers[1]", 'no member "attributes"'),
+    "layer_attributes_own": (_faulted(_set("layers", 1, "attributes",
+                                           value=[5, 2, 6, 7])),
+                             "layers[1].attributes", "not its own attribute 2"),
+    "layer_attributes_order": (_faulted(_set("layers", 1, "attributes",
+                                             value=[2, 6, 5, 7])),
+                               "layers[1].attributes", "in increasing order"),
+    "layer_attributes_type": (_faulted(_set("layers", 1, "attributes",
+                                            value=[2, 5.0, 6, 7])),
+                              "layers[1].attributes[1]", "expected an integer"),
+    "shell_collar": (_faulted(_set("layers", 2, "attributes", value=[3, 8])),
+                     "layers[2].attributes", "a shell holds no fault"),
+    "collar_twice": (_faulted(_set("layers", 0, "attributes", value=[1, 4, 5])),
+                     "layers[1].attributes", "which layers[0] lists too"),
+    "collar_gap": (_faulted(_set("layers", 1, "attributes", value=[2, 5, 6, 8]),
+                            _set("faults", 1, "hanging_wall", value=[4, 6, 8])),
+                   "layers", "not 4..7"),
+    "collar_in_no_wall": (_faulted(_set("faults", 1, "hanging_wall", value=[4, 6])),
+                          "layers[1].attributes", "in no fault's hanging wall"),
+    "collar_order": (_faulted(_set("faults", 0, "hanging_wall", value=[6, 7]),
+                              _set("faults", 1, "hanging_wall", value=[4, 5, 7])),
+                     "layers[1].attributes", "out of the order of layer and faults"),
 }
 
 

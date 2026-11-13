@@ -9,16 +9,18 @@ definition of its shape.  A consumer reads the manifest, opens the mesh
 the way it says, and knows where to look for every field and what each
 one means.
 
-The schema is `planetmodel.mesh.manifest/5`, with these blocks:
+The schema is `planetmodel.mesh.manifest/5` for a mesh without faults
+and `planetmodel.mesh.manifest/6` for one with them, with these blocks:
 
   mesh          file, format ("msh" or "mfem"), nodes ("reference" or
                 "physical"), read_options, displacement
-  layers[]      attribute, name, r_inner, r_outer, in_geometry, fluid
+  layers[]      attribute, name, r_inner, r_outer, in_geometry, fluid,
+                and under schema 6 attributes
   interfaces[]  attribute, name, radius, between_layers, kind, values
   refinements[] name, size, far_size, decay_width, points, digest
-  faults[]      name, attribute, layers, tip, free_edge, junction, meets,
-                controls, offset, sizing; written only where the mesh
-                has faults
+  faults[]      name, attribute, layers, hanging_wall, tip, free_edge,
+                junction, meets, ends_on, controls, offset, sizing;
+                schema 6 alone
   fields[]      name, file, fe_space, vdim, ordering, rank, weight,
                 voigt, unit, layers, radial_degree
   scales        length, mass, time, temperature in SI; null until a model
@@ -48,10 +50,15 @@ fields the mesh was sized under, recorded for provenance and change
 detection — a point cloud by its count and digest, never the points
 themselves.  Layers are numbered by
 `attribute` 1..N from the centre and `between_layers` gives 0-based
-layer indices with -1 for the outside.  A field is a file beside the
+layer indices with -1 for the outside.  Wherever a record names layers
+(`fields[].layers`, `faults[].layers`, the model file's layer n being
+the layer of attribute n + 1) it names them by that attribute, the
+layer's own; under schema 5 it is the one attribute the layer's cells
+carry, under schema 6 the first of the layer's `attributes`, the others
+being its collars' (below).  A field is a file beside the
 mesh, a finite-element space to read it into, a character (`rank`,
-`weight`, `voigt`), a unit and the attributes of the layers on which
-its values mean anything.  The displacement m(X) - X is a field like
+`weight`, `voigt`), a unit and the layers on which its values mean
+anything.  The displacement m(X) - X is a field like
 any other, a vector on every layer; `mesh.displacement` names it where
 one was written, and `mesh.nodes` says whether the mesh's coordinates
 are reference coordinates or already carry it.  Flat and boring on
@@ -65,14 +72,18 @@ after the M interfaces, every one oriented with the fault's normal:
 its vertices, in the order written, run so that (v1 - v0) x (v2 - v0)
 points from the footwall into the hanging wall, so the cell on that
 side of a face is the hanging-wall (plus) one and the other the
-footwall (minus) one.  `layers` are the attributes of the layers its
-faces lie in.  The curves bounding it are dimension-1 physical groups
+footwall (minus) one.  `layers` are the layers its faces lie in.  The
+curves bounding it are dimension-1 physical groups
 of the MSH file (an MFEM mesh keeps no curves; the same curves are the
 edges of the fault's faces by the rule the format page gives): `tip`,
 its buried tip, where its sides are joined; `free_edge`, where it meets
 the model's outer surface and its sides are free; `junction`, where it
 meets another fault, whose names `meets` lists; each null where there
-is none.  Fault k's curve groups are numbered 3k - 2, 3k - 1 and 3k
+is none.  `ends_on` names the faults among those it ends on: where its
+junction with one lies on its own boundary (a splay's edge on its main
+fault), its slip is pinned along it as on its tip; where the junction
+is interior to it (the main fault under the splay, two faults crossing)
+it is not.  Fault k's curve groups are numbered 3k - 2, 3k - 1 and 3k
 whether or not they exist.  `controls` are the control nodes [n_u,
 n_v] of each patch's pull-back through the mapping, null under the
 identity, where the fault is built in as given; `offset` the largest
@@ -80,13 +91,34 @@ distance found between the fault and its pull-back mapped forward,
 zero under the identity; `sizing` the refinement towards it, {size,
 far_size, decay_width}, or null.
 
-Two rules turn a fault's faces into what a split-node code needs, and
+A fault's slip lives on its faces' vertices and edges but those of its
+pinned edges (its tip, and its junction where it ends on another
+fault): its slip-carrying vertices and edges.  The cells holding one
+of them, on the hanging-wall side, are the fault's COLLAR, and carry
+element attributes of their own: one for each combination of a layer
+and a set of faults whose collar a cell is in, numbered N + 1, N + 2,
+... after the layers, in the order of the layer and then of the
+faults' indices (compared as tuples).  A cell in no collar keeps its
+layer's attribute.  `layers[k].attributes` lists the element attributes
+the layer's cells carry, its own first, and `faults[k].hanging_wall`
+the collar attributes of the fault's hanging wall; a split-node code
+takes the indicator of those as its chi_HW, and since the attributes
+are the cells' own they survive partitioning, uniform refinement (a
+child inherits its parent's) and pre-partitioned files.  A mesh
+without faults has no collars, and its manifest is schema 5 exactly as
+it was.
+
+Three rules turn a fault's faces into what a split-node code needs, and
 are the format page's: which of a face's two cells is the plus one
-(`fault_side`, `plus_cell`), and which edges of a fault's faces are its
-tip, free edge and junction, read from the faces alone where the mesh
-format keeps no curves (`fault_curves`).  Both take plain arrays (the
-vertices' coordinates, corners as indices into them), so they apply to
-a mesh however it was read; the C++ library states them again.
+(`fault_side`, `plus_cell`); which edges of a fault's faces are its
+tip, free edge and junction, and of its junction where it ends, read
+from the faces alone where the mesh format keeps no curves
+(`fault_curves`); and which cells are in its hanging wall and which in
+its footwall (`fault_walls`, `walls_of_faults`), which the mesher
+writes as the collar attributes (`collars`).  All take plain arrays
+(the vertices' coordinates, corners as indices into them), so they
+apply to a mesh however it was read; the C++ library states them
+again.
 """
 from __future__ import annotations
 
@@ -109,15 +141,29 @@ if TYPE_CHECKING:
     from ..model import Model
     from .spec import Refinement
 
-__all__ = ["SCHEMA", "FORMATS", "NODES", "KINDS", "MeshManifest", "LayerEntry",
+__all__ = ["SCHEMA", "SCHEMA_WITH_FAULTS", "SCHEMAS", "FORMATS", "NODES", "KINDS",
+           "MeshManifest", "LayerEntry",
            "InterfaceEntry", "RefinementEntry", "FaultEntry", "FieldEntry",
            "write", "read", "beside",
            "mesh_block", "scales_block", "constants_block", "fault_curve_groups",
            "validate_structure", "validate_against", "fault_side", "plus_cell",
-           "CurveEdges", "fault_curves"]
+           "CurveEdges", "fault_curves", "fault_walls", "walls_of_faults",
+           "Collars", "collars", "check_collars"]
 
-#: Bump only for an incompatible change; consumers check it.
+#: The schema of a manifest whose mesh has no fault, the cells of layer n
+#: all carrying attribute n.  Bump only for an incompatible change;
+#: consumers check it.
 SCHEMA = "planetmodel.mesh.manifest/5"
+
+#: The schema of a manifest whose mesh has faults: the cells of the
+#: faults' collars carry attributes beyond the layers', which a reader of
+#: `SCHEMA` would take for no layer, so each layer lists the attributes
+#: its cells carry (`layers[].attributes`) and each fault its hanging
+#: wall's (`faults[].hanging_wall`).
+SCHEMA_WITH_FAULTS = "planetmodel.mesh.manifest/6"
+
+#: The schemas `read` reads.
+SCHEMAS = (SCHEMA, SCHEMA_WITH_FAULTS)
 
 #: The MSH format version the mesher writes and MFEM's reader wants.
 MSH_VERSION = 2.2
@@ -156,7 +202,8 @@ def beside(path: str | Path, suffix: str) -> Path:
 class LayerEntry:
     """One `layers[]` record: a layer of the mesh, centre outward."""
 
-    #: The element attribute, 1..N from the centre.
+    #: The layer's own element attribute, 1..N from the centre, by which
+    #: every record names it.
     attribute: int
     #: The layer's name; `layer_<attribute>` where none was given.
     name: str
@@ -170,15 +217,23 @@ class LayerEntry:
     #: Whether shear vanishes throughout the model's layer; False for a
     #: shell, null until a model export reads it (or where it cannot).
     fluid: bool | None = None
+    #: The element attributes its cells carry, its own first and then its
+    #: collars' (module docstring); a manifest with faults alone has the
+    #: key, its cells all carrying `attribute` under schema 5.
+    attributes: list | None = None
 
     @classmethod
     def from_layer(cls, layer: LayerInfo, *, attribute: int, r_inner: float,
-                   r_outer: float, in_geometry: bool) -> "LayerEntry":
-        """The record of a LayerInfo between the given radii."""
+                   r_outer: float, in_geometry: bool,
+                   attributes: Sequence[int] | None = None) -> "LayerEntry":
+        """The record of a LayerInfo between the given radii, its cells
+        carrying `attributes` where its mesh has faults."""
         return cls(attribute=int(attribute),
                    name=layer.name or f"layer_{attribute}",
                    r_inner=float(r_inner), r_outer=float(r_outer),
-                   in_geometry=bool(in_geometry))
+                   in_geometry=bool(in_geometry),
+                   attributes=None if attributes is None
+                   else [int(a) for a in attributes])
 
 
 @dataclass
@@ -269,11 +324,13 @@ class FaultEntry:
     """One `faults[]` record: a fault built into the mesh as an interior
     surface (module docstring).
 
-    `attribute` is the boundary attribute of its faces and `layers` the
-    attributes of the layers they lie in; `tip`, `free_edge` and
-    `junction` are the dimension-1 physical groups of its curves in the
-    MSH file, null where it has none, and `meets` the names of the
-    faults it meets along its junction curves.  `controls` holds each
+    `attribute` is the boundary attribute of its faces, `layers` the
+    layers they lie in and `hanging_wall` the element attributes of its
+    collar; `tip`, `free_edge` and `junction` are the dimension-1
+    physical groups of its curves in the MSH file, null where it has
+    none, `meets` the names of the faults it meets along its junction
+    curves and `ends_on` those of them it ends on, its slip pinned along
+    the junction there.  `controls` holds each
     patch's pull-back grid [n_u, n_v], null where the mapping is the
     identity; `offset` is the largest distance found between the fault
     and its pull-back mapped forward, in the mesh's lengths; `sizing`
@@ -284,9 +341,11 @@ class FaultEntry:
     name: str
     #: The boundary attribute of its faces: M + k, after the interfaces.
     attribute: int
-    #: The attributes of the layers its faces lie in.
+    #: The layers its faces lie in, by their own attributes.
     layers: list
     _: KW_ONLY
+    #: The element attributes of the cells of its hanging wall, its collar.
+    hanging_wall: list = field(default_factory=list)
     #: The physical group of its buried tip curves, or null.
     tip: int | None = None
     #: The physical group of its curves on the outer surface, or null.
@@ -295,6 +354,8 @@ class FaultEntry:
     junction: int | None = None
     #: The names of the faults it meets.
     meets: list = field(default_factory=list)
+    #: The names of the faults it ends on, of those it meets.
+    ends_on: list = field(default_factory=list)
     #: Each patch's pull-back control nodes [n_u, n_v]; null under the identity.
     controls: list | None = None
     #: The largest distance between the fault and its pull-back mapped forward.
@@ -311,8 +372,9 @@ class FieldEntry:
     the space from before it opens the file; `rank`, `weight` and
     `voigt` are the field's character, `unit` its unit string under the
     manifest's scales ("1" where no SI scale is declared, "unknown" for
-    a name without dimensions), and `layers` the attributes of the
-    layers on which its values mean anything: elsewhere the file holds
+    a name without dimensions), and `layers` the layers on which its
+    values mean anything, by their own attributes (their cells carry
+    `MeshManifest.element_attributes` of them): elsewhere the file holds
     zeros.
     """
 
@@ -436,24 +498,67 @@ class MeshManifest:
         """A manifest from the mesh block and the typed entries.
 
         The one place a manifest is assembled, so a key cannot drift
-        between builders and the schema is described once.
+        between builders and the schema is described once: schema 6
+        with the layers' `attributes` where there are faults, schema 5
+        without either where there are none.
         """
-        card = cls(mesh=dict(mesh), layers=[asdict(e) for e in layers],
+        rows = [asdict(e) for e in layers]
+        if not faults:
+            for row in rows:
+                del row["attributes"]
+        card = cls(mesh=dict(mesh), layers=rows,
                    interfaces=[asdict(e) for e in interfaces],
                    refinements=[asdict(e) for e in refinements],
                    faults=[asdict(e) for e in faults],
-                   meta=dict(meta or {}))
+                   meta=dict(meta or {}),
+                   schema=SCHEMA_WITH_FAULTS if faults else SCHEMA)
         validate_structure(card)
         return card
 
     def layer_attribute(self, name: str) -> int:
-        """The attribute number of a named layer."""
+        """The own attribute of a named layer, by which records name it."""
         for entry in self.layers:
             if entry.get("name") == name:
                 return int(entry["attribute"])
         raise KeyError(
             f"no layer named {name!r}; layers are "
             f"{[e.get('name') for e in self.layers]}")
+
+    def _attributes(self, entry: Mapping[str, Any]) -> list[int]:
+        """The element attributes a layer's cells carry, its own first."""
+        if self.schema == SCHEMA_WITH_FAULTS:
+            return [int(a) for a in entry["attributes"]]
+        return [int(entry["attribute"])]
+
+    def element_attributes(self, *, layers: Iterable[int] | None = None
+                           ) -> tuple[int, ...]:
+        """The element attributes the cells of the given layers carry,
+        each layer's own and then its collars', the layers in the order
+        given; every layer's where None.
+
+        The layers are named by their own attributes, as `fields[].layers`
+        and `faults[].layers` name them: an MFEM marker for the cells of a
+        layer, or of the layers where a field means anything, is made from
+        this list.  KeyError for a number that is no layer's own attribute.
+        """
+        by = {int(e["attribute"]): e for e in self.layers}
+        out = []
+        for a in (by if layers is None else layers):
+            if int(a) not in by:
+                raise KeyError(f"no layer has its own attribute {a}; the layers' "
+                               f"are {sorted(by)}")
+            out += self._attributes(by[int(a)])
+        return tuple(out)
+
+    def layer_of(self, attribute: int) -> dict[str, Any]:
+        """The record of the layer whose cells carry an element
+        attribute: its own, or one of its collars'.  KeyError where no
+        layer's cells carry it."""
+        for entry in self.layers:
+            if int(attribute) in self._attributes(entry):
+                return entry
+        raise KeyError(f"no layer's cells carry element attribute {attribute}; "
+                       f"they carry {list(self.element_attributes())}")
 
     def interface_attribute(self, name: str) -> int:
         """The attribute number of a named interface."""
@@ -484,9 +589,10 @@ class MeshManifest:
 
     @property
     def shell_attributes(self) -> tuple[int, ...]:
-        """Attributes of the layers outside the geometry: the shells."""
-        return tuple(int(e["attribute"]) for e in self.layers
-                     if not e.get("in_geometry", True))
+        """The element attributes of the layers outside the geometry, the
+        shells, which hold no fault and so no collar."""
+        return self.element_attributes(layers=[int(e["attribute"]) for e in self.layers
+                                               if not e.get("in_geometry", True)])
 
     @property
     def surface_attribute(self) -> int:
@@ -528,7 +634,9 @@ class MeshManifest:
         rows = [(str(e.get("attribute", "?")), str(e.get("name", "")),
                  f"[{_num(e.get('r_inner'))}, {_num(e.get('r_outer'))}]",
                  "in geometry" if e.get("in_geometry", True) else "shell",
-                 {True: "fluid", False: "solid"}.get(e.get("fluid"), ""))
+                 {True: "fluid", False: "solid"}.get(e.get("fluid"), ""),
+                 f"collars {list(e['attributes'][1:])}"
+                 if len(e.get("attributes") or ()) > 1 else "")
                 for e in self.layers]
         lines.extend(_table(rows))
         lines.append("  interfaces")
@@ -558,6 +666,9 @@ class MeshManifest:
                                 ("junction", "junction"))
                                if e.get(key) is not None),
                      f"meets {', '.join(e['meets'])}" if e.get("meets") else "",
+                     f"ends on {', '.join(e['ends_on'])}" if e.get("ends_on")
+                     else "",
+                     f"hanging wall {list(e.get('hanging_wall', []))}",
                      f"offset {_num(e.get('offset'))}")
                     for e in self.faults]
             lines.extend(_table(rows))
@@ -620,8 +731,8 @@ def _table(rows: Sequence[Sequence[str]], *, numbered: bool = True) -> list[str]
 
 def write(path: str | Path, manifest: MeshManifest) -> Path:
     """Write the manifest beside its mesh, and return the path.  The
-    `faults` key is written only where the mesh has a fault, so a mesh
-    without one has the manifest it always had."""
+    `faults` key is written only where the mesh has a fault (schema 6),
+    so a mesh without one has the manifest it always had (schema 5)."""
     path = beside(path, ".json")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(manifest)
@@ -636,14 +747,15 @@ def write(path: str | Path, manifest: MeshManifest) -> Path:
 
 
 def read(path: str | Path) -> MeshManifest:
-    """Read a manifest, checking the schema it declares and its structure."""
+    """Read a manifest, checking the schema it declares (one of SCHEMAS)
+    and its structure."""
     with open(path) as fh:
         data = json.load(fh)
     declared = data.get("schema")
-    if declared != SCHEMA:
+    if declared not in SCHEMAS:
         raise ValueError(
             f"{path}: manifest schema is {declared!r}, this planetmodel reads "
-            f"{SCHEMA!r}")
+            f"{' and '.join(map(repr, SCHEMAS))}")
     known = set(MeshManifest.__dataclass_fields__)
     card = MeshManifest(**{k: v for k, v in data.items() if k in known})
     validate_structure(card)
@@ -693,6 +805,8 @@ def validate_structure(manifest: MeshManifest) -> None:
     def fail(msg: str) -> NoReturn:
         raise ValueError(f"malformed manifest: {msg}")
 
+    if manifest.schema not in SCHEMAS:
+        fail(f"schema is {manifest.schema!r}, not one of {SCHEMAS}")
     m = manifest.mesh
     _check_record(m, _MESH_FIELDS, "mesh", fail)
     if m["format"] not in FORMATS:
@@ -710,6 +824,9 @@ def validate_structure(manifest: MeshManifest) -> None:
         if not isinstance(entries, list):
             fail(f"{what} must be a list of objects")
         types = _entry_types(cls)
+        if cls is LayerEntry:
+            # a layer's attributes are schema 6's, and checked with the faults
+            del types["attributes"]
         for i, e in enumerate(entries):
             _check_record(e, types, f"{what}[{i}]", fail)
 
@@ -765,6 +882,8 @@ def validate_structure(manifest: MeshManifest) -> None:
             fail(f"refinements[{i}].points is {e['points']}, not a count")
 
     _check_faults(manifest, fail)
+    if manifest.faults:
+        _check_collars(manifest, fail)
 
     names = [e["name"] for e in manifest.fields]
     if len(set(names)) != len(names):
@@ -825,8 +944,15 @@ def _check_faults(manifest: MeshManifest, fail: Fail) -> None:
     attributes running on from the interfaces', names unique and not an
     interface's, layers of the geometry, the curve groups fault k's,
     meetings mutual and with a junction to show for them, and the
-    pull-back and sizing records well formed."""
+    pull-back and sizing records well formed; and the schema the one of a
+    manifest with faults, or of one without."""
     faults = manifest.faults
+    if faults and manifest.schema != SCHEMA_WITH_FAULTS:
+        fail(f"faults are listed under schema {manifest.schema!r}; a manifest "
+             f"with faults is {SCHEMA_WITH_FAULTS!r}")
+    if not faults and manifest.schema == SCHEMA_WITH_FAULTS:
+        fail(f"faults lists none, and a manifest of schema "
+             f"{SCHEMA_WITH_FAULTS!r} has faults")
     n_faces = len(manifest.interfaces)
     names = [e["name"] for e in faults]
     if len(set(names)) != len(names):
@@ -860,6 +986,10 @@ def _check_faults(manifest: MeshManifest, fail: Fail) -> None:
         if bool(e["meets"]) != (e["junction"] is not None):
             fail(f"faults[{i}] has junction {e['junction']} but meets "
                  f"{e['meets']}: a junction is where it meets another fault")
+        ends = e["ends_on"]
+        if (not all(isinstance(n, str) and n in e["meets"] for n in ends)
+                or len(set(ends)) != len(ends)):
+            fail(f"faults[{i}].ends_on is {ends}, not faults it meets, each once")
         controls = e["controls"]
         if controls is not None and not all(
                 isinstance(pair, list) and len(pair) == 2
@@ -878,6 +1008,56 @@ def _check_faults(manifest: MeshManifest, fail: Fail) -> None:
                      "far_size with a positive decay_width")
 
 
+def _check_collars(manifest: MeshManifest, fail: Fail) -> None:
+    """Schema 6's collar records (module docstring): each layer's
+    `attributes` its own and then collar attributes in increasing order,
+    none for a shell; the collar attributes N + 1..N + C, each one
+    layer's and in some fault's hanging wall; each fault's hanging wall
+    collar attributes in increasing order; and the collars numbered in
+    the order of their layer and then of their faults, so that no two
+    share a combination."""
+    n = len(manifest.layers)
+    owner: dict[int, int] = {}      # collar attribute -> the layer's own
+    for i, e in enumerate(manifest.layers):
+        where = f"layers[{i}].attributes"
+        attrs = e.get("attributes")
+        if (not isinstance(attrs, list) or not attrs
+                or not all(_typed(a, (int,)) for a in attrs)
+                or attrs[0] != e["attribute"] or any(a <= n for a in attrs[1:])
+                or any(b <= a for a, b in zip(attrs[1:], attrs[2:]))):
+            fail(f"{where} is {attrs!r}, not its own attribute {e['attribute']} "
+                 f"and then collar attributes above {n} in increasing order")
+        if len(attrs) > 1 and not e["in_geometry"]:
+            fail(f"{where} lists collars {attrs[1:]}, and a shell holds no fault")
+        for a in attrs[1:]:
+            if a in owner:
+                fail(f"{where} lists collar {a}, which layers[{owner[a] - 1}] lists "
+                     "too")
+            owner[a] = e["attribute"]
+    if sorted(owner) != list(range(n + 1, n + 1 + len(owner))):
+        fail(f"layers list the collar attributes {sorted(owner)}, not "
+             f"{n + 1}..{n + len(owner)}")
+    walls: dict[int, list[int]] = {a: [] for a in owner}
+    for k, e in enumerate(manifest.faults):
+        hw = e["hanging_wall"]
+        if (not all(_typed(a, (int,)) and a in owner for a in hw)
+                or any(b <= a for a, b in zip(hw, hw[1:]))):
+            fail(f"faults[{k}].hanging_wall is {hw}, not collar attributes in "
+                 "increasing order")
+        for a in hw:
+            walls[a].append(k)
+    previous: tuple[int, tuple[int, ...]] | None = None
+    for a in sorted(owner):
+        where = f"layers[{owner[a] - 1}].attributes"
+        if not walls[a]:
+            fail(f"{where} lists collar {a}, which is in no fault's hanging wall")
+        key = (owner[a], tuple(walls[a]))
+        if previous is not None and key <= previous:
+            fail(f"{where} lists collar {a} (layer {owner[a]}, faults "
+                 f"{list(walls[a])}) out of the order of layer and faults")
+        previous = key
+
+
 def validate_against(manifest: MeshManifest, *, layer_count: int,
                      interface_count: int, fault_count: int = 0,
                      groups: Mapping[str, Iterable[int]] | None = None) -> None:
@@ -885,8 +1065,9 @@ def validate_against(manifest: MeshManifest, *, layer_count: int,
 
     `groups` maps "layers" and "interfaces" to the physical group
     numbers the mesh carries, both of which must run 1..N from the
-    centre, and "faults" to those of the faults' faces, which run on
-    from the interfaces'.
+    centre, "faults" to those of the faults' faces, which run on from
+    the interfaces', and "collars" to those of the collars' cells, which
+    run on from the layers' and are the manifest's.
     """
     if len(manifest.layers) != layer_count:
         raise ValueError(
@@ -908,9 +1089,11 @@ def validate_against(manifest: MeshManifest, *, layer_count: int,
                 f"manifest {what} attributes are {attrs}, expected "
                 f"1..{len(entries)} from the centre outward")
     if groups is not None:
-        first = {"layers": 1, "interfaces": 1, "faults": interface_count + 1}
+        first = {"layers": 1, "interfaces": 1, "faults": interface_count + 1,
+                 "collars": layer_count + 1}
         counts = {"layers": layer_count, "interfaces": interface_count,
-                  "faults": fault_count}
+                  "faults": fault_count,
+                  "collars": len(manifest.element_attributes()) - layer_count}
         for what, wanted in groups.items():
             got = sorted(wanted)
             start = first.get(what, 1)
@@ -998,7 +1181,8 @@ def plus_cell(points: ArrayLike, faces: ArrayLike, cells: ArrayLike) -> np.ndarr
 class CurveEdges:
     """The edges of one fault's faces that lie on its curves
     (`fault_curves`): each (k, 2), the two corners of an edge as vertex
-    indices with the smaller first, the rows in increasing order."""
+    indices with the smaller first, the rows in increasing order; and the
+    faults it ends on."""
 
     #: Its buried tip, where its sides are joined.
     tip: np.ndarray
@@ -1006,6 +1190,18 @@ class CurveEdges:
     free_edge: np.ndarray
     #: Where it meets another fault.
     junction: np.ndarray
+    #: The part of its junction on its own boundary, where it ends on
+    #: another fault: its slip is pinned there as on its tip.
+    junction_end: np.ndarray
+    #: The faults it ends on, by their indices in the list given.
+    ends_on: tuple[int, ...]
+
+    @property
+    def pinned(self) -> np.ndarray:
+        """The edges along which its slip is pinned to zero, (k, 2) in
+        increasing order: its tip, and its junction where it ends."""
+        both = np.concatenate([self.tip, self.junction_end])
+        return np.unique(both, axis=0).reshape(-1, 2).astype(np.int64)
 
 
 def _edge_counts(faces: np.ndarray) -> dict[tuple[int, int], int]:
@@ -1030,20 +1226,24 @@ def _triangles(faces: ArrayLike, what: str) -> np.ndarray:
 
 
 def fault_curves(faults: Sequence[ArrayLike], surface: ArrayLike) -> list[CurveEdges]:
-    """The tip, free-edge and junction edges of each fault, read from the
-    faces alone: the rule a consumer of a mesh that keeps no curves
-    applies (the format page), and the edges the MSH file's curve
-    groups hold.
+    """The tip, free-edge and junction edges of each fault, and the part
+    of its junction where it ends, read from the faces alone: the rule a
+    consumer of a mesh that keeps no curves applies (the format page),
+    and the edges the MSH file's curve groups hold.
 
     `faults` holds each fault's faces, (m_k, 3) corner indices, and
     `surface` the faces of the geometry's outer surface (the boundary
     elements of `MeshManifest.surface_attribute`), all in one numbering
-    of the vertices.  An edge is a pair of corners.  The edges of a
-    fault's faces that are also edges of another fault's faces are its
-    junction; of the rest, an edge one of its faces uses alone is in
-    its free edge where it is also an edge of the surface, and in its
-    tip otherwise; an edge two of its faces use lies inside it.  The
-    answer is one `CurveEdges` a fault, in the order given.
+    of the vertices.  An edge is a pair of corners, and a fault's count
+    of it the number of its faces that use it: one on the fault's
+    boundary, two inside it.  The edges of a fault's faces that are also
+    edges of another fault's faces are its junction; those of them it
+    counts once, on its own boundary, are where it ends on that other
+    fault (`junction_end`, the faults `ends_on`), and those it counts
+    twice where the other ends on it or the two cross.  Of the rest, an
+    edge counted once is in its free edge where it is also an edge of the
+    surface, and in its tip otherwise; an edge counted twice lies inside
+    it.  The answer is one `CurveEdges` a fault, in the order given.
     """
     counts = [_edge_counts(_triangles(f, "a fault's faces")) for f in faults]
     outer = set(_edge_counts(_triangles(surface, "the surface's faces")))
@@ -1053,10 +1253,279 @@ def fault_curves(faults: Sequence[ArrayLike], surface: ArrayLike) -> list[CurveE
 
     out = []
     for k, own in enumerate(counts):
-        shared = {e for e in own if any(e in other for j, other in enumerate(counts)
-                                        if j != k)}
-        once = {e for e, n in own.items() if n == 1} - shared
-        free = once & outer
-        out.append(CurveEdges(tip=array(once - free), free_edge=array(free),
-                              junction=array(shared)))
+        others = [j for j in range(len(counts)) if j != k]
+        shared = {e for e in own if any(e in counts[j] for j in others)}
+        once = {e for e, n in own.items() if n == 1}
+        end = once & shared
+        free = (once - shared) & outer
+        out.append(CurveEdges(tip=array(once - shared - free), free_edge=array(free),
+                              junction=array(shared), junction_end=array(end),
+                              ends_on=tuple(j for j in others
+                                            if any(e in counts[j] for e in end))))
     return out
+
+
+#: The six edges of a tetrahedron and the three of a triangle, as pairs
+#: of corners, and the four faces of a tetrahedron, each opposite one
+#: corner.
+_TET_EDGES = np.array([[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]])
+_TRI_EDGES = np.array([[0, 1], [1, 2], [0, 2]])
+_TET_FACES = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
+
+
+def _keys(edges: np.ndarray, n: int) -> np.ndarray:
+    """Edges (..., 2) of corners among n vertices as one integer each,
+    the same whichever corner comes first."""
+    e = np.sort(np.asarray(edges, dtype=np.int64), axis=-1)
+    return e[..., 0] * n + e[..., 1]
+
+
+def _indices(rows: ArrayLike, width: int, n: int, what: str) -> np.ndarray:
+    """Rows of `width` vertex indices among n, as an integer array."""
+    a = np.asarray(rows)
+    if a.size == 0:
+        return np.empty((0, width), dtype=np.int64)
+    if a.ndim != 2 or a.shape[1] != width or not np.issubdtype(a.dtype, np.integer):
+        raise ValueError(f"{what} are (m, {width}) corner indices, got {a.shape} of "
+                         f"{a.dtype}")
+    if a.min() < 0 or a.max() >= n:
+        raise ValueError(f"{what} index vertices outside 0..{n - 1}")
+    return a
+
+
+def fault_walls(points: ArrayLike, cells: ArrayLike, faces: ArrayLike,
+                pinned: ArrayLike, *, name: str | None = None) -> np.ndarray:
+    """The wall of one fault each cell is in: +1 its hanging wall, -1 its
+    footwall, 0 neither, (c,) int8.
+
+    `points` are the mesh's vertices, (n, 3); `cells` the corners of the
+    tetrahedra of the body the fault is in, (c, 4): the geometry's
+    layers, without the shells a mesh spec adds outside them (through
+    which the two sides of a fault meeting the geometry's surface would
+    join); `faces` the fault's faces, (m, 3), oriented as the mesh holds
+    them (`fault_side`); `pinned` the edges along which its slip is
+    pinned, (k, 2), its tip and its junction where it ends
+    (`CurveEdges.pinned`); all in one numbering of the vertices.  The
+    vertices and edges of its faces that are not on a pinned edge carry
+    its slip.  The cells holding one of them are joined across every
+    face that is not one of the fault's and holds one of them too; so
+    joined, they fall into groups each lying on one side of the fault,
+    the side of the faces of the fault its cells hold (the hanging wall
+    where a face's vertex order points to the cell, `fault_side`).  An
+    edge carries slip in its own right: an edge of the fault joining two
+    pinned vertices (across a corner of the fault, say) has slip at its
+    interior nodes in a mesh of order two or more, and at its midpoint
+    once the mesh is refined, so the cells holding it are in a wall.
+    Every other cell touches the fault, if at all, along its pinned
+    edges alone, where its slip is zero, and is in neither wall.
+
+    Refused, naming the fault by `name`: a group holding cells on both
+    sides of the fault's faces (a face oriented against the others, or a
+    tip or junction missing from `pinned`), a group next to none of its
+    faces, and a face of the fault that is not a face of two cells.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    x = np.asarray(points, dtype=float)
+    if x.ndim != 2 or x.shape[1] != 3:
+        raise ValueError(f"points have shape (n, 3), got {x.shape}")
+    n = len(x)
+    c = _indices(cells, 4, n, "cells")
+    f = _indices(faces, 3, n, "a fault's faces")
+    p = _indices(pinned, 2, n, "pinned edges")
+    what = "the fault" if name is None else f"fault {name!r}"
+    walls = np.zeros(len(c), dtype=np.int8)
+    if not len(f):
+        return walls
+
+    # what carries slip, and the cells holding any of it
+    slip_edges = np.setdiff1d(_keys(f[:, _TRI_EDGES], n), _keys(p, n))
+    carries = np.zeros(n, dtype=bool)
+    carries[f] = True
+    carries[p] = False
+    touching = (carries[c].any(axis=1)
+                | np.isin(_keys(c[:, _TET_EDGES], n), slip_edges).any(axis=1))
+
+    # every face of every cell, the fault's among them, and the cells of each
+    sides = np.sort(c[:, _TET_FACES], axis=2).reshape(-1, 3)
+    unique, inverse = np.unique(np.concatenate([sides, np.sort(f, axis=1)]), axis=0,
+                                return_inverse=True)
+    inverse = inverse.ravel()
+    of_cells, of_fault = inverse[:len(sides)], inverse[len(sides):]
+    held = np.bincount(of_cells, minlength=len(unique))
+    if np.any(held > 2):
+        raise ValueError(f"{int(np.count_nonzero(held > 2))} faces of the mesh are "
+                         "held by more than two cells")
+    if np.any(held[of_fault] != 2):
+        raise ValueError(f"{what}: {int(np.count_nonzero(held[of_fault] != 2))} of "
+                         f"its {len(f)} faces are not a face of two cells")
+    order = np.argsort(of_cells, kind="stable")
+    owner = order // 4
+    start = np.searchsorted(of_cells[order], np.arange(len(unique)))
+
+    # the joins: faces not the fault's, holding a slip-carrying vertex or edge
+    two = np.flatnonzero(held == 2)
+    pair = np.stack([owner[start[two]], owner[start[two] + 1]], axis=1)
+    on = unique[two]
+    holds = (carries[on].any(axis=1)
+             | np.isin(_keys(on[:, _TRI_EDGES], n), slip_edges).any(axis=1))
+    is_fault = np.zeros(len(unique), dtype=bool)
+    is_fault[of_fault] = True
+    join = pair[holds & ~is_fault[two]]
+    idx = np.flatnonzero(touching)
+    local = np.full(len(c), -1)
+    local[idx] = np.arange(len(idx))
+    graph = coo_matrix((np.ones(len(join)), (local[join[:, 0]], local[join[:, 1]])),
+                       shape=(len(idx), len(idx)))
+    count, group = connected_components(graph, directed=False)
+
+    # each group's side, from the faces of the fault its cells hold
+    both = np.stack([owner[start[of_fault]], owner[start[of_fault] + 1]], axis=1)
+    side = fault_side(x, f[:, None, :], c[both])
+    seen = touching[both]
+    plus = np.zeros(count, dtype=bool)
+    minus = np.zeros(count, dtype=bool)
+    plus[group[local[both[seen & (side > 0)]]]] = True
+    minus[group[local[both[seen & (side < 0)]]]] = True
+    if np.any(plus & minus):
+        raise ValueError(
+            f"{what}: {int(np.count_nonzero(plus & minus))} of the {count} groups of "
+            "cells touching its slip-carrying vertices and edges hold cells on both "
+            "sides of its faces, joining its hanging wall to its footwall: a face "
+            "oriented against the others, or a tip or junction missing from its "
+            "pinned edges")
+    if not np.all(plus | minus):
+        raise ValueError(
+            f"{what}: {int(np.count_nonzero(~(plus | minus)))} of the {count} groups "
+            "of cells touching its slip-carrying vertices and edges are next to none "
+            "of its faces")
+    walls[idx] = np.where(plus[group], 1, -1)
+    return walls
+
+
+def walls_of_faults(points: ArrayLike, cells: ArrayLike, faults: Sequence[ArrayLike],
+                    surface: ArrayLike, *,
+                    names: Sequence[str] | None = None) -> np.ndarray:
+    """Every fault's walls (`fault_walls`), (F, c) int8, its pinned edges
+    read from the faces (`fault_curves`, `CurveEdges.pinned`): `cells`
+    are the body's, as `fault_walls` takes them, `faults` each fault's
+    faces, (m_k, 3), and `surface` the faces of the geometry's outer
+    surface, as `fault_curves` takes them; `names` names the faults in a
+    refusal."""
+    curves = fault_curves(faults, surface)
+    names = [None] * len(curves) if names is None else list(names)
+    if len(names) != len(curves):
+        raise ValueError(f"{len(names)} names for {len(curves)} faults")
+    n_cells = len(np.asarray(cells))
+    return np.stack([fault_walls(points, cells, faces, found.pinned, name=name)
+                     for faces, found, name in zip(faults, curves, names)]
+                    ) if curves else np.zeros((0, n_cells), dtype=np.int8)
+
+
+@dataclass(frozen=True, eq=False)
+class Collars:
+    """The element attributes of the cells of a mesh with faults
+    (`collars`)."""
+
+    #: Each cell's element attribute, (c,): its layer's own where it is in
+    #: no fault's hanging wall, its collar's otherwise.
+    attributes: np.ndarray
+    #: The collars in the order of their attributes, from N + 1: each the
+    #: layer, by its own attribute, and the faults, by their 0-based
+    #: indices in increasing order, whose hanging wall its cells are in.
+    combinations: tuple[tuple[int, tuple[int, ...]], ...]
+    #: N, the number of layers.
+    layer_count: int
+
+    def layer_attributes(self, layer: int) -> list[int]:
+        """The element attributes of a layer's cells (the layer by its own
+        attribute): its own, then its collars' (`LayerEntry.attributes`)."""
+        return [int(layer)] + [self.layer_count + 1 + j for j, (owner, _) in
+                               enumerate(self.combinations) if owner == layer]
+
+    def hanging_wall(self, fault: int) -> list[int]:
+        """The collar attributes of a fault's hanging wall, the fault by
+        its 0-based index (`FaultEntry.hanging_wall`)."""
+        return [self.layer_count + 1 + j for j, (_, faults) in
+                enumerate(self.combinations) if fault in faults]
+
+
+def collars(layers: ArrayLike, walls: ArrayLike, *, layer_count: int) -> Collars:
+    """The element attributes of the cells of a mesh with faults (module
+    docstring): `layers` is each cell's layer by its own attribute, (c,),
+    and `walls` the faults' walls (`walls_of_faults`), (F, c).  A cell in
+    no fault's hanging wall keeps its layer's attribute; the others carry
+    one attribute for each combination of a layer and a set of faults
+    whose hanging wall a cell is in, numbered from `layer_count` + 1 in
+    the order of the layer and then of the faults' indices, compared as
+    tuples."""
+    lay = np.asarray(layers)
+    if lay.ndim != 1 or (lay.size and not np.issubdtype(lay.dtype, np.integer)):
+        raise ValueError(f"layers are one integer a cell, got {lay.shape} of "
+                         f"{lay.dtype}")
+    if lay.size and (lay.min() < 1 or lay.max() > layer_count):
+        raise ValueError(f"layers are attributes in 1..{layer_count}")
+    hanging = np.asarray(walls) == 1
+    if hanging.ndim != 2 or hanging.shape[1] != len(lay):
+        raise ValueError(f"walls have shape (faults, {len(lay)}), got {hanging.shape}")
+    out = lay.astype(np.int64)
+    inside = hanging.any(axis=0)
+    if not np.any(inside):
+        return Collars(attributes=out, combinations=(), layer_count=int(layer_count))
+    rows = np.concatenate([out[inside, None], hanging[:, inside].T.astype(np.int64)],
+                          axis=1)
+    unique, inverse = np.unique(rows, axis=0, return_inverse=True)
+    keys = [(int(r[0]), tuple(int(k) for k in np.flatnonzero(r[1:]))) for r in unique]
+    order = sorted(range(len(keys)), key=keys.__getitem__)
+    rank = np.empty(len(keys), dtype=np.int64)
+    rank[order] = np.arange(len(keys))
+    out[inside] = layer_count + 1 + rank[inverse.ravel()]
+    return Collars(attributes=out, combinations=tuple(keys[j] for j in order),
+                   layer_count=int(layer_count))
+
+
+def check_collars(manifest: MeshManifest, layers: ArrayLike, attributes: ArrayLike,
+                  walls: ArrayLike) -> None:
+    """Hold a mesh's cells and its manifest's collar records to the
+    classification: `layers` is each cell's layer by where it lies (its
+    own attribute), `attributes` the element attribute the mesh gives it,
+    and `walls` the faults' walls (`walls_of_faults`, the faults in the
+    manifest's order).  Every cell carries an attribute of the layer it
+    lies in (`MeshManifest.layer_of`), so that a layer's attributes cover
+    it, and the one `collars` numbers for it; each layer's `attributes`
+    and each fault's `hanging_wall` are the numbering's.  ValueError
+    naming the first disagreement."""
+    lay = np.asarray(layers)
+    got = np.asarray(attributes)
+    if lay.shape != got.shape:
+        raise ValueError(f"{lay.shape} layers for {got.shape} attributes")
+    for a in np.unique(got).tolist():
+        try:
+            owner = int(manifest.layer_of(a)["attribute"])
+        except KeyError as error:
+            raise ValueError(f"cells carry element attribute {a}: {error}") from None
+        wrong = (got == a) & (lay != owner)
+        if np.any(wrong):
+            raise ValueError(
+                f"{int(np.count_nonzero(wrong))} cells of element attribute {a}, layer "
+                f"{owner}'s, lie in layers {sorted(set(lay[wrong].tolist()))}")
+    want = collars(lay, walls, layer_count=len(manifest.layers))
+    differ = got != want.attributes
+    if np.any(differ):
+        collar = differ & (want.attributes > len(manifest.layers))
+        raise ValueError(
+            f"{int(np.count_nonzero(differ))} of {got.size} cells carry another "
+            "element attribute than the classification of the faults' walls gives "
+            f"them ({int(np.count_nonzero(collar))} of them in its collars)")
+    for e in manifest.layers:
+        listed = list(manifest.element_attributes(layers=[e["attribute"]]))
+        if listed != want.layer_attributes(int(e["attribute"])):
+            raise ValueError(
+                f"layer {e['name']!r} lists the attributes {listed}, and the "
+                f"classification numbers {want.layer_attributes(int(e['attribute']))}")
+    for k, e in enumerate(manifest.faults):
+        if list(e["hanging_wall"]) != want.hanging_wall(k):
+            raise ValueError(
+                f"fault {e['name']!r} lists the hanging wall {e['hanging_wall']}, and "
+                f"the classification numbers {want.hanging_wall(k)}")

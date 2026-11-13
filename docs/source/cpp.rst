@@ -21,9 +21,11 @@ It reads and writes four of the Python's files:
   its own time rule; writing builds a file from a code's own fields.
 * **Mesh manifests** (:doc:`formats/mesh_manifest`). The library reads
   these on a strict JSON reader of its own, the faults built into a mesh
-  among them, and states the two rules a split-node code applies to a
-  fault's faces: which of a face's two cells is on the hanging wall, and
-  which edges are the fault's tip, free edge and junction.
+  and the element attributes of their hanging walls among them, and
+  states the three rules of a fault's faces: which of a face's two cells
+  is on the hanging wall, which edges are the fault's tip, free edge and
+  junction and where it ends on another, and which cells are in its
+  hanging wall and its footwall.
 * **Decks**, the mineos and Maxwell tables of knots
   (:doc:`formats/maxwell_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
   with the names of the layers and interfaces their headers or labels

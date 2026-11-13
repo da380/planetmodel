@@ -6,11 +6,15 @@
 # Each is a sheet of boundary faces of its own attribute, and the
 # manifest names its curves: the buried tip, where its sides are joined;
 # the free edge, where it meets the surface; the junction, where it
-# meets another fault. Here the faces are drawn coloured by fault inside
+# meets another fault, and the faults it ends on. The cells of each
+# fault's hanging wall that touch its slip, its collar, carry element
+# attributes of their own, which the manifest lists by layer and by
+# fault, so a solver finds each fault's hanging wall from the
+# attributes alone. Here the faces are drawn coloured by fault inside
 # a block of the mesh, its far walls the cells' sections and its top the
 # outer boundary's elements as a wireframe; and on a section across the
-# thrust, the cells on its two sides, the plus (hanging-wall) one of
-# each face and the minus one, found by `manifest.plus_cell`.
+# thrust, the collars of the thrust and the splay, read from the cells'
+# attributes, a cell in both distinguished.
 #
 # Needs: meshing, plot
 # Network: none
@@ -38,8 +42,8 @@ FIGURES = Path(__file__).resolve().parents[1] / "figures"
 FIGURES.mkdir(exist_ok=True)
 UNIT = GeographicFrame(1.0)
 LAYERS = {"core": "#c3c2b7", "mantle": "#e1e0d9", "lithosphere": "#f4f3f0"}
-COLOURS = {"thrust": "#2a78d6", "splay": "#eb6834", "buried": "#1baf7a"}
-PLUS, MINUS = "#eda100", "#6250d6"
+COLOURS = {"thrust": "#2a78d6", "splay": "#eb6834", "buried": "#eda100"}
+BOTH = "#1baf7a"
 INK, GUIDE, EDGES = "#1a1a19", "#52514e", "#a3a29b"
 CURVES = {"tip": dict(linestyle="--", linewidth=1.5),
           "free_edge": dict(linestyle="-", linewidth=2.5),
@@ -90,7 +94,8 @@ for record in card.faults:
                        for key in CURVES if record[key] is not None)
     print(f"{record['name']}: attribute {record['attribute']}, "
           f"{len(mesh.faces_with(record['attribute']))} faces; edges of its "
-          f"{counts}; meets {record['meets'] or 'nothing'}")
+          f"{counts}; meets {record['meets'] or 'nothing'}, ends on "
+          f"{record['ends_on'] or 'nothing'}")
 
 # %% [markdown]
 # An MFEM mesh keeps no curve groups; `manifest.fault_curves` reads the
@@ -163,37 +168,43 @@ ax.set_axis_off()
 ax.set_title("Three faults in a block of the mesh")
 
 # %% [markdown]
-# The plus and minus cells of the thrust's faces: the two cells holding
-# each face, the plus one on the side its vertex order points to. Each
-# plus cell's centre, located on the thrust, lies on its hanging-wall
-# side (a positive distance) and each minus cell's on its footwall side.
+# The collars, from the attributes alone. Each layer lists the element
+# attributes its cells carry, its own and its collars' (one for each
+# combination of layer and set of faults), and each fault the collar
+# attributes of its hanging wall; a cell in the splay's collar above
+# the thrust is in the thrust's too. Located on its fault, the centre of
+# every cell of a fault's collar that lies over the fault is on its
+# hanging-wall side, a positive distance.
 
 # %%
-attribute = card.fault_record("thrust")["attribute"]
-faces = mesh.faces_with(attribute)[:, :3]
-pairs = mesh.face_cells(faces)
-plus = manifest.plus_cell(mesh.points, faces, mesh.cells[pairs][:, :, :4])
-side = np.zeros(len(mesh.cells), dtype=int)
-side[pairs[np.arange(len(faces)), plus]] = 1
-side[pairs[np.arange(len(faces)), 1 - plus]] = -1
+for entry in card.layers:
+    print(f"layer {entry['name']}: element attributes {entry['attributes']}")
+hanging = {r["name"]: np.isin(mesh.cell_attributes, r["hanging_wall"])
+           for r in card.faults}
 centres = mesh.points[mesh.cells[:, :4]].mean(axis=1)
-distance = faults["thrust"].locate(centres[side != 0], strict=False).distance
-print(f"the thrust: {np.count_nonzero(side == 1)} plus cells, all on the hanging-"
-      f"wall side: {bool(np.all(distance[side[side != 0] == 1] > 0))}; "
-      f"{np.count_nonzero(side == -1)} minus cells, all on the footwall side: "
-      f"{bool(np.all(distance[side[side != 0] == -1] < 0))}")
+for record in card.faults:
+    cells = hanging[record["name"]]
+    found = faults[record["name"]].locate(centres[cells], strict=False)
+    print(f"{record['name']}: hanging wall {record['hanging_wall']}, "
+          f"{np.count_nonzero(cells)} cells; those over it on its hanging-wall "
+          f"side: {bool(np.all(found.distance[found.inside] > 0))}")
+both = hanging["thrust"] & hanging["splay"]
+print(f"{np.count_nonzero(both)} cells in the collars of both the thrust and the "
+      "splay")
 
 # %% [markdown]
 # The section through the centre spanned by east and up at the thrust's
-# centroid, across its strike: the cells by layer, the thrust's plus and
-# minus cells over them, the interfaces, and the thrust and the splay
-# where the section crosses them.
+# centroid, across its strike: the cells by layer, coloured over them
+# by the collar their attribute names (the thrust's, the splay's, or
+# both), the interfaces, and the thrust and the splay where the section
+# crosses them.
 
 # %%
 sx = fig.add_subplot(1, 2, 2)
 axes = np.stack([east, up])
-fill = np.array(list(LAYERS.values()), dtype=object)[mesh.cell_attributes - 1]
-fill[side == 1], fill[side == -1] = PLUS, MINUS
+fill = np.array(list(LAYERS.values()), dtype=object)[mesh.layers(card) - 1]
+fill[hanging["thrust"]], fill[hanging["splay"]] = COLOURS["thrust"], COLOURS["splay"]
+fill[both] = BOTH
 mesh_section(sx, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes),
              colours=list(fill), edgecolor=EDGES, linewidth=0.5)
 mesh_section(sx, plane_cut(mesh.points, mesh.faces[interfaces, :3], np.zeros(3),
@@ -201,21 +212,27 @@ mesh_section(sx, plane_cut(mesh.points, mesh.faces[interfaces, :3], np.zeros(3),
 for record in card.faults[:2]:
     mesh_section(sx, plane_cut(mesh.points, mesh.faces_with(record["attribute"])[:, :3],
                                np.zeros(3), axes),
-                 colours=COLOURS[record["name"]], linewidth=2.5, capstyle="round")
+                 colours=INK, linewidth=2.5, capstyle="round")
 centre = thrust.cartesian(0.0, 0.0) @ axes.T
+for name, (u, v, dx, dy) in {"thrust": (0.0, 0.35, -0.012, 0.0),
+                             "splay": (0.0, -0.45, 0.012, 0.0)}.items():
+    patch = faults[name].patches[0]
+    at = patch.cartesian(u, v) @ axes.T
+    sx.text(at[0] + dx, at[1] + dy, name, color=INK, ha="right" if dx < 0 else "left",
+            va="center", fontsize=9)
 sx.set(xlim=centre[0] + np.array([-0.17, 0.17]),
        ylim=centre[1] + np.array([-0.2, 0.1]), xticks=[], yticks=[])
-sx.set_title("Across the thrust: its plus and minus cells")
+sx.set_title("Across the thrust: the collars, by element attribute")
 x0, y0 = centre[0] - 0.155, centre[1] - 0.185
 sx.plot([x0, x0 + 0.05], [y0, y0], color=INK, lw=2.0, solid_capstyle="butt")
 sx.text(x0 + 0.025, y0 + 0.006, "0.05", ha="center", va="bottom")
 
-fig.legend(handles=[Patch(color=c, label=n) for n, c in COLOURS.items()]
+fig.legend(handles=[Patch(color=c, label=f"{n}: faces, and its collar")
+                    for n, c in COLOURS.items()]
+           + [Patch(facecolor=BOTH, label="in both collars")]
            + [Line2D([], [], color=INK, label=k.replace("_", " "), **s)
-              for k, s in CURVES.items()]
-           + [Patch(facecolor=PLUS, label="plus cell"),
-              Patch(facecolor=MINUS, label="minus cell")],
-           loc="lower center", ncol=8, frameon=False)
+              for k, s in CURVES.items()],
+           loc="lower center", ncol=7, frameon=False)
 fig.subplots_adjust(left=0.0, right=0.98, top=0.93, bottom=0.1, wspace=0.05)
 fig.savefig(FIGURES / "meshing_05.png", dpi=120)
 shutil.rmtree(work)

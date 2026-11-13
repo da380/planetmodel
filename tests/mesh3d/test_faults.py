@@ -163,9 +163,12 @@ def test_a_fault_inside_one_layer(built):
     assert res.counts["faults"] == 1
     card = held(res, faults)
     (record,) = card.faults
-    assert record == {"name": "f", "attribute": 3, "layers": [2], "tip": 1,
-                      "free_edge": None, "junction": None, "meets": [],
+    assert record == {"name": "f", "attribute": 3, "layers": [2],
+                      "hanging_wall": [3], "tip": 1, "free_edge": None,
+                      "junction": None, "meets": [], "ends_on": [],
                       "controls": None, "offset": 0.0, "sizing": None}
+    assert card.schema == sc.SCHEMA_WITH_FAULTS
+    assert [e["attributes"] for e in card.layers] == [[1], [2, 3]]
     # the plane's area exactly, by straight triangles: measured 1e-16
     pos, tri = faces(res, 3)
     assert area(pos, tri[:, :3]) == pytest.approx(0.3 * 0.2, rel=1e-12)
@@ -183,7 +186,10 @@ def test_a_fault_crossing_a_layer_boundary_is_one_fault_of_several_faces(built):
     assert record["layers"] == [1, 2] and record["tip"] == 1
     mesh = read_mesh(res.msh_path)
     cells = mesh.face_cells(mesh.faces_with(record["attribute"])[:, :3])
-    assert set(mesh.cell_attributes[cells].ravel().tolist()) == {1, 2}
+    assert set(mesh.layers(card)[cells].ravel().tolist()) == {1, 2}
+    # a collar in each layer it crosses
+    assert [e["attributes"] for e in card.layers] == [[1, 3], [2, 4]]
+    assert record["hanging_wall"] == [3, 4]
     # the seam where it crosses the sphere is no tip: the tip is its edge
     found = faults["f"].locate(curve_nodes(res, record["tip"]))
     assert np.allclose(np.maximum(np.abs(found.u), np.abs(found.v)), 0.5,
@@ -419,9 +425,13 @@ def test_a_finer_mesh_is_asked_for_near_the_fault(tmp_path):
 def test_a_mesh_without_faults_has_the_manifest_it_always_had(tmp_path):
     res = build_layered_mesh(MeshSpec(two_layers(), SIZING), tmp_path / "plain")
     data = json.loads(res.manifest_path.read_text())
-    assert "faults" not in data
-    assert sc.read(res.manifest_path).faults == []
-    assert "faults" not in res.counts and res.preimages == {}
+    assert "faults" not in data and data["schema"] == sc.SCHEMA
+    assert all("attributes" not in e for e in data["layers"])
+    card = sc.read(res.manifest_path)
+    assert card.faults == [] and card.element_attributes() == (1, 2)
+    assert "faults" not in res.counts and "collars" not in res.counts
+    assert res.preimages == {}
+    assert set(read_mesh(res.msh_path).cell_attributes.tolist()) == {1, 2}
 
 
 def test_the_manifest_describes_the_faults(built):
@@ -429,6 +439,7 @@ def test_the_manifest_describes_the_faults(built):
     card = sc.read(res.manifest_path)
     text = card.describe()
     assert "faults" in text and "meets splay" in text and "junction 3" in text
+    assert "collars [3, 4, 5]" in text and "hanging wall [3, 4]" in text
     assert card.fault_record("splay")["attribute"] == 4
     with pytest.raises(KeyError, match="no fault named"):
         card.fault_record("nope")
@@ -541,11 +552,11 @@ def test_a_mapping_without_an_inverse_is_refused(tmp_path):
 # ------------------------------------------------------------ the format
 
 def test_the_manifest_s_fault_records_are_checked():
-    good = {"name": "f", "attribute": 3, "layers": [2], "tip": 1,
-            "free_edge": None, "junction": None, "meets": [], "controls": None,
-            "offset": 0.0, "sizing": None}
+    good = {"name": "f", "attribute": 3, "layers": [2], "hanging_wall": [3],
+            "tip": 1, "free_edge": None, "junction": None, "meets": [],
+            "ends_on": [], "controls": None, "offset": 0.0, "sizing": None}
 
-    def card(*records):
+    def card(*records, attributes=([1], [2, 3])):
         g = two_layers()
         b = g.skeleton.boundaries
         layers = [sc.LayerEntry.from_layer(lay, attribute=i + 1, r_inner=b[i],
@@ -558,13 +569,17 @@ def test_the_manifest_s_fault_records_are_checked():
             mesh=sc.mesh_block("m.msh", format="msh", nodes="reference"),
             layers=layers, interfaces=faces_)
         out.faults = [dict(r) for r in records]
+        out.schema = sc.SCHEMA_WITH_FAULTS
+        for e, a in zip(out.layers, attributes):
+            e["attributes"] = list(a)
         return out
 
     sc.validate_structure(card(good))
     junction = [good | {"name": "a", "junction": 3, "meets": ["b"]},
                 good | {"name": "b", "attribute": 4, "tip": 4, "junction": 6,
-                        "meets": ["a"]}]
-    sc.validate_structure(card(*junction))
+                        "meets": ["a"], "ends_on": ["a"], "hanging_wall": [3, 4]}]
+    both = {"attributes": ([1], [2, 3, 4])}
+    sc.validate_structure(card(*junction, **both))
     for bad, match in [
             (good | {"attribute": 2}, "attribute is 2, expected 3"),
             (good | {"layers": [3]}, "not attributes of layers"),
@@ -572,6 +587,9 @@ def test_the_manifest_s_fault_records_are_checked():
             (good | {"name": "cmb"}, "share a name with an interface"),
             (good | {"meets": ["g"]}, "not the names of other faults"),
             (good | {"junction": 3}, "a junction is where it meets"),
+            (good | {"ends_on": ["g"]}, "ends_on is \\['g'\\], not faults it meets"),
+            (good | {"hanging_wall": [2]}, "hanging_wall is \\[2\\], not collar"),
+            (good | {"hanging_wall": []}, "collar 3, which is in no fault's"),
             (good | {"controls": [[3, 9]]}, "controls"),
             (good | {"offset": -1.0}, "offset"),
             (good | {"sizing": {"size": 2.0, "far_size": 1.0,
@@ -579,11 +597,31 @@ def test_the_manifest_s_fault_records_are_checked():
             (good | {"layers": "2"}, "faults\\[0\\].layers")]:
         with pytest.raises(ValueError, match=match):
             sc.validate_structure(card(bad))
+    for attributes, match in [
+            (([1], [3, 2]), "not its own attribute 2"),
+            (([1, 3], [2, 3]), "which layers\\[0\\] lists too"),
+            (([1], [2, 4]), "not 3..3"),
+            (([1], [2]), "hanging_wall is \\[3\\], not collar")]:
+        with pytest.raises(ValueError, match=match):
+            sc.validate_structure(card(good, attributes=attributes))
+    # the collars numbered out of the order of layer and faults
+    swapped = [junction[0] | {"hanging_wall": [4]},
+               junction[1] | {"hanging_wall": [3, 4]}]
+    with pytest.raises(ValueError, match="out of the order of layer and faults"):
+        sc.validate_structure(card(*swapped, **both))
     with pytest.raises(ValueError, match="not every one of them meets"):
-        sc.validate_structure(card(junction[0], junction[1] | {"meets": [],
-                                                               "junction": None}))
+        sc.validate_structure(card(junction[0], junction[1] | {
+            "meets": [], "junction": None, "ends_on": []}, **both))
     with pytest.raises(ValueError, match="manifest lists 1 faults, the mesh has 0"):
         sc.validate_against(card(good), layer_count=2, interface_count=2)
+    # the schema says whether there are faults
+    five = card(good)
+    five.schema = sc.SCHEMA
+    with pytest.raises(ValueError, match="faults are listed under schema"):
+        sc.validate_structure(five)
+    six = card()
+    with pytest.raises(ValueError, match="has faults"):
+        sc.validate_structure(six)
 
 
 # ------------------------------------------------------------ the rules
@@ -612,14 +650,21 @@ def test_the_plus_cell_is_on_the_side_the_face_s_vertex_order_points_to():
 
 
 def test_the_curves_are_read_from_the_faces():
-    """A square of two faces whose edge (0, 1) is on the surface, and a
-    second fault of one face meeting it along (2, 3)."""
-    a, b = sc.fault_curves([[[0, 1, 2], [1, 3, 2]], [[3, 2, 4]]], [[0, 1, 9]])
+    """A square of two faces whose edge (0, 1) is on the surface, a second
+    fault of one face meeting it along (2, 3), both ending there, and a
+    third of two faces with (2, 3) inside it, which the square ends on and
+    which ends on neither."""
+    a, b, c = sc.fault_curves([[[0, 1, 2], [1, 3, 2]], [[3, 2, 4]],
+                               [[3, 2, 5], [2, 3, 6]]], [[0, 1, 9]])
     assert a.free_edge.tolist() == [[0, 1]]
     assert a.tip.tolist() == [[0, 2], [1, 3]]
-    assert a.junction.tolist() == [[2, 3]]
+    assert a.junction.tolist() == a.junction_end.tolist() == [[2, 3]]
+    assert a.ends_on == (1, 2)
+    assert a.pinned.tolist() == [[0, 2], [1, 3], [2, 3]]
     assert b.free_edge.shape == (0, 2) and b.junction.tolist() == [[2, 3]]
-    assert b.tip.tolist() == [[2, 4], [3, 4]]
+    assert b.tip.tolist() == [[2, 4], [3, 4]] and b.ends_on == (0, 2)
+    assert c.junction.tolist() == [[2, 3]] and c.junction_end.shape == (0, 2)
+    assert c.ends_on == () and c.pinned.tolist() == c.tip.tolist()
     (alone,) = sc.fault_curves([np.array([[5, 4, 6]])], np.empty((0, 3), int))
     assert alone.tip.tolist() == [[4, 5], [4, 6], [5, 6]]
     with pytest.raises(ValueError, match="corner indices"):

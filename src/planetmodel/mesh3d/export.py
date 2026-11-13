@@ -20,8 +20,10 @@ again.
 an L2 space: a material discontinuity is the point of a layered model,
 and an L2 space of the mesh gives each element its own dofs, so the two
 sides of an interface carry their own layer's value and nothing is
-averaged.  Which layer a dof belongs to is the attribute of its
-element, and each layer is evaluated in one vectorised call; every
+averaged.  Which layer a dof belongs to is the layer whose cells carry
+its element's attribute (the manifest's `layer_of`: its own, or one of
+its collars' in a mesh with faults), and each layer is evaluated in one
+vectorised call; every
 value is referential, the model's own field at the reference point,
 with Cartesian components in the model's units, whichever delivery the
 mesh is written in.  A dof of a curved element can sit a chord's depth
@@ -304,10 +306,12 @@ def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
     among the `fields` where one was written; the displacement's unit
     is "1" until a model's scales are known.  What only a model can say
     (`fluid`, `kind`, `values`, the `model` block) is null, whatever the
-    manifest read had.  The faults' records pass through unchanged: a
-    fault's faces are boundary elements of its attribute, which MFEM
-    reads, and the order of their vertices, which it keeps, says which
-    of each face's two elements is on the fault's hanging-wall side.
+    manifest read had.  The faults' records, and the layers' collar
+    attributes, pass through unchanged: a fault's faces are boundary
+    elements of its attribute, which MFEM reads, the order of their
+    vertices, which it keeps, says which of each face's two elements is
+    on the fault's hanging-wall side, and the cells of its collar carry
+    their attributes as MFEM's element attributes.
     The manifest is validated before any file is written.
     """
     mfem = _mfem()
@@ -391,15 +395,20 @@ def _dof_coordinates(mesh: Any, fes: Any) -> np.ndarray:
     return X
 
 
-def _dofs_by_attribute(mesh: Any, fes: Any) -> dict[int, np.ndarray]:
-    """attribute -> the dofs of `fes` on the elements carrying it."""
+def _dofs_by_layer(mesh: Any, fes: Any, card: manifest.MeshManifest
+                   ) -> dict[int, np.ndarray]:
+    """A layer's own attribute -> the dofs of `fes` on the elements of
+    the layer, whichever of its attributes they carry (`layer_of`)."""
     n = mesh.GetNE()
     attributes = np.fromiter((mesh.GetAttribute(e) for e in range(n)),
                              dtype=int, count=n)
+    layers = np.empty(n, dtype=int)
+    for a in np.unique(attributes).tolist():
+        layers[attributes == a] = card.layer_of(a)["attribute"]
     dofs = [np.asarray(fes.GetElementDofs(e), dtype=int) for e in range(n)]
     return {int(a): np.unique(np.concatenate(
-                [dofs[e] for e in np.flatnonzero(attributes == a)]))
-            for a in np.unique(attributes)}
+                [dofs[e] for e in np.flatnonzero(layers == a)]))
+            for a in np.unique(layers)}
 
 
 def _clipped_into(X: ArrayLike, interval: tuple[float, float]) -> np.ndarray:
@@ -454,8 +463,9 @@ def _field_values(model: Model, name: str, X: np.ndarray,
                   groups: MappingOf[int, np.ndarray], *, vdim: int) -> np.ndarray:
     """`name` at the dof coordinates `X`, (ndof, vdim), layer by layer.
 
-    `groups` maps attribute -> dofs.  Attribute i + 1 is layer i of the
-    model; everything the model does not hold the field on stays zero.
+    `groups` maps a layer's own attribute -> its dofs.  The layer of
+    own attribute i + 1 is layer i of the model; everything the model
+    does not hold the field on stays zero.
     """
     values = np.zeros((X.shape[0], vdim))
     shape = stored_shape(_character_of(model, name))
@@ -582,7 +592,9 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     every dof: the model's field at the dof's reference coordinates,
     with Cartesian components, in the model's units, whichever delivery
     the mesh is written in.  A dof is evaluated by the layer its
-    element's attribute names, pulled radially to that layer's nearer
+    element's attribute belongs to (`MeshManifest.layer_of`: the layer's
+    own attribute, or one of its collars'), pulled radially to that
+    layer's nearer
     interface when a curved element leaves it outside; a shell outside
     the model, and a layer of the model without the field, are written
     as zero.  `fields` is None for every name the model holds, or the
@@ -606,7 +618,8 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     a grid (or a mapping from layers to grids) for the file's parts, as
     `modelfile.write_model` takes it, or True for a model that does not
     vary with direction under the identity, written on the smallest
-    grid.  Layer n of the file is attribute n + 1 of the mesh; a shell
+    grid.  Layer n of the file is the mesh's layer of own attribute
+    n + 1, whose cells carry its `attributes`; a shell
     the spec appended has no model data.  The `.gf` fields are written
     either way.
     """
@@ -630,7 +643,7 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     collection = mfem.L2_FECollection(order, mesh.Dimension())
     scalar = mfem.FiniteElementSpace(mesh, collection, 1)
     X = _dof_coordinates(mesh, scalar)
-    groups = _dofs_by_attribute(mesh, scalar)
+    groups = _dofs_by_layer(mesh, scalar, manifest.read(result.manifest_path))
     values = {}
     for name in names:
         vdim = int(np.prod(stored_shape(_character_of(model, name)), dtype=int))

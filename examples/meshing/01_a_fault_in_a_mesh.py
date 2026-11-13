@@ -11,10 +11,15 @@
 # is a sheet of boundary elements of its own attribute, every face
 # oriented from the footwall into the hanging wall, and the manifest
 # names the curves where it ends (its buried tip, its free edge on the
-# surface, the junction where the two meet). Splitting the nodes is the
-# solver's; the rule it needs for which of a face's two cells is the plus
-# one is `planetmodel.mesh3d.manifest`'s (and the C++ library's).
-# Examples 02 to 06 draw such meshes.
+# surface, the junction where the two meet, and which fault ends on
+# which). The cells of each fault's hanging wall that touch its slip,
+# its collar, carry element attributes of their own after the layers',
+# which the manifest lists by layer and by fault. Splitting the nodes is
+# the solver's: it takes each fault's hanging wall from those attributes,
+# and the rules behind them (which of a face's two cells is the plus
+# one, which edges are pinned, which cells are in which wall) are
+# `planetmodel.mesh3d.manifest`'s (and the C++ library's). Examples 02 to
+# 06 draw such meshes; 05 and 06 the collars.
 #
 # Needs: meshing
 # Network: none
@@ -86,7 +91,9 @@ faults = {"thrust": Fault([thrust]), "splay": Fault([splay])}
 # The mesh, of order 2, refined towards both faults. The validation
 # report holds the faults' own checks (every face a face of two cells,
 # every face pointing into the hanging wall) and the warnings beside the
-# usual ones; the manifest gains one record a fault.
+# usual ones; the manifest, of the schema of a mesh with faults, gains
+# one record a fault, and each layer the list of element attributes its
+# cells carry, its collars' after its own.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
@@ -98,6 +105,9 @@ result = build_layered_mesh(
 print(f"{result.counts['elements']} elements, {result.counts['nodes']} nodes")
 print(result.validation)
 card = manifest.read(result.manifest_path)
+print(card.schema)
+for entry in card.layers:
+    print(f"layer {entry['name']}: element attributes {entry['attributes']}")
 for record in card.faults:
     print(json.dumps(record))
 

@@ -13,23 +13,29 @@
  * which files beside it hold which fields.  `MeshManifest(path)` reads one
  * and holds it to the structure the Python's `validate_structure` checks,
  * refusing the first fault with an `Error` naming the file and the JSON
- * path of the fault; schema 5 alone is read.  Keys the schema added within
- * itself are optional (`refinements` empty, `scales.temperature` a
- * kelvin, `model` null where absent, `faults` empty), and keys it does
- * not know are ignored.  Null is kept as null: a manifest written without
- * a model says nothing of fluidity, kinds or interface values, and the
- * queries that need them say so.
+ * path of the fault; schemas 5 (a mesh without faults) and 6 (a mesh with
+ * them) are read.  Keys a schema added within itself are optional
+ * (`refinements` empty, `scales.temperature` a kelvin, `model` null where
+ * absent), and keys it does not know are ignored.  Null is kept as null: a
+ * manifest written without a model says nothing of fluidity, kinds or
+ * interface values, and the queries that need them say so.
  *
  * A fault built into the mesh is an interior surface of boundary elements
  * of its own attribute, after the interfaces' (`MeshManifest::Fault`),
- * with no node split: splitting them is the code's.  Two rules of the
- * format page turn its faces into what a split-node code needs, stated
- * here over plain arrays (vertex coordinates, corners as indices) as the
- * Python's `planetmodel.mesh3d.manifest` states them: which of a face's
- * two cells is the hanging-wall (plus) one (`FaultSide`, `PlusCell`), and
- * which edges of a fault's faces are its tip, free edge and junction,
- * read from the faces alone where the mesh format keeps no curves
- * (`FaultCurves`).
+ * with no node split: splitting them is the code's.  The cells of its
+ * hanging wall, its collar, carry element attributes of their own after
+ * the layers' (`Fault::hanging_wall`), so that a layer's cells carry a
+ * list of attributes (`Layer::attributes`, `ElementAttributes`,
+ * `LayerOf`).  Three rules of the format page turn a fault's faces into
+ * what a split-node code needs, stated here over plain arrays (vertex
+ * coordinates, corners as indices) as the Python's
+ * `planetmodel.mesh3d.manifest` states them: which of a face's two cells
+ * is the hanging-wall (plus) one (`FaultSide`, `PlusCell`); which edges of
+ * a fault's faces are its tip, free edge and junction, and of its
+ * junction where it ends, read from the faces alone where the mesh format
+ * keeps no curves (`FaultCurves`); and which cells are in its hanging
+ * wall and which in its footwall (`FaultWalls`, `WallsOfFaults`), which
+ * the mesher wrote as the collar attributes.
  *
  * Nothing here knows MFEM.  A code opens the mesh and its fields itself,
  * with what the manifest gives:
@@ -44,10 +50,21 @@
  * auto gf = mfem::GridFunction(&mesh, in);   // in rho.fe_space, vdim
  * @endcode
  *
- * and finds the two sides of a fault's faces the same way:
+ * builds the indicator of a fault's hanging wall from the element
+ * attributes alone, a marker over `attributes.Max()` entries (the
+ * attributes survive partitioning and uniform refinement):
  *
  * @code
  * const auto& fault = m.FaultNamed("megathrust");
+ * const auto chi = planetmodel::MeshManifest::Marker(fault.hanging_wall,
+ *                                                     mesh.attributes.Max());
+ * const auto mantle = planetmodel::MeshManifest::Marker(
+ *     m.LayerNamed("mantle").attributes, mesh.attributes.Max());
+ * @endcode
+ *
+ * and finds the two sides of a fault's faces the same way:
+ *
+ * @code
  * for (auto be = 0; be < mesh.GetNBE(); ++be) {
  *   if (mesh.GetBdrAttribute(be) != fault.attribute) continue;
  *   auto e1 = 0, e2 = 0;
@@ -63,6 +80,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <format>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
@@ -78,8 +96,18 @@
 
 namespace planetmodel {
 
-/** @brief The schema this reader reads; bumped only for an incompatible change. */
+/**
+ * @brief The schema of a manifest whose mesh has no fault, the cells of
+ * layer n all carrying attribute n; bumped only for an incompatible change.
+ */
 inline constexpr std::string_view MANIFEST_SCHEMA = "planetmodel.mesh.manifest/5";
+
+/**
+ * @brief The schema of a manifest whose mesh has faults: the cells of the
+ * faults' collars carry attributes beyond the layers', listed by each
+ * layer (`attributes`) and each fault (`hanging_wall`).
+ */
+inline constexpr std::string_view MANIFEST_SCHEMA_WITH_FAULTS = "planetmodel.mesh.manifest/6";
 
 /** @brief The formats a manifest's mesh may be in: the mesher's MSH, or MFEM's. */
 inline constexpr auto MANIFEST_FORMATS = std::array<std::string_view, 2>{"msh", "mfem"};
@@ -114,7 +142,8 @@ class MeshManifest {
  public:
   /** @brief One `layers[]` record: a layer of the mesh, centre outward. */
   struct Layer {
-    int attribute = 0;     /**< The mesh attribute, from one. */
+    /** @brief The layer's own attribute, from one, by which records name it. */
+    int attribute = 0;
     std::string name;      /**< The layer's name. */
     double r_inner = 0.0;  /**< Its inner radius. */
     double r_outer = 0.0;  /**< Its outer radius. */
@@ -125,6 +154,11 @@ class MeshManifest {
      * where no model said.
      */
     std::optional<bool> fluid{};
+    /**
+     * @brief The element attributes its cells carry: its own first, then
+     * its collars' (schema 6); its own alone under schema 5.
+     */
+    std::vector<int> attributes{};
   };
 
   /**
@@ -210,7 +244,10 @@ class MeshManifest {
     int weight = 0;       /**< The character's weight. */
     bool voigt = true;    /**< Whether the character is in Voigt form. */
     std::string unit;     /**< The unit of the stored values. */
-    /** @brief The attributes of the layers on which the values mean anything. */
+    /**
+     * @brief The layers on which the values mean anything, by their own
+     * attributes (their cells carry `ElementAttributes` of them).
+     */
     std::vector<int> layers{};
     /**
      * @brief The degree in r reproducing a scalar field within each layer
@@ -245,15 +282,18 @@ class MeshManifest {
    * hanging wall, so the cell on that side of a face is the plus one
    * (`PlusCell`).  The curve groups are those of the MSH file, fault k's
    * numbered 3k - 2, 3k - 1 and 3k; a mesh format without curves gives
-   * the same edges from the faces (`FaultCurves`).
+   * the same edges from the faces (`FaultCurves`).  The cells of its
+   * hanging wall (`FaultWalls`) carry the attributes `hanging_wall`.
    */
   struct Fault {
     /** @brief The fault's name, its boundary group's in the MSH file. */
     std::string name;
     /** @brief The boundary attribute of its faces, after the interfaces'. */
     int attribute = 0;
-    /** @brief The attributes of the layers its faces lie in. */
+    /** @brief The layers its faces lie in, by their own attributes. */
     std::vector<int> layers{};
+    /** @brief The element attributes of the cells of its hanging wall, its collar. */
+    std::vector<int> hanging_wall{};
     /**
      * @brief The MSH file's curve group of its buried tip, where its sides
      * are joined; empty where it has none.
@@ -271,6 +311,12 @@ class MeshManifest {
     std::optional<int> junction{};
     /** @brief The names of the faults it meets along its junction. */
     std::vector<std::string> meets{};
+    /**
+     * @brief The names of the faults it ends on, of those it meets: its
+     * slip is pinned along its junction with them, which lies on its own
+     * boundary.
+     */
+    std::vector<std::string> ends_on{};
     /**
      * @brief Each patch's pull-back control grid [n_u, n_v]; empty where
      * the mapping is the identity and the fault was built in as given.
@@ -291,6 +337,15 @@ class MeshManifest {
      */
     [[nodiscard]] bool Meets(std::string_view other) const {
       return std::ranges::any_of(meets, [&](const std::string& m) { return m == other; });
+    }
+
+    /**
+     * @brief Whether it ends on another fault, its slip pinned along their
+     * junction.
+     * @param other The other fault's name.
+     */
+    [[nodiscard]] bool EndsOn(std::string_view other) const {
+      return std::ranges::any_of(ends_on, [&](const std::string& m) { return m == other; });
     }
   };
 
@@ -318,6 +373,9 @@ class MeshManifest {
 
   /** @brief The manifest's own path. */
   [[nodiscard]] const std::filesystem::path& Path() const noexcept { return path_; }
+
+  /** @brief The schema it declares: `MANIFEST_SCHEMA` or `MANIFEST_SCHEMA_WITH_FAULTS`. */
+  [[nodiscard]] const std::string& Schema() const noexcept { return schema_; }
 
   /** @brief The mesh file beside the manifest. */
   [[nodiscard]] std::filesystem::path MeshFile() const {
@@ -447,16 +505,61 @@ class MeshManifest {
   /** @brief Whether the mesh has a hole at the centre. */
   [[nodiscard]] bool IsHollow() const { return InnerRadius() > 0.0; }
 
-  /** @brief The attributes of the geometry's layers. */
+  /**
+   * @brief The layer whose cells carry an element attribute: its own, or
+   * one of its collars'.
+   * @param attribute The element attribute.
+   * @throws planetmodel::Error where no layer's cells carry it.
+   */
+  [[nodiscard]] const Layer& LayerOf(int attribute) const {
+    for (const auto& l : layers_) {
+      if (std::ranges::contains(l.attributes, attribute)) return l;
+    }
+    throw Error(path_.string(), "layers",
+                std::format("lists no layer whose cells carry element attribute {}; they "
+                            "carry {}",
+                            attribute, Join(ElementAttributes())));
+  }
+  /** @brief The element attributes every layer's cells carry, layer by layer. */
+  [[nodiscard]] std::vector<int> ElementAttributes() const {
+    return Select([](const Layer&) { return true; });
+  }
+  /**
+   * @brief The element attributes the cells of some layers carry, each
+   * layer's own and then its collars', in the order the layers are given.
+   * The layers are named by their own attributes, as a field's `layers`
+   * and a fault's name them: an MFEM marker for their cells is made from
+   * this list.
+   * @param layers The layers' own attributes.
+   * @throws planetmodel::Error for a number that is no layer's own attribute.
+   */
+  [[nodiscard]] std::vector<int> ElementAttributes(const std::vector<int>& layers) const {
+    auto out = std::vector<int>{};
+    for (const auto a : layers) {
+      if (a < 1 || a > static_cast<int>(layers_.size())) {
+        throw Error(path_.string(), "layers",
+                    std::format("has no layer of own attribute {}", a));
+      }
+      const auto& l = layers_[static_cast<std::size_t>(a - 1)];
+      out.insert(out.end(), l.attributes.begin(), l.attributes.end());
+    }
+    return out;
+  }
+
+  /**
+   * @brief The element attributes of the geometry's layers, their collars'
+   * among them: a marker's list.
+   */
   [[nodiscard]] std::vector<int> BodyAttributes() const {
     return Select([](const Layer& l) { return l.in_geometry; });
   }
-  /** @brief The attributes of the shells outside the geometry. */
+  /** @brief The element attributes of the shells outside the geometry. */
   [[nodiscard]] std::vector<int> ShellAttributes() const {
     return Select([](const Layer& l) { return !l.in_geometry; });
   }
   /**
-   * @brief The attributes of the geometry's solid layers.
+   * @brief The element attributes of the geometry's solid layers, their
+   * collars' among them.
    * @throws planetmodel::Error where a layer's fluidity is unknown (no
    *         model said).
    */
@@ -465,7 +568,8 @@ class MeshManifest {
     return Select([](const Layer& l) { return l.in_geometry && !*l.fluid; });
   }
   /**
-   * @brief The attributes of the geometry's fluid layers.
+   * @brief The element attributes of the geometry's fluid layers, their
+   * collars' among them.
    * @throws planetmodel::Error where a layer's fluidity is unknown.
    */
   [[nodiscard]] std::vector<int> FluidAttributes() const {
@@ -512,9 +616,12 @@ class MeshManifest {
    * @throws planetmodel::Error if the manifest lists none.
    */
   [[nodiscard]] int SurfaceAttribute() const {
-    const auto body = BodyAttributes();
+    auto top = 0;  // the geometry's outermost layer, by its own attribute
+    for (const auto& l : layers_) {
+      if (l.in_geometry) top = l.attribute;
+    }
     for (const auto& f : interfaces_) {
-      if (!body.empty() && f.BelowAttribute() == body.back()) return f.attribute;
+      if (top > 0 && f.BelowAttribute() == top) return f.attribute;
     }
     throw Error(path_.string(), "interfaces", "lists no surface of the geometry");
   }
@@ -629,6 +736,15 @@ class MeshManifest {
     const auto& doc = document_;
     if (!doc.IsObject()) Fail("", "is not an object");
     ReadSchema(doc.At("schema"));
+    const auto faulted = schema_ == MANIFEST_SCHEMA_WITH_FAULTS;
+    if (!faulted && !List(doc, "faults").empty()) {
+      Fail("faults", std::format("are listed under schema {}; a manifest with faults is {}",
+                                 schema_, MANIFEST_SCHEMA_WITH_FAULTS));
+    }
+    if (faulted && List(doc, "faults").empty()) {
+      Fail("faults", std::format("lists none, and a manifest of schema {} has faults",
+                                 MANIFEST_SCHEMA_WITH_FAULTS));
+    }
 
     const auto& mesh = doc.At("mesh");
     mesh_file_ = mesh.At("file").AsString();
@@ -642,13 +758,19 @@ class MeshManifest {
 
     for (const auto& e : List(doc, "layers")) {
       const auto& fluid = e.At("fluid");
-      layers_.push_back({.attribute = e.At("attribute").AsInt(),
+      auto layer = Layer{.attribute = e.At("attribute").AsInt(),
                          .name = e.At("name").AsString(),
                          .r_inner = e.At("r_inner").AsNumber(),
                          .r_outer = e.At("r_outer").AsNumber(),
                          .in_geometry = e.At("in_geometry").AsBool(),
                          .fluid = fluid.IsNull() ? std::nullopt
-                                                 : std::optional<bool>{fluid.AsBool()}});
+                                                 : std::optional<bool>{fluid.AsBool()}};
+      if (faulted) {
+        for (const auto& a : e.At("attributes").AsArray()) layer.attributes.push_back(a.AsInt());
+      } else {
+        layer.attributes = {layer.attribute};
+      }
+      layers_.push_back(std::move(layer));
     }
     for (const auto& e : List(doc, "interfaces")) {
       auto face = Interface{.attribute = e.At("attribute").AsInt(),
@@ -685,10 +807,12 @@ class MeshManifest {
     for (const auto& e : List(doc, "faults")) {
       auto f = Fault{.name = e.At("name").AsString(), .attribute = e.At("attribute").AsInt()};
       for (const auto& a : e.At("layers").AsArray()) f.layers.push_back(a.AsInt());
+      for (const auto& a : e.At("hanging_wall").AsArray()) f.hanging_wall.push_back(a.AsInt());
       f.tip = OptionalInt(e.At("tip"));
       f.free_edge = OptionalInt(e.At("free_edge"));
       f.junction = OptionalInt(e.At("junction"));
       for (const auto& other : e.At("meets").AsArray()) f.meets.push_back(other.AsString());
+      for (const auto& other : e.At("ends_on").AsArray()) f.ends_on.push_back(other.AsString());
       if (const auto& c = e.At("controls"); !c.IsNull()) {
         auto controls = std::vector<std::array<int, 2>>{};
         for (const auto& pair : c.AsArray()) {
@@ -748,13 +872,16 @@ class MeshManifest {
     }
   }
 
-  void ReadSchema(const Json& schema) const {
+  void ReadSchema(const Json& schema) {
     const auto& declared = schema.AsString();
-    if (declared == MANIFEST_SCHEMA) return;
+    if (declared == MANIFEST_SCHEMA || declared == MANIFEST_SCHEMA_WITH_FAULTS) {
+      schema_ = declared;
+      return;
+    }
     if (declared.starts_with("planetmodel.mesh.manifest/")) {
-      Fail("schema", std::format("is {}, and this reader reads {} alone: regenerate the "
-                                 "manifest with planetmodel 1.2.3 or later",
-                                 declared, MANIFEST_SCHEMA));
+      Fail("schema", std::format("is {}, and this reader reads {} and {}: regenerate the "
+                                 "manifest with this planetmodel",
+                                 declared, MANIFEST_SCHEMA, MANIFEST_SCHEMA_WITH_FAULTS));
     }
     Fail("schema", std::format("is {}, not a mesh manifest's", declared));
   }
@@ -886,7 +1013,10 @@ class MeshManifest {
   /// junction to show for them, and the pull-back and sizing well formed.
   void CheckFaults() const {
     const auto m = static_cast<int>(interfaces_.size());
-    const auto body = BodyAttributes();
+    auto body = std::vector<int>{};  // the geometry's layers, by their own attributes
+    for (const auto& l : layers_) {
+      if (l.in_geometry) body.push_back(l.attribute);
+    }
     for (auto i = std::size_t{0}; i < faults_.size(); ++i) {
       const auto& name = faults_[i].name;
       if (std::ranges::count(faults_, name, &Fault::name) > 1) {
@@ -940,6 +1070,12 @@ class MeshManifest {
              std::format("is {} but meets is [{}]: a junction is where it meets another fault",
                          f.junction ? std::to_string(*f.junction) : "null", Join(f.meets)));
       }
+      if (!std::ranges::all_of(f.ends_on, [&](const std::string& other) {
+            return f.Meets(other) && std::ranges::count(f.ends_on, other) == 1;
+          })) {
+        Fail(where + ".ends_on",
+             std::format("is [{}], not faults it meets, each once", Join(f.ends_on)));
+      }
       if (f.controls && !std::ranges::all_of(*f.controls, [](const std::array<int, 2>& c) {
             return c[0] >= 4 && c[1] >= 4;
           })) {
@@ -955,6 +1091,75 @@ class MeshManifest {
                          "far_size with a positive decay_width",
                          s->size, s->far_size, s->decay_width));
       }
+    }
+    if (!faults_.empty()) CheckCollars();
+  }
+
+  /// Schema 6's collars: each layer's attributes its own and then collar
+  /// attributes above N in increasing order, none for a shell; the collar
+  /// attributes N + 1..N + C, each one layer's and in some fault's hanging
+  /// wall; each hanging wall collar attributes in increasing order; and the
+  /// collars numbered in the order of their layer and then of their faults.
+  void CheckCollars() const {
+    const auto n = static_cast<int>(layers_.size());
+    auto owner = std::map<int, int>{};  // collar attribute -> the layer's own
+    for (auto i = 0; i < n; ++i) {
+      const auto& l = layers_[static_cast<std::size_t>(i)];
+      const auto where = std::format("layers[{}].attributes", i);
+      const auto& a = l.attributes;
+      auto ordered = !a.empty() && a.front() == l.attribute;
+      for (auto j = std::size_t{1}; ordered && j < a.size(); ++j) {
+        ordered = a[j] > n && (j == 1 || a[j] > a[j - 1]);
+      }
+      if (!ordered) {
+        Fail(where, std::format("is [{}], not its own attribute {} and then collar attributes "
+                                "above {} in increasing order",
+                                Join(a), l.attribute, n));
+      }
+      if (a.size() > 1 && !l.in_geometry) {
+        Fail(where, "lists collars, and a shell holds no fault");
+      }
+      for (auto j = std::size_t{1}; j < a.size(); ++j) {
+        if (owner.contains(a[j])) {
+          Fail(where, std::format("lists collar {}, which layers[{}] lists too", a[j],
+                                  owner[a[j]] - 1));
+        }
+        owner[a[j]] = l.attribute;
+      }
+    }
+    const auto c = static_cast<int>(owner.size());
+    if (!owner.empty() && (owner.begin()->first != n + 1 || owner.rbegin()->first != n + c)) {
+      auto listed = std::vector<int>{};
+      for (const auto& [a, _] : owner) listed.push_back(a);
+      Fail("layers", std::format("list the collar attributes [{}], not {}..{}", Join(listed),
+                                 n + 1, n + c));
+    }
+    auto walls = std::map<int, std::vector<int>>{};
+    for (auto k = std::size_t{0}; k < faults_.size(); ++k) {
+      const auto& hw = faults_[k].hanging_wall;
+      auto ordered = true;
+      for (auto j = std::size_t{0}; ordered && j < hw.size(); ++j) {
+        ordered = owner.contains(hw[j]) && (j == 0 || hw[j] > hw[j - 1]);
+      }
+      if (!ordered) {
+        Fail(std::format("faults[{}].hanging_wall", k),
+             std::format("is [{}], not collar attributes in increasing order", Join(hw)));
+      }
+      for (const auto a : hw) walls[a].push_back(static_cast<int>(k));
+    }
+    auto previous = std::optional<std::pair<int, std::vector<int>>>{};
+    for (const auto& [a, layer] : owner) {
+      const auto where = std::format("layers[{}].attributes", layer - 1);
+      if (!walls.contains(a)) {
+        Fail(where, std::format("lists collar {}, which is in no fault's hanging wall", a));
+      }
+      auto key = std::pair{layer, walls[a]};
+      if (previous && key <= *previous) {
+        Fail(where, std::format("lists collar {} (layer {}, faults [{}]) out of the order of "
+                                "layer and faults",
+                                a, layer, Join(walls[a])));
+      }
+      previous = std::move(key);
     }
   }
 
@@ -997,7 +1202,7 @@ class MeshManifest {
   std::vector<int> Select(Predicate keep) const {
     auto out = std::vector<int>{};
     for (const auto& l : layers_) {
-      if (keep(l)) out.push_back(l.attribute);
+      if (keep(l)) out.insert(out.end(), l.attributes.begin(), l.attributes.end());
     }
     return out;
   }
@@ -1021,6 +1226,7 @@ class MeshManifest {
   }
 
   std::filesystem::path path_;
+  std::string schema_;
   Json document_;
   Json meta_;
   std::string mesh_file_;
@@ -1148,25 +1354,51 @@ using MeshEdge = std::array<int, 2>;
 
 /**
  * @brief The edges of one fault's faces that lie on its curves
- * (`FaultCurves`), each list in increasing order.
+ * (`FaultCurves`), each list in increasing order, and the faults it ends
+ * on.
  */
 struct CurveEdges {
   std::vector<MeshEdge> tip{};        /**< Its buried tip, where its sides are joined. */
   std::vector<MeshEdge> free_edge{};  /**< Its edge on the outer surface, its sides free. */
   std::vector<MeshEdge> junction{};   /**< Where it meets another fault. */
+  /**
+   * @brief The part of its junction on its own boundary, where it ends on
+   * another fault: its slip is pinned there as on its tip.
+   */
+  std::vector<MeshEdge> junction_end{};
+  /** @brief The faults it ends on, by their indices in the list given. */
+  std::vector<int> ends_on{};
+
+  /**
+   * @brief The edges along which its slip is pinned to zero, in increasing
+   * order: its tip, and its junction where it ends.
+   */
+  [[nodiscard]] std::vector<MeshEdge> Pinned() const {
+    auto out = tip;
+    out.insert(out.end(), junction_end.begin(), junction_end.end());
+    std::ranges::sort(out);
+    out.erase(std::ranges::unique(out).begin(), out.end());
+    return out;
+  }
 };
 
 /**
- * @brief The tip, free-edge and junction edges of each fault, read from
- * the faces alone, for a mesh format that keeps no curves (MFEM's): the
- * edges the MSH file's curve groups hold.
+ * @brief The tip, free-edge and junction edges of each fault, and the part
+ * of its junction where it ends, read from the faces alone, for a mesh
+ * format that keeps no curves (MFEM's): the edges the MSH file's curve
+ * groups hold.
  *
- * An edge is a pair of corners.  The edges of a fault's faces that are
- * also edges of another fault's faces are its junction; of the rest, an
- * edge one of its faces uses alone is in its free edge where it is also
- * an edge of the geometry's outer surface, and in its tip otherwise; an
- * edge two of its faces use lies inside it.  The format page's rule, which
- * the Python states as `planetmodel.mesh3d.manifest.fault_curves`.
+ * An edge is a pair of corners, and a fault's count of it the number of
+ * its faces that use it: one on the fault's boundary, two inside it.  The
+ * edges of a fault's faces that are also edges of another fault's faces
+ * are its junction; those of them it counts once, on its own boundary, are
+ * where it ends on that other fault (`junction_end`, the faults
+ * `ends_on`), and those it counts twice where the other ends on it or the
+ * two cross.  Of the rest, an edge counted once is in its free edge where
+ * it is also an edge of the geometry's outer surface, and in its tip
+ * otherwise; an edge counted twice lies inside it.  The format page's
+ * rule, which the Python states as
+ * `planetmodel.mesh3d.manifest.fault_curves`.
  *
  * @param faults Each fault's faces (in MFEM, the boundary elements of its
  *        attribute), all in one numbering of the vertices.
@@ -1192,17 +1424,235 @@ struct CurveEdges {
   const auto outer = count(surface);
   auto out = std::vector<CurveEdges>(faults.size());
   for (auto k = std::size_t{0}; k < edges.size(); ++k) {
+    auto ends = std::vector<char>(edges.size(), 0);
     for (const auto& [edge, uses] : edges[k]) {
       auto shared = false;
       for (auto j = std::size_t{0}; j < edges.size(); ++j) {
-        shared = shared || (j != k && edges[j].contains(edge));
+        if (j != k && edges[j].contains(edge)) {
+          shared = true;
+          if (uses == 1) ends[j] = 1;
+        }
       }
       if (shared) {
         out[k].junction.push_back(edge);
+        if (uses == 1) out[k].junction_end.push_back(edge);
       } else if (uses == 1) {
         (outer.contains(edge) ? out[k].free_edge : out[k].tip).push_back(edge);
       }
     }
+    for (auto j = std::size_t{0}; j < edges.size(); ++j) {
+      if (ends[j]) out[k].ends_on.push_back(static_cast<int>(j));
+    }
+  }
+  return out;
+}
+
+/**
+ * @brief The wall of one fault each cell is in: +1 its hanging wall, -1 its
+ * footwall, 0 neither.
+ *
+ * The vertices and edges of the fault's faces that are not on a pinned
+ * edge carry its slip.  The cells holding one of them are joined across
+ * every face that is not one of the fault's and holds one of them too; so
+ * joined, they fall into groups each lying on one side of the fault, the
+ * side of the faces of the fault its cells hold (the hanging wall where a
+ * face's vertex order points to the cell, `FaultSide`).  An edge carries
+ * slip in its own right: an edge of the fault joining two pinned vertices
+ * (across a corner of the fault, say) has slip at its interior nodes in a
+ * mesh of order two or more, and at its midpoint once the mesh is refined.
+ * Every other cell touches the fault, if at all, along its pinned edges
+ * alone, where its slip is zero, and is in neither wall.  The format page's
+ * rule, which the Python states as `planetmodel.mesh3d.manifest.fault_walls`;
+ * the mesher wrote its answers as the element attributes of the fault's
+ * `hanging_wall`, so a code need not apply it.
+ *
+ * @param vertices The mesh's vertices.
+ * @param cells The tetrahedra of the body the fault is in: the geometry's
+ *        layers, without the shells a mesh spec adds outside them.
+ * @param faces The fault's faces, in the vertex order the mesh holds.
+ * @param pinned The edges along which its slip is pinned (`CurveEdges::Pinned`).
+ * @param name The fault's name, for a refusal.
+ * @return One wall a cell, in the order of `cells`.
+ * @throws planetmodel::Error, where its fault's name, where an index lies
+ *         outside `vertices`, where a face of the fault is not a face of
+ *         two cells, where a group of cells holds cells on both sides of
+ *         its faces (a face oriented against the others, or a tip or
+ *         junction missing from `pinned`), or where a group is next to none
+ *         of its faces.
+ */
+[[nodiscard]] inline std::vector<int> FaultWalls(std::span<const MeshVertex> vertices,
+                                                 std::span<const MeshTetrahedron> cells,
+                                                 std::span<const MeshTriangle> faces,
+                                                 std::span<const MeshEdge> pinned,
+                                                 std::string_view name = "the fault") {
+  using Face = std::array<int, 3>;
+  const auto n = static_cast<long long>(vertices.size());
+  auto check = [&](int i) {
+    if (i < 0 || i >= n) {
+      throw Error("FaultWalls", name, std::format("indexes vertex {}, outside the {} given", i, n));
+    }
+    return static_cast<std::size_t>(i);
+  };
+  auto key = [&](int a, int b) {
+    return static_cast<long long>(std::min(a, b)) * n + std::max(a, b);
+  };
+  auto sorted = [](Face f) {
+    std::ranges::sort(f);
+    return f;
+  };
+  auto walls = std::vector<int>(cells.size(), 0);
+  if (faces.empty()) return walls;
+
+  // what carries slip, and the cells holding any of it
+  auto carries = std::vector<char>(vertices.size(), 0);
+  auto slip_edges = std::vector<long long>{};
+  for (const auto& f : faces) {
+    for (const auto i : f) carries[check(i)] = 1;
+    slip_edges.insert(slip_edges.end(), {key(f[0], f[1]), key(f[1], f[2]), key(f[0], f[2])});
+  }
+  auto pinned_keys = std::vector<long long>{};
+  for (const auto& e : pinned) {
+    carries[check(e[0])] = carries[check(e[1])] = 0;
+    pinned_keys.push_back(key(e[0], e[1]));
+  }
+  std::ranges::sort(slip_edges);
+  slip_edges.erase(std::ranges::unique(slip_edges).begin(), slip_edges.end());
+  std::ranges::sort(pinned_keys);
+  auto difference = std::vector<long long>{};
+  std::ranges::set_difference(slip_edges, pinned_keys, std::back_inserter(difference));
+  slip_edges = std::move(difference);
+  auto is_slip_edge = [&](int a, int b) {
+    return std::ranges::binary_search(slip_edges, key(a, b));
+  };
+  auto touching = std::vector<char>(cells.size(), 0);
+  for (auto c = std::size_t{0}; c < cells.size(); ++c) {
+    const auto& t = cells[c];
+    for (const auto i : t) touching[c] = touching[c] || carries[check(i)];
+    for (auto a = 0; a < 4 && !touching[c]; ++a) {
+      for (auto b = a + 1; b < 4; ++b) {
+        if (is_slip_edge(t[static_cast<std::size_t>(a)], t[static_cast<std::size_t>(b)])) {
+          touching[c] = 1;
+        }
+      }
+    }
+  }
+
+  // every face of every cell, and the cells of each
+  auto sides = std::vector<std::pair<Face, int>>{};
+  sides.reserve(4 * cells.size());
+  for (auto c = std::size_t{0}; c < cells.size(); ++c) {
+    const auto& t = cells[c];
+    for (const auto& [a, b, d] : {Face{1, 2, 3}, Face{0, 2, 3}, Face{0, 1, 3}, Face{0, 1, 2}}) {
+      sides.emplace_back(sorted({t[static_cast<std::size_t>(a)], t[static_cast<std::size_t>(b)],
+                                 t[static_cast<std::size_t>(d)]}),
+                         static_cast<int>(c));
+    }
+  }
+  std::ranges::sort(sides);
+  auto fault_faces = std::vector<Face>{};
+  for (const auto& f : faces) fault_faces.push_back(sorted(f));
+  std::ranges::sort(fault_faces);
+
+  // the groups: cells joined across faces not the fault's holding slip
+  auto parent = std::vector<int>(cells.size());
+  for (auto c = std::size_t{0}; c < cells.size(); ++c) parent[c] = static_cast<int>(c);
+  auto root = [&](int c) {
+    while (parent[static_cast<std::size_t>(c)] != c) {
+      c = parent[static_cast<std::size_t>(c)] =
+          parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(c)])];
+    }
+    return c;
+  };
+  for (auto i = std::size_t{0}; i < sides.size();) {
+    auto j = i;
+    while (j < sides.size() && sides[j].first == sides[i].first) ++j;
+    if (j - i > 2) {
+      throw Error("FaultWalls", name, "a face of the mesh is held by more than two cells");
+    }
+    const auto& f = sides[i].first;
+    if (j - i == 2 && !std::ranges::binary_search(fault_faces, f)) {
+      const auto holds = carries[static_cast<std::size_t>(f[0])] ||
+                         carries[static_cast<std::size_t>(f[1])] ||
+                         carries[static_cast<std::size_t>(f[2])] || is_slip_edge(f[0], f[1]) ||
+                         is_slip_edge(f[1], f[2]) || is_slip_edge(f[0], f[2]);
+      if (holds) parent[static_cast<std::size_t>(root(sides[i].second))] = root(sides[i + 1].second);
+    }
+    i = j;
+  }
+
+  // each group's side, from the faces of the fault its cells hold
+  auto plus = std::vector<char>(cells.size(), 0);
+  auto minus = std::vector<char>(cells.size(), 0);
+  auto lonely = 0;
+  for (const auto& f : faces) {
+    const auto at = std::ranges::lower_bound(sides, std::pair{sorted(f), -1});
+    if (at == sides.end() || at->first != sorted(f) || std::next(at) == sides.end() ||
+        std::next(at)->first != at->first) {
+      ++lonely;
+      continue;
+    }
+    for (const auto c : {at->second, std::next(at)->second}) {
+      if (!touching[static_cast<std::size_t>(c)]) continue;
+      const auto side = FaultSide(vertices, f, cells[static_cast<std::size_t>(c)]);
+      (side > 0 ? plus : minus)[static_cast<std::size_t>(root(c))] = 1;
+    }
+  }
+  if (lonely) {
+    throw Error("FaultWalls", name,
+                std::format("{} of its {} faces are not a face of two cells", lonely,
+                            faces.size()));
+  }
+  auto groups = 0, both = 0, none = 0;
+  for (auto c = std::size_t{0}; c < cells.size(); ++c) {
+    if (!touching[c] || root(static_cast<int>(c)) != static_cast<int>(c)) continue;
+    ++groups;
+    both += plus[c] && minus[c];
+    none += !plus[c] && !minus[c];
+  }
+  if (both) {
+    throw Error("FaultWalls", name,
+                std::format("{} of the {} groups of cells touching its slip-carrying vertices and "
+                            "edges hold cells on both sides of its faces, joining its hanging "
+                            "wall to its footwall: a face oriented against the others, or a tip "
+                            "or junction missing from its pinned edges",
+                            both, groups));
+  }
+  if (none) {
+    throw Error("FaultWalls", name,
+                std::format("{} of the {} groups of cells touching its slip-carrying vertices and "
+                            "edges are next to none of its faces",
+                            none, groups));
+  }
+  for (auto c = std::size_t{0}; c < cells.size(); ++c) {
+    if (touching[c]) walls[c] = plus[static_cast<std::size_t>(root(static_cast<int>(c)))] ? 1 : -1;
+  }
+  return walls;
+}
+
+/**
+ * @brief Every fault's walls (`FaultWalls`), its pinned edges read from the
+ * faces (`FaultCurves`, `CurveEdges::Pinned`); the Python states it as
+ * `planetmodel.mesh3d.manifest.walls_of_faults`.
+ *
+ * @param vertices The mesh's vertices.
+ * @param cells The tetrahedra of the body, as `FaultWalls` takes them.
+ * @param faults Each fault's faces, as `FaultCurves` takes them.
+ * @param surface The faces of the geometry's outer surface.
+ * @param names The faults' names, for a refusal; `fault <k>` where none
+ *        are given.
+ * @return One list of walls a fault, in the order given.
+ * @throws planetmodel::Error where `FaultWalls` refuses a fault.
+ */
+[[nodiscard]] inline std::vector<std::vector<int>> WallsOfFaults(
+    std::span<const MeshVertex> vertices, std::span<const MeshTetrahedron> cells,
+    std::span<const std::vector<MeshTriangle>> faults, std::span<const MeshTriangle> surface,
+    std::span<const std::string> names = {}) {
+  const auto curves = FaultCurves(faults, surface);
+  auto out = std::vector<std::vector<int>>{};
+  for (auto k = std::size_t{0}; k < faults.size(); ++k) {
+    const auto pinned = curves[k].Pinned();
+    out.push_back(FaultWalls(vertices, cells, faults[k], pinned,
+                             k < names.size() ? names[k] : std::format("fault {}", k)));
   }
   return out;
 }

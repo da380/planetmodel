@@ -17,8 +17,9 @@ writes files that the Python reads. It reads and writes:
   Python's arithmetic;
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
-  (`json.hpp`), with the faults built into a mesh and the two rules a
-  split-node code applies to their faces (`PlusCell`, `FaultCurves`);
+  (`json.hpp`), with the faults built into a mesh, the element
+  attributes of their hanging walls, and the three rules of their faces
+  (`PlusCell`, `FaultCurves`, `FaultWalls`);
 - **decks**, mineos and Maxwell tables of knots and TauP's `.nd` and
   `.tvel` tables (`deck.hpp`), read and written as the Python does, with
   the names their headers or labels give, each layer's columns joined

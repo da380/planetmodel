@@ -18,11 +18,12 @@ delivery (`.mesh`) is read by MFEM, whose `Mesh` gives the same arrays
 `GetAttribute`, `GetBdrAttribute`), corners alone.
 
 A cell is an element of the mesh's own dimension in a physical group,
-its attribute the group's number (the layer); a boundary element one of
-the dimension below (an interface's or a fault's face); a curve group
-one of dimension one in a 3D mesh (a fault's tip, free edge or
-junction).  An element in several groups of its dimension appears once
-for each.
+its attribute the group's number (its layer's own attribute, or in a
+mesh with faults one of its collars', the manifest's `layer_of` saying
+whose); a boundary element one of the dimension below (an interface's
+or a fault's face); a curve group one of dimension one in a 3D mesh (a
+fault's tip, free edge or junction).  An element in several groups of
+its dimension appears once for each.
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import ArrayLike
 
+from . import manifest as _manifest
 from ._extra import require_gmsh
 
 __all__ = ["MeshArrays", "read_mesh"]
@@ -66,7 +68,8 @@ class MeshArrays:
     tags: np.ndarray
     #: The cells, (c, k): k = 4 for a linear tetrahedron, 10 quadratic.
     cells: np.ndarray
-    #: The attribute of each cell: its layer, (c,).
+    #: The element attribute of each cell, (c,): its layer's own, or one
+    #: of its layer's collars' (`MeshManifest.layer_of`).
     cell_attributes: np.ndarray
     #: The boundary elements, (b, m), in the vertex order the file holds.
     faces: np.ndarray
@@ -82,6 +85,48 @@ class MeshArrays:
     def faces_with(self, attribute: int) -> np.ndarray:
         """The boundary elements of one attribute, in file order."""
         return self.faces[self.face_attributes == attribute]
+
+    def layers(self, manifest: _manifest.MeshManifest) -> np.ndarray:
+        """Each cell's layer by its element attribute, as the layer's own
+        attribute (`MeshManifest.layer_of`), (c,)."""
+        out = np.empty(len(self.cell_attributes), dtype=np.int64)
+        for a in np.unique(self.cell_attributes).tolist():
+            out[self.cell_attributes == a] = manifest.layer_of(a)["attribute"]
+        return out
+
+    def layers_by_position(self, manifest: _manifest.MeshManifest) -> np.ndarray:
+        """Each cell's layer by where its corners lie among the manifest's
+        layers, as the layer's own attribute, (c,): the layer whose radii
+        hold every corner, to a millionth of the outer radius, and the
+        lower of two where the corners all lie on the sphere between
+        them (a cell with its corners on a sphere lies inside it).  The
+        positions are taken as the reference ones they are in the
+        mesher's file.  Refused where a cell's corners span two layers."""
+        bounds = np.array([manifest.layers[0]["r_inner"]]
+                          + [e["r_outer"] for e in manifest.layers])
+        r = np.linalg.norm(self.points[self.cells[:, :self.dimension + 1]], axis=-1)
+        tol = 1e-6 * bounds[-1]
+        fits = ((r.min(axis=1)[:, None] >= bounds[None, :-1] - tol)
+                & (r.max(axis=1)[:, None] <= bounds[None, 1:] + tol))
+        if not np.all(fits.any(axis=1)):
+            raise ValueError(f"{int(np.count_nonzero(~fits.any(axis=1)))} cells have "
+                             "corners in two layers")
+        return np.argmax(fits, axis=1) + 1
+
+    def walls(self, manifest: _manifest.MeshManifest) -> np.ndarray:
+        """Every fault's walls on these arrays (`manifest.walls_of_faults`),
+        the faults the manifest's in its order, (F, c): +1 in a fault's
+        hanging wall, -1 in its footwall, 0 in neither, a shell's cells
+        in neither."""
+        body = np.isin(self.layers(manifest),
+                       [e["attribute"] for e in manifest.layers if e["in_geometry"]])
+        out = np.zeros((len(manifest.faults), len(self.cells)), dtype=np.int8)
+        out[:, body] = _manifest.walls_of_faults(
+            self.points, self.cells[body, :4],
+            [self.faces_with(e["attribute"])[:, :3] for e in manifest.faults],
+            self.faces_with(manifest.surface_attribute)[:, :3],
+            names=[e["name"] for e in manifest.faults])
+        return out
 
     @cached_property
     def _sides(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

@@ -104,7 +104,7 @@ def face(origin: list, axes: list) -> tuple[list, list, list]:
     layers' colours, and the interfaces' curves on it."""
     cut = plane_cut(local, mesh.cells[:, :4], origin, axes)
     polygons, index = clip_polygons(cut.in_space(), *BOX)
-    colours = np.array(list(LAYERS.values()))[mesh.cell_attributes[cut.index] - 1]
+    colours = np.array(list(LAYERS.values()))[mesh.layers(card)[cut.index] - 1]
     curves = plane_cut(local, mesh.faces[interfaces, :3], origin, axes)
     return polygons, list(colours[index]), clip_polygons(curves.in_space(), *BOX)[0]
 

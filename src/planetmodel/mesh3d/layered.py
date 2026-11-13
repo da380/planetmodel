@@ -27,7 +27,11 @@ where the fragment could not cut them cleanly), enter the CAD as
 surfaces fragmented in with the shells, and leave it as boundary groups
 after the interfaces' with their curves as dimension-1 groups; their
 faces are oriented with their normals and validated as conforming
-before anything is written (`_faults`).  Netgen's optimisation of the
+before anything is written, and once the mesh is validated the cells of
+each fault's hanging-wall collar are given their attributes, after the
+layers' (`_faults`); the mesh written is read back as a consumer reads
+it and its cells held to the classification and to the layers they lie
+in (`_validate.confirm_collars`).  Netgen's optimisation of the
 linear mesh crashes the process on a solid with a surface embedded in
 it, whichever solids it is given, so a mesh with a fault skips it and
 says so among the report's warnings.
@@ -44,15 +48,16 @@ from ..frames import cartesian_points
 from ..geometry import Geometry
 from ..mapping import validity_lattice
 from . import manifest
-from ._faults import (add_surfaces, apply_fault_groups, curve_names, fault_entries,
-                      fault_refinements, prepare_faults, settle_faults)
+from ._faults import (CollarTagging, add_surfaces, apply_fault_groups, assign_collars,
+                      curve_names, fault_entries, fault_refinements, prepare_faults,
+                      settle_faults)
 from ._geometry import build_concentric
 from ._orient import orient_mesh, raise_order
 from ._session import session
 from ._sizing import (apply_mesh_options, apply_refinements, apply_size_fields,
                       check_sizing_resolves_spans, check_sizing_scale)
 from ._tagging import apply_physical_groups, identify
-from ._validate import validate_mesh
+from ._validate import confirm_collars, validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
 from .spec import MeshResult, MeshSpec
 
@@ -208,15 +213,24 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
         timings["validate"] = clock() - t0
 
         t0 = clock()
+        group_names = [nm or f"layer_{i + 1}" for i, nm in enumerate(layer_names)]
+        collared = (assign_collars(tagging, faulted, layer_names=group_names,
+                                   body=geometry.nlayers)
+                    if faulted is not None else None)
+        if collared is not None:
+            timings["collars"] = clock() - t0
+
+        t0 = clock()
         counts = element_counts(dimension=d)
         msh_path = manifest.beside(path, ".msh")
-        faults = (fault_entries(faulted, fault_groups, prepared)
-                  if faulted is not None else [])
-        card = _build_manifest(spec, msh_path, faults=faults)
+        faults = (fault_entries(faulted, fault_groups, prepared, collared)
+                  if faulted is not None and collared is not None else [])
+        card = _build_manifest(spec, msh_path, faults=faults, collared=collared)
         # The manifest is checked and written before the mesh: a mesh on
         # disk with no manifest, or with one that disagrees, looks finished.
         made = {k: list(v) for k, v in groups.items()}
         made["faults"] = [g["attribute"] for g in fault_groups.values()]
+        made["collars"] = list(collared.names) if collared is not None else []
         manifest.validate_against(card, layer_count=domain.nlayers,
                                   interface_count=len(domain.interfaces),
                                   fault_count=len(prepared), groups=made)
@@ -229,14 +243,21 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
         timings["write"] = clock() - t0
 
     boundary_names = list(interface_names) + fault_names
-    confirm_reread(msh_path, manifest_path, d, layer_names, boundary_names,
+    cell_names = list(layer_names) + (list(collared.names.values())
+                                      if collared is not None else [])
+    confirm_reread(msh_path, manifest_path, d, cell_names, boundary_names,
                    curves=(curve_names(faulted, fault_groups)
                            if faulted is not None else None))
+    if collared is not None:
+        t0 = clock()
+        confirm_collars(msh_path, manifest_path)
+        timings["collars"] += clock() - t0
 
     counts["layers"] = domain.nlayers
     counts["interfaces"] = len(domain.interfaces)
     if prepared:
         counts["faults"] = len(prepared)
+        counts["collars"] = len(collared.names) if collared is not None else 0
     return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
                       geometry=geometry, counts=counts, validation=report,
                       timings=timings, spec=spec, mapping=mapping,
@@ -244,17 +265,20 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
 
 
 def _build_manifest(spec: MeshSpec, msh_path: Path, *,
-                    faults: list[manifest.FaultEntry] | None = None
+                    faults: list[manifest.FaultEntry] | None = None,
+                    collared: CollarTagging | None = None
                     ) -> manifest.MeshManifest:
-    """The manifest of the mesh: its skeleton, its file, its faults, the
-    spec's meta."""
+    """The manifest of the mesh: its skeleton, its file, its faults and
+    the attributes of their collars, the spec's meta."""
     domain = spec.domain
     b = domain.skeleton.boundaries
     n_geometry = spec.geometry.nlayers
 
     layers = [manifest.LayerEntry.from_layer(
         lay, attribute=i + 1, r_inner=b[i], r_outer=b[i + 1],
-        in_geometry=i < n_geometry)
+        in_geometry=i < n_geometry,
+        attributes=(None if collared is None
+                    else collared.numbering.layer_attributes(i + 1)))
         for i, lay in enumerate(domain.layers)]
     interfaces = [manifest.InterfaceEntry.from_interface(
         face, attribute=k + 1, radius=face.radius)

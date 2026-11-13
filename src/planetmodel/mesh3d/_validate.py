@@ -9,22 +9,29 @@ because its failure would otherwise be invisible.  The report lives in
 
 A fault is held to two more: each of its faces is a face of exactly
 two cells (the mesh conforms to it, and no node is split), and each
-points from the footwall into the hanging wall.
+points from the footwall into the hanging wall.  Once written, a mesh
+with faults is read back as a consumer reads it and its cells held to
+the classification of the faults' walls and to the layers they lie in
+(`confirm_collars`).
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 import gmsh
 import numpy as np
 from numpy.typing import ArrayLike
 
+from . import manifest
 from ._orient import (Centres, FaultSurfaces, element_quality, fault_dots,
                       node_positions, outward_dots, signed_measures)
 from ._tagging import Tagging, mean_radius_of_entity
+from .arrays import read_mesh
 from .spec import QUALITY_FLOOR, ValidationReport
 
-__all__ = ["check_interface_radii", "nonconforming_faces", "validate_mesh"]
+__all__ = ["check_interface_radii", "nonconforming_faces", "validate_mesh",
+           "confirm_collars"]
 
 
 def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
@@ -203,3 +210,25 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
                 "exactly two cells: the mesh does not conform to the fault")
 
     return rep
+
+
+def confirm_collars(msh_path: str | Path, manifest_path: str | Path) -> None:
+    """Read a written mesh with faults back as plain arrays (`read_mesh`)
+    and hold its cells to its manifest (`manifest.check_collars`): every
+    cell carries an attribute of the layer it lies in, by its corners'
+    radii, and the attribute the classification of the faults' walls on
+    the mesh as read numbers for it, as the layers' `attributes` and the
+    faults' `hanging_wall` list them.  On a disagreement both files are
+    removed, a pair that failed this being the pair nobody should find
+    later."""
+    msh_path, manifest_path = Path(msh_path), Path(manifest_path)
+    card = manifest.read(manifest_path)
+    mesh = read_mesh(msh_path)
+    try:
+        manifest.check_collars(card, mesh.layers_by_position(card),
+                               mesh.cell_attributes, mesh.walls(card))
+    except ValueError as error:
+        msh_path.unlink(missing_ok=True)
+        manifest_path.unlink(missing_ok=True)
+        raise RuntimeError(f"the written mesh's cells disagree with its faults' "
+                           f"collars: {error}; both files were removed") from None

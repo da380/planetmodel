@@ -53,8 +53,9 @@ def test_the_manifests_are_written_with_their_walks(tmp_path):
 @pytest.mark.gmsh
 def test_the_fault_meshes_are_written_with_their_answers(tmp_path):
     """The meshes with faults the C++ rules are held to: each manifest
-    valid, a face of each fault with its two cells and its plus one, and
-    the curves the fault's record names."""
+    valid, a face of each fault with its two cells and its plus one, the
+    curves the fault's record names, the faults it ends on, and its walls
+    (its hanging wall the cells of its collar attributes)."""
     pytest.importorskip("gmsh")
     from planetmodel.mesh3d import manifest
     spec = importlib.util.spec_from_file_location("make_fixtures", SCRIPT)
@@ -62,10 +63,11 @@ def test_the_fault_meshes_are_written_with_their_answers(tmp_path):
     spec.loader.exec_module(module)
     written = module.fault_meshes(tmp_path)
     assert {p.name for p in written} == {
-        f"{case}{suffix}" for case in ("surface", "splay")
+        f"{case}{suffix}" for case in ("surface", "splay", "crossing")
         for suffix in (".json", ".mesh.txt", ".expect")}
     for case, kinds in (("surface", {"tip", "free_edge"}),
-                        ("splay", {"tip", "junction"})):
+                        ("splay", {"tip", "junction", "junction_end"}),
+                        ("crossing", {"tip", "junction"})):
         root = tmp_path / "fault_meshes" / case
         card = manifest.read(root / f"{case}.json")
         lines = (root / f"{case}.expect").read_text().splitlines()
@@ -81,6 +83,17 @@ def test_the_fault_meshes_are_written_with_their_answers(tmp_path):
         for record in card.faults:
             for kind in ("tip", "free_edge", "junction"):
                 assert ((record["name"], kind) in edges) == (record[kind] is not None)
+        ends = {tuple(line.split()[1:]) for line in lines if line.startswith("ends ")}
+        assert ends == {(r["name"], o) for r in card.faults for o in r["ends_on"]}
+        assert ends == ({("splay", "main")} if case == "splay" else set())
+        cells = [line.split() for line in (root / f"{case}.mesh.txt").read_text()
+                 .splitlines() if line.startswith("cell ")]
+        for record in card.faults:
+            hanging = {int(line.split()[2]) for line in lines
+                       if line.startswith(f"wall {record['name']} ")
+                       and line.split()[3] == "1"}
+            assert hanging == {i for i, c in enumerate(cells)
+                               if int(c[5]) in record["hanging_wall"]} and hanging
 
 
 @pytest.mark.gmsh

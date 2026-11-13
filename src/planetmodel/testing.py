@@ -1781,9 +1781,19 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
     ten-millionth of the patch's size), of the patch's own surface
     continued beyond that edge; every node of
     its tip lies on an edge of its patch, within `distance` and that
-    tolerance; and its curve groups hold the edges of its faces that
+    tolerance; its curve groups hold the edges of its faces that
     the rule a consumer of a mesh without curves applies gives
-    (`mesh3d.manifest.fault_curves`).  The mesh is read by
+    (`mesh3d.manifest.fault_curves`), and its `ends_on` the faults that
+    rule finds it ending on.  And the collars: the classification of
+    every fault's walls on the mesh as read
+    (`mesh3d.manifest.walls_of_faults`) gives each cell the element
+    attribute it carries, every cell's attribute is one of the layer it
+    lies in by its corners' radii, and the layers' `attributes` and the
+    faults' `hanging_wall` are the numbering's
+    (`mesh3d.manifest.check_collars`); and every cell of a fault's
+    hanging wall whose centre, once mapped, the fault locates inside
+    its patches lies at a positive distance from it, and every such cell
+    of its footwall at a negative one.  The mesh is read by
     `mesh3d.read_mesh`, which imports gmsh.
     """
     from .mapping import IdentityMapping
@@ -1801,8 +1811,16 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
     recovered = dict(zip(triangles, mf.fault_curves(
         [t[:, :3] for t in triangles.values()],
         mesh.faces_with(card.surface_attribute)[:, :3])))
+    layer = mesh.layers(card)
+    walls = mesh.walls(card)
+    try:
+        mf.check_collars(card, mesh.layers_by_position(card), mesh.cell_attributes,
+                         walls)
+    except ValueError as error:
+        raise AssertionError(f"the collars: {error}") from None
+    centres = x[mesh.cells[:, :4]].mean(axis=1)
 
-    for record in card.faults:
+    for at, record in enumerate(card.faults):
         name, fault = record["name"], faults[record["name"]]
         tri = triangles[name]
         assert len(tri), f"{name}: no faces carry its attribute {record['attribute']}"
@@ -1814,7 +1832,7 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
         assert np.all(pair >= 0), (
             f"{name}: {int(np.count_nonzero(np.any(pair < 0, axis=1)))} faces are "
             "not a face of exactly two cells")
-        their = mesh.cell_attributes[pair]
+        their = layer[pair]
         assert np.all(their[:, 0] == their[:, 1]) and set(
             their[:, 0].tolist()) <= set(record["layers"]), (
             f"{name}: its faces lie in layers {sorted(set(their.ravel().tolist()))}, "
@@ -1848,3 +1866,14 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
             assert got == expected, (
                 f"{name}: its {key} group {group} holds {len(got)} edges, and its "
                 f"faces give {len(expected)}")
+        ends = [card.faults[j]["name"] for j in recovered[name].ends_on]
+        assert record["ends_on"] == ends, (
+            f"{name}: its record ends on {record['ends_on']}, and its faces end "
+            f"on {ends}")
+
+        for wall, sign, what in ((1, 1.0, "hanging"), (-1, -1.0, "foot")):
+            found = fault.locate(centres[walls[at] == wall], strict=False)
+            wrong = found.inside & (sign * found.distance <= 0.0)
+            assert not np.any(wrong), (
+                f"{name}: {int(np.count_nonzero(wrong))} cells of its {what}wall "
+                "lie on its other side")

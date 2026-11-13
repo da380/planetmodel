@@ -84,7 +84,7 @@ axes = np.stack([east, up])
 
 def draw(ax: plt.Axes, mesh: object, card: object, *, lw: float) -> None:
     """The section of a mesh: cells by layer, interfaces, the fault."""
-    colours = np.array(list(LAYERS.values()))[mesh.cell_attributes - 1]
+    colours = np.array(list(LAYERS.values()))[mesh.layers(card) - 1]
     mesh_section(ax, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes),
                  colours=colours, edgecolor=EDGES, linewidth=lw)
     interfaces = np.isin(mesh.face_attributes,

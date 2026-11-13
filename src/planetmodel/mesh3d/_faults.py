@@ -42,6 +42,14 @@ of its faces, or embedded in one, lies inside it (a seam where it
 crosses a sphere, or where another fault ends on it); any of these it
 shares with another fault is a junction; an edge on the geometry's
 outer boundary is a free edge; every other edge is its buried tip.
+
+Once the mesh is oriented and curved, each fault's walls are classified
+on it by the manifest's rule (`manifest.walls_of_faults`, on the
+corners, the faces' vertex order carrying the orientation) and the
+cells of each collar are given their attribute (`manifest.collars`):
+moved out of their layer's volume into a discrete volume of their own,
+whose physical group is the collar's attribute, so that the MSH file
+and MFEM's reading of it carry it as the cells' element attribute.
 """
 from __future__ import annotations
 
@@ -66,7 +74,8 @@ if TYPE_CHECKING:
 
 __all__ = ["PreparedFault", "FaultTagging", "prepare_faults", "add_surfaces",
            "settle_faults", "apply_fault_groups", "fault_refinements",
-           "fault_entries", "curve_names", "FaultGroups", "CLEARANCE", "GAP"]
+           "fault_entries", "curve_names", "FaultGroups", "CLEARANCE", "GAP",
+           "CollarTagging", "assign_collars", "collar_name"]
 
 #: How far a carried edge must clear the outer boundary, as a fraction of
 #: the patch's extent across that edge.
@@ -101,8 +110,9 @@ class PreparedFault:
 class FaultTagging:
     """What the fragment made of the faults, fault by fault in the spec's
     order: their faces, the layers (attributes) those lie in, their tip,
-    free-edge and junction curves, and the faults each meets; and, for
-    every face, the preimage it is a piece of."""
+    free-edge and junction curves, and the faults each meets; for every
+    face, the preimage it is a piece of; and the geometry's outer
+    boundary, the surface a free edge lies on."""
 
     names: tuple[str, ...]
     faces: tuple[tuple[int, ...], ...]
@@ -112,6 +122,18 @@ class FaultTagging:
     junctions: tuple[tuple[int, ...], ...]
     meets: tuple[tuple[str, ...], ...]
     surfaces: MappingOf[int, Patch]
+    surface: int
+
+
+@dataclass(frozen=True)
+class CollarTagging:
+    """The collars `assign_collars` gave the cells: the numbering, the
+    faults each fault ends on (by index, `CurveEdges.ends_on`), and the
+    name of each collar's physical group by its attribute."""
+
+    numbering: manifest.Collars
+    ends_on: tuple[tuple[int, ...], ...]
+    names: MappingOf[int, str]
 
 
 # -------------------------------------------------------------- before CAD
@@ -471,7 +493,7 @@ def settle_faults(cad: ConcentricGeometry, tagging: Tagging,
     return FaultTagging(names=tuple(names), faces=tuple(map(tuple, faces)),
                         layers=layers, tips=tuple(tips), free_edges=tuple(frees),
                         junctions=tuple(junctions), meets=tuple(meets),
-                        surfaces=surfaces)
+                        surfaces=surfaces, surface=sphere)
 
 
 def apply_fault_groups(faults: FaultTagging, *, first: int
@@ -507,7 +529,8 @@ type FaultGroups = MappingOf[str, MappingOf[str, int | None]]
 
 
 def fault_entries(faults: FaultTagging, groups: FaultGroups,
-                  prepared: Sequence[PreparedFault]) -> list[manifest.FaultEntry]:
+                  prepared: Sequence[PreparedFault],
+                  collared: CollarTagging) -> list[manifest.FaultEntry]:
     """The manifest's `faults[]` records."""
     entries = []
     for k, fault in enumerate(prepared):
@@ -517,8 +540,10 @@ def fault_entries(faults: FaultTagging, groups: FaultGroups,
         entries.append(manifest.FaultEntry(
             name=fault.name, attribute=int(g["attribute"]),
             layers=[int(a) for a in faults.layers[k]],
+            hanging_wall=collared.numbering.hanging_wall(k),
             tip=g["tip"], free_edge=g["free_edge"], junction=g["junction"],
             meets=list(faults.meets[k]),
+            ends_on=[faults.names[j] for j in collared.ends_on[k]],
             controls=(None if all(c is None for c in controls)
                       else [list(c) for c in controls]),
             offset=float(max(p.offset for p in fault.preimages)),
@@ -536,3 +561,72 @@ def curve_names(faults: FaultTagging, groups: FaultGroups) -> dict[int, str]:
             if groups[name][key] is not None:
                 out[int(groups[name][key])] = f"{name}_{key}"
     return out
+
+
+def collar_name(layer: str, faults: Sequence[str]) -> str:
+    """The name of a collar's physical group: its layer's, and the faults
+    whose hanging wall its cells are in, `<layer>:<fault>+<fault>`."""
+    return f"{layer}:{'+'.join(faults)}"
+
+
+def assign_collars(tagging: Tagging, faulted: FaultTagging, *,
+                   layer_names: Sequence[str], body: int) -> CollarTagging:
+    """Classify every fault's walls on the mesh as it stands and give the
+    cells of each collar their attribute (module docstring), with a
+    physical group named by `collar_name` from `layer_names` (each
+    layer's group name); the walls are classified on the cells of the
+    first `body` layers, the geometry's, a shell's cells being in no
+    wall.  Run once the mesh is oriented: the walls are read from the
+    corners and the faces' vertex order."""
+    node_tags, coords, _ = gmsh.model.mesh.getNodes()
+    node_tags = np.asarray(node_tags, dtype=np.int64)
+    order = np.argsort(node_tags)
+    node_tags = node_tags[order]
+    points = np.asarray(coords, dtype=float).reshape(-1, 3)[order]
+
+    def corners(dim: int, entities: Sequence[int]) -> np.ndarray:
+        rows = []
+        for entity in entities:
+            _, etags, enodes = gmsh.model.mesh.getElements(dim, entity)
+            rows += [np.asarray(n, dtype=np.int64).reshape(len(t), -1)[:, :dim + 1]
+                     for t, n in zip(etags, enodes) if len(t)]
+        rows = np.concatenate(rows) if rows else np.empty((0, dim + 1), np.int64)
+        return np.searchsorted(node_tags, rows)
+
+    # the cells, block by block as gmsh holds them, with their layers
+    blocks = []
+    for layer, entity in enumerate(tagging.cells, start=1):
+        types, etags, enodes = gmsh.model.mesh.getElements(3, entity)
+        blocks += [(layer, entity, int(t), np.asarray(e, dtype=np.int64),
+                    np.asarray(n, dtype=np.int64).reshape(len(e), -1))
+                   for t, e, n in zip(types, etags, enodes) if len(e)]
+    cells = np.searchsorted(node_tags, np.concatenate([b[4][:, :4] for b in blocks]))
+    layers = np.concatenate([np.full(len(b[3]), b[0]) for b in blocks])
+    inside = layers <= body
+    faces = [corners(2, group) for group in faulted.faces]
+    curves = manifest.fault_curves(faces, corners(2, [faulted.surface]))
+    walls = np.zeros((len(faces), len(cells)), dtype=np.int8)
+    for k, (f, c, name) in enumerate(zip(faces, curves, faulted.names)):
+        walls[k, inside] = manifest.fault_walls(points, cells[inside], f, c.pinned,
+                                                name=name)
+    numbering = manifest.collars(layers, walls, layer_count=len(tagging.cells))
+
+    names = {}
+    first = len(tagging.cells) + 1
+    at = np.cumsum([0] + [len(b[3]) for b in blocks])
+    for j, (layer, owners) in enumerate(numbering.combinations):
+        attribute = first + j
+        volume = gmsh.model.addDiscreteEntity(3)
+        for (owner, entity, etype, etags, enodes), lo, hi in zip(blocks, at, at[1:]):
+            moved = numbering.attributes[lo:hi] == attribute
+            if owner != layer or not np.any(moved):
+                continue
+            gmsh.model.mesh.removeElements(3, entity, etags[moved])
+            gmsh.model.mesh.addElements(3, volume, [etype], [etags[moved]],
+                                        [enodes[moved].ravel()])
+        gmsh.model.addPhysicalGroup(3, [volume], attribute)
+        names[attribute] = collar_name(layer_names[layer - 1],
+                                       [faulted.names[k] for k in owners])
+        gmsh.model.setPhysicalName(3, attribute, names[attribute])
+    return CollarTagging(numbering=numbering,
+                         ends_on=tuple(c.ends_on for c in curves), names=names)

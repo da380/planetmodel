@@ -5,7 +5,9 @@ reference mesh of it through gmsh and a MeshResult says what was
 written; `build_offset_mesh` makes the two-body benchmark geometries.
 Faults given to a MeshSpec as `EmbeddedFault`s are built into the mesh
 from the start, pulled back through the mapping and fragmented in, each
-an oriented interior surface with its curves labelled.
+an oriented interior surface with its curves labelled, the cells of its
+hanging wall that touch its slip carrying element attributes of their
+own (its collar, `manifest`).
 `export_mfem_mesh` turns either into an MFEM delivery, where the
 geometry's mapping is applied, moving the nodes or written beside them
 as a field, and `export_mfem` adds the fields of a model to a layered

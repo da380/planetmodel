@@ -126,7 +126,7 @@ box = np.array([[-0.17, 0.17]] * 2) + centre[:, None]
 
 def draw(ax: plt.Axes, mesh: object, card: object, x: np.ndarray) -> None:
     """The section of a mesh at positions x, and the true fault over it."""
-    colours = np.array(list(LAYERS.values()))[mesh.cell_attributes - 1]
+    colours = np.array(list(LAYERS.values()))[mesh.layers(card) - 1]
     mesh_section(ax, plane_cut(x, mesh.cells[:, :4], np.zeros(3), axes),
                  colours=colours, edgecolor=EDGES, linewidth=0.5)
     interfaces = np.isin(mesh.face_attributes,
