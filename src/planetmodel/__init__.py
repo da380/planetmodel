@@ -26,6 +26,7 @@ Modules reached by name, one level down:
                in time (netCDF4, optional)
   fault        faults: patches of surface inside a body, the slip on them in
                time, and their quadrature
+  faultfile    the fault file: a fault in one netCDF file (netCDF4, optional)
   harmonics    real spherical harmonics, through ducc0
   slices       a field on a sphere, a section or a profile; spectra and
                correlations by degree

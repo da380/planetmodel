@@ -37,7 +37,8 @@ __all__ = ["check_displacement", "check_mapping", "check_geometry",
            "check_refinement", "check_sample", "check_spectral_basis",
            "check_spherical_basis", "check_model_file", "check_dataset",
            "check_surface", "check_strata", "check_regional",
-           "check_surface_file", "check_patch", "check_fault_mesh"]
+           "check_surface_file", "check_patch", "check_fault_file",
+           "check_fault_mesh"]
 
 
 def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
@@ -1464,7 +1465,8 @@ def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
     `fault_basis` orthonormal and right-handed, its first column along
     x_u and its last the normal; for every slice, the slip finite, its
     `cartesian`, `ambient` and `fault` components one vector in three
-    bases, and at the slip's own nodes (cell centres for the `cell`
+    bases, its component along the normal its opening, and its fault
+    components at the slip's own nodes (cell centres for the `cell`
     rule) the values it stores; the quadrature's points, positions,
     normals, weights and slip those of the patch at its parameters; a
     parameter outside the square refused; `second_derivatives` against
@@ -1570,10 +1572,14 @@ def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
                            rtol=0, atol=1e-12 * sscale), (
             f"{patch!r}: slice {k}'s fault components are not its Cartesian "
             "ones in the fault basis")
-        at_nodes = patch.slip_vector(*nodes, index=k)
+        at_nodes = patch.slip_vector(*nodes, index=k, basis="fault")
         assert np.allclose(at_nodes, slip.values[k], rtol=0, atol=1e-9 * sscale), (
-            f"{patch!r}: slice {k} of the slip is not its stored values at its "
-            "nodes")
+            f"{patch!r}: slice {k}'s fault components are not its stored values "
+            "at its nodes")
+        along_n = np.einsum("pi,pi->p", cart, normal)
+        assert np.allclose(along_n, got["fault"][:, 2], rtol=0,
+                           atol=1e-12 * sscale), (
+            f"{patch!r}: slice {k}'s normal component is not its opening")
 
     q = patch.quadrature(2, 3, points=2)
     pu, pv, pw = parameter_rule(2, 3, points=2)
@@ -1638,6 +1644,99 @@ def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
             f"{patch!r}: its spline runs over {spline.bounds}, not the square")
         assert np.allclose(spline(u, v), X, rtol=0, atol=1e-12 * scale), (
             f"{patch!r}: its spline is not its map")
+
+
+def check_fault_file(path: str | os.PathLike[str], fault: Fault, *,
+                     names: Iterable[str | None] | None = None,
+                     meta: Mapping[str, Any] | None = None,
+                     citation: Iterable[str] = (),
+                     rng: np.random.Generator | None = None, n: int = 32) -> None:
+    """Hold a fault file to the fault it was written from.
+
+    Checks that the file reads (`faultfile.read_fault_file`, which makes
+    every check of the format); that `source` and `created` are present
+    and `created` parses as ISO 8601; that the schema, the frame, the
+    scales, the time support, rule and axis, the patches' names, the
+    meta attributes and the citation read back as given; that each patch
+    is of its kind with its parameters (a plane's) or control positions
+    and rule (a structured patch's) exactly as given, and its slip's rule
+    and values too; and that at `n` random parameters and, for a slip in
+    time, at its nodes and between them, each patch's position, normal,
+    area element and slip in every basis of `fault.BASES` are the
+    given fault's, to 1e-12 of their scale.  netCDF4 is imported here.
+    """
+    from datetime import datetime
+
+    from .fault import BASES, SQUARE
+    from .faultfile import SCHEMA, read_fault_file
+
+    data = read_fault_file(path)
+    back = data.fault
+    assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
+    assert data.source.strip(), "the file names no source"
+    datetime.fromisoformat(data.created)
+    assert back.frame == fault.frame, f"the file's frame is {back.frame!r}"
+    assert back.scales == fault.scales, f"the file is in {back.scales!r}"
+    assert (back.support, back.time_interpolation) == (
+        fault.support, fault.time_interpolation), (
+        f"the file's slip is {back.support} {back.time_interpolation}")
+    assert (fault.time is None) == (back.time is None), (
+        "the file's time axis is not as given")
+    if fault.time is not None:
+        assert np.array_equal(back.time, fault.time), (
+            "the file's time values are not as given")
+    want_names = ((None,) * len(fault.patches) if names is None
+                  else tuple(names))
+    assert data.names == want_names, f"the file names its patches {data.names}"
+    for key, value in (meta or {}).items():
+        assert data.meta.get(key) == value, (
+            f"meta_{key} is {data.meta.get(key)!r}, not {value!r}")
+    assert data.citation == tuple(citation), (
+        "the file does not cite what it was given")
+    assert len(back.patches) == len(fault.patches), (
+        f"the file holds {len(back.patches)} patches, not {len(fault.patches)}")
+    for k, (got, want) in enumerate(zip(back.patches, fault.patches)):
+        assert got.kind == want.kind, f"patch {k} is a {got.kind} patch"
+        if want.kind == "plane":
+            for key in ("strike", "dip", "length", "width"):
+                assert getattr(got, key) == getattr(want, key), (
+                    f"patch {k}'s {key} is {getattr(got, key)!r}")
+            assert np.array_equal(got.centroid, want.centroid), (
+                f"patch {k}'s centroid is {got.centroid}")
+        else:
+            assert got.interpolation == want.interpolation, (
+                f"patch {k}'s rule is {got.interpolation!r}")
+            assert np.array_equal(got.positions, want.positions), (
+                f"patch {k}'s control positions are not as given")
+        assert got.slip.rule == want.slip.rule and np.array_equal(
+            got.slip.values, want.slip.values), (
+            f"patch {k}'s slip is not as given")
+    rng = np.random.default_rng(0) if rng is None else rng
+    u, v = rng.uniform(*SQUARE, (2, n))
+    dates: list[float | None] = [None]
+    if fault.time is not None:
+        t = fault.time
+        dates = list(t) + list(t[0] + (t[-1] - t[0]) * rng.uniform(0.0, 1.0, 4))
+        if fault.time_interpolation == "none":
+            dates = list(t)
+    for k, (got, want) in enumerate(zip(back.patches, fault.patches)):
+        X = want.cartesian(u, v)
+        scale = float(np.max(np.abs(X)))
+        assert np.allclose(got.cartesian(u, v), X, rtol=0, atol=1e-12 * scale), (
+            f"patch {k}'s points are not the given fault's")
+        assert np.allclose(got.normal(u, v), want.normal(u, v), rtol=0,
+                           atol=1e-12), f"patch {k}'s normals are not the given's"
+        assert np.allclose(got.area_element(u, v), want.area_element(u, v),
+                           rtol=1e-12, atol=0), (
+            f"patch {k}'s area element is not the given fault's")
+        sscale = max(float(np.max(np.abs(want.slip.values))), 1e-300)
+        for date in dates:
+            for basis in BASES:
+                a = back.slip_vector(k, u, v, date=date, basis=basis)
+                b = fault.slip_vector(k, u, v, date=date, basis=basis)
+                assert np.allclose(a, b, rtol=0, atol=1e-12 * sscale), (
+                    f"patch {k}'s slip at {date!r} in the {basis} basis is not "
+                    "the given fault's")
 
 
 #: The CAD kernel's tolerance, a fraction of a patch's size: how far a

@@ -25,6 +25,10 @@ def test_the_fixtures_are_written_and_validate(tmp_path):
         assert ds.method == "cubic"
         assert ds.variables["expected"].shape == ds.variables["query_colatitude"].shape
     assert {"constants.txt", "json_corners.json", "json_corners.json.walk"} <= names
+    assert {"fault_static.nc", "fault_afterslip.nc", "fault_cartesian.nc",
+            "fault_static.expect", "bad.txt"} <= names
+    bad = (tmp_path / "fault_cases" / "bad.txt").read_text().splitlines()
+    assert len(bad) > 30 and all(line.count("\t") == 2 for line in bad)
     assert not (tmp_path / "manifests").exists()
     assert not (tmp_path / "fault_meshes").exists()
 

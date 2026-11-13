@@ -70,30 +70,36 @@ rules are scipy's interpolating B-splines, as the lateral rules are;
 closed at the poles, and do not apply to a plain square.
 
 **The slip** is the displacement of the hanging wall relative to the
-footwall, on a grid of its own over the square with a rule of
-`SLIP_RULES`: `cell`, constant on each of n_u by n_v equal cells (a
-point on a boundary between cells reads the cell above it, the last
-cell closed at 1/2), or `linear` or `cubic` between the nodes of a
-uniform grid as above.  A `Slip` is given in a basis of `BASES`:
-`ambient` (the frame's basis), `cartesian`, or `fault`, the components
-(strike-slip, dip-slip, opening) in the fault basis, dip-slip positive
-up dip (a reverse fault) and opening along the normal, so that a rake
+footwall, held and interpolated in fault components: (strike-slip,
+dip-slip, opening) in the fault basis (s, a, n), dip-slip positive up
+dip (a reverse fault) and opening along the normal, so that a rake
 lambda and a magnitude m are (m cos lambda, m sin lambda) (Aki &
 Richards 2002, eq. 4.88) and a dyke or a sill is a patch like any
-other.  A patch stores it in the ambient basis at each node's (or cell
-centre's) own position; between nodes it is read in Cartesian
-components, each node's vector turned into Cartesian by the basis
-there, and turned into the basis asked for at the point, as the
-library's gridded vectors are, so that a slip uniform in space (a
-plane's uniform rake) stays uniform at every point, near a pole too.
-Slip need not match where patches meet.
+other.  A `Slip` holds the three components on a grid of its own over
+the square with a rule of `SLIP_RULES`: `cell`, constant on each of
+n_u by n_v equal cells (a point on a boundary between cells reads the
+cell above it, the last cell closed at 1/2), or `linear` or `cubic`
+between the nodes of a uniform grid as above, each component read by
+the rule.  The vector at a point is the components there on the fault
+basis there, then given in any of `BASES`: `fault` (the components
+themselves), `ambient` (the frame's basis at the point) or
+`cartesian`.  So a slip without opening lies in the surface at every
+point of any patch; a uniform (strike-slip, dip-slip) on a plane is
+one Cartesian vector everywhere; on a curved patch the rake is
+measured from its u-lines point by point, and it is the components
+that are uniform, near a pole or across the date line as anywhere.
+`Slip.from_vectors` turns vectors given at a grid's points of a patch
+in the ambient or Cartesian basis into its components there.  Slip
+need not match where patches meet.
 
 **Time** follows the surface file (`surfacefile`): the slip's values
 carry a leading axis of slices, and the fault states one support of
 `surfacefile.TIME_SUPPORTS` for them all, with its axis (`time` for
 `node` and `interval`, `instant` for `instant`) and its rule between
 nodes; `surfacefile.time_rows` gives the slices a date reads and
-their weights.  A `static` slip is one slice and needs no date.
+their weights.  A `static` slip is one slice and needs no date.  The
+fault file (`faultfile`) holds the `static` and `node` supports, the
+slip at a node the cumulative slip.
 
 **Quadrature.**  Each patch is cut into n_u by n_v equal cells of the
 square with `points` Gauss-Legendre points each way in each cell (one
@@ -185,7 +191,7 @@ from __future__ import annotations
 import numbers
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -202,12 +208,13 @@ from .units import Scales
 if TYPE_CHECKING:
     from .mapping import Mapping
 
-__all__ = ["SQUARE", "INTERPOLATIONS", "SLIP_RULES", "BASES", "POINT_FORMS",
-           "Frame", "GeographicFrame", "CartesianFrame", "Slip", "Patch",
-           "PatchBase", "Plane", "StructuredPatch", "Quadrature", "Location",
-           "Fault", "parameter_rule", "DipProfile", "Trace", "GreatCircle",
-           "SmallCircle", "Polyline", "finite_block", "TensorSpline",
-           "PULL_BACK_CONTROLS", "Preimage", "pull_back"]
+__all__ = ["SQUARE", "INTERPOLATIONS", "SLIP_RULES", "BASES", "SLIP_COMPONENTS",
+           "MIN_NODES", "POINT_FORMS", "Frame", "GeographicFrame",
+           "CartesianFrame", "Slip", "Patch", "PatchBase", "Plane",
+           "StructuredPatch", "Quadrature", "Location", "Fault", "parameter_rule",
+           "DipProfile", "Trace", "GreatCircle", "SmallCircle", "Polyline",
+           "finite_block", "TensorSpline", "PULL_BACK_CONTROLS", "Preimage",
+           "pull_back"]
 
 #: The interval u and v each run over: the parameter square is SQUARE x SQUARE,
 #: (0, 0) at its centre, u along strike and v down dip.
@@ -220,16 +227,20 @@ INTERPOLATIONS = ("linear", "cubic")
 #: The rules of a slip grid: constant on each cell, or one of INTERPOLATIONS.
 SLIP_RULES = ("cell",) + INTERPOLATIONS
 
-#: The bases a slip's components are given or asked for in: the frame's
-#: ambient basis at the point, Cartesian, or the fault basis (strike-slip,
-#: dip-slip positive up dip, opening).
+#: The bases a slip vector is given or asked for in: the frame's ambient
+#: basis at the point, Cartesian, or the fault basis at the point, whose
+#: components (strike-slip, dip-slip positive up dip, opening) a `Slip` holds.
 BASES = ("ambient", "cartesian", "fault")
+
+#: The names of a `Slip`'s three components, in order.
+SLIP_COMPONENTS = ("strike_slip", "dip_slip", "opening")
 
 #: How points are given to `locate`: Cartesian, or in the frame's coordinates.
 POINT_FORMS = ("cartesian", "frame")
 
-#: The fewest nodes (cells, for `cell`) each way a rule needs.
-_MIN_NODES = {"cell": 1, "linear": 2, "cubic": 4}
+#: The fewest nodes (cells, for `cell`) each way a rule of `SLIP_RULES` needs,
+#: and so `INTERPOLATIONS`.
+MIN_NODES = {"cell": 1, "linear": 2, "cubic": 4}
 
 #: The sufficient decrease a step of `locate`'s search must make (Armijo), and
 #: the halvings of the step it tries before giving up on an iteration.
@@ -364,6 +375,9 @@ class GeographicFrame:
     sphere of `radius`, the ambient basis (east, north, up) (module
     docstring)."""
 
+    #: The frame's name, as a fault file states it.
+    kind: ClassVar[str] = "geographic"
+
     radius: float
 
     def __post_init__(self) -> None:
@@ -406,6 +420,9 @@ class CartesianFrame:
     """Positions as (x, y, z), x east, y north and z up, the ambient basis
     (x, y, z) everywhere; the reference surface is the plane z =
     `surface`."""
+
+    #: The frame's name, as a fault file states it.
+    kind: ClassVar[str] = "cartesian"
 
     _: KW_ONLY
     surface: float = 0.0
@@ -478,7 +495,7 @@ def _check_grid(shape: tuple[int, ...], rule: str, what: str) -> None:
     if rule not in SLIP_RULES:
         raise ValueError(f"{what}: the rule must be one of {SLIP_RULES}, got "
                          f"{rule!r}")
-    least = _MIN_NODES[rule]
+    least = MIN_NODES[rule]
     if min(shape) < least:
         raise ValueError(f"{what}: the {rule!r} rule needs at least {least} "
                          f"{'cells' if rule == 'cell' else 'nodes'} each way, "
@@ -489,21 +506,20 @@ def _check_grid(shape: tuple[int, ...], rule: str, what: str) -> None:
 
 @dataclass(frozen=True, eq=False)
 class Slip:
-    """The slip on one patch: values on a grid over the square, a rule,
-    and the basis the components are in (module docstring).
+    """The slip on one patch: its fault components on a grid over the
+    square, and the rule between them (module docstring).
 
     `values` has shape (n_u, n_v, 3) for one slice or (nslices, n_u,
-    n_v, 3), and is held as (nslices, n_u, n_v, 3), read-only: at the
-    centres of n_u by n_v equal cells for the `cell` rule, otherwise at
-    the nodes of a uniform grid, corners included.  `rule` is one of
-    `SLIP_RULES` and `basis` one of `BASES`.  A patch turns the values
-    into the ambient basis at the nodes when it is built.
+    n_v, 3), and is held as (nslices, n_u, n_v, 3), read-only: the
+    components (strike-slip, dip-slip, opening) (`SLIP_COMPONENTS`) at
+    the centres of n_u by n_v equal cells for the `cell` rule, otherwise
+    at the nodes of a uniform grid, corners included.  `rule` is one of
+    `SLIP_RULES`.
     """
 
     values: ArrayLike
     _: KW_ONLY
     rule: str = "cell"
-    basis: str = "ambient"
 
     def __post_init__(self) -> None:
         if np.iscomplexobj(self.values):
@@ -517,16 +533,13 @@ class Slip:
         if not np.all(np.isfinite(v)):
             raise ValueError("slip values must be finite")
         _check_grid(v.shape[1:3], self.rule, "the slip")
-        if self.basis not in BASES:
-            raise ValueError(f"the slip's basis is one of {BASES}, got "
-                             f"{self.basis!r}")
         object.__setattr__(self, "values", _readonly(v))
 
     @classmethod
     def from_rake(cls, rake: ArrayLike, magnitude: ArrayLike, *,
                   opening: ArrayLike = 0.0, rule: str = "cell") -> Slip:
         """Slip of `magnitude` in the fault plane at `rake` degrees, with
-        `opening` along the normal: fault components (m cos rake,
+        `opening` along the normal: the components (m cos rake,
         m sin rake, opening).  The three broadcast to (n_u, n_v) or
         (nslices, n_u, n_v); scalars alone are one cell."""
         rake, m, o = np.broadcast_arrays(*(np.asarray(x, dtype=float)
@@ -538,7 +551,32 @@ class Slip:
                              f"(n_u, n_v) or (nslices, n_u, n_v), got {rake.shape}")
         lam = np.deg2rad(rake)
         return cls(np.stack([m * np.cos(lam), m * np.sin(lam), o], axis=-1),
-                   rule=rule, basis="fault")
+                   rule=rule)
+
+    @classmethod
+    def from_vectors(cls, patch: Patch, vectors: ArrayLike, *, rule: str = "cell",
+                     basis: str = "ambient") -> Slip:
+        """The slip whose vectors at its grid's points on `patch` (the cell
+        centres for the `cell` rule, the nodes otherwise) are `vectors`,
+        given in `basis` (one of `BASES`) there: each turned into its
+        fault components by the patch's fault basis at its point, an
+        orthonormal change of basis, so that a component along the normal
+        becomes opening.  `vectors` has shape (n_u, n_v, 3) or (nslices,
+        n_u, n_v, 3); only the patch's map is read, not its own slip."""
+        if not isinstance(patch, Patch):
+            raise TypeError(f"expected a Patch, got {type(patch).__name__}")
+        if basis not in BASES:
+            raise ValueError(f"basis is one of {BASES}, got {basis!r}")
+        given = cls(vectors, rule=rule)
+        if basis == "fault":
+            return given
+        U, V = np.meshgrid(*given.nodes(), indexing="ij")
+        cart = given.values
+        if basis == "ambient":
+            B = patch.frame.basis(patch.position(U, V))         # (n_u, n_v, 3, 3)
+            cart = np.einsum("uvij,suvj->suvi", B, cart)
+        F = patch.fault_basis(U, V)
+        return cls(np.einsum("uvji,suvj->suvi", F, cart), rule=rule)
 
     @property
     def nslices(self) -> int:
@@ -560,7 +598,7 @@ class Slip:
 
     def __repr__(self) -> str:
         n_u, n_v = self.shape
-        return (f"Slip({self.rule}, {self.basis}, {self.nslices} slice"
+        return (f"Slip({self.rule}, {self.nslices} slice"
                 f"{'' if self.nslices == 1 else 's'} of {n_u} x {n_v})")
 
 
@@ -894,7 +932,7 @@ class Patch(Protocol):
 
     @property
     def slip(self) -> Slip:
-        """The slip, its components in the ambient basis at its nodes."""
+        """The slip, its fault components on its grid."""
         ...
 
     def cartesian(self, u: ArrayLike, v: ArrayLike) -> np.ndarray:
@@ -962,7 +1000,7 @@ class PatchBase:
 
     @property
     def slip(self) -> Slip:
-        """The slip, its components in the ambient basis at its nodes."""
+        """The slip, its fault components on its grid."""
         return self._slip
 
     def cartesian(self, u: ArrayLike, v: ArrayLike) -> np.ndarray:
@@ -992,21 +1030,11 @@ class PatchBase:
         return 17, 17
 
     def _attach(self, slip: Slip) -> None:
-        """Hold `slip` in the ambient basis at its nodes, and its Cartesian
-        components for the rule that reads it between them."""
+        """Hold `slip`, and the rule that reads its components."""
         if not isinstance(slip, Slip):
             raise TypeError(f"slip must be a Slip, got {type(slip).__name__}")
-        U, V = np.meshgrid(*slip.nodes(), indexing="ij")
-        B = self._frame.basis(self.position(U, V))          # (n_u, n_v, 3, 3)
-        if slip.basis == "cartesian":
-            cart = slip.values
-        else:
-            M = B if slip.basis == "ambient" else self.fault_basis(U, V)
-            cart = np.einsum("uvij,suvj->suvi", M, slip.values)
-        ambient = (slip.values if slip.basis == "ambient"
-                   else np.einsum("uvji,suvj->suvi", B, cart))
-        self._slip = Slip(ambient, rule=slip.rule)
-        self._slip_rule = _GridRule(np.moveaxis(cart, 0, 2), slip.rule)
+        self._slip = slip
+        self._slip_rule = _GridRule(np.moveaxis(slip.values, 0, 2), slip.rule)
 
     def position(self, u: ArrayLike, v: ArrayLike) -> np.ndarray:
         """x(u, v) in the frame's coordinates, (..., 3)."""
@@ -1034,9 +1062,9 @@ class PatchBase:
 
     def slip_vector(self, u: ArrayLike, v: ArrayLike, *, index: int = 0,
                     basis: str = "ambient") -> np.ndarray:
-        """The slip of slice `index` at (u, v), (..., 3): read in Cartesian
-        components by the slip's rule, then given in `basis`, one of
-        `BASES`."""
+        """The slip of slice `index` at (u, v), (..., 3): its fault
+        components read by the slip's rule, and given in `basis`, one of
+        `BASES`, through the fault basis at the point."""
         if basis not in BASES:
             raise ValueError(f"basis is one of {BASES}, got {basis!r}")
         n = self._slip.nslices
@@ -1044,14 +1072,14 @@ class PatchBase:
                 or not 0 <= index < n:
             raise IndexError(f"slice {index!r} of a slip of {n}")
         fu, fv, shape = _parameters(u, v)
-        cart = self._slip_rule(fu, fv, index=int(index))
+        comp = self._slip_rule(fu, fv, index=int(index))
+        if basis == "fault":
+            return comp.reshape(shape + (3,))
+        cart = np.einsum("pij,pj->pi", self.fault_basis(fu, fv), comp)
         if basis == "ambient":
-            M = self._frame.basis(self.position(fu, fv))
-        elif basis == "fault":
-            M = self.fault_basis(fu, fv)
-        else:
-            return cart.reshape(shape + (3,))
-        return np.einsum("pji,pj->pi", M, cart).reshape(shape + (3,))
+            B = self._frame.basis(self.position(fu, fv))
+            cart = np.einsum("pji,pj->pi", B, cart)
+        return cart.reshape(shape + (3,))
 
     def quadrature(self, n_u: int, n_v: int, *, points: int = 1,
                    index: int = 0) -> Quadrature:
@@ -1139,6 +1167,9 @@ class Plane(PatchBase):
     degrees, the dip from 0 to 90; `length` (along strike) and `width`
     (down dip) are positive, in the length scale.
     """
+
+    #: The patch's kind, as a fault file states it.
+    kind: ClassVar[str] = "plane"
 
     def __init__(self, frame: Frame, centroid: ArrayLike, *, strike: float,
                  dip: float, length: float, width: float, slip: Slip) -> None:
@@ -1262,6 +1293,9 @@ class StructuredPatch(PatchBase):
     `interpolation` is one of `INTERPOLATIONS`.  The area element must be
     positive at every control node.
     """
+
+    #: The patch's kind, as a fault file states it.
+    kind: ClassVar[str] = "structured"
 
     def __init__(self, frame: Frame, positions: ArrayLike, *, slip: Slip,
                  interpolation: str = "cubic") -> None:
@@ -1985,7 +2019,7 @@ def pull_back(patch: Patch, mapping: Mapping, *,
             else tuple(controls)
         if len(pair) != 2:
             raise ValueError(f"controls is a count or (n_u, n_v), got {controls!r}")
-        grids = [tuple(_count(n, "controls", least=_MIN_NODES["cubic"])
+        grids = [tuple(_count(n, "controls", least=MIN_NODES["cubic"])
                        for n in pair)]
     zero = Slip(np.zeros((1, 1, 3)))
     for n_u, n_v in grids:

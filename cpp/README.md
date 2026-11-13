@@ -15,6 +15,14 @@ writes files that the Python reads. It reads and writes:
   (`SurfaceField`), whole or not at all, and `SurfaceHistory` serves a
   field's values at any date by the field's own time rule, with the
   Python's arithmetic;
+- **fault files**, a fault's patches of surface and the slip on them,
+  static or in time (`faultfile.hpp`, read only): `ReadFaultFile` makes
+  the Python reader's checks and gives a `Fault` (`fault.hpp`) that
+  evaluates as the Python's does, to rounding: positions, normals, the
+  fault basis and the area element at any (u, v), the slip at any
+  (u, v) and date in fault, ambient or Cartesian components, a
+  quadrature (`Fault::Quadrature`), and the location of physical points
+  near it with the slip there (`Fault::Locate`, `Fault::SlipAt`);
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
   (`json.hpp`), with the faults built into a mesh, the element
@@ -94,6 +102,33 @@ A field holds the interpolants it was built with and nothing else that
 changes, so it is cheap to copy and safe to evaluate from many threads.
 A typical code builds the fields it wants, samples them onto its own
 mesh, and discards them.
+
+## Reading a fault file
+
+```cpp
+#include <planetmodel/faultfile.hpp>
+
+namespace pm = planetmodel;
+const auto file = pm::ReadFaultFile("rupture.nc");
+const auto& fault = file.fault;
+
+// a quadrature of 20 by 8 cells, two Gauss-Legendre points each way, the
+// slip at a date: points, normals, weights (areas) and Cartesian slip
+const auto q = fault.Quadrature(20, 8, 2, /*date=*/1.5);
+for (auto i = std::size_t{0}; i < q.Size(); ++i) {
+  // the moment is yours, with your own moduli at q.points[i]
+}
+
+// a mesh node near the fault: its patch, (u, v) and signed distance,
+// and the slip there in (east, north, up)
+const auto where = fault.Locate({x, y, z});
+const auto slip = fault.SlipAt(nodes, /*max_distance=*/1e3,
+                               {.date = 1.5, .basis = pm::SlipBasis::Ambient});
+```
+
+A structured patch is read by the same tensor-product B-splines as the
+Python's (scipy's knots, the coefficients solved here), so the two
+languages agree to rounding wherever they are asked.
 
 ## Writing a model file
 

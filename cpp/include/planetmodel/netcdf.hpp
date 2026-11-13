@@ -401,6 +401,50 @@ using Attributes = std::map<std::string, Attribute>;
 }
 
 /**
+ * @brief The names of a group's own dimensions, its parents' left out, in
+ * the file's order.
+ * @param group The group, or the file's id.
+ * @param source The file, as an error names it.
+ */
+[[nodiscard]] inline std::vector<std::string> GroupDimensionNames(int group,
+                                                                const std::string& source) {
+  auto count = 0;
+  Check(nc_inq_dimids(group, &count, nullptr, 0), source, "");
+  auto ids = std::vector<int>(static_cast<std::size_t>(count));
+  if (count > 0) Check(nc_inq_dimids(group, &count, ids.data(), 0), source, "");
+  auto out = std::vector<std::string>{};
+  for (const auto id : ids) {
+    auto name = std::string(NC_MAX_NAME + 1, '\0');
+    Check(nc_inq_dimname(group, id, name.data()), source, "");
+    name.resize(std::char_traits<char>::length(name.c_str()));
+    out.push_back(std::move(name));
+  }
+  return out;
+}
+
+/**
+ * @brief The names of a variable's attributes, or of a group's with
+ * `GLOBAL`, in the file's order.
+ * @param group The group, or the file's id.
+ * @param var The variable's id, or `GLOBAL`.
+ * @param source The file, as an error names it.
+ */
+[[nodiscard]] inline std::vector<std::string> AttributeNames(int group, int var,
+                                                           const std::string& source) {
+  auto count = 0;
+  Check(var == GLOBAL ? nc_inq_natts(group, &count) : nc_inq_varnatts(group, var, &count),
+        source, "");
+  auto out = std::vector<std::string>{};
+  for (auto i = 0; i < count; ++i) {
+    auto name = std::string(NC_MAX_NAME + 1, '\0');
+    Check(nc_inq_attname(group, var, i, name.data()), source, "");
+    name.resize(std::char_traits<char>::length(name.c_str()));
+    out.push_back(std::move(name));
+  }
+  return out;
+}
+
+/**
  * @brief A string variable's values, of one dimension.
  * @param group The group, or the file's id.
  * @param name The variable.

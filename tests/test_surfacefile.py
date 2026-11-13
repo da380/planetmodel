@@ -244,3 +244,14 @@ def test_dimensions_round_trip(tmp_path: Path):
     var = read_surface_file(out).variables["load"]
     assert list(var.attributes["dimensions"]) == [1, 0, -2, 0]
     assert var.attributes["units"] == dims.unit_string()
+
+
+def test_a_single_time_node_reads_itself():
+    from planetmodel.surfacefile import time_rows
+    t = np.array([3.0])
+    for rule in ("linear", "previous"):
+        assert time_rows("node", rule, 3.0, time=t) == ((0, 1.0), (0, 0.0))
+        assert time_rows("node", rule, 9.0, time=t,
+                         extrapolation="hold") == ((0, 1.0), (0, 0.0))
+    with pytest.raises(ValueError, match="outside"):
+        time_rows("node", "linear", 2.0, time=t)

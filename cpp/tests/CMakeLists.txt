@@ -16,6 +16,7 @@ set(PLANETMODEL_FIXTURES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures" CACHE PATH
 add_executable(planetmodel_tests
   test_deck.cpp
   test_error.cpp
+  $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_faultfile.cpp>
   test_faults.cpp
   test_json.cpp
   test_manifest.cpp

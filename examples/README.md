@@ -2,8 +2,8 @@
 
 Two kinds of material, after MFEM's: **examples**, small scripts that
 each show one idea in under a hundred lines or so, grouped by area
-(`conversion/`, `meshing/`, more areas to come as the tutorials are
-split), and
+(`conversion/`, `faults/`, `meshing/`, more areas to come as the
+tutorials are split), and
 **mini-apps** (`miniapps/`), medium-sized programs that use several
 parts of the library together on a real problem, each in a directory
 with its README. Each starts with a header naming what it needs:
@@ -28,6 +28,7 @@ each one's markers, so the test suite runs every example it can.
 | `conversion/06_lithosphere_base.py` | the base of the lithosphere at a viscosity and at a Maxwell time, as geometry (an interface moved onto it) and as a lid, mapped (`maps`) |
 | `conversion/07_published_viscosity.py` | Lloyd et al.'s viscosity from GLAD-M25, fetched, put on PREM's mantle and mapped at three depths (`netcdf`, `maps`, network) |
 | `conversion/08_power_law.py` | power-law creep's stress exponent and transition stress on a model, and AdGIA's gamma from them |
+| `faults/01_a_fault_file.py` | a megathrust swept from an arcuate trench with a tapered thrust and two slices of afterslip, and an outer-rise plane, written to a fault file and read back: the slip on a map and in a section down dip, its arrows in the surface, and its fault components in time (`netcdf`, `plot`) |
 | `meshing/01_a_fault_in_a_mesh.py` | a plane thrust reaching the surface and a curved splay meeting it, built into a layered mesh under a relief: the validation report and the manifest's fault records, the moved fault nodes located on the true faults, the slip at a few of them, the plus and minus cells of a face (`meshing`) |
 | `meshing/02_a_fault_in_section.py` | a plane fault inside one layer, the volume mesh cut by a plane normal to its strike: the cells by layer, the interfaces, the fault as a line the element edges run along, near it with and without its sizing (`meshing`, `plot`) |
 | `meshing/03_the_pull_back.py` | a thrust breaking the surface under a hill: the reference mesh with the curved preimage built in, the moved mesh with the fault on the true plane, and the pull-back off, the fault carried off it, with the nodes' distances from the true fault (`meshing`, `plot`) |

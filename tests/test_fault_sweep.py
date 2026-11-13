@@ -198,23 +198,25 @@ def test_a_thrust_on_a_subduction_interface():
     assert np.all(np.einsum("pi,pi->p", patch.normal(u, v), up) > 0.0)
     assert np.all(np.einsum("pi,pi->p", slip, up) > 0.0)
     assert np.all(np.einsum("pi,pi->p", slip, towards_trench) > 0.0)
-    # rake is measured from the u-lines, here the local trace direction:
-    # pure dip-slip at the slip's nodes, and close to it between them
-    # (measured: an opening of 3.5e-3 at most, the slip being read in
-    # Cartesian components)
-    U, V = np.meshgrid(*patch.slip.nodes(), indexing="ij")
-    assert np.allclose(patch.slip_vector(U, V, basis="fault"), [0.0, 1.0, 0.0],
-                       rtol=0, atol=1e-12)
-    assert np.allclose(patch.slip_vector(u, v, basis="fault"), [0.0, 1.0, 0.0],
-                       rtol=0, atol=5e-3)
-    # a cell's slip is one Cartesian vector: on a curved interface it
-    # leaves the surface away from the cell's centre (measured: an opening
-    # of 0.24 at the trench end, where the dip is 10 degrees, not 22)
+    # rake is measured from the u-lines, here the local trace direction,
+    # and the rule reads fault components: pure dip-slip everywhere, on a
+    # grid of nodes or in one cell, and no opening, the vector turning
+    # with the surface down the steepening dip and staying in it
+    U, V = np.meshgrid(np.linspace(-0.5, 0.5, 41), np.linspace(-0.5, 0.5, 41),
+                       indexing="ij")
     single = StructuredPatch.swept(EARTH, trace, dip=_steepening, bottom=150e3,
                                    n_u=5, n_v=7, slip=Slip.from_rake(90.0, 1.0))
-    cart = single.slip_vector(u, v, basis="cartesian")
-    assert np.allclose(cart, cart[2], rtol=0, atol=1e-15)
-    assert abs(single.slip_vector(0.0, -0.5, basis="fault")[2]) > 0.1
+    for p in (patch, single):
+        assert np.allclose(p.slip_vector(U, V, basis="fault"), [0.0, 1.0, 0.0],
+                           rtol=0, atol=1e-15)
+        cart = p.slip_vector(U, V, basis="cartesian")
+        # measured: 1.1e-16
+        assert np.max(np.abs(np.einsum("...i,...i->...", cart,
+                                       p.normal(U, V)))) < 1e-15
+        assert np.allclose(np.linalg.norm(cart, axis=-1), 1.0, rtol=0,
+                           atol=1e-15)
+    cart = single.slip_vector(0.0, np.array([-0.5, 0.5]), basis="cartesian")
+    assert abs(np.degrees(np.arccos(cart[0] @ cart[1]))) > 10.0
 
 
 def test_a_polyline_through_a_small_circle_tends_to_it():

@@ -18,9 +18,9 @@ import pytest
 from scipy.integrate import dblquad
 
 from planetmodel import Scales, testing
-from planetmodel.fault import (BASES, SQUARE, CartesianFrame, Fault,
-                               GeographicFrame, Plane, Slip, StructuredPatch,
-                               parameter_rule)
+from planetmodel.fault import (BASES, SLIP_COMPONENTS, SQUARE, CartesianFrame,
+                               Fault, GeographicFrame, Plane, Slip,
+                               StructuredPatch, parameter_rule)
 from planetmodel.modelfile import FileVariable
 from planetmodel.sampling import AngularGrid
 from planetmodel.surfacefile import SCHEMA, SurfaceFile, SurfaceHistory
@@ -252,11 +252,19 @@ def test_fault_components_and_rake():
         got = p.slip_vector(a, b, basis=basis)
         assert np.allclose(np.einsum("pij,pj->pi", M, got), cart, rtol=0,
                            atol=1e-14)
-    # given as ambient components it is held as given
+    # fault components are held as given; vectors given in another basis
+    # at the grid's points are turned into them there, and read back
     given = rng.normal(size=(3, 4, 3))
     q = Plane(EARTH, [10.0, 20.0, R - 3e3], strike=0.0, dip=80.0, length=1e3,
               width=1e3, slip=Slip(given, rule="linear"))
-    assert np.allclose(q.slip.values[0], given, rtol=0, atol=1e-15)
+    assert np.array_equal(q.slip.values[0], given)
+    U, V = np.meshgrid(*q.slip.nodes(), indexing="ij")
+    for basis in BASES:
+        slip = Slip.from_vectors(q, given, rule="linear", basis=basis)
+        back = Plane(EARTH, [10.0, 20.0, R - 3e3], strike=0.0, dip=80.0,
+                     length=1e3, width=1e3, slip=slip)
+        assert np.allclose(back.slip_vector(U, V, basis=basis), given, rtol=0,
+                           atol=1e-15), basis
 
 
 # -- a structured patch -----------------------------------------------------------
@@ -311,9 +319,15 @@ def _area_element(v: float, u: float) -> float:
 
 
 def _slip(u: float, v: float) -> np.ndarray:
-    """The bilinear slip, written out."""
+    """The slip vector, Cartesian: its bilinear fault components, written
+    out, on the fault basis built from the tangents (2a, 0, 4cv) and
+    (0, 2b, 4cu)."""
     lu, lv = np.array([0.5 - u, 0.5 + u]), np.array([0.5 - v, 0.5 + v])
-    return np.einsum("i,j,ijk->k", lu, lv, _SLIP)
+    comp = np.einsum("i,j,ijk->k", lu, lv, _SLIP)
+    xu, xv = np.array([2 * _A, 0.0, 4 * _C * v]), np.array([0.0, 2 * _B, 4 * _C * u])
+    s = xu / np.linalg.norm(xu)
+    n = np.cross(xv, xu) / np.linalg.norm(np.cross(xv, xu))
+    return comp[0] * s + comp[1] * np.cross(n, s) + comp[2] * n
 
 
 def _orders(errors: np.ndarray) -> np.ndarray:
@@ -415,6 +429,7 @@ def test_time_by_the_surface_files_rules():
     for name, (support, rule, values, axes) in cases.items():
         fault = _timed(support, rule, values, **axes)
         U, V = np.meshgrid(*fault.patches[0].slip.nodes(), indexing="ij")
+        F = fault.patches[0].fault_basis(0.0, 0.0)
         for date in dates:
             for extrapolation in ("refuse", "hold"):
                 try:
@@ -424,16 +439,17 @@ def test_time_by_the_surface_files_rules():
                 except ValueError as error:
                     with pytest.raises(ValueError) as caught:
                         fault.slip_vector(0, U, V, date=date,
-                                          extrapolation=extrapolation)
+                                          extrapolation=extrapolation,
+                                          basis="fault")
                     assert str(caught.value) == str(error).replace(
                         f"'{name}0'", "'slip'")
                     continue
                 got = fault.slip_vector(0, U, V, date=date,
-                                        extrapolation=extrapolation)
+                                        extrapolation=extrapolation, basis="fault")
                 assert np.allclose(got, want, rtol=0, atol=1e-15), (name, date)
                 q = fault.quadrature(2, 3, date=date, extrapolation=extrapolation)
-                assert np.allclose(q.slip.reshape(2, 3, 3), want, rtol=0,
-                                   atol=1e-15)
+                assert np.allclose(q.slip.reshape(2, 3, 3), want @ F.T, rtol=0,
+                                   atol=1e-14)
     with pytest.raises(ValueError, match="needs a date"):
         _timed("node", "linear", nodes, time=time).quadrature(1, 1)
 
@@ -490,8 +506,10 @@ def test_a_plane_over_a_pole():
     patch = StructuredPatch(EARTH, p.position(U, V),
                             slip=Slip.from_rake(45.0, 3.0))
     assert np.allclose(patch.cartesian(q.u, q.v), q.points, rtol=0, atol=1e-14 * R)
+    # the slip on the patch's own fault basis, the plane's to 4e-13
+    # (measured: 1.0e-12 of the slip's 3)
     assert np.allclose(patch.slip_vector(q.u, q.v, basis="cartesian"), q.slip,
-                       rtol=0, atol=1e-12)
+                       rtol=0, atol=1e-12 * 3.0)
     testing.check_patch(patch)
 
 
@@ -515,6 +533,10 @@ def test_a_patch_across_the_date_line():
                        rtol=1e-12, atol=0)
     assert np.allclose(across.normal(u, v), home.normal(u, v) @ flip, rtol=0,
                        atol=1e-12)
+    # the fault components are what the rule reads: the same on both, and
+    # so the ambient components too, the two bases turning together
+    assert np.array_equal(across.slip_vector(u, v, basis="fault"),
+                          home.slip_vector(u, v, basis="fault"))
     assert np.allclose(across.slip_vector(u, v), home.slip_vector(u, v), rtol=0,
                        atol=1e-12)
     lon_read = across.position(u, v)[:, 1]
@@ -538,10 +560,13 @@ def _patches() -> list:
          3e3 * np.cos(2 * U + V)], axis=-1)
     local = np.stack(np.broadcast_arrays(3.0 * U, 2.0 * V,
                                          -4.0 - 0.3 * V ** 2 + 0.2 * U * V), -1)
+    vertical = Plane(LOCAL, [1.0, 2.0, -3.0], strike=250.0, dip=90.0, length=2.0,
+                     width=1.0, slip=Slip(np.zeros((1, 1, 3))))
     return [plane,
             Plane(LOCAL, [1.0, 2.0, -3.0], strike=250.0, dip=90.0, length=2.0,
-                  width=1.0, slip=Slip(rng.normal(size=(3, 2, 3)), rule="linear",
-                                       basis="cartesian")),
+                  width=1.0, slip=Slip.from_vectors(
+                      vertical, rng.normal(size=(3, 2, 3)), rule="linear",
+                      basis="cartesian")),
             Plane(LOCAL, [0.0, 0.0, -1.0], strike=30.0, dip=0.0, length=2.0,
                   width=2.0, slip=Slip.from_rake(0.0, 0.0, opening=0.4)),
             StructuredPatch(EARTH, wavy, slip=Slip(rng.normal(size=(2, 2, 3)),
@@ -550,8 +575,7 @@ def _patches() -> list:
                             slip=Slip.from_rake(30.0, rng.uniform(0, 2, (4, 4)),
                                                 rule="cubic")),
             StructuredPatch(LOCAL, local, slip=Slip(rng.normal(size=(3, 3, 3)),
-                                                    rule="linear",
-                                                    basis="fault"))]
+                                                    rule="linear"))]
 
 
 @pytest.mark.parametrize("index", range(6))
@@ -590,7 +614,10 @@ def test_refusals():
     with pytest.raises(ValueError, match="rule"):
         Slip(np.zeros((1, 1, 3)), rule="nearest")
     with pytest.raises(ValueError, match="basis"):
-        Slip(np.zeros((1, 1, 3)), basis="spherical")
+        Slip.from_vectors(Plane(LOCAL, [0.0, 0.0, 0.0], dip=10.0, **kw),
+                          np.zeros((1, 1, 3)), basis="spherical")
+    with pytest.raises(TypeError, match="Patch"):
+        Slip.from_vectors("plane", np.zeros((1, 1, 3)))
     with pytest.raises(TypeError, match="real"):
         Slip(np.zeros((1, 1, 3), dtype=complex))
     with pytest.raises(ValueError, match="broadcast"):
@@ -639,6 +666,7 @@ def test_refusals():
 
 def test_the_bases_and_the_square_are_one_statement():
     assert BASES == ("ambient", "cartesian", "fault")
+    assert SLIP_COMPONENTS == ("strike_slip", "dip_slip", "opening")
     assert SQUARE == (-0.5, 0.5)
     u, v, w = parameter_rule(3, 2, points=2)
     assert np.isclose(w.sum(), 1.0, rtol=1e-15)

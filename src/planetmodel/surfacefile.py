@@ -558,6 +558,8 @@ def time_rows(support: str, rule: str, date: float | None, *,
     if rule == "previous":
         k = int(np.searchsorted(axis, date, side="right")) - 1
         return ((k, 1.0), (k, 0.0))
+    if axis.size == 1:  # a single node: the span is that date alone
+        return ((0, 1.0), (0, 0.0))
     k = min(int(np.searchsorted(axis, date, side="right")) - 1, axis.size - 2)
     w = (date - float(axis[k])) / (float(axis[k + 1]) - float(axis[k]))
     if w == 0.0:  # a stored node: its own values, a NaN beside it kept out

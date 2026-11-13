@@ -7,7 +7,7 @@ that a solver written in C++ can take a model from planetmodel and hand
 its own fields back. It is header-only C++23, and its version is
 the Python package's.
 
-It reads and writes four of the Python's files:
+It reads and writes the Python's files:
 
 * **Model files** (:doc:`formats/model_file`). Reading gives the numbers
   as stored, and each variable on each layer as a field that can be
@@ -19,6 +19,12 @@ It reads and writes four of the Python's files:
 * **Surface files** (:doc:`formats/surface_file`). Reading gives the
   fields on the surface, static or in time, each served at any date by
   its own time rule; writing builds a file from a code's own fields.
+* **Fault files** (:doc:`formats/fault_file`), read only. Reading makes
+  the Python reader's checks and gives the fault, which evaluates as the
+  Python's does, to rounding: positions, normals, the fault basis and the
+  area element anywhere on a patch, the slip at any point and date, a
+  quadrature, and the location of a physical point near the fault (a
+  mesh node on it) with the slip there.
 * **Mesh manifests** (:doc:`formats/mesh_manifest`). The library reads
   these on a strict JSON reader of its own, the faults built into a mesh
   and the element attributes of their hanging walls among them, and

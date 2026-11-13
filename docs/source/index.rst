@@ -61,6 +61,8 @@ for their readers:
   angular grids at radial nodes, and its mapping.
 * :doc:`formats/surface_file`: fields on one spherical surface, static
   or in time, in one netCDF file.
+* :doc:`formats/fault_file`: a fault, its patches of surface and the slip
+  on them, static or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what
   the mesh's numbered attributes and the field files beside it are.
 * :doc:`formats/maxwell_deck`: a radial viscoelastic body as a plain-text
@@ -73,6 +75,7 @@ for their readers:
 
    formats/model_file
    formats/surface_file
+   formats/fault_file
    formats/mesh_manifest
    formats/maxwell_deck
 
