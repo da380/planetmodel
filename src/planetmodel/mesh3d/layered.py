@@ -34,7 +34,13 @@ it and its cells held to the classification and to the layers they lie
 in (`_validate.confirm_collars`).  Netgen's optimisation of the
 linear mesh crashes the process on a solid with a surface embedded in
 it, whichever solids it is given, so a mesh with a fault skips it and
-says so among the report's warnings.
+says so among the report's warnings.  Nothing then removes a flat
+element the volume mesher leaves, which it can beside a fault at a
+shallow angle to an interface or to the outer boundary: such a mesh
+fails its validation or the check of its collars and is refused, never
+written.  Whether one is left depends on the surface meshes, so another
+`algorithm_2d` (gmsh's Delaunay, 5, in place of its frontal Delaunay,
+6) or other sizes are what to try.
 """
 from __future__ import annotations
 
