@@ -1,11 +1,16 @@
-// Decks: the shipped mineos decks, a Maxwell deck, TauP's two tables and
-// one of short layers read as the Python reads them, each kind of interpolant the Python's, a
-// malformed deck refused by name; and every fixture written back, and a
-// Maxwell deck built here, left for the Python to read.
+// Decks: the shipped mineos decks, a Maxwell, a prony and a burgers deck,
+// TauP's two tables and one of short layers read as the Python reads them,
+// each kind of interpolant the Python's, through the values or their
+// logarithms, a column joined in its logarithm refused where it is not
+// positive, a malformed deck refused by name, a
+// prony or burgers deck breaking its format's rules refused with the
+// Python's message; and every fixture written back, and a Maxwell, a prony
+// and a burgers deck built here, left for the Python to read.
 #include "planetmodel/deck.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <format>
@@ -15,9 +20,15 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "fixtures.hpp"
+
+#if !defined(PLANETMODEL_HAS_VISCOELASTIC_DECKS) || !defined(PLANETMODEL_HAS_LOG_KINDS)
+#error "deck.hpp and radial.hpp define the macros of their features"
+#endif
 
 namespace {
 
@@ -38,12 +49,27 @@ std::string Unhex(const std::string& hex) {
   return out;
 }
 
-/// What names a deck's layers: no header, a mineos or Maxwell header, or
-/// a TauP table's labels.
-enum class Named { None, Mineos, Maxwell, Nd };
+/// What names a deck's layers: no header, a mineos, Maxwell, prony or
+/// burgers header, or a TauP table's labels.
+enum class Named { None, Mineos, Maxwell, Prony, Burgers, Nd };
+
+/// The columns of a deck positive and finite wherever they are not NaN, and
+/// not NaN throughout, as the fixtures' `_positive_columns` finds them.
+std::vector<std::string> PositiveColumns(const Deck& deck) {
+  auto out = std::vector<std::string>{};
+  for (const auto& name : deck.Names()) {
+    const auto& v = deck.Column(name);
+    const auto held = std::ranges::any_of(v, [](double x) { return !std::isnan(x); });
+    const auto positive = std::ranges::all_of(
+        v, [](double x) { return std::isnan(x) || (std::isfinite(x) && x > 0.0); });
+    if (held && positive) out.push_back(name);
+  }
+  return out;
+}
 
 /// The deck against the Python's expectations: the layering, the header
-/// and its names, and every kind's values and derivatives.
+/// and its names, and every kind's values and derivatives, those after
+/// `log-` on the columns positive throughout.
 void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, Named named) {
   auto in = std::ifstream(expect);
   auto values = 0;
@@ -51,18 +77,34 @@ void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, Na
   for (const auto* kind : {"cubic", "natural", "linear"}) {
     functions.emplace(kind, planetmodel::DeckLayers(deck, kind));
   }
+  const auto positive = PositiveColumns(deck);
+  for (const auto* kind : {"log-cubic", "log-natural", "log-linear"}) {
+    auto kinds = std::map<std::string, std::string, std::less<>>{};
+    for (const auto& name : positive) kinds.emplace(name, kind);
+    functions.emplace(kind, planetmodel::DeckLayers(deck, "cubic", kinds));
+  }
   if (named == Named::Maxwell) {
     functions.emplace("maxwell",
                       planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS));
   }
+  if (named == Named::Prony) {
+    functions.emplace("prony",
+                      planetmodel::DeckLayers(deck, "cubic", planetmodel::PRONY_KINDS));
+  }
+  if (named == Named::Burgers) {
+    functions.emplace("burgers",
+                      planetmodel::DeckLayers(deck, "cubic", planetmodel::BURGERS_KINDS));
+  }
+  const auto headed =
+      named == Named::Maxwell || named == Named::Prony || named == Named::Burgers;
   const auto mineos = named == Named::Mineos;
   const auto header = mineos ? std::optional{planetmodel::ReadMineosHeader(deck.Header(),
                                                                            deck.Source())}
                              : std::nullopt;
-  const auto names = mineos                       ? std::optional{planetmodel::MineosNames(deck)}
-                     : named == Named::Maxwell ? std::optional{planetmodel::MaxwellNames(deck)}
-                     : named == Named::Nd      ? std::optional{planetmodel::NdNames(deck)}
-                                               : std::nullopt;
+  const auto names = mineos              ? std::optional{planetmodel::MineosNames(deck)}
+                     : headed           ? std::optional{planetmodel::MaxwellNames(deck)}
+                     : named == Named::Nd ? std::optional{planetmodel::NdNames(deck)}
+                                          : std::nullopt;
   auto label = std::size_t{0};
   for (auto line = std::string{}; std::getline(in, line);) {
     auto words = std::istringstream{line};
@@ -168,6 +210,45 @@ TEST(Deck, ReadsAMaxwellDeckWithItsNamesAndAViscosityAbsentFromTheCore) {
   EXPECT_EQ(names.interfaces.back(), "surface");
 }
 
+TEST(Deck, ReadsAPronyDeckWithItsBranchesAsThePythonDoes) {
+  PLANETMODEL_FIXTURE(path, "deck_prony.txt");
+  const auto deck = planetmodel::ReadDeck(path, planetmodel::PRONY());
+  ExpectAsThePython(deck, path.parent_path() / "deck_prony.expect", Named::Prony);
+  EXPECT_EQ(planetmodel::PronyBranches(deck), 3u);
+  EXPECT_EQ(deck.Names(), planetmodel::PronyColumns(3));
+  const auto layers = planetmodel::DeckLayers(deck, "cubic", planetmodel::PRONY_KINDS);
+  EXPECT_FALSE(layers.layers[0].contains("relaxation_strength_1"));  // elastic
+  EXPECT_FALSE(layers.layers[1].contains("relaxation_time_3"));      // fluid
+  // the layer of one branch the writer completed: strengths of 0, the time
+  // of its branch
+  const auto& one = layers.layers[5];
+  ASSERT_TRUE(one.contains("relaxation_strength_3"));
+  for (const auto r : {5701e3, 5740e3, 5771e3}) {
+    EXPECT_EQ(one.at("relaxation_strength_2").Value(r), 0.0);
+    EXPECT_EQ(one.at("relaxation_time_3").Value(r), one.at("relaxation_time_1").Value(r));
+  }
+  // straight lines: a strength between two knots is their mean
+  const auto [begin, end] = deck.Layers()[3];
+  const auto& r = deck.Radius();
+  const auto& w = deck.Column("relaxation_strength_3");
+  EXPECT_NEAR(layers.layers[3].at("relaxation_strength_3").Value(0.5 * (r[begin] + r[begin + 1])),
+              0.5 * (w[begin] + w[begin + 1]), 1e-15);
+  EXPECT_LT(begin + 1, end);
+  EXPECT_EQ(planetmodel::MaxwellNames(deck).layers.at(2), "lowermost_mantle");
+}
+
+TEST(Deck, ReadsABurgersDeckAsThePythonDoes) {
+  PLANETMODEL_FIXTURE(path, "deck_burgers.txt");
+  const auto deck = planetmodel::ReadDeck(path, planetmodel::BURGERS());
+  ExpectAsThePython(deck, path.parent_path() / "deck_burgers.expect", Named::Burgers);
+  EXPECT_EQ(deck.Names(), planetmodel::BURGERS_COLUMNS);
+  const auto layers = planetmodel::DeckLayers(deck, "cubic", planetmodel::BURGERS_KINDS);
+  EXPECT_TRUE(layers.layers[2].contains("viscosity"));  // a Maxwell body
+  EXPECT_FALSE(layers.layers[2].contains("kelvin_viscosity"));
+  EXPECT_TRUE(layers.layers[6].contains("kelvin_modulus_fraction"));  // a Burgers body
+  EXPECT_FALSE(layers.layers[10].contains("viscosity"));              // elastic
+}
+
 TEST(Deck, ReadsTauPTablesAsThePythonDoes) {
   for (const auto& [label, format] :
        std::vector<std::pair<std::string, planetmodel::DeckFormat>>{
@@ -262,6 +343,90 @@ TEST(Deck, JoinsAColumnByAKindOfItsOwn) {
   EXPECT_THROW(
       static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "pchip"}})),
       Error);
+  EXPECT_THROW(
+      static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "log-akima"}})),
+      Error);
+}
+
+TEST(Deck, JoinsAMaxwellViscosityGeometricallyBetweenKnotsAndLinearlyWhenAsked) {
+  const auto deck = Deck({0.0, 0.3, 0.5, 1.0}, {{"rho", {5.0, 4.0, 4.5, 3.0}},
+                                                {"viscosity", {1e20, 1e23, 1e21, 1e22}}});
+  const auto eta = planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS)
+                        .layers[0]
+                        .at("viscosity");
+  const auto line =
+      planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "linear"}}).layers[0].at("viscosity");
+  // y_0 (y_1 / y_0)^t between the first two knots, its derivative the
+  // value times the slope of the logarithm (at the second knot, the next
+  // piece's)
+  for (const auto t : {0.0, 0.25, 0.5, 0.9, 1.0}) {
+    const auto r = 0.3 * t;
+    const auto want = 1e20 * std::pow(1e3, t);
+    EXPECT_NEAR(eta.Value(r), want, 1e-14 * want) << t;
+    if (t < 1.0) {
+      EXPECT_NEAR(eta.Derivative(r), want * std::log(1e3) / 0.3, 1e-13 * want / 0.3) << t;
+    }
+    EXPECT_NEAR(line.Value(r), 1e20 + t * (1e23 - 1e20), 1e-15 * 1e23) << t;
+  }
+  EXPECT_EQ(eta.Value(0.0), 1e20);  // the first knot to the bit, the others to rounding
+  EXPECT_NEAR(eta.Value(0.5), 1e21, 1e-15 * 1e21);
+  // values whose ratio leaves the range of a double are refused
+  EXPECT_THROW(static_cast<void>(planetmodel::ThroughKnots(
+                   {0.0, 1.0}, {1e-200, 1e200}, planetmodel::KnotKind::LogLinear, 0.0)),
+               Error);
+  // a viscosity constant through a layer is that constant, to the bit
+  const auto flat = Deck({0.0, 0.4, 1.0}, {{"viscosity", {3e21, 3e21, 3e21}}});
+  const auto constant =
+      planetmodel::DeckLayers(flat, "cubic", planetmodel::MAXWELL_KINDS).layers[0].at("viscosity");
+  for (const auto r : {0.0, 0.1, 0.4, 0.77, 1.0}) {
+    EXPECT_EQ(constant.Value(r), 3e21);
+    EXPECT_EQ(constant.Derivative(r), 0.0);
+  }
+  // the logarithm of every kind
+  for (const auto* kind : {"log-cubic", "log-natural"}) {
+    const auto f = planetmodel::DeckLayers(deck, kind).layers[0].at("viscosity");
+    const auto g = planetmodel::DeckLayers(
+                        Deck({0.0, 0.3, 0.5, 1.0},
+                             {{"viscosity", {0.0, std::log(1e3), std::log(10.0), std::log(1e2)}}}),
+                        std::string_view{kind}.substr(4))
+                        .layers[0]
+                        .at("viscosity");
+    for (const auto r : {0.1, 0.42, 0.8}) {
+      EXPECT_NEAR(std::log(f.Value(r) / 1e20), g.Value(r), 1e-13) << kind << " " << r;
+      EXPECT_NEAR(f.Derivative(r), f.Value(r) * g.Derivative(r), 1e-13 * f.Value(r)) << kind;
+    }
+  }
+}
+
+TEST(Deck, RefusesAColumnJoinedInItsLogarithmThatIsNotPositive) {
+  const auto refusal = [](std::vector<double> viscosity, std::string_view kind) {
+    try {
+      static_cast<void>(planetmodel::DeckLayers(
+          Deck({0.0, 1.0, 1.0, 2.0, 3.0},
+               {{"rho", {4.0, 4.0, 3.0, 3.0, 3.0}}, {"viscosity", std::move(viscosity)}},
+               {}, "v.deck"),
+          "cubic", {{"viscosity", std::string{kind}}}));
+    } catch (const Error& e) {
+      return std::string{e.what()};
+    }
+    return std::string{"accepted"};
+  };
+  const auto nan = std::nan("");
+  EXPECT_EQ(refusal({nan, nan, 1e21, -1.0, 1e22}, "log-linear"),
+            "v.deck: viscosity: is -1 at r = 2 on layer 1; a column joined by log-linear, its "
+            "logarithm interpolated, is positive and finite at every knot of a layer holding it");
+  EXPECT_NE(refusal({nan, nan, 0.0, 1e21, 1e22}, "log-cubic").find("is 0 at r = 1 on layer 1"),
+            std::string::npos);
+  EXPECT_NE(refusal({1.0, 2.0, 1e21, std::numeric_limits<double>::infinity(), 1e22},
+                    "log-natural")
+                .find("is inf at r = 2"),
+            std::string::npos);
+  EXPECT_EQ(refusal({nan, nan, 1e21, -1.0, 1e22}, "linear"), "accepted");
+  EXPECT_EQ(refusal({nan, nan, 1e21, 1e21, 1e22}, "log-linear"), "accepted");
+  EXPECT_THROW(static_cast<void>(planetmodel::ThroughKnots({0.0, 1.0}, {1.0, 0.0},
+                                                           planetmodel::KnotKind::LogLinear,
+                                                           0.0)),
+               Error);
 }
 
 TEST(Deck, WritesEveryFixtureBackForThePython) {
@@ -270,6 +435,8 @@ TEST(Deck, WritesEveryFixtureBackForThePython) {
       {"prem200", planetmodel::MINEOS()},
       {"nocrust", planetmodel::MINEOS()},
       {"maxwell", planetmodel::MAXWELL()},
+      {"prony", planetmodel::PRONY()},
+      {"burgers", planetmodel::BURGERS()},
       {"nd", planetmodel::ND()},
       {"tvel", planetmodel::TVEL()},
       {"knots", planetmodel::ColumnsFormat({"rho", "vp"}, 1)}};
@@ -306,6 +473,237 @@ TEST(Deck, WritesAMaxwellDeckBuiltHereForThePython) {
   const auto names = planetmodel::MaxwellNames(planetmodel::ReadDeck(out, planetmodel::MAXWELL()));
   EXPECT_EQ(names.layers.at(0), "core");
   EXPECT_EQ(names.interfaces.at(0), "cmb");
+}
+
+TEST(Deck, WritesAPronyDeckBuiltHereForThePython) {
+  // a fluid core under a mantle of two branches, a relaxed part above, and
+  // an elastic lid; the deepest mantle layer of one branch, which the writer
+  // completes; as the Python's test rebuilds it
+  const auto nan = std::nan("");
+  const auto deck = Deck(
+      {0.0, 1.0e6, 1.0e6, 1.5e6, 1.5e6, 1.8e6, 2.0e6, 2.0e6, 2.1e6},
+      {{"rho", {1.1e4, 1.0e4, 4.5e3, 4.2e3, 4.2e3, 4.0e3, 3.8e3, 3.3e3, 3.2e3}},
+       {"vpv", {9e3, 8.8e3, 8e3, 7.8e3, 7.8e3, 7.5e3, 7e3, 6.5e3, 6.4e3}},
+       {"vsv", {0.0, 0.0, 4.5e3, 4.4e3, 4.4e3, 4.2e3, 4e3, 3.7e3, 3.6e3}},
+       {"vph", {9e3, 8.8e3, 8.1e3, 7.9e3, 7.9e3, 7.6e3, 7.1e3, 6.6e3, 6.5e3}},
+       {"vsh", {0.0, 0.0, 4.6e3, 4.5e3, 4.5e3, 4.3e3, 4.1e3, 3.8e3, 3.7e3}},
+       {"eta", {1.0, 1.0, 0.95, 0.96, 0.96, 0.97, 1.0, 1.0, 1.0}},
+       {"relaxation_strength_1", {nan, nan, 1.0, 1.0, 0.4, 0.45, 0.5, nan, nan}},
+       {"relaxation_time_1", {nan, nan, 3e11, 1e11, 1e9, 2e9, 4e9, nan, nan}},
+       {"relaxation_strength_2", {nan, nan, nan, nan, 0.5, 0.45, 0.3, nan, nan}},
+       {"relaxation_time_2", {nan, nan, nan, nan, 1e12, 3e12, 1e13, nan, nan}}},
+      planetmodel::PronyHeader("a body built in C++", 2,
+                               {"core", "lower_mantle", std::nullopt, "lid"},
+                               {"cmb", std::nullopt, std::nullopt, "surface"}));
+  const auto out = planetmodel::testing::WrittenDir() / "deck_prony_built.txt";
+  planetmodel::WriteDeck(out, deck, planetmodel::PRONY());
+  const auto back = planetmodel::ReadDeck(out, planetmodel::PRONY());
+  EXPECT_EQ(planetmodel::PronyBranches(back), 2u);
+  EXPECT_EQ(back.Column("relaxation_strength_2")[2], 0.0);
+  EXPECT_EQ(back.Column("relaxation_time_2")[3], 1e11);
+  EXPECT_TRUE(std::isnan(back.Column("relaxation_time_2")[0]));
+  EXPECT_EQ(planetmodel::MaxwellNames(back).layers.at(1), "lower_mantle");
+}
+
+TEST(Deck, WritesABurgersDeckBuiltHereForThePython) {
+  // a fluid core, a Burgers mantle, a Maxwell layer above and an elastic
+  // lid, as the Python's test rebuilds it
+  const auto nan = std::nan("");
+  const auto deck = Deck(
+      {0.0, 1.0e6, 1.0e6, 1.5e6, 1.5e6, 2.0e6, 2.0e6, 2.1e6},
+      {{"rho", {1.1e4, 1.0e4, 4.5e3, 4.2e3, 4.2e3, 3.8e3, 3.3e3, 3.2e3}},
+       {"vpv", {9e3, 8.8e3, 8e3, 7.8e3, 7.8e3, 7e3, 6.5e3, 6.4e3}},
+       {"vsv", {0.0, 0.0, 4.5e3, 4.4e3, 4.4e3, 4e3, 3.7e3, 3.6e3}},
+       {"vph", {9e3, 8.8e3, 8.1e3, 7.9e3, 7.9e3, 7.1e3, 6.6e3, 6.5e3}},
+       {"vsh", {0.0, 0.0, 4.6e3, 4.5e3, 4.5e3, 4.1e3, 3.8e3, 3.7e3}},
+       {"eta", {1.0, 1.0, 0.95, 0.96, 0.96, 1.0, 1.0, 1.0}},
+       {"viscosity", {nan, nan, 1e22, 3e21, 1e21, 1e20, nan, nan}},
+       {"kelvin_viscosity", {nan, nan, 1e20, 5e19, nan, nan, nan, nan}},
+       {"kelvin_modulus_fraction", {nan, nan, 0.5, 1.5, nan, nan, nan, nan}}},
+      planetmodel::BurgersHeader("a Burgers body built in C++", {"core", std::nullopt,
+                                                                 "asthenosphere", "lid"}));
+  const auto out = planetmodel::testing::WrittenDir() / "deck_burgers_built.txt";
+  planetmodel::WriteDeck(out, deck, planetmodel::BURGERS());
+  const auto back = planetmodel::ReadDeck(out, planetmodel::BURGERS());
+  EXPECT_EQ(back.Column("kelvin_modulus_fraction")[3], 1.5);
+  EXPECT_EQ(planetmodel::MaxwellNames(back).layers.at(2), "asthenosphere");
+}
+
+TEST(Deck, RefusesAWrongColumnLineQuotingItInThePythonsWords) {
+  // tests/test_viscoelastic_decks.py holds the Python to the same words
+  const auto rows = std::string_view{"0 4 8 4 8 4 1 1e21\n1 4 8 4 8 4 1 1e21\n"};
+  const auto cases = std::vector<std::tuple<const planetmodel::DeckFormat*, std::string, std::string>>{
+      {&planetmodel::MAXWELL(), "r rho vp vs viscosity # a note",
+       "a Maxwell deck's second line names its columns, r rho vpv vsv vph vsh eta viscosity; got "
+       "'r rho vp vs viscosity # a note'"},
+      {&planetmodel::PRONY(), "r rho vp vs relaxation_strength_1 relaxation_time_1",
+       "a prony deck's second line names its columns, r rho vpv vsv vph vsh eta then "
+       "relaxation_strength_k relaxation_time_k for each branch k = 1 to N; got 'r rho vp vs "
+       "relaxation_strength_1 relaxation_time_1'"},
+      {&planetmodel::BURGERS(), "r rho vpv vsv vph vsh eta viscosity",
+       "a burgers deck's second line names its columns, r rho vpv vsv vph vsh eta viscosity "
+       "kelvin_viscosity kelvin_modulus_fraction; got 'r rho vpv vsv vph vsh eta viscosity'"}};
+  for (const auto& [format, line, says] : cases) {
+    try {
+      static_cast<void>(
+          planetmodel::ReadDeckText(std::format("a body\n{}\n{}", line, rows), *format, "d.txt"));
+      ADD_FAILURE() << line << ": accepted";
+    } catch (const Error& e) {
+      EXPECT_EQ(std::string{e.what()}, "d.txt: header: " + says);
+    }
+  }
+}
+
+TEST(Deck, RefusesWhatBreaksAPronyOrBurgersDeckAsThePythonDoes) {
+  auto refusal = [](std::string_view text, const planetmodel::DeckFormat& format) {
+    try {
+      static_cast<void>(planetmodel::ReadDeckText(text, format, "d.txt"));
+    } catch (const Error& e) {
+      return std::string{e.what()};
+    }
+    return std::string{"accepted"};
+  };
+  const auto has = [](const std::string& got, std::string_view want) {
+    return got.find(want) != std::string::npos;
+  };
+  const auto prony = [&](std::string_view line, std::string_view rows) {
+    return refusal(std::format("a body\n{}\n{}", line, rows), planetmodel::PRONY());
+  };
+  const auto two = std::string{
+      "r rho vpv vsv vph vsh eta relaxation_strength_1 relaxation_time_1 "
+      "relaxation_strength_2 relaxation_time_2"};
+  const auto good = std::string{"0 4 8 4 8 4 1 0.5 1e9 0.25 1e11\n1 4 8 4 8 4 1 0.5 1e9 0.25 1e11\n"};
+  EXPECT_EQ(prony(two, good), "accepted");
+  EXPECT_PRED2(has, prony("r rho vp vs relaxation_strength_1 relaxation_time_1", good),
+               "a prony deck's second line names its columns, r rho vpv vsv vph vsh eta then "
+               "relaxation_strength_k relaxation_time_k for each branch k = 1 to N; got 'r rho "
+               "vp vs");
+  EXPECT_PRED2(has, prony("r rho vpv vsv vph vsh eta viscosity", good),
+               "'viscosity' stands where 'relaxation_strength_1' belongs");
+  EXPECT_PRED2(has, prony("r rho vpv vsv vph vsh eta", "0 4 8 4 8 4 1\n1 4 8 4 8 4 1\n"),
+               "a prony deck has at least one branch");
+  EXPECT_PRED2(has,
+               prony("r rho vpv vsv vph vsh eta relaxation_time_1 relaxation_strength_1", good),
+               "'relaxation_time_1' stands where 'relaxation_strength_1' belongs");
+  EXPECT_PRED2(has,
+               prony("r rho vpv vsv vph vsh eta relaxation_strength_1 relaxation_time_1 "
+                     "relaxation_strength_3 relaxation_time_3",
+                     good),
+               "'relaxation_strength_3' stands where 'relaxation_strength_2' belongs");
+  EXPECT_PRED2(has,
+               prony("r rho vpv vsv vph vsh eta relaxation_strength_1 relaxation_time_1 "
+                     "relaxation_strength_2",
+                     good),
+               "branch 2 has no 'relaxation_time_2'");
+  EXPECT_PRED2(has,
+               prony("r rho vpv vsv vph vsh eta relaxation_strength_1 relaxation_time_1",
+                     good),
+               "the column line names 8 columns after the radius; the rows have 10");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.5 1e9 0.25\n1 4 8 4 8 4 1 0.5 1e9 0.25\n"),
+               "then 2 for each index k = 1 to N");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.5 1e9 nan nan\n1 4 8 4 8 4 1 0.5 1e9 nan nan\n"),
+               "d.txt: layer 0: holds nan in some of its branch columns");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 1.5 1e9 0 1e11\n1 4 8 4 8 4 1 0.5 1e9 0 1e11\n"),
+               "layer 0: relaxation_strength_1 is 1.5 at r = 0; a strength lies in [0, 1]");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.5 1e9 0 1e11\n1 4 8 4 8 4 1 0.5 1e9 -0.1 1e11\n"),
+               "relaxation_strength_2 is -0.1 at r = 1; a strength lies in [0, 1]");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.5 1e9 0 0\n1 4 8 4 8 4 1 0.5 1e9 0 1e11\n"),
+               "relaxation_time_2 is 0 at r = 0; a time is positive and finite");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.5 inf 0 1\n1 4 8 4 8 4 1 0.5 1e9 0 1e11\n"),
+               "relaxation_time_1 is inf at r = 0");
+  EXPECT_PRED2(has, prony(two, "0 4 8 4 8 4 1 0.6 1e9 0.5 1\n1 4 8 4 8 4 1 0.5 1e9 0 1e11\n"),
+               "the strengths sum to 1.1 at r = 0, more than one");
+  // within the rounding of eight digits a branch, a sum of one is one
+  EXPECT_EQ(prony(two, "0 4 8 4 8 4 1 0.50000001 1e9 0.5 1\n1 4 8 4 8 4 1 0.5 1e9 0 1e11\n"),
+            "accepted");
+  const auto burgers = [&](std::string_view rows) {
+    return refusal(std::format("a body\n{}\n{}",
+                               "r rho vpv vsv vph vsh eta viscosity kelvin_viscosity "
+                               "kelvin_modulus_fraction",
+                               rows),
+                   planetmodel::BURGERS());
+  };
+  EXPECT_EQ(burgers("0 4 8 4 8 4 1 1e21 1e20 0.5\n1 4 8 4 8 4 1 1e21 1e20 0.5\n"), "accepted");
+  EXPECT_EQ(burgers("0 4 8 4 8 4 1 1e21 nan nan\n1 4 8 4 8 4 1 1e21 nan nan\n"), "accepted");
+  EXPECT_PRED2(has, burgers("0 4 8 4 8 4 1 nan 1e20 0.5\n1 4 8 4 8 4 1 nan 1e20 0.5\n"),
+               "layer 0: holds ['kelvin_viscosity', 'kelvin_modulus_fraction']; a layer of a "
+               "burgers deck holds a viscosity alone");
+  EXPECT_PRED2(has, burgers("0 4 8 4 8 4 1 1e21 1e20 nan\n1 4 8 4 8 4 1 1e21 1e20 nan\n"),
+               "holds ['viscosity', 'kelvin_viscosity']");
+  EXPECT_PRED2(has, burgers("0 4 8 4 8 4 1 1e21 1e20 0.5\n1 4 8 4 8 4 1 1e21 nan 0.5\n"),
+               "kelvin_viscosity is nan on part of the layer");
+  EXPECT_PRED2(has, burgers("0 4 8 4 8 4 1 1e21 1e20 0.5\n1 4 8 4 8 4 1 1e21 1e20 -2\n"),
+               "kelvin_modulus_fraction is -2 at r = 1; it is positive and finite");
+  EXPECT_PRED2(has,
+               refusal("a body\nr rho vpv vsv vph vsh eta viscosity\n0 1 1 1 1 1 1 1\n"
+                       "1 1 1 1 1 1 1 1\n",
+                       planetmodel::BURGERS()),
+               "a burgers deck's second line names its columns");
+  // on writing: a layer of branches that do not run 1 to m, a value out of
+  // bounds, a branch without its partner
+  const auto nan = std::nan("");
+  const auto elastic = std::vector<std::pair<std::string, std::vector<double>>>{
+      {"rho", {4.0, 4.0}}, {"vpv", {8.0, 8.0}}, {"vsv", {4.0, 4.0}},
+      {"vph", {8.0, 8.0}}, {"vsh", {4.0, 4.0}}, {"eta", {1.0, 1.0}}};
+  const auto written = [&](std::vector<std::pair<std::string, std::vector<double>>> branches) {
+    auto columns = elastic;
+    for (auto& column : branches) columns.push_back(std::move(column));
+    try {
+      static_cast<void>(planetmodel::WriteDeckText(Deck({0.0, 1.0}, std::move(columns)),
+                                                   planetmodel::PRONY()));
+    } catch (const Error& e) {
+      return std::string{e.what()};
+    }
+    return std::string{"accepted"};
+  };
+  EXPECT_PRED2(has,
+               written({{"relaxation_strength_1", {nan, nan}}, {"relaxation_time_1", {nan, nan}},
+                        {"relaxation_strength_2", {0.5, 0.5}}, {"relaxation_time_2", {1.0, 1.0}}}),
+               "holds nan in some of its branch columns");
+  EXPECT_PRED2(has,
+               written({{"relaxation_strength_1", {2.0, 0.5}}, {"relaxation_time_1", {1.0, 1.0}}}),
+               "relaxation_strength_1 is 2 at r = 0");
+  EXPECT_PRED2(has,
+               written({{"relaxation_strength_1", {0.5, 0.5}}, {"relaxation_time_1", {1.0, 1.0}},
+                        {"relaxation_strength_2", {0.5, 0.5}}}),
+               "a prony deck holds relaxation_strength_k, relaxation_time_k for k = 1 to N, N "
+               "at least one, each of them; it has ['relaxation_strength_1', "
+               "'relaxation_time_1', 'relaxation_strength_2']");
+  EXPECT_PRED2(has, written({}), "each of them; it has none");
+  EXPECT_THROW(static_cast<void>(planetmodel::PronyColumns(0)), Error);
+  EXPECT_THROW(static_cast<void>(planetmodel::PronyHeader("t", 1, {"two words"})), Error);
+}
+
+TEST(Deck, JoinsAFamilyByAKindOfItsOwn) {
+  const auto deck = Deck({0.0, 0.3, 0.5, 1.0},
+                         {{"rho", {5.0, 4.0, 4.5, 3.0}},
+                          {"relaxation_strength_1", {0.1, 0.9, 0.2, 0.8}},
+                          {"relaxation_time_1", {1e8, 1e12, 1e9, 1e11}}});
+  const auto cubic = planetmodel::DeckLayers(deck);
+  const auto joined = planetmodel::DeckLayers(deck, "cubic", planetmodel::PRONY_KINDS);
+  auto lowest_cubic = 1e30;
+  auto lowest_joined = 1e30;
+  for (auto i = 0; i <= 40; ++i) {
+    const auto r = i / 40.0;
+    EXPECT_EQ(joined.layers[0].at("rho").Value(r), cubic.layers[0].at("rho").Value(r));
+    lowest_cubic = std::min(lowest_cubic, cubic.layers[0].at("relaxation_time_1").Value(r));
+    lowest_joined = std::min(lowest_joined, joined.layers[0].at("relaxation_time_1").Value(r));
+    const auto w = joined.layers[0].at("relaxation_strength_1").Value(r);
+    EXPECT_TRUE(w >= 0.1 && w <= 0.9) << r;
+  }
+  EXPECT_LT(lowest_cubic, 0.0);  // a cubic overshoots
+  EXPECT_GE(lowest_joined, 1e8);
+  // a column's own kind before its family's
+  const auto own = planetmodel::DeckLayers(
+      deck, "cubic", {{"relaxation_time", "linear"}, {"relaxation_time_1", "cubic"}});
+  EXPECT_EQ(own.layers[0].at("relaxation_time_1").Value(0.7),
+            cubic.layers[0].at("relaxation_time_1").Value(0.7));
+  EXPECT_THROW(static_cast<void>(planetmodel::DeckLayers(deck, "cubic",
+                                                         planetmodel::BURGERS_KINDS)),
+               Error);
+  EXPECT_THROW(static_cast<void>(planetmodel::DeckLayers(
+                   Deck({0.0, 1.0}, {{"rho", {1.0, 2.0}}}), "cubic", planetmodel::PRONY_KINDS)),
+               Error);
 }
 
 TEST(Deck, WritesAsThePythonDoes) {

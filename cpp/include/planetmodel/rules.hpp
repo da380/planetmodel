@@ -12,7 +12,11 @@
  * radius.  Within an element the rule `polynomial` reads the Lagrange
  * polynomial through the element's nodes and `linear` the straight line
  * between consecutive nodes; at a shared radius the element above
- * answers, and the outermost element answers at the outer end.
+ * answers, and the outermost element answers at the outer end.  The rules
+ * in the logarithm, `log-polynomial` and `log-linear`, read positive
+ * values: on element e the value is y_e exp(P(r)), y_e the element's first
+ * value and P the polynomial or the lines through log(y / y_e) at its
+ * nodes, so that an element of one value reads it to the bit.
  *
  * **Laterally**, values are held on an angular grid.  Both local rules
  * read a padded grid: the wrap column, a copy of the first, one period
@@ -56,12 +60,19 @@
 #include "planetmodel/frames.hpp"
 #include "planetmodel/grid.hpp"
 
+/** @brief Defined where this header provides the model file's radial rules
+ * in the logarithm, `RadialRule::LogPolynomial` and `RadialRule::LogLinear`
+ * (`IsLogRule`, `BaseRule`). */
+#define PLANETMODEL_HAS_LOG_RULES 1
+
 namespace planetmodel {
 
 /** @brief How a variable is read between the radial nodes of an element. */
 enum class RadialRule {
-  Polynomial, /**< The Lagrange polynomial through the element's nodes. */
-  Linear      /**< The straight line between consecutive nodes. */
+  Polynomial,    /**< The Lagrange polynomial through the element's nodes. */
+  Linear,        /**< The straight line between consecutive nodes. */
+  LogPolynomial, /**< The exponential of the Lagrange polynomial through the logarithms. */
+  LogLinear      /**< The exponential of the straight lines through the logarithms. */
 };
 
 /** @brief How a variable is read between the nodes of an angular grid. */
@@ -70,8 +81,9 @@ enum class LateralRule {
   Cubic   /**< The bicubic spline, clamped at the poles, periodic in longitude. */
 };
 
-/** @brief The radial rules a model file may state. */
-inline constexpr auto RADIAL_RULES = std::array<std::string_view, 2>{"polynomial", "linear"};
+/** @brief The radial rules a model file may state, in the order of `RadialRule`. */
+inline constexpr auto RADIAL_RULES = std::array<std::string_view, 4>{
+    "polynomial", "linear", "log-polynomial", "log-linear"};
 
 /**
  * @brief The lateral rules a model file may state; `harmonic` is the
@@ -85,7 +97,26 @@ inline constexpr auto LATERAL_RULES =
  * @param rule The rule.
  */
 [[nodiscard]] constexpr std::string_view RuleName(RadialRule rule) noexcept {
-  return rule == RadialRule::Polynomial ? RADIAL_RULES[0] : RADIAL_RULES[1];
+  return RADIAL_RULES[static_cast<std::size_t>(rule)];
+}
+
+/**
+ * @brief Whether a radial rule reads the logarithms of the values.
+ * @param rule The rule.
+ */
+[[nodiscard]] constexpr bool IsLogRule(RadialRule rule) noexcept {
+  return rule == RadialRule::LogPolynomial || rule == RadialRule::LogLinear;
+}
+
+/**
+ * @brief The rule in the values a radial rule reads by: itself, or for a
+ * rule in the logarithm the rule it applies to the logarithms.
+ * @param rule The rule.
+ */
+[[nodiscard]] constexpr RadialRule BaseRule(RadialRule rule) noexcept {
+  if (rule == RadialRule::LogPolynomial) return RadialRule::Polynomial;
+  if (rule == RadialRule::LogLinear) return RadialRule::Linear;
+  return rule;
 }
 
 /**
@@ -98,7 +129,7 @@ inline constexpr auto LATERAL_RULES =
 
 /**
  * @brief The radial rule a file names.
- * @param name `polynomial` or `linear`.
+ * @param name One of `RADIAL_RULES`.
  * @param source The file, as an error names it.
  * @param where The variable, as an error names it.
  * @throws planetmodel::Error if the name is not a radial rule.
@@ -106,10 +137,13 @@ inline constexpr auto LATERAL_RULES =
 [[nodiscard]] inline RadialRule RadialRuleNamed(std::string_view name,
                                                 const std::string& source = "",
                                                 std::string_view where = "") {
-  if (name == "polynomial") return RadialRule::Polynomial;
-  if (name == "linear") return RadialRule::Linear;
+  for (auto k = std::size_t{0}; k < RADIAL_RULES.size(); ++k) {
+    if (name == RADIAL_RULES[k]) return static_cast<RadialRule>(k);
+  }
   throw Error(source, where,
-              std::format("{} is not a radial rule; they are polynomial and linear", name));
+              std::format("{} is not a radial rule; they are polynomial, linear, "
+                          "log-polynomial and log-linear",
+                          name));
 }
 
 /**
@@ -321,6 +355,8 @@ class RadialLayout {
    * @brief The weights of element `e`'s nodes at `r` under `rule`, and
    * their radial derivatives: a value held at the nodes reads as the sum of
    * the values times `w`, its radial derivative as the sum times `dw`.
+   * Under a rule in the logarithm they are its `BaseRule`'s, which read the
+   * logarithms.
    * @param e The element, as `ElementOf` gives it.
    * @param r The radius, taken as the nearer end of the element where
    *        outside it.
@@ -334,7 +370,7 @@ class RadialLayout {
                std::span<double> dw) const {
     const auto nodes = Nodes(e);
     r = std::clamp(r, nodes.front(), nodes.back());
-    if (rule == RadialRule::Polynomial) {
+    if (BaseRule(rule) == RadialRule::Polynomial) {
       // the element's cardinal polynomials and their slopes
       const auto& basis = (*bases_)[e];
       for (auto k = std::size_t{0}; k < w.size(); ++k) w[k] = basis.Evaluate<0>(k, r);
@@ -376,9 +412,12 @@ class RadialInterpolant {
   /**
    * @brief The interpolant of nodal values.
    * @param layout The radial layout.
-   * @param values One value per node, element by element.
+   * @param values One value per node, element by element; positive and
+   *        finite under a rule in the logarithm.
    * @param rule The radial rule.
-   * @throws planetmodel::Error if there is not one value per node.
+   * @throws planetmodel::Error if there is not one value per node, or a
+   *         rule in the logarithm meets a value that is not positive and
+   *         finite.
    */
   RadialInterpolant(RadialLayout layout, std::vector<double> values, RadialRule rule)
       : layout_(std::move(layout)), values_(std::move(values)), rule_(rule) {
@@ -386,6 +425,25 @@ class RadialInterpolant {
       throw Error("RadialInterpolant", "",
                   std::format("{} values for {} nodes", values_.size(),
                               layout_.NodeRadii().size()));
+    }
+    if (!IsLogRule(rule_)) return;
+    // each element's first value, and the logarithms over it
+    const auto n = layout_.Ngll();
+    for (auto e = std::size_t{0}; e < layout_.NElements(); ++e) {
+      const auto first = values_[e * n];
+      for (auto k = std::size_t{0}; k < n; ++k) {
+        const auto v = values_[e * n + k];
+        if (!(std::isfinite(v) && v > 0.0)) {
+          throw Error("RadialInterpolant", "",
+                      std::format("is read by {}, its logarithm interpolated, and its "
+                                  "value at node {} is {}, not positive and finite",
+                                  RuleName(rule_), e * n + k, v));
+        }
+      }
+      scale_.push_back(first);
+      for (auto k = std::size_t{0}; k < n; ++k) {
+        values_[e * n + k] = std::log(values_[e * n + k] / first);
+      }
     }
   }
 
@@ -409,19 +467,26 @@ class RadialInterpolant {
     const auto e = layout_.ElementOf(r);
     const auto n = layout_.Ngll();
     auto w = std::vector<double>(n);
-    if (derivative == 0) {
-      layout_.Weights(e, r, rule_, w, {});
-    } else {
-      layout_.Weights(e, r, rule_, {}, w);
-    }
+    auto dw = std::vector<double>(derivative == 0 ? 0 : n);
+    layout_.Weights(e, r, rule_, w, dw);
     auto out = 0.0;
-    for (auto k = std::size_t{0}; k < n; ++k) out += w[k] * values_[e * n + k];
-    return out;
+    auto slope = 0.0;
+    for (auto k = std::size_t{0}; k < n; ++k) {
+      out += w[k] * values_[e * n + k];
+      if (derivative != 0) slope += dw[k] * values_[e * n + k];
+    }
+    if (!IsLogRule(rule_)) return derivative == 0 ? out : slope;
+    // the values held are the logarithms over the element's first value
+    const auto value = scale_[e] * std::exp(out);
+    return derivative == 0 ? value : value * slope;
   }
 
   RadialLayout layout_;
+  /// The values, or under a rule in the logarithm log(y / y_e).
   std::vector<double> values_;
   RadialRule rule_;
+  /// Under a rule in the logarithm, each element's first value y_e.
+  std::vector<double> scale_{};
 };
 
 /**

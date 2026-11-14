@@ -17,13 +17,16 @@ Modules reached by name, one level down:
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   behaviours   the free functions as methods: `layer_method` and the mixins
-  catalogue    PREM, LayeredIsotropicElastic, MineosModel and MaxwellDeckModel
+  catalogue    PREM, LayeredIsotropicElastic, and the model types of the decks
   deck         tabulated models: decks, their formats, fields by interpolation
   sampling     a model on a radial mesh times an angular grid
   lateral      values between the nodes of an angular grid: the lateral rules
   modelfile    the model file: a model in one netCDF file (netCDF4, optional)
   surfacefile  the surface file: fields on one spherical surface, static or
                in time (netCDF4, optional)
+  fault        faults: patches of surface inside a body, the slip on them in
+               time, and their quadrature
+  faultfile    the fault file: a fault in one netCDF file (netCDF4, optional)
   harmonics    real spherical harmonics, through ducc0
   slices       a field on a sphere, a section or a profile; spectra and
                correlations by degree
@@ -47,12 +50,21 @@ from .behaviours import (
     with_moduli,
     with_velocities,
 )
-from .catalogue import PREM, LayeredIsotropicElastic, MaxwellDeckModel, MineosModel
+from .catalogue import (
+    PREM,
+    BurgersDeckModel,
+    LayeredIsotropicElastic,
+    MaxwellDeckModel,
+    MineosModel,
+    PronyDeckModel,
+)
 from .character import DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character, Symmetry
 from .deck import (
+    BURGERS,
     MAXWELL,
     MINEOS,
     ND,
+    PRONY,
     TVEL,
     Deck,
     DeckFormat,
@@ -219,10 +231,14 @@ __all__ = [
     "LayeredIsotropicElastic",
     "MineosModel",
     "MaxwellDeckModel",
+    "PronyDeckModel",
+    "BurgersDeckModel",
     "Deck",
     "DeckFormat",
     "MINEOS",
     "MAXWELL",
+    "PRONY",
+    "BURGERS",
     "ND",
     "TVEL",
     "read_deck",

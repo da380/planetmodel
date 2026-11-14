@@ -1,10 +1,14 @@
-// Dimensions and scales, against the Python's numbers in constants.txt.
+// Dimensions and scales, against the Python's numbers in constants.txt;
+// and the version, its three integers the numbers of its string.
 #include "planetmodel/units.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
+#include <format>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -133,4 +137,37 @@ TEST(Scales, AgreeWithThePython) {
     }
   }
   EXPECT_GT(checked, 60);
+}
+
+TEST(Version, TheThreeIntegersAreTheNumbersOfTheString) {
+  constexpr auto first = PLANETMODEL_VERSION_MAJOR;
+  constexpr auto second = PLANETMODEL_VERSION_MINOR;
+  constexpr auto third = PLANETMODEL_VERSION_PATCH;
+  const auto version = planetmodel::Version();
+  // the integers CMake defines are the string's numbers, a number it lacks
+  // 0; a version of three numbers begins with them
+  EXPECT_EQ(planetmodel::detail::VersionNumbers(version), (std::array{first, second, third}))
+      << version;
+  if (std::ranges::count(version, '.') >= 2) {
+    EXPECT_TRUE(version.starts_with(std::format("{}.{}.{}", first, second, third))) << version;
+  }
+  // the reading of a version, as CMake reads it
+  using planetmodel::detail::VersionNumbers;
+  static_assert(VersionNumbers("1.6.0") == std::array{1, 6, 0});
+  static_assert(VersionNumbers("1.6.0rc1") == std::array{1, 6, 0});
+  static_assert(VersionNumbers("1.6.0.dev2") == std::array{1, 6, 0});
+  static_assert(VersionNumbers("1.6") == std::array{1, 6, 0});
+  static_assert(VersionNumbers("2") == std::array{2, 0, 0});
+  static_assert(VersionNumbers("10.20.30.40") == std::array{10, 20, 30});
+  static_assert(VersionNumbers("1.x") == std::array{1, 0, 0});
+  // at least the version itself, not anything after it
+  static_assert(PLANETMODEL_VERSION_AT_LEAST(first, second, third));
+  static_assert(PLANETMODEL_VERSION_AT_LEAST(first, second, 0));
+  static_assert(PLANETMODEL_VERSION_AT_LEAST(first - 1, 99, 99));
+  static_assert(!PLANETMODEL_VERSION_AT_LEAST(first, second, third + 1));
+  static_assert(!PLANETMODEL_VERSION_AT_LEAST(first, second + 1, 0));
+  static_assert(!PLANETMODEL_VERSION_AT_LEAST(first + 1, 0, 0));
+#if !PLANETMODEL_VERSION_AT_LEAST(1, 0, 0) || PLANETMODEL_VERSION_AT_LEAST(1000, 0, 0)
+  ADD_FAILURE() << "the preprocessor does not read the version";
+#endif
 }

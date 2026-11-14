@@ -15,13 +15,44 @@ writes files that the Python reads. It reads and writes:
   (`SurfaceField`), whole or not at all, and `SurfaceHistory` serves a
   field's values at any date by the field's own time rule, with the
   Python's arithmetic;
+- **fault files**, a fault's patches of surface and the slip on them,
+  static or in time (`faultfile.hpp`): `ReadFaultFile` makes the Python
+  reader's checks and gives a `Fault` (`fault.hpp`) that evaluates as
+  the Python's does, to rounding: positions, normals, the fault basis
+  and the area element at any (u, v), the slip at any (u, v) and date
+  in fault, ambient or Cartesian components, a quadrature with the slip
+  at a date (`Fault::Quadrature`) or of every slice, the geometry formed
+  once (`Fault::SliceQuadrature`), and the location of physical points
+  near it with the slip there (`Fault::Locate`, `Fault::SlipAt`);
+  `WriteFaultFile` writes a fault, built in code or read, as the Python
+  writes it, and `FaultSlip::FromRake` makes a patch's slip from a rake
+  and a magnitude as the Python's `Slip.from_rake` does; the support and
+  the time rule are the enumerations `TimeSupport` and `TimeRule`
+  (`time.hpp`), and a date is read as `DateOptions` say: a date within
+  `TIME_RTOL` (or the `time_rtol` given) times the scale of the time
+  axis of a stored time is that time, the scale being the largest of the
+  axis's span and the magnitudes of its first and last times, and a
+  date outside the span is refused or, by `Extrapolation::Hold`, held
+  at the nearer end (a `none` slip refusing any date not stored either
+  way);
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
-  (`json.hpp`);
-- **decks**, mineos and Maxwell tables of knots and TauP's `.nd` and
-  `.tvel` tables (`deck.hpp`), read and written as the Python does, with
-  the names their headers or labels give, each layer's columns joined
-  into functions of the radius;
+  (`json.hpp`), with the faults built into a mesh, the element
+  attributes of their hanging walls, and the three rules of their faces
+  (`PlusCell`, `FaultCurves`, `FaultWalls`);
+- **decks**, mineos, Maxwell, prony and burgers tables of knots and
+  TauP's `.nd` and `.tvel` tables (`deck.hpp`), read and written as the
+  Python does, with the names their headers or labels give, a prony
+  deck's number of branches (`PronyBranches`), and the Python's checks
+  of a prony or burgers deck's values, each layer's columns joined into
+  functions of the radius, through the values or through their
+  logarithms (by default `MAXWELL_KINDS`, `PRONY_KINDS` and
+  `BURGERS_KINDS`: a Maxwell deck's viscosity, a prony deck's relaxation
+  times and a burgers deck's two viscosities by `log-linear`, the
+  strengths and the Kelvin modulus fraction by `linear`); a burgers
+  deck's Burgers body becomes its two Prony branches by `BurgersTerms`,
+  and two branches the body by `BurgersParameters` (`prony.hpp`), as the
+  Python's `conversion.prony` forms them;
 - the units, scales and vocabulary of the Python (`units.hpp`,
   `vocabulary.hpp`).
 
@@ -93,6 +124,52 @@ changes, so it is cheap to copy and safe to evaluate from many threads.
 A typical code builds the fields it wants, samples them onto its own
 mesh, and discards them.
 
+## Reading and writing a fault file
+
+```cpp
+#include <planetmodel/faultfile.hpp>
+
+namespace pm = planetmodel;
+const auto file = pm::ReadFaultFile("rupture.nc");
+const auto& fault = file.fault;
+
+// a quadrature of 20 by 8 cells, two Gauss-Legendre points each way, the
+// slip at a date: points, normals, weights (areas) and Cartesian slip
+const auto q = fault.Quadrature(20, 8, 2, /*date=*/1.5);
+for (auto i = std::size_t{0}; i < q.Size(); ++i) {
+  // the moment is yours, with your own moduli at q.points[i]
+}
+
+// a date past the end of the time axis, held at its last slice
+const auto held = fault.Quadrature(20, 8, 2, /*date=*/9.0,
+                                   {.extrapolation = pm::Extrapolation::Hold});
+
+// a mesh node near the fault: its patch, (u, v) and signed distance,
+// and the slip there in (east, north, up)
+const auto where = fault.Locate({x, y, z});
+const auto slip = fault.SlipAt(nodes, /*max_distance=*/1e3,
+                               {.date = 1.5, .basis = pm::SlipBasis::Ambient});
+
+// the geometry once and the slip of every slice, combined at any date by
+// the weights the date reads: the quadrature's slip at that date
+const auto slices = fault.SliceQuadrature(20, 8, 2);
+const auto at = slices.SlipOf(fault.Rows(1.5));
+const auto late = slices.SlipOf(fault.Rows(9.0, {.extrapolation = pm::Extrapolation::Hold}));
+
+// written back, or a fault built in code written: the Python's file
+pm::WriteFaultFile("copy.nc", file);
+```
+
+A structured patch is read by the same tensor-product B-splines as the
+Python's (scipy's knots, the coefficients solved here), so the two
+languages agree to rounding wherever they are asked.  The Python's
+constructors of large patches, `StructuredPatch.swept` (down a dip
+profile from a `GreatCircle`, `SmallCircle` or `Polyline` trace) and
+`StructuredPatch.from_depths` (from a grid of depths), are Python-only:
+a code here builds a structured patch from its control positions
+(`FaultPatch::Structured`), or reads one from a fault file the Python
+wrote.
+
 ## Writing a model file
 
 A code that holds fields of its own builds a `ModelFile` and writes it:
@@ -142,6 +219,46 @@ file, and an existing file at the path stays as it was. The programs in
 `examples/` write a model file, write the file a code computing
 sensitivity kernels writes (`write_kernel.cpp`, which the Python's
 tutorial 15 draws), and read any model file back.
+
+## Versions and features
+
+`planetmodel/version.hpp` gives the version as a string,
+`planetmodel::Version()` and `PLANETMODEL_VERSION`, and as the integers
+`PLANETMODEL_VERSION_MAJOR`, `PLANETMODEL_VERSION_MINOR` and
+`PLANETMODEL_VERSION_PATCH`, which the CMake target defines for every
+code it links, with `PLANETMODEL_VERSION_AT_LEAST(major, minor, patch)`
+for the preprocessor:
+
+```cpp
+#include <planetmodel/version.hpp>
+#if PLANETMODEL_VERSION_AT_LEAST(1, 6, 0)
+// what 1.6.0 added
+#endif
+```
+
+Between releases the version stays the last release's, so a feature is
+tested by its own macro, which the header providing it defines:
+
+| macro | header | what it provides |
+| --- | --- | --- |
+| `PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE` | `fault.hpp` | `Fault::SliceQuadrature` and `FaultSliceQuadrature::SlipOf`; a fault's date read by `DateOptions` (`Fault::Rows`, `SlipVector`, `Quadrature`); `FaultSlip::FromRake` |
+| `PLANETMODEL_HAS_FAULT_FILE_WRITER` | `faultfile.hpp` | `WriteFaultFile` beside `ReadFaultFile` |
+| `PLANETMODEL_HAS_VISCOELASTIC_DECKS` | `deck.hpp` | `PRONY()` and `BURGERS()` beside `MAXWELL()`, their kinds `PRONY_KINDS` and `BURGERS_KINDS`, `PronyColumns`, `PronyBranches`, `PronyHeader`, `BurgersHeader`; `MAXWELL_KINDS` joining the viscosity by `log-linear` |
+| `PLANETMODEL_HAS_LOG_KINDS` | `radial.hpp` | the kinds through the logarithms, `KnotKind::LogCubic`, `LogNatural` and `LogLinear` |
+| `PLANETMODEL_HAS_LOG_RULES` | `rules.hpp` | the model file's radial rules in the logarithm, `RadialRule::LogPolynomial` and `LogLinear` |
+| `PLANETMODEL_HAS_BURGERS_TERMS` | `prony.hpp` | `BurgersTerms` and `BurgersParameters` |
+
+A header a code may lack altogether is tested first with
+`__has_include`:
+
+```cpp
+#if __has_include(<planetmodel/fault.hpp>)
+#include <planetmodel/fault.hpp>
+#endif
+#ifdef PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE
+// the slice quadrature
+#endif
+```
 
 ## Errors
 

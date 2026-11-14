@@ -20,7 +20,10 @@ interval by more than `rtol` of its width is refused: stepping beyond a
 layer on purpose is `on_interval`.
 
 Three kinds are shipped.  `RadialField` holds one layer function per
-stored component and is exact when they are polynomial.
+stored component and is exact when they are polynomial; it declares
+their pieces (`radial_pieces`), and for a positive field of rank 0 whose
+logarithm is a piecewise polynomial, that logarithm's
+(`log_radial_pieces`).
 `AnalyticField` is a formula of (r, theta, phi).  `ComposedField` is a
 pointwise function of other fields, the one escape from the algebra
 below, which is: `+` and `-` between fields of one character on one
@@ -53,7 +56,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "ComposedField", "constant_field", "FRAMES", "check_frame",
-           "stored_shape", "to_stored", "rotate_stored", "radial_pieces_of"]
+           "stored_shape", "to_stored", "rotate_stored", "radial_pieces_of",
+           "log_radial_pieces_of"]
 
 #: The frames a field can present its components in.
 FRAMES = ("spherical", "cartesian")
@@ -102,6 +106,22 @@ def radial_pieces_of(interval: tuple[float, float],
         breaks.append(x[(x > lo) & (x < hi)])
         degree = max(degree, int(pp.c.shape[0]) - 1)
     return np.unique(np.concatenate(breaks)), degree
+
+
+def log_radial_pieces_of(interval: tuple[float, float],
+                         functions: Iterable[object]
+                         ) -> tuple[np.ndarray, int] | None:
+    """`radial_pieces_of` the natural logarithms of a set of layer
+    functions, each positive with a logarithm that is a piecewise
+    polynomial (`logarithm()` of a layer function), or None when one is
+    not."""
+    logs = []
+    for fn in functions:
+        log = getattr(fn, "logarithm", lambda: None)()
+        if log is None:
+            return None
+        logs.append(log)
+    return radial_pieces_of(interval, logs)
 
 
 def rotate_stored(values: np.ndarray, R: np.ndarray, character: Character
@@ -451,6 +471,15 @@ class RadialField(FieldBase):
         highest degree of an exact piecewise-polynomial description of
         every component, or None when a component is not polynomial."""
         return radial_pieces_of(self._interval, self._fs.ravel())
+
+    def log_radial_pieces(self) -> tuple[np.ndarray, int] | None:
+        """The breakpoints and highest degree, as `radial_pieces` gives
+        them, of an exact piecewise-polynomial description of the natural
+        logarithm of a field of rank 0 that is positive throughout, or None
+        when it has none (a field with components has none)."""
+        if self._character.rank:
+            return None
+        return log_radial_pieces_of(self._interval, self._fs.ravel())
 
     def spherical_mean(self, *, grid: AngularGrid | None = None) -> "RadialField":
         """A radial field of rank 0 is its own spherical mean; `grid` is not

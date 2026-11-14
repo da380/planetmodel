@@ -11,11 +11,15 @@
  * Python's fields take a radius within their rtol of an interval as on
  * it; beyond that it throws.  It is cheap to copy, the interpolant behind
  * it being shared, and its evaluation is `const` and thread-safe.  The
- * constructors here are the piecewise polynomials through knots that a
- * deck's columns are joined by: the not-a-knot and the natural cubic
- * splines, the parabola, and the polyline.
+ * constructors here are the functions through knots that a deck's columns
+ * are joined by: the piecewise polynomials, the not-a-knot and the natural
+ * cubic splines, the parabola, and the polyline; and each of them through
+ * the logarithms of positive values, the value its exponential, as the
+ * Python's `ExponentialLayer` holds it: y_0 exp(L(r)), L through
+ * log(y_i / y_0), its derivative y_0 exp(L) L'.
  */
 
+#include <cmath>
 #include <format>
 #include <functional>
 #include <memory>
@@ -29,6 +33,11 @@
 #include <Interpolation/Linear.hpp>
 
 #include "planetmodel/error.hpp"
+
+/** @brief Defined where this header provides the kinds through the
+ * logarithms of the values, `KnotKind::LogCubic`, `KnotKind::LogNatural`
+ * and `KnotKind::LogLinear` (`log-cubic`, `log-natural`, `log-linear`). */
+#define PLANETMODEL_HAS_LOG_KINDS 1
 
 namespace planetmodel {
 
@@ -88,23 +97,42 @@ class RadialFunction {
 
 /**
  * @brief How a deck's knots are joined within a layer, the kinds both the
- * Python and the C++ read; two knots are a line under every kind.
+ * Python and the C++ read; two knots are a line under every kind, and a
+ * line through the logarithms under every logarithmic one.
  */
 enum class KnotKind {
-  Cubic,   /**< scipy's not-a-knot `CubicSpline`, the parabola through three knots. */
-  Natural, /**< The natural cubic spline: no curvature at the ends. */
-  Linear   /**< The polyline. */
+  Cubic,      /**< scipy's not-a-knot `CubicSpline`, the parabola through three knots. */
+  Natural,    /**< The natural cubic spline: no curvature at the ends. */
+  Linear,     /**< The polyline. */
+  LogCubic,   /**< `Cubic` through the logarithms of the values, `log-cubic`. */
+  LogNatural, /**< `Natural` through the logarithms of the values, `log-natural`. */
+  LogLinear   /**< `Linear` through the logarithms, geometric between knots, `log-linear`. */
 };
 
 /**
- * @brief The piecewise polynomial through knots, on the interval they
- * span.
+ * @brief Whether a kind joins the logarithms of the values.
+ * @param kind The kind.
+ */
+[[nodiscard]] constexpr bool IsLogarithmic(KnotKind kind) noexcept {
+  return kind == KnotKind::LogCubic || kind == KnotKind::LogNatural ||
+         kind == KnotKind::LogLinear;
+}
+
+/**
+ * @brief The function through knots, on the interval they span: the
+ * piecewise polynomial of `kind`, or for a logarithmic kind y_0 exp(L(r)),
+ * L the piecewise polynomial of its kind through log(y_i / y_0), as the
+ * Python's deck holds it, so that values constant through the knots are
+ * that constant exactly.
  * @param r The knots' radii, strictly increasing, at least two.
- * @param y The values at the knots.
+ * @param y The values at the knots, positive and finite for a logarithmic
+ *        kind, their ratios within the range of a double.
  * @param kind How the knots are joined.
  * @param tolerance How far beyond an end a radius is taken as on it.
  * @throws planetmodel::Error if the knots are fewer than two, the values
- *         do not match them, or the radii do not increase strictly.
+ *         do not match them, the radii do not increase strictly, or a
+ *         logarithmic kind is given a value that is not positive and finite
+ *         or two whose ratio is not finite.
  */
 [[nodiscard]] inline RadialFunction ThroughKnots(std::vector<double> r, std::vector<double> y,
                                                  KnotKind kind, double tolerance) {
@@ -113,6 +141,34 @@ enum class KnotKind {
   }
   for (auto i = std::size_t{1}; i < r.size(); ++i) {
     if (!(r[i] > r[i - 1])) throw Error("ThroughKnots", "", "the knots must increase strictly");
+  }
+  if (IsLogarithmic(kind)) {
+    for (const auto v : y) {
+      if (!(std::isfinite(v) && v > 0.0)) {
+        throw Error("ThroughKnots", "",
+                    std::format("{} is not positive and finite; the logarithm of every value "
+                                "is joined",
+                                v));
+      }
+    }
+    const auto first = y.front();
+    for (auto& v : y) {
+      v = std::log(v / first);
+      if (!std::isfinite(v)) {
+        throw Error("ThroughKnots", "",
+                    "the values span more than the range of a double: the ratio of two of "
+                    "them is not finite");
+      }
+    }
+    const auto polynomial = kind == KnotKind::LogCubic     ? KnotKind::Cubic
+                            : kind == KnotKind::LogNatural ? KnotKind::Natural
+                                                           : KnotKind::Linear;
+    const auto log = ThroughKnots(std::move(r), std::move(y), polynomial, tolerance);
+    const auto [lo, hi] = log.Interval();
+    return RadialFunction(lo, hi, tolerance, [first, log](double x, int derivative) {
+      const auto value = first * std::exp(log.Value(x));
+      return derivative == 0 ? value : value * log.Derivative(x);
+    });
   }
   const auto lo = r.front();
   const auto hi = r.back();

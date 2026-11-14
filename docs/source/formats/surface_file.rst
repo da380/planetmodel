@@ -140,8 +140,30 @@ the date (``previous``), or served at its stored nodes alone
 (``none``); an ``interval`` field from the interval holding the date,
 the last closed at its end; an ``instant`` field at its stored
 instants alone; a ``static`` field at any date.  Outside its span a
-field refuses the date, or holds its nearest value where the caller
-asks (``extrapolation="hold"``).  ``function(name, date)`` is the same
+``linear`` or ``previous`` ``node`` field and an ``interval`` field
+refuse the date, or hold their nearest value where the caller asks
+(``extrapolation="hold"``); a ``none`` ``node`` field and an
+``instant`` field refuse any date that is not one of their stored
+times, held or not.
+
+A date within a tolerance of a stored time is that time: the
+tolerance is ``time_rtol`` times the scale of the axis, the largest of
+its span (its last time less its first) and the magnitudes of its first
+and last times, ``time_rtol`` being ``TIME_RTOL = 1e-12`` unless the
+caller gives another, and zero matching exactly.  An axis of one time
+has the magnitude of that time as its scale; an axis whose one time is
+zero has a scale of zero, and a date matches it exactly.  So a date a
+rounding error from a node reads that node alone under every rule
+(``none`` and ``instant`` serve it, ``previous`` and ``interval`` read
+from it, ``linear`` gives it weight one), and a date that close beyond
+an end of the span is that end and is not refused; the nearest stored
+time within the tolerance is taken, the earlier on a tie.  A reader
+that converts its own clock to the file's units therefore meets the
+stored times without matching them bit for bit: its rounding is
+relative to the size of the times it forms, which the magnitudes in the
+scale allow for however short the span (a time stored at -999 on an
+axis of span 1, reached as -998.99999999999511, is read as -999).  ``function(name, date)`` is the same
 field as a ``GriddedFunction`` by its stated lateral rule, stored
 polar values carried along.  The C++ ``SurfaceHistory`` reads a file
-by the same arithmetic, so the two languages serve identical values.
+by the same arithmetic (``TimeRowsAt``, its tolerance ``TIME_RTOL``),
+so the two languages serve identical values.

@@ -16,7 +16,11 @@
  * variable names in `radial_layers`, as a function of the radius; a
  * lateral one by its radial and lateral rules, its components of rank one
  * and above interpolated in Cartesian components; a reference with a
- * perturbation by the perturbation's kind.  `ModelFile::Mapping()` gives
+ * perturbation by the perturbation's kind.  A scalar of the radius alone
+ * may state a radial rule in the logarithm (`log-polynomial`,
+ * `log-linear`, see rules.hpp), its logarithm read between the nodes,
+ * which a file of `MODEL_SCHEMA_WITH_LOG_RULES` holds and the field
+ * evaluates, with its derivatives, as any other.  `ModelFile::Mapping()` gives
  * the mapping, from the boundary displacements of the `geometry` group or
  * from the `displacement` field.  `ModelFile::SurfaceFieldOn(interface,
  * name)` reads a field of the `surfaces` group, a number at each point of
@@ -45,7 +49,9 @@
  * in the format's frames (spherical at the grid's nodes, Cartesian at the
  * poles a grid lacks) with every attribute the format asks for, and
  * `WriteModelFile` writes the file after holding it to the reader's
- * checks, under a name of its own until it is whole.  Fields on interfaces
+ * checks, under a name of its own until it is whole; a variable added with
+ * a radial rule in the logarithm (`Rules::radial`) makes it a file of
+ * `MODEL_SCHEMA_WITH_LOG_RULES`.  Fields on interfaces
  * go on a grid set once by `SetSurfaceGrid`, each added by
  * `AddSurfaceField` from a source per interface, evaluated at the
  * interface's radius:
@@ -101,8 +107,18 @@
 
 namespace planetmodel {
 
-/** @brief The schema this library reads and writes; bumped only for an incompatible change. */
+/**
+ * @brief The schema of a file in which no variable states a radial rule in
+ * the logarithm; bumped only for an incompatible change.
+ */
 inline constexpr std::string_view MODEL_SCHEMA = "planetmodel.model/1";
+
+/**
+ * @brief The schema of a file in which some variable states a radial rule
+ * in the logarithm (`log-polynomial`, `log-linear`), which a reader of
+ * `MODEL_SCHEMA` alone does not know and so refuses by the schema.
+ */
+inline constexpr std::string_view MODEL_SCHEMA_WITH_LOG_RULES = "planetmodel.model/2";
 
 /** @brief The CF conventions the file follows; groups are admitted from 1.8. */
 inline constexpr std::string_view MODEL_CONVENTIONS = "CF-1.8";
@@ -552,7 +568,9 @@ class LayerSource {
 
 /** @brief The rules a variable states, radially and laterally. */
 struct Rules {
-  RadialRule radial = RadialRule::Polynomial; /**< Between the radial nodes. */
+  /** @brief Between the radial nodes; a rule in the logarithm for a positive
+   * scalar of the radius alone. */
+  RadialRule radial = RadialRule::Polynomial;
   LateralRule lateral = LateralRule::Linear;  /**< Between the grid's nodes. */
 };
 
@@ -655,13 +673,16 @@ class Field {
 
   /// What one variable is on one layer, at the nodes of its elements: the
   /// stored components in the spherical frame where it is radial, or the
-  /// lateral rule's interpolants of the Cartesian components.
+  /// lateral rule's interpolants of the Cartesian components.  Under a
+  /// rule in the logarithm, a radial scalar: `nodal` holds log(y / y_e)
+  /// and `scale` each element's first value y_e.
   struct Piece {
     bool radial = true;
     Character character{0};
     RadialRule rule = RadialRule::Polynomial;
     std::optional<RadialLayout> layout{};
     std::vector<double> nodal{};               // [(node * ncomp) + c], radial
+    std::vector<double> scale{};               // [element], a rule in the logarithm
     std::vector<LateralInterpolant> lateral{};  // [(node * ncomp) + c], lateral
   };
 
@@ -700,6 +721,12 @@ class Field {
           sph[c] += w[k] * at[c];
           if (derivatives) dsph[c] += dw[k] * at[c];
         }
+      }
+      if (IsLogRule(p.rule)) {
+        // a scalar: the element's first value times the exponential of
+        // the logarithm read, and its derivative that times the slope
+        sph[0] = p.scale[e] * std::exp(sph[0]);
+        dsph[0] *= sph[0];
       }
       if (rank == 0 || frame == Frame::Spherical) out.value = sph;
       const auto R = SphericalFrame(theta, phi);
@@ -942,7 +969,11 @@ class ModelFile {
 
   /** @brief The path it was read from, as errors name it; `ModelFile` for one being built. */
   [[nodiscard]] const std::string& Source() const noexcept { return source_; }
-  /** @brief The schema it declares, `MODEL_SCHEMA`. */
+  /**
+   * @brief The schema it declares: `MODEL_SCHEMA_WITH_LOG_RULES` where a
+   * variable states a radial rule in the logarithm, `MODEL_SCHEMA`
+   * otherwise.
+   */
   [[nodiscard]] const std::string& Schema() const noexcept { return schema_; }
   /** @brief The code that wrote the file (the attribute `source`); empty in
    * files from before the writers stamped it. */
@@ -1386,10 +1417,15 @@ class ModelFile {
    * @param spec Its character, dimensions and meaning; a vocabulary name's
    *        must be the vocabulary's.
    * @param layers Each layer holding it, and its source there.
-   * @param rules The rules the variable states.
+   * @param rules The rules the variable states; a radial rule in the
+   *        logarithm for a scalar of the radius alone, positive at every
+   *        node.
    * @throws planetmodel::Error if the name or the spec is refused, a layer
-   *         is in no part, the grid cannot carry the lateral rule, or a
-   *         source gives values that do not fit or are not finite.
+   *         is in no part, the grid cannot carry the lateral rule, a radial
+   *         rule in the logarithm is stated by a variable that varies with
+   *         direction or has components, or meets a value that is not
+   *         positive, or a source gives values that do not fit or are not
+   *         finite.
    */
   void AddField(const std::string& name, const FieldSpec& spec,
                 const std::map<int, ::planetmodel::LayerSource>& layers, const Rules& rules = {}) {
@@ -1828,6 +1864,12 @@ class ModelFile {
     const auto where = std::format("part_{}/{}", part.index, name);
     const auto& grid = *part.grid;
     if (lateral) CheckRule(grid, rules.lateral, where);
+    if (IsLogRule(rules.radial) && (lateral || character.Rank() != 0)) {
+      Fail(where, std::format("states {}, a rule in the logarithm, which a variable of rank 0 "
+                              "of the radius alone states, and {}",
+                              RuleName(rules.radial),
+                              lateral ? "this one varies with direction" : "this one has components"));
+    }
     const auto n = character.StoredSize();
     const auto axes = AxesOf(character, where);
     const auto stored = character.StoredShape();
@@ -1859,6 +1901,17 @@ class ModelFile {
       const auto n0 = e0 * part.ngll;
       const auto sampled = source.Sample(PointsOf(layer), character, lateral, source_,
                                          std::format("{} on layer {}", where, layer));
+      if (IsLogRule(rules.radial)) {
+        for (auto k = std::size_t{0}; k < sampled.values.size(); ++k) {
+          if (!(sampled.values[k] > 0.0)) {
+            Fail(where, std::format("is {} at r = {} on layer {}; a variable read by {}, its "
+                                    "logarithm interpolated, is positive at every node of a "
+                                    "layer holding it",
+                                    sampled.values[k], part.radius[n0 + k], layer,
+                                    RuleName(rules.radial)));
+          }
+        }
+      }
       std::ranges::copy(sampled.values,
                         var.values.begin() + static_cast<std::ptrdiff_t>(n0 * per_node));
       if (with_poles) {
@@ -1889,7 +1942,8 @@ class ModelFile {
     return out;
   }
 
-  /// Variables made for parts, put into them once all are made.
+  /// Variables made for parts, put into them once all are made, and the
+  /// schema the file then declares.
   void Commit(std::vector<std::pair<std::size_t, std::vector<FileVariable>>> made) {
     for (auto& [index, variables] : made) {
       for (auto& var : variables) {
@@ -1897,6 +1951,18 @@ class ModelFile {
         parts_[index].variables.insert_or_assign(std::move(name), std::move(var));
       }
     }
+    schema_ = std::string{StatesLogRule() ? MODEL_SCHEMA_WITH_LOG_RULES : MODEL_SCHEMA};
+  }
+
+  /// Whether a variable of a part states a radial rule in the logarithm.
+  bool StatesLogRule() const {
+    return std::ranges::any_of(parts_, [](const FilePart& part) {
+      return std::ranges::any_of(part.variables, [](const auto& entry) {
+        const auto rule = entry.second.Text("radial_interpolation");
+        return rule && (*rule == RuleName(RadialRule::LogPolynomial) ||
+                        *rule == RuleName(RadialRule::LogLinear));
+      });
+    });
   }
 
   /// Refuse an interface the skeleton lacks.
@@ -2144,6 +2210,17 @@ class ModelFile {
         const auto* at = &var.values[node * stride];
         out.nodal.insert(out.nodal.end(), at, at + ncomp);
       }
+      if (IsLogRule(out.rule)) {
+        // a scalar, positive (as the file was checked): the logarithms
+        // over each element's first value
+        for (auto e = std::size_t{0}; e < e1 - e0; ++e) {
+          const auto first = out.nodal[e * ngll];
+          out.scale.push_back(first);
+          for (auto k = std::size_t{0}; k < ngll; ++k) {
+            out.nodal[e * ngll + k] = std::log(out.nodal[e * ngll + k] / first);
+          }
+        }
+      }
       return out;
     }
     const auto& grid = *part.grid;
@@ -2245,6 +2322,28 @@ inline std::filesystem::path PartialName(const std::filesystem::path& path) {
   Fail(path.string(), "", "no name is free beside the file to write it under");
 }
 
+/// Put a file written whole under `partial` in place at `path`, with the
+/// permissions a plain open of `path` for writing would give it: those of
+/// the file there, kept, or for a new file the umask's, which the partial
+/// file was given as netCDF-C created it.
+inline void PutInPlace(const std::filesystem::path& partial, const std::filesystem::path& path,
+                       const std::string& source) {
+  auto error = std::error_code{};
+  const auto there = std::filesystem::status(path, error);
+  if (std::filesystem::exists(there)) {
+    std::filesystem::permissions(partial, there.permissions(),
+                                 std::filesystem::perm_options::replace, error);
+    if (error) {
+      Fail(source, "",
+           std::format("cannot be given the permissions of the file it replaces: {}",
+                       error.message()));
+    }
+  }
+  error.clear();
+  std::filesystem::rename(partial, path, error);
+  if (error) Fail(source, "", std::format("cannot be put in place: {}", error.message()));
+}
+
 }  // namespace detail
 
 /**
@@ -2265,8 +2364,9 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   auto fail = [&source](std::string_view where, std::string_view message) {
     detail::Fail(source, where, message);
   };
-  if (file.schema_ != MODEL_SCHEMA) {
-    fail("schema", std::format("is {}, and this reader reads {}", file.schema_, MODEL_SCHEMA));
+  if (file.schema_ != MODEL_SCHEMA && file.schema_ != MODEL_SCHEMA_WITH_LOG_RULES) {
+    fail("schema", std::format("is {}, and this reader reads {} and {}", file.schema_,
+                               MODEL_SCHEMA, MODEL_SCHEMA_WITH_LOG_RULES));
   }
   if (!(file.rtol_ > 0.0 && file.rtol_ < 1.0)) fail("rtol", "is not a tolerance in (0, 1)");
   const auto& skeleton = *file.skeleton_;
@@ -2371,6 +2471,25 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       if (!radial_rule || !std::ranges::contains(RADIAL_RULES, std::string_view{*radial_rule})) {
         fail(vwhere, "states an unknown radial rule");
       }
+      if (IsLogRule(RadialRuleNamed(*radial_rule))) {
+        if (lateral || !stored.empty() || vname == "displacement") {
+          fail(vwhere, std::format("states {}, a rule in the logarithm, which a variable of rank "
+                                   "0 of the radius alone states",
+                                   *radial_rule));
+        }
+        for (const auto v : var.values) {
+          if (!std::isnan(v) && !(std::isfinite(v) && v > 0.0)) {
+            fail(vwhere, std::format("states {}, a rule in the logarithm, and holds a value that "
+                                     "is not positive",
+                                     *radial_rule));
+          }
+        }
+        if (file.schema_ != MODEL_SCHEMA_WITH_LOG_RULES) {
+          fail(vwhere, std::format("states a rule in the logarithm, which a file of schema {} "
+                                   "does not hold: such a file is {}",
+                                   file.schema_, MODEL_SCHEMA_WITH_LOG_RULES));
+        }
+      }
       if (var.attributes.contains("radial_layers")) {
         auto holders = std::vector<int>{};
         if (const auto l = var.Numbers("layers")) {
@@ -2413,6 +2532,12 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
         }
       }
     }
+  }
+
+  if (file.schema_ == MODEL_SCHEMA_WITH_LOG_RULES && !file.StatesLogRule()) {
+    fail("schema", std::format("is {}, a file in which a variable states a rule in the "
+                               "logarithm, and none does",
+                               file.schema_));
   }
 
   // the mapping
@@ -2759,7 +2884,7 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
   const auto length = units::ScaledUnit(units::LENGTH, scales_);
 
   // the root
-  put(root, global, "schema", std::string{MODEL_SCHEMA});
+  put(root, global, "schema", schema_);
   put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
   put(root, global, "title", name_ ? "planetmodel model " + *name_ : "planetmodel model");
   put(root, global, "source",
@@ -2923,7 +3048,9 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
  * node whose values are not one value), before anything is written; it is
  * written under a name of its own beside `path` and put in place when
  * whole, so that a failed write leaves no file and an existing file at
- * `path` stands until it is replaced.
+ * `path` stands until it is replaced.  The file has the permissions a
+ * plain open for writing would give it: an existing file's, kept, or the
+ * umask's.
  *
  * @param path The file to write; one there is replaced.
  * @param file The model file, read or built.
@@ -2939,9 +3066,7 @@ inline void WriteModelFile(const std::filesystem::path& path, const ModelFile& f
     auto nc = netcdf::File::Create(partial);
     file.WriteTo(nc.Id(), source);
     nc.Close();
-    auto error = std::error_code{};
-    std::filesystem::rename(partial, path, error);
-    if (error) detail::Fail(source, "", std::format("cannot be put in place: {}", error.message()));
+    detail::PutInPlace(partial, path, source);
   } catch (...) {
     auto error = std::error_code{};
     std::filesystem::remove(partial, error);

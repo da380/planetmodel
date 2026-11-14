@@ -84,7 +84,7 @@ held to the same call.
 pip install planetmodel                     # numpy, scipy and ducc0
 pip install 'planetmodel[meshing]'          # 2D and 3D meshes via gmsh
 pip install 'planetmodel[mfem]'             # export to MFEM (PyMFEM)
-pip install 'planetmodel[netcdf]'           # the model file (netCDF4)
+pip install 'planetmodel[netcdf]'           # the model, surface and fault files (netCDF4)
 pip install 'planetmodel[plot]'             # matplotlib, for the figures
 pip install 'planetmodel[notebook]'         # ipykernel, to run tutorials cell by cell
 ```
@@ -123,8 +123,9 @@ print(mesh.nodal(nd, "rho").shape)      # density at every mesh node
   published models and sensitivity kernels, each a `# %%` script that
   runs headless and opens as a notebook, in Google Colab from the badges
   in `examples/README.md`.
-- `docs/source/formats/`: the model file and the manifest beside every
-  mesh, described for the codes that read them (also on Read the Docs).
+- `docs/source/formats/`: the model file, the surface file, the fault
+  file and the manifest beside every mesh, described for the codes that
+  read them (also on Read the Docs).
 - `CONTRIBUTING.md`: the development setup, the hooks, the test
   selections and how a release is made.
 

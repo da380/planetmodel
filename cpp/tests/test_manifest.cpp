@@ -6,8 +6,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <array>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -61,8 +64,15 @@ void ExpectAsWritten(const MeshManifest& m, const Json& doc, bool files = true) 
   const auto& layers = doc.At("layers");
   ASSERT_EQ(m.Layers().size(), layers.Size());
   for (auto i = std::size_t{0}; i < layers.Size(); ++i) {
-    const auto& [attribute, name, r_inner, r_outer, in_geometry, fluid] = m.Layers()[i];
+    const auto& [attribute, name, r_inner, r_outer, in_geometry, fluid, attributes] =
+        m.Layers()[i];
     const auto& e = layers.At(i);
+    if (m.Schema() == planetmodel::MANIFEST_SCHEMA_WITH_FAULTS) {
+      EXPECT_EQ(attributes, Ints(e.At("attributes")));
+    } else {
+      EXPECT_EQ(attributes, (std::vector<int>{attribute}));
+    }
+    for (const auto a : attributes) EXPECT_EQ(&m.LayerOf(a), &m.Layers()[i]);
     EXPECT_EQ(attribute, e.At("attribute").AsInt());
     EXPECT_EQ(name, e.At("name").AsString());
     EXPECT_EQ(r_inner, e.At("r_inner").AsNumber());
@@ -137,6 +147,63 @@ void ExpectAsWritten(const MeshManifest& m, const Json& doc, bool files = true) 
     }
   }
   EXPECT_EQ(m.Model().has_value(), doc.Find("model") && !doc.At("model").IsNull());
+}
+
+std::optional<int> OptionalInt(const Json& v) {
+  return v.IsNull() ? std::nullopt : std::optional<int>{v.AsInt()};
+}
+
+/// The manifest's fault records against the document they were read from.
+void ExpectFaultsAsWritten(const MeshManifest& m, const Json& doc) {
+  const auto* faults = doc.Find("faults");
+  ASSERT_EQ(m.Faults().size(), faults ? faults->Size() : 0u);
+  for (auto i = std::size_t{0}; i < m.Faults().size(); ++i) {
+    const auto& f = m.Faults()[i];
+    const auto& e = faults->At(i);
+    SCOPED_TRACE(f.name);
+    EXPECT_EQ(f.name, e.At("name").AsString());
+    EXPECT_EQ(f.attribute, e.At("attribute").AsInt());
+    EXPECT_EQ(f.layers, Ints(e.At("layers")));
+    EXPECT_EQ(f.hanging_wall, Ints(e.At("hanging_wall")));
+    ASSERT_EQ(f.ends_on.size(), e.At("ends_on").Size());
+    for (auto j = std::size_t{0}; j < f.ends_on.size(); ++j) {
+      EXPECT_EQ(f.ends_on[j], e.At("ends_on").At(j).AsString());
+      EXPECT_TRUE(f.EndsOn(f.ends_on[j]));
+      EXPECT_TRUE(f.Meets(f.ends_on[j]));
+    }
+    for (const auto a : f.hanging_wall) EXPECT_GT(a, static_cast<int>(m.Layers().size()));
+    EXPECT_EQ(f.tip, OptionalInt(e.At("tip")));
+    EXPECT_EQ(f.free_edge, OptionalInt(e.At("free_edge")));
+    EXPECT_EQ(f.junction, OptionalInt(e.At("junction")));
+    ASSERT_EQ(f.meets.size(), e.At("meets").Size());
+    for (auto j = std::size_t{0}; j < f.meets.size(); ++j) {
+      EXPECT_EQ(f.meets[j], e.At("meets").At(j).AsString());
+      EXPECT_TRUE(f.Meets(f.meets[j]));
+    }
+    EXPECT_EQ(f.controls.has_value(), !e.At("controls").IsNull());
+    if (f.controls) {
+      ASSERT_EQ(f.controls->size(), e.At("controls").Size());
+      for (auto j = std::size_t{0}; j < f.controls->size(); ++j) {
+        EXPECT_EQ((*f.controls)[j][0], e.At("controls").At(j).At(0).AsInt());
+        EXPECT_EQ((*f.controls)[j][1], e.At("controls").At(j).At(1).AsInt());
+      }
+    }
+    EXPECT_EQ(f.offset, e.At("offset").AsNumber());
+    EXPECT_EQ(f.sizing.has_value(), !e.At("sizing").IsNull());
+    if (f.sizing) {
+      EXPECT_EQ(f.sizing->size, e.At("sizing").At("size").AsNumber());
+      EXPECT_EQ(f.sizing->far_size, e.At("sizing").At("far_size").AsNumber());
+      EXPECT_EQ(f.sizing->decay_width, e.At("sizing").At("decay_width").AsNumber());
+    }
+    EXPECT_EQ(&m.FaultNamed(f.name), &f);
+    EXPECT_EQ(&m.FaultWithAttribute(f.attribute), &f);
+    EXPECT_TRUE(m.HasFault(f.name));
+    EXPECT_TRUE(m.IsFaultAttribute(f.attribute));
+    EXPECT_EQ(f.attribute, static_cast<int>(m.Interfaces().size() + i) + 1);
+  }
+  for (const auto& face : m.Interfaces()) {
+    EXPECT_FALSE(m.IsFaultAttribute(face.attribute)) << face.name;
+  }
 }
 
 }  // namespace
@@ -286,6 +353,101 @@ TEST(Manifest, RefusesWhatThePythonRefusesAtItsPlace) {
     ++cases;
   }
   EXPECT_GT(cases, 30);
+}
+
+TEST(Manifest, ReadsNoFaultsWhereTheKeyIsAbsent) {
+  PLANETMODEL_FIXTURE(path, "manifest_cases/base.json");
+  const auto m = MeshManifest(path);
+  EXPECT_EQ(m.Schema(), planetmodel::MANIFEST_SCHEMA);
+  EXPECT_EQ(m.ElementAttributes(), (std::vector<int>{1, 2, 3}));
+  EXPECT_EQ(m.ElementAttributes({2, 1}), (std::vector<int>{2, 1}));
+  EXPECT_TRUE(m.ElementAttributes(std::vector<int>{}).empty());
+  EXPECT_EQ(m.LayerOf(2).name, "mantle");
+  EXPECT_THROW(static_cast<void>(m.LayerOf(4)), Error);
+  EXPECT_THROW(static_cast<void>(m.ElementAttributes({4})), Error);
+  EXPECT_TRUE(m.Faults().empty());
+  EXPECT_TRUE(m.FaultAttributes().empty());
+  EXPECT_FALSE(m.IsFaultAttribute(4));
+  EXPECT_FALSE(m.HasFault("megathrust"));
+  EXPECT_THROW(static_cast<void>(m.FaultNamed("megathrust")), Error);
+  EXPECT_THROW(static_cast<void>(m.FaultWithAttribute(4)), Error);
+}
+
+TEST(Manifest, ReadsTheFaultsAsWritten) {
+  PLANETMODEL_FIXTURE(path, "manifest_cases/accept_faults.json");
+  const auto m = MeshManifest(path);
+  ExpectAsWritten(m, planetmodel::ReadJsonFile(path), false);
+  ExpectFaultsAsWritten(m, planetmodel::ReadJsonFile(path));
+  EXPECT_EQ(m.Schema(), planetmodel::MANIFEST_SCHEMA_WITH_FAULTS);
+  EXPECT_EQ(m.FaultAttributes(), (std::vector<int>{4, 5}));
+  EXPECT_FALSE(m.IsFaultAttribute(6));
+  // the collars: each layer's cells carry a list, and a marker takes it
+  EXPECT_EQ(m.LayerNamed("mantle").attributes, (std::vector<int>{2, 5, 6, 7}));
+  EXPECT_EQ(m.ElementAttributes(), (std::vector<int>{1, 4, 2, 5, 6, 7, 3}));
+  EXPECT_EQ(m.ElementAttributes({2}), (std::vector<int>{2, 5, 6, 7}));
+  EXPECT_EQ(m.BodyAttributes(), (std::vector<int>{1, 4, 2, 5, 6, 7}));
+  EXPECT_EQ(m.ShellAttributes(), (std::vector<int>{3}));
+  EXPECT_EQ(m.SolidAttributes(), (std::vector<int>{2, 5, 6, 7}));
+  EXPECT_EQ(m.FluidAttributes(), (std::vector<int>{1, 4}));
+  EXPECT_EQ(m.LayerOf(4).name, "core");
+  EXPECT_EQ(m.LayerOf(6).name, "mantle");
+  EXPECT_THROW(static_cast<void>(m.LayerOf(8)), Error);
+  EXPECT_EQ(MeshManifest::Marker(m.FaultNamed("splay").hanging_wall, 7),
+            (std::vector<int>{0, 0, 0, 1, 0, 1, 1}));
+  const auto& mega = m.FaultNamed("megathrust");
+  EXPECT_EQ(mega.attribute, 4);
+  EXPECT_EQ(mega.layers, (std::vector<int>{2}));
+  EXPECT_EQ(mega.hanging_wall, (std::vector<int>{5, 6}));
+  EXPECT_TRUE(mega.ends_on.empty());
+  EXPECT_TRUE(m.FaultNamed("splay").EndsOn("megathrust"));
+  EXPECT_FALSE(mega.EndsOn("splay"));
+  EXPECT_EQ(mega.tip, 1);
+  EXPECT_EQ(mega.free_edge, 2);
+  EXPECT_EQ(mega.junction, 3);
+  EXPECT_TRUE(mega.Meets("splay"));
+  EXPECT_FALSE(mega.Meets("megathrust"));
+  ASSERT_TRUE(mega.controls);
+  EXPECT_EQ(*mega.controls, (std::vector<std::array<int, 2>>{{17, 17}}));
+  EXPECT_EQ(mega.offset, 3.3e-8);
+  ASSERT_TRUE(mega.sizing);
+  EXPECT_EQ(mega.sizing->size, 0.05);
+  EXPECT_EQ(mega.sizing->far_size, 0.3);
+  EXPECT_EQ(mega.sizing->decay_width, 0.2);
+  const auto& splay = m.FaultWithAttribute(5);
+  EXPECT_EQ(splay.name, "splay");
+  EXPECT_EQ(splay.layers, (std::vector<int>{1, 2}));
+  EXPECT_EQ(splay.tip, 4);
+  EXPECT_FALSE(splay.free_edge);
+  EXPECT_EQ(splay.junction, 6);
+  EXPECT_EQ(*splay.controls, (std::vector<std::array<int, 2>>{{9, 9}, {5, 17}}));
+  EXPECT_EQ(splay.offset, 0.0);
+  EXPECT_FALSE(splay.sizing);
+  try {
+    static_cast<void>(m.FaultNamed("slab"));
+    FAIL();
+  } catch (const Error& e) {
+    EXPECT_NE(std::string{e.what()}.find("it has megathrust, splay"), std::string::npos)
+        << e.what();
+  }
+  EXPECT_THROW(static_cast<void>(m.FaultWithAttribute(3)), Error);
+  EXPECT_EQ(MeshManifest::Marker(m.FaultAttributes(), 5), (std::vector<int>{0, 0, 0, 1, 1}));
+}
+
+TEST(Manifest, ReadsTheManifestsOfMeshesWithFaults) {
+  PLANETMODEL_FIXTURE(root, "fault_meshes");
+  auto read = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    const auto path = entry.path() / (entry.path().filename().string() + ".json");
+    SCOPED_TRACE(path.string());
+    const auto m = MeshManifest(path);
+    const auto doc = planetmodel::ReadJsonFile(path);
+    ExpectAsWritten(m, doc, false);
+    ExpectFaultsAsWritten(m, doc);
+    EXPECT_FALSE(m.Faults().empty());
+    EXPECT_EQ(m.Schema(), planetmodel::MANIFEST_SCHEMA_WITH_FAULTS);
+    ++read;
+  }
+  EXPECT_EQ(read, 3);
 }
 
 TEST(Manifest, RefusesADocumentThatIsNoManifest) {

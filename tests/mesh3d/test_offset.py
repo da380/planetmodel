@@ -4,7 +4,7 @@ import pytest
 
 import gmsh
 
-from planetmodel.mesh3d import build_offset_mesh, manifest as sc
+from planetmodel.mesh3d import build_offset_mesh, manifest as sc, read_mesh
 from planetmodel.mesh3d._session import session
 
 from conftest import COARSE, boundary_edge_lengths
@@ -58,11 +58,8 @@ def test_the_offset_manifest_says_what_it_knows(offset3):
 
 
 def test_the_inclusion_sits_where_it_was_put(offset3):
-    with session(name="nodes"):
-        gmsh.merge(str(offset3.msh_path))
-        (face,) = gmsh.model.getEntitiesForPhysicalGroup(2, 1)
-        _, coords, _ = gmsh.model.mesh.getNodes(2, face, includeBoundary=True)
-    xyz = coords.reshape(-1, 3)
+    mesh = read_mesh(offset3.msh_path)
+    xyz = mesh.points[np.unique(mesh.faces_with(1))]
     assert np.allclose(np.linalg.norm(xyz - [0.0, 0.0, 0.3], axis=1), 0.4,
                        atol=2e-3)
 
@@ -74,11 +71,8 @@ def test_a_disc_builds_in_two_dimensions(offset, tmp_path):
     assert res.validation.ok
     card = sc.read(res.manifest_path)
     assert card.meta["kind"] == "two_disc"
-    with session(name="nodes"):
-        gmsh.merge(str(res.msh_path))
-        (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, 1)
-        _, coords, _ = gmsh.model.mesh.getNodes(1, curve, includeBoundary=True)
-    xyz = coords.reshape(-1, 3)
+    mesh = read_mesh(res.msh_path)
+    xyz = mesh.points[np.unique(mesh.faces_with(1))]
     assert np.allclose(np.linalg.norm(xyz - [offset, 0.0, 0.0], axis=1), 0.4,
                        atol=2e-3)
 
@@ -110,10 +104,7 @@ def test_an_offset_mesh_keeps_the_numbers_it_was_given(tmp_path):
     assert card.meta["offset"] == 1.5
     assert card.outer_radius == 5.0
     assert card.layers[1]["r_outer"] == 5.0
-    with session(name="nodes"):
-        gmsh.merge(str(res.msh_path))
-        _, coords, _ = gmsh.model.mesh.getNodes()
-    r = np.linalg.norm(coords.reshape(-1, 3), axis=1)
+    r = np.linalg.norm(read_mesh(res.msh_path).points, axis=1)
     assert r.max() == pytest.approx(5.0, abs=1e-9)
 
 

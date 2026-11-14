@@ -355,6 +355,39 @@ def test_a_model_file_is_written_beside_the_mesh_and_named_in_the_manifest(
     assert "model       earth.model.nc" in card.describe()
 
 
+def test_a_model_file_in_the_logarithm_is_named_with_the_schema_it_declares(
+        built, tmp_path):
+    """A viscosity the exponential of a line on every layer: the model
+    file states the rule in the logarithm, and the manifest names the
+    file's schema, the second."""
+    pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
+    from scipy.interpolate import PPoly
+
+    from planetmodel.fields import RadialField
+    from planetmodel.layerfunction import ExponentialLayer
+    from planetmodel.modelfile import SCHEMA_WITH_LOG_RULES, read_model
+    from planetmodel.vocabulary import shipped
+    res, model = built["full3"]
+    layers = []
+    for lay in model.geometry.layers:
+        lo, hi = lay.interval
+        line = PPoly([[-8.0], [3.0 * lay.index]], [lo, hi])
+        eta = ExponentialLayer(lay.interval, line, factor=1e20)
+        layers.append({
+            "rho": constant_field(lay.interval, 1.0 + lay.index, character=DENSITY),
+            "viscosity": RadialField(lay.interval, eta, name="viscosity",
+                                     character=shipped("viscosity").character)})
+    radial = Model(model.geometry, layers)
+    export = export_mfem(res, tmp_path / "eta", model=radial, model_file=True)
+    card = sc.read(export.manifest_path)
+    assert card.model == {"file": "eta.model.nc", "schema": SCHEMA_WITH_LOG_RULES}
+    back = read_model(export.model_path)
+    for lay in radial.layers:
+        r = np.linspace(*lay.interval, 31)
+        assert np.allclose(back.layer(lay.index)["viscosity"](r), lay["viscosity"](r),
+                           rtol=1e-14, atol=0)
+
+
 def test_model_file_true_writes_a_radial_model_and_refuses_one_that_varies(
         built, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")

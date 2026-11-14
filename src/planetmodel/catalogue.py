@@ -35,6 +35,10 @@ Maxwell deck, a radial Earth for glacial isostatic adjustment: density
 and the unrelaxed elastic velocities beside a viscosity, a Maxwell body
 in shear, with no quality factors, since a constant-Q dispersion about
 a seismic reference period would otherwise reach glacial periods.
+`PronyDeckModel` is the model of a prony deck, the same with Prony
+branches in place of the viscosity, a generalised Maxwell body, and
+`BurgersDeckModel` that of a burgers deck, each layer a Maxwell or a
+Burgers body, the latter held as its two branches.
 """
 from __future__ import annotations
 
@@ -45,18 +49,21 @@ import numpy as np
 
 from .behaviours import ConstantQ, Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
-from .deck import (MAXWELL, MAXWELL_KINDS, MINEOS, Deck, Tabulated, deck_layers,
-                   maxwell_names, mineos_names, read_deck)
+from .deck import (BURGERS, BURGERS_KINDS, MAXWELL, MAXWELL_KINDS, MINEOS, PRONY,
+                   PRONY_KINDS, Deck, Tabulated, deck_layers, maxwell_names,
+                   mineos_names, prony_branches, read_deck)
 from .fields import RadialField, constant_field
 from .geometry import Geometry
 from .layerfunction import polynomial_layer
+from .materials import kappa_mu
 from .model import Model
+from .rheology import BRANCH_STEMS
 from .skeleton import Skeleton
 from .units import FREQUENCY, Scales
 from .vocabulary import Constant
 
 __all__ = ["PREM", "LayeredIsotropicElastic", "MineosModel", "MaxwellDeckModel",
-           "PREM_RADIUS"]
+           "PronyDeckModel", "BurgersDeckModel", "PREM_RADIUS"]
 
 #: The normalisation radius a of PREM's polynomials, metres.
 PREM_RADIUS = 6371e3
@@ -303,11 +310,13 @@ class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
 
     The columns are interpolated layer by layer by `kind`, and by the
     kind `kinds` gives a column where it gives one (see
-    `planetmodel.deck.KINDS`); by default the viscosity is joined by
-    straight lines, `MAXWELL_KINDS`, which keep it positive between
-    knots.  The elastic values are the unrelaxed moduli of the Maxwell
-    body, so `frozen(omega)` relaxes each layer holding a viscosity with
-    tau = viscosity / mu, and the deck holds no quality factors.  The
+    `planetmodel.deck.KINDS` and `LOG_KINDS`); by default the viscosity
+    is joined in its logarithm by straight lines, `MAXWELL_KINDS`,
+    positive and geometric between knots, and `kinds={"viscosity":
+    "linear"}` joins its values by straight lines instead.  The elastic
+    values are the unrelaxed moduli of the Maxwell body, so
+    `frozen(omega)` relaxes each layer holding a viscosity with tau =
+    viscosity / mu, and the deck holds no quality factors.  The
     `# layers` and `# interfaces` lines of the header name the layers
     and interfaces (`maxwell_names`); its title is the model's name.
     The deck is kept as `deck`, its knots per layer as `knots`, its
@@ -326,3 +335,131 @@ class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
         self.keep_deck(deck)
         super().__init__(geometry, layers,
                          name=str(deck.header.get("name", "")) or None)
+
+
+def _sampled_header(model: Tabulated, sampled: Deck) -> Deck:
+    """A deck sampled from a model read from a deck, its header the deck's
+    with the model's name and names as they now are, and without the
+    column line read, which the format writes from the columns."""
+    kept = {k: v for k, v in model.header.items() if k != "columns"}
+    return Deck(sampled.radius, sampled.columns, header={**kept, **sampled.header})
+
+
+class PronyDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
+    """The model of a prony deck: `r rho vpv vsv vph vsh eta` and the pairs
+    `relaxation_strength_k relaxation_time_k`, k = 1 to N, in SI under a
+    title and the line naming the columns, NaN where a layer lacks a field.
+
+    The columns are interpolated layer by layer by `kind`, and by the
+    kind `kinds` gives a column or a family's stem (see
+    `planetmodel.deck.KINDS` and `LOG_KINDS`); by default the strengths
+    are joined by straight lines and the times in their logarithm by
+    straight lines, `PRONY_KINDS`.  The elastic values are the
+    unrelaxed moduli, and each layer holds the Prony branches it uses as
+    `relaxation_strength_k` and `relaxation_time_k`, a generalised
+    Maxwell body in shear that `frozen` relaxes: the branches after the
+    last whose strength is not zero at every knot of the layer are not
+    made fields of it, so a layer the writer completed holds the
+    branches it was written from.  An elastic layer holds none.  A deck
+    given rather than read is completed and held to the format as one
+    written would be.  Its header names the layers and interfaces
+    (`maxwell_names`) and the model; the deck is kept as `deck`, its
+    knots per layer as `knots`, its header as `header` and its columns
+    as `columns`, and `to_deck` writes the model back out as a prony
+    deck on those knots (`conversion.prony.prony_deck`).  The model is in
+    SI, as the deck is; `converted` gives it in other scales.
+    """
+
+    def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
+                 kinds: Mapping[str, str] = PRONY_KINDS) -> None:
+        if isinstance(source, Deck):
+            deck = PRONY.complete(source)
+            PRONY.check_table(deck)
+        else:
+            deck = read_deck(source, PRONY)
+        skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
+        n = prony_branches(deck)
+        strength = f"{BRANCH_STEMS[0]}_{{}}"
+        for fields, s in zip(layers, deck.layers()):
+            used = max((k for k in range(1, n + 1)
+                        if np.any(deck[strength.format(k)][s] != 0.0)), default=0)
+            for k in range(used + 1, n + 1):
+                for stem in BRANCH_STEMS:
+                    fields.pop(f"{stem}_{k}", None)
+        layer_names, interface_names = maxwell_names(deck)
+        geometry = Geometry(skeleton, layer_names=layer_names,
+                            interface_names=interface_names)
+        self.keep_deck(deck)
+        super().__init__(geometry, layers,
+                         name=str(deck.header.get("name", "")) or None)
+
+    def to_deck(self, *, columns: Sequence[str] | None = None) -> Deck:
+        """The model as a prony deck on its knots, in SI, by
+        `conversion.prony.prony_deck`, the header the deck's with the
+        model's name and the names of its layers and interfaces as they
+        now are; with `columns`, those fields as `Tabulated.to_deck`
+        samples them."""
+        if columns is not None:
+            return super().to_deck(columns=columns)
+        from .conversion.prony import prony_deck
+        return _sampled_header(self, prony_deck(self, knots=self.knots))
+
+
+class BurgersDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
+    """The model of a burgers deck: `r rho vpv vsv vph vsh eta viscosity
+    kelvin_viscosity kelvin_modulus_fraction` in SI under a title and the
+    line naming the columns, NaN where a layer lacks a field.
+
+    The columns are interpolated layer by layer by `kind`, and by the
+    kind `kinds` gives a column (see `planetmodel.deck.KINDS` and
+    `LOG_KINDS`); by default the two viscosities are joined in their
+    logarithm by straight lines and the Kelvin modulus fraction by
+    straight lines, `BURGERS_KINDS`.  The elastic values are the
+    unrelaxed moduli.  A layer holding a viscosity alone is a Maxwell
+    body and holds it, as a `MaxwellDeckModel`'s layer does; a layer
+    holding the Kelvin element too is a Burgers body and holds its two
+    Prony branches (`conversion.prony.burgers_branches`), fields of its
+    elastic (Voigt) shear modulus and the three interpolated columns,
+    which `frozen` relaxes, as `with_burgers` makes them; an elastic
+    layer holds none.  A deck given rather than read is held to the
+    format as one written would be.  Its header names the layers and
+    interfaces (`maxwell_names`) and the model; the deck is kept as
+    `deck`, its knots per layer as `knots`, its header as `header` and
+    its columns as `columns`, and `to_deck` writes the model back out as
+    a burgers deck on those knots (`conversion.prony.burgers_deck`, the
+    Kelvin element recovered from the branches).  The model is in SI, as
+    the deck is; `converted` gives it in other scales.
+    """
+
+    def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
+                 kinds: Mapping[str, str] = BURGERS_KINDS) -> None:
+        from .conversion.prony import burgers_branches
+        if isinstance(source, Deck):
+            deck = source
+            BURGERS.check_table(deck)
+        else:
+            deck = read_deck(source, BURGERS)
+        skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
+        for fields in layers:
+            if "kelvin_viscosity" in fields:
+                kelvin = {name: fields.pop(name) for name in
+                          ("kelvin_viscosity", "kelvin_modulus_fraction")}
+                fields.update(burgers_branches(kappa_mu(fields)[1],
+                                               fields.pop("viscosity"), **kelvin))
+        layer_names, interface_names = maxwell_names(deck)
+        geometry = Geometry(skeleton, layer_names=layer_names,
+                            interface_names=interface_names)
+        self.keep_deck(deck)
+        super().__init__(geometry, layers,
+                         name=str(deck.header.get("name", "")) or None)
+
+    def to_deck(self, *, columns: Sequence[str] | None = None) -> Deck:
+        """The model as a burgers deck on its knots, in SI, by
+        `conversion.prony.burgers_deck`, the header the deck's with the
+        model's name and the names of its layers and interfaces as they
+        now are; with `columns`, those fields as `Tabulated.to_deck`
+        samples them."""
+        if columns is not None:
+            return super().to_deck(columns=columns)
+        from .conversion.prony import burgers_deck
+        return _sampled_header(self, burgers_deck(self, knots=self.knots))

@@ -55,15 +55,33 @@ between its nodes (`linear`), read from the latest node not after the
 date (`previous`), or served at its stored nodes alone (`none`); an
 `interval` field from the interval holding the date, the last closed
 at its end; an `instant` field at its stored instants alone; a
-`static` field at any date.  Outside its span a field refuses the
-date, or holds its nearest value where the caller asks.  netCDF4 (the
-`netcdf` extra) is imported where a file is opened.
+`static` field at any date.  Outside its span a `linear` or `previous`
+`node` field and an `interval` field refuse the date, or hold their
+nearest value where the caller asks; a `none` `node` field and an
+`instant` field refuse any date that is not one of their stored times,
+held or not.  A date within a tolerance of a stored time is that time:
+`time_rtol` (`TIME_RTOL` by default, zero for exact matching) times the
+scale of the axis, the largest of its span (its last time less its
+first) and the magnitudes of its first and last times.  A date formed
+by arithmetic on times of that size is a rounding error relative to
+them from the time it stands for, however short the span; an axis of
+one time has the magnitude of that time as its scale, and an axis whose
+one time is zero a scale of zero, matching exactly.  So a date a
+rounding error from a node reads that node alone under every rule
+(`none` and `instant` serve it, `previous` and `interval` read from
+it), and a date that close beyond an end of the span is that end; the
+nearest stored time within the tolerance is taken, the earlier on a
+tie.  That
+arithmetic is `time_rows`, and `time_axis`, `check_time_rule` and
+`leading_shape` check an axis, a support's rule and a support's shape:
+whatever else in the library holds slices in time states and reads
+them by these.  netCDF4 (the `netcdf` extra) is imported where a file
+is opened.
 """
 from __future__ import annotations
 
 import numbers
 import os
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from datetime import datetime, timezone
@@ -74,6 +92,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .files import written_whole
 from .lateral import METHODS as LATERAL_METHODS
 from .modelfile import (CONVENTIONS, FileVariable, grid_degrees, grid_of_group,
                         netcdf_module, put_variable, variable_attributes,
@@ -85,9 +104,11 @@ from .units import BASE, TIME, Dimensions, Scales, scaled_unit
 if TYPE_CHECKING:
     from .gridded import GriddedFunction
 
-__all__ = ["SCHEMA", "TIME_SUPPORTS", "TIME_METHODS", "SurfaceVariable",
-           "SurfaceFile", "SurfaceHistory", "write_surface",
-           "read_surface_file", "read_surface", "validate_structure"]
+__all__ = ["SCHEMA", "TIME_SUPPORTS", "TIME_METHODS", "EXTRAPOLATIONS", "TIME_RTOL",
+           "TimeRows", "SurfaceVariable", "SurfaceFile", "SurfaceHistory",
+           "write_surface", "read_surface_file", "read_surface",
+           "validate_structure", "time_axis", "check_time_rule",
+           "leading_shape", "time_rows"]
 
 #: The schema string every reader checks; bumped only for an incompatible change.
 SCHEMA = "planetmodel.surface/1"
@@ -164,8 +185,9 @@ def _real_values(values: ArrayLike, shape: tuple[int, ...], name: str,
                          ) from None
 
 
-def _axis(values: ArrayLike | None, name: str) -> np.ndarray | None:
-    """A time axis: one dimensional, finite and strictly increasing."""
+def time_axis(values: ArrayLike | None, name: str) -> np.ndarray | None:
+    """A time axis checked: None where none is given, otherwise one
+    dimensional, finite and strictly increasing, as float64."""
     if values is None:
         return None
     v = np.asarray(values, dtype=float)
@@ -176,6 +198,21 @@ def _axis(values: ArrayLike | None, name: str) -> np.ndarray | None:
     return v
 
 
+def check_time_rule(support: str, rule: str, *, name: str) -> None:
+    """Refuse, naming the field `name`, a support not among
+    `TIME_SUPPORTS`, a rule not among `TIME_METHODS`, and any rule but
+    `none` for a support other than `node`."""
+    if support not in TIME_SUPPORTS:
+        raise ValueError(f"{name!r}: time_support {support!r} is not one "
+                         f"of {TIME_SUPPORTS}")
+    if rule not in TIME_METHODS:
+        raise ValueError(f"{name!r}: time_interpolation {rule!r} is not one of "
+                         f"{TIME_METHODS}")
+    if support != "node" and rule != "none":
+        raise ValueError(f"{name!r}: a {support!r} field is not sampled "
+                         "between times; its time_interpolation is 'none'")
+
+
 def _checked(name: str, field: SurfaceVariable) -> None:
     """The per-field statements `write_surface` refuses early."""
     if not isinstance(name, str) or not name:
@@ -184,16 +221,7 @@ def _checked(name: str, field: SurfaceVariable) -> None:
         raise ValueError(f"{name!r} is a name the surface file keeps for itself")
     if not isinstance(field, SurfaceVariable):
         raise TypeError(f"{name!r} is not a SurfaceVariable")
-    if field.support not in TIME_SUPPORTS:
-        raise ValueError(f"{name!r}: time_support {field.support!r} is not one "
-                         f"of {TIME_SUPPORTS}")
-    if field.time_interpolation not in TIME_METHODS:
-        raise ValueError(f"{name!r}: time_interpolation "
-                         f"{field.time_interpolation!r} is not one of "
-                         f"{TIME_METHODS}")
-    if field.support != "node" and field.time_interpolation != "none":
-        raise ValueError(f"{name!r}: a {field.support!r} field is not sampled "
-                         "between times; its time_interpolation is 'none'")
+    check_time_rule(field.support, field.time_interpolation, name=name)
     if field.lateral_interpolation not in LATERAL_METHODS:
         raise ValueError(f"{name!r}: lateral_interpolation "
                          f"{field.lateral_interpolation!r} is not one of "
@@ -203,9 +231,11 @@ def _checked(name: str, field: SurfaceVariable) -> None:
         raise TypeError(f"{name!r}: dimensions are a units.Dimensions")
 
 
-def _leading_shape(support: str, time: np.ndarray | None,
-                   instant: np.ndarray | None, name: str) -> tuple[int, ...]:
-    """The leading shape a support's values carry, its axis required."""
+def leading_shape(support: str, *, time: np.ndarray | None,
+                  instant: np.ndarray | None, name: str) -> tuple[int, ...]:
+    """The leading shape a support's values carry, its axis required: ()
+    for `static`, (ntime,) for `node`, one fewer for `interval`,
+    (ninstant,) for `instant`; the field `name` is named in a refusal."""
     if support == "static":
         return ()
     if support in ("node", "interval"):
@@ -233,7 +263,8 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     are the axes of the module docstring, given where a field needs
     one; `radius` is the surface's radius and every number is in
     `scales`' units; `meta` becomes `meta_<key>` attributes.  The file
-    is written whole or not at all.
+    is written whole or not at all, with the permissions a plain
+    `open(path, "w")` would give it (`files.written_whole`).
     """
     nc = netcdf_module()
     if not isinstance(grid, AngularGrid):
@@ -244,7 +275,7 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
         raise TypeError(f"expected Scales, got {type(scales).__name__}")
     if isinstance(fields, str) or not isinstance(fields, Mapping) or not fields:
         raise TypeError("fields maps names to SurfaceVariables, at least one")
-    t, s = _axis(time, "time"), _axis(instant, "instant")
+    t, s = time_axis(time, "time"), time_axis(instant, "instant")
     if radius is not None and not (isinstance(radius, numbers.Real)
                                    and np.isfinite(radius) and radius > 0.0):
         raise ValueError(f"radius must be positive and finite, got {radius!r}")
@@ -257,7 +288,7 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     prepared: dict[str, tuple[SurfaceVariable, np.ndarray, np.ndarray | None]] = {}
     for name, field in fields.items():
         _checked(name, field)
-        leading = _leading_shape(field.support, t, s, name)
+        leading = leading_shape(field.support, time=t, instant=s, name=name)
         values = _real_values(field.values, leading + (grid.ntheta, grid.nphi),
                               name, "its values")
         poles = None
@@ -270,16 +301,10 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     needs_interval = any(f.support == "interval" for f, _, _ in prepared.values())
     needs_pole = any(p is not None for _, _, p in prepared.values())
     path = Path(path)
-    fd, partial = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent or None)
-    os.close(fd)
-    try:
-        _write_file(nc, Path(partial), grid, prepared, source, t, s,
+    with written_whole(path) as partial:
+        _write_file(nc, partial, grid, prepared, source, t, s,
                     needs_interval, needs_pole, radius, scales, title, meta,
                     tuple(citation))
-        os.replace(partial, path)
-    finally:
-        if os.path.exists(partial):
-            os.remove(partial)
     return path
 
 
@@ -484,8 +509,110 @@ def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
 
 # -- the file as a function of time -----------------------------------------------
 
-#: What a field does with a date outside its span.
-_EXTRAPOLATIONS = ("refuse", "hold")
+#: What a field read between nodes does with a date outside its span: refuse
+#: it, or hold the nearest value; a field served at its stored times alone
+#: refuses any other date either way.
+EXTRAPOLATIONS = ("refuse", "hold")
+
+#: The tolerance of a date on a stored time by default, relative to the
+#: scale of the axis (module docstring).
+TIME_RTOL = 1e-12
+
+#: The leading rows a date reads and their weights, ((k0, w0), (k1, w1)):
+#: the value at the date is w0 times row k0 plus w1 times row k1.
+type TimeRows = tuple[tuple[int, float], tuple[int, float]]
+
+
+def _stored_time_at(axis: np.ndarray, date: float, tolerance: float) -> int | None:
+    """The index of the stored time nearest `date` within `tolerance` of it,
+    the earlier on a tie; None where none is that close."""
+    after = int(np.searchsorted(axis, date, side="right"))
+    best, least = None, tolerance
+    for k in (after - 1, after):
+        if not 0 <= k < axis.size:
+            continue
+        gap = abs(float(axis[k]) - date)
+        if gap <= least and not (best is not None and gap == least):
+            best, least = k, gap
+    return best
+
+
+def _time_tolerance(axis: np.ndarray, rtol: float) -> float:
+    """A date's tolerance on an axis: `rtol` times its scale, the largest
+    of its span and the magnitudes of its first and last times."""
+    first, last = float(axis[0]), float(axis[-1])
+    return rtol * max(last - first, abs(first), abs(last))
+
+
+def time_rows(support: str, rule: str, date: float | None, *,
+              time: np.ndarray | None = None, instant: np.ndarray | None = None,
+              extrapolation: str = "refuse", name: str = "the field",
+              time_rtol: float = TIME_RTOL) -> TimeRows | None:
+    """The leading rows a date reads, with their weights, by a support's
+    time rule (module docstring); None for a `static` field, whose values
+    are the answer whole.
+
+    `time` is the axis of `node` and `interval` values, `instant` that of
+    `instant` values; `extrapolation` is one of `EXTRAPOLATIONS`, `hold`
+    clamping a date outside the span of a `linear`, `previous` or
+    `interval` field to its nearer end (a `none` or `instant` field
+    refuses a date not stored, held or not); `time_rtol` is the tolerance
+    of a date on a stored time, relative to the scale of the axis (module
+    docstring), zero matching exactly.  A date on a stored node, or within the tolerance
+    of one, reads that node alone, its weight one and the other row's
+    zero and the same row, so that a NaN beside it stays out.  The field
+    `name` is named in a refusal.
+    """
+    if extrapolation not in EXTRAPOLATIONS:
+        raise ValueError(f"extrapolation is one of {EXTRAPOLATIONS}, "
+                         f"got {extrapolation!r}")
+    if isinstance(time_rtol, bool) or not isinstance(time_rtol, numbers.Real) \
+            or not (np.isfinite(time_rtol) and time_rtol >= 0.0):
+        raise ValueError(f"time_rtol must be a finite number, not negative, got "
+                         f"{time_rtol!r}")
+    if support == "static":
+        return None
+    if date is None:
+        raise ValueError(f"{name!r} is a {support} field and needs a date")
+    date = float(date)
+    hold = extrapolation == "hold"
+    if support == "instant":
+        k = _stored_time_at(instant, date, _time_tolerance(instant, time_rtol))
+        if k is None:
+            raise ValueError(f"{name!r} is held at its stored instants "
+                             f"alone, and {date!r} is not one")
+        return ((k, 1.0), (k, 0.0))
+    axis = time
+    if support == "node" and rule == "none":
+        k = _stored_time_at(axis, date, _time_tolerance(axis, time_rtol))
+        if k is None:
+            raise ValueError(f"{name!r} states no time rule and is held "
+                             f"at its stored nodes alone; {date!r} is not one")
+        return ((k, 1.0), (k, 0.0))
+    k = _stored_time_at(axis, date, _time_tolerance(axis, time_rtol))
+    if k is not None:
+        date = float(axis[k])
+    if date < axis[0] or date > axis[-1]:
+        if not hold:
+            raise ValueError(f"{date!r} lies outside {name!r}'s span "
+                             f"[{axis[0]!r}, {axis[-1]!r}]")
+        date = min(max(date, float(axis[0])), float(axis[-1]))
+    if support == "interval":
+        k = min(int(np.searchsorted(axis, date, side="right")) - 1,
+                axis.size - 2)
+        return ((k, 1.0), (k, 0.0))
+    if rule == "previous":
+        k = int(np.searchsorted(axis, date, side="right")) - 1
+        return ((k, 1.0), (k, 0.0))
+    if axis.size == 1:  # a single node: the span is that date alone
+        return ((0, 1.0), (0, 0.0))
+    k = min(int(np.searchsorted(axis, date, side="right")) - 1, axis.size - 2)
+    w = (date - float(axis[k])) / (float(axis[k + 1]) - float(axis[k]))
+    if w == 0.0:  # a stored node: its own values, a NaN beside it kept out
+        return ((k, 1.0), (k, 0.0))
+    if w == 1.0:
+        return ((k + 1, 1.0), (k + 1, 0.0))
+    return ((k, 1.0 - w), (k + 1, w))
 
 
 class SurfaceHistory:
@@ -532,13 +659,15 @@ class SurfaceHistory:
         return Dimensions(**{b: int(e) for b, e in zip(BASE, np.atleast_1d(exps))})
 
     def values(self, name: str, *, date: float | None = None,
-               extrapolation: str = "refuse") -> np.ndarray:
+               extrapolation: str = "refuse",
+               time_rtol: float = TIME_RTOL) -> np.ndarray:
         """A field's values on the grid at `date`, (ntheta, nphi), by its
         own time rule (module docstring); NaN stays where the field does
         not cover a point.  `extrapolation` is `refuse` (the default) or
         `hold`, which serves the nearest value of a `linear`, `previous`
-        or `interval` field outside its span."""
-        rows = self._rows(name, date, extrapolation)
+        or `interval` field outside its span; `time_rtol` is the date's
+        tolerance on a stored time (`time_rows`)."""
+        rows = self._rows(name, date, extrapolation, time_rtol)
         values = self._variable(name).values
         if rows is None:
             return values.copy()
@@ -546,26 +675,28 @@ class SurfaceHistory:
         return w0 * values[k0] + w1 * values[k1]
 
     def function(self, name: str, *, date: float | None = None,
-                 extrapolation: str = "refuse",
-                 rtol: float = 1e-9) -> GriddedFunction:
+                 extrapolation: str = "refuse", rtol: float = 1e-9,
+                 time_rtol: float = TIME_RTOL) -> GriddedFunction:
         """The field at `date` as a `GriddedFunction` by its stated lateral
         rule (`harmonic` read as `cubic`, this library evaluating no
         harmonic rule), its stored polar values carried along where the
-        file holds them; a field with NaN cannot be one."""
+        file holds them; a field with NaN cannot be one.  `rtol` is the
+        function's, `time_rtol` the date's (`time_rows`)."""
         from .gridded import GriddedFunction
 
         lateral = str(self._variable(name).attributes["lateral_interpolation"])
         poles = None
         held = self._file.variables.get(f"{name}_poles")
         if held is not None:
-            rows = self._rows(name, date, extrapolation)
+            rows = self._rows(name, date, extrapolation, time_rtol)
             if rows is None:
                 poles = np.asarray(held.values, dtype=float)
             else:
                 (k0, w0), (k1, w1) = rows
                 poles = w0 * held.values[k0] + w1 * held.values[k1]
         return GriddedFunction(self.grid, self.values(name, date=date,
-                                                      extrapolation=extrapolation),
+                                                      extrapolation=extrapolation,
+                                                      time_rtol=time_rtol),
                                lateral="cubic" if lateral == "harmonic" else lateral,
                                poles=poles, rtol=rtol)
 
@@ -575,54 +706,16 @@ class SurfaceHistory:
             raise KeyError(f"the file holds no field {name!r}")
         return self._file.variables[name]
 
-    def _rows(self, name: str, date: float | None, extrapolation: str
-              ) -> tuple[tuple[int, float], tuple[int, float]] | None:
-        """The leading rows a date reads, with their weights; None for a
-        static field, whose values are the answer whole."""
-        if extrapolation not in _EXTRAPOLATIONS:
-            raise ValueError(f"extrapolation is one of {_EXTRAPOLATIONS}, "
-                             f"got {extrapolation!r}")
-        support = self.support(name)
-        if support == "static":
-            return None
-        if date is None:
-            raise ValueError(f"{name!r} is a {support} field and needs a date")
-        date = float(date)
-        hold = extrapolation == "hold"
-        if support == "instant":
-            axis = self._file.instant
-            hits = np.flatnonzero(axis == date)
-            if hits.size == 0:
-                raise ValueError(f"{name!r} is held at its stored instants "
-                                 f"alone, and {date!r} is not one")
-            return ((int(hits[0]), 1.0), (int(hits[0]), 0.0))
-        axis = self._file.time
-        rule = str(self._variable(name).attributes["time_interpolation"])
-        if support == "node" and rule == "none":
-            hits = np.flatnonzero(axis == date)
-            if hits.size == 0:
-                raise ValueError(f"{name!r} states no time rule and is held "
-                                 f"at its stored nodes alone; {date!r} is not one")
-            return ((int(hits[0]), 1.0), (int(hits[0]), 0.0))
-        if date < axis[0] or date > axis[-1]:
-            if not hold:
-                raise ValueError(f"{date!r} lies outside {name!r}'s span "
-                                 f"[{axis[0]!r}, {axis[-1]!r}]")
-            date = min(max(date, float(axis[0])), float(axis[-1]))
-        if support == "interval":
-            k = min(int(np.searchsorted(axis, date, side="right")) - 1,
-                    axis.size - 2)
-            return ((k, 1.0), (k, 0.0))
-        if rule == "previous":
-            k = int(np.searchsorted(axis, date, side="right")) - 1
-            return ((k, 1.0), (k, 0.0))
-        k = min(int(np.searchsorted(axis, date, side="right")) - 1, axis.size - 2)
-        w = (date - float(axis[k])) / (float(axis[k + 1]) - float(axis[k]))
-        if w == 0.0:  # a stored node: its own values, a NaN beside it kept out
-            return ((k, 1.0), (k, 0.0))
-        if w == 1.0:
-            return ((k + 1, 1.0), (k + 1, 0.0))
-        return ((k, 1.0 - w), (k + 1, w))
+    def _rows(self, name: str, date: float | None, extrapolation: str,
+              time_rtol: float) -> TimeRows | None:
+        """The leading rows a date reads, with their weights (`time_rows`);
+        None for a static field, whose values are the answer whole."""
+        variable = self._variable(name)
+        return time_rows(self.support(name),
+                         str(variable.attributes["time_interpolation"]), date,
+                         time=self._file.time, instant=self._file.instant,
+                         extrapolation=extrapolation, name=name,
+                         time_rtol=time_rtol)
 
 
 def read_surface(path: str | os.PathLike[str]) -> SurfaceHistory:

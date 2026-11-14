@@ -38,6 +38,7 @@
 #include "planetmodel/grid.hpp"
 #include "planetmodel/modelfile.hpp"
 #include "planetmodel/netcdf.hpp"
+#include "planetmodel/time.hpp"
 #include "planetmodel/units.hpp"
 
 namespace planetmodel {
@@ -45,15 +46,6 @@ namespace planetmodel {
 /** @brief The schema every reader checks; bumped only for an incompatible
  * change. */
 inline constexpr std::string_view SURFACE_SCHEMA = "planetmodel.surface/1";
-
-/** @brief How a field sits in time; its dimensions follow (file comment). */
-inline constexpr auto TIME_SUPPORTS =
-    std::array<std::string_view, 4>{"static", "node", "interval", "instant"};
-
-/** @brief The time rules a `node` field may state; every other support
- * states `none`. */
-inline constexpr auto TIME_METHODS =
-    std::array<std::string_view, 3>{"linear", "previous", "none"};
 
 /** @brief The lateral rules a surface file may state: the model file's,
  * with `harmonic`, which this library reads as data and does not
@@ -303,7 +295,9 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
 }
 
 /**
- * @brief Write a surface file, whole or not at all.
+ * @brief Write a surface file, whole or not at all, with the permissions a
+ * plain open for writing would give it: an existing file's, kept, or the
+ * umask's.
  * @param path The file to write; one there is replaced.
  * @param file The surface file, built or read; an empty `created` is
  *        stamped with the writing time in UTC, and each field's `units`
@@ -414,23 +408,13 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
       if (!field.attributes.contains("long_name")) put(root, var, "long_name", name);
     }
     out.Close();
-    auto error = std::error_code{};
-    std::filesystem::rename(partial, path, error);
-    if (error) {
-      detail::Fail(source, "", std::format("cannot be put in place: {}", error.message()));
-    }
+    detail::PutInPlace(partial, path, source);
   } catch (...) {
     auto error = std::error_code{};
     std::filesystem::remove(partial, error);
     throw;
   }
 }
-
-/** @brief What a field does with a date outside its span. */
-enum class Extrapolation {
-  Refuse, /**< The date is refused. */
-  Hold    /**< The nearest value of the span is served. */
-};
 
 /**
  * @brief A surface file as a function of time: each field's values at a
@@ -441,9 +425,13 @@ enum class Extrapolation {
  * stored nodes alone (`none`); an `interval` field from the interval
  * holding the date, the last closed at its end; an `instant` field at
  * its stored instants alone; a `static` field at any date.  Outside its
- * span a field refuses the date, or holds its nearest value under
- * `Extrapolation::Hold`.  The arithmetic is the Python
- * `SurfaceHistory`'s, so the two read a file identically.
+ * span a `linear` or `previous` `node` field and an `interval` field
+ * refuse the date, or hold their nearest value under
+ * `Extrapolation::Hold`; a `none` `node` field and an `instant` field
+ * refuse any date that is not one of their stored times, held or not.  A
+ * date within the tolerance of a stored time is that time.  The
+ * arithmetic is `TimeRowsAt`, the Python `SurfaceHistory`'s, so the two
+ * read a file identically.
  */
 class SurfaceHistory {
  public:
@@ -487,15 +475,18 @@ class SurfaceHistory {
    * @param extrapolation What to do outside the field's span: refuse
    *        (the default), or hold its nearest value (`linear`,
    *        `previous` and `interval` fields).
+   * @param time_rtol The date's tolerance on a stored time and on an end
+   *        of the span, relative to the scale of the axis (`TimeRowsAt`);
+   *        zero matches exactly.
    * @throws planetmodel::Error where the file holds no such field, the
    *         date is refused, or a dated field is given no date.
    */
-  [[nodiscard]] std::vector<double> Values(
-      std::string_view name, std::optional<double> date = {},
-      Extrapolation extrapolation = Extrapolation::Refuse) const {
+  [[nodiscard]] std::vector<double> Values(std::string_view name, std::optional<double> date = {},
+                                           Extrapolation extrapolation = Extrapolation::Refuse,
+                                           double time_rtol = TIME_RTOL) const {
     const auto& var = VariableOf(name);
     const auto size = file_.grid->NTheta() * file_.grid->NPhi();
-    const auto rows = Rows(name, var, date, extrapolation);
+    const auto rows = Rows(name, var, date, extrapolation, time_rtol);
     if (!rows) return var.values;
     const auto [first, second] = *rows;
     const auto [k0, w0] = first;
@@ -508,8 +499,6 @@ class SurfaceHistory {
   }
 
  private:
-  using Row = std::pair<std::size_t, double>;
-
   [[nodiscard]] const FileVariable& VariableOf(std::string_view name) const {
     const auto it = file_.variables.find(std::string{name});
     if (name.ends_with("_poles") || it == file_.variables.end()) {
@@ -519,54 +508,13 @@ class SurfaceHistory {
   }
 
   /// The leading rows a date reads, with their weights; empty for a
-  /// static field, whose values are the answer whole.  The selection and
-  /// the weights are the Python `SurfaceHistory._rows`'s.
-  [[nodiscard]] std::optional<std::pair<Row, Row>> Rows(
-      std::string_view name, const FileVariable& var, std::optional<double> date,
-      Extrapolation extrapolation) const {
-    auto fail = [&name](std::string_view message) {
-      detail::Fail("surface history", name, message);
-    };
-    const auto support = *detail::TextOf(var.attributes, "time_support");
-    if (support == "static") return std::nullopt;
-    if (!date) fail(std::format("is a {} field and needs a date", support));
-    auto exact = [&fail](const std::vector<double>& axis, double at,
-                         std::string_view what) {
-      const auto it = std::ranges::find(axis, at);
-      if (it == axis.end()) fail(what);
-      const auto k = static_cast<std::size_t>(it - axis.begin());
-      return std::pair{Row{k, 1.0}, Row{k, 0.0}};
-    };
-    if (support == "instant") {
-      return exact(*file_.instant, *date,
-                   "is held at its stored instants alone, and the date is not one");
-    }
-    const auto& axis = *file_.time;
-    const auto rule = *detail::TextOf(var.attributes, "time_interpolation");
-    if (support == "node" && rule == "none") {
-      return exact(axis, *date,
-                   "states no time rule and is held at its stored nodes alone");
-    }
-    auto at = *date;
-    if (at < axis.front() || at > axis.back()) {
-      if (extrapolation != Extrapolation::Hold) {
-        fail(std::format("is not sampled at {}, outside its span [{}, {}]", at,
-                         axis.front(), axis.back()));
-      }
-      at = std::clamp(at, axis.front(), axis.back());
-    }
-    const auto after =
-        static_cast<std::size_t>(std::ranges::upper_bound(axis, at) - axis.begin());
-    if (support == "interval" || rule == "previous") {
-      const auto last = support == "interval" ? axis.size() - 2 : axis.size() - 1;
-      return std::pair{Row{std::min(after - 1, last), 1.0},
-                       Row{std::min(after - 1, last), 0.0}};
-    }
-    const auto k = std::min(after - 1, axis.size() - 2);
-    const auto w = (at - axis[k]) / (axis[k + 1] - axis[k]);
-    if (w == 0.0) return std::pair{Row{k, 1.0}, Row{k, 0.0}};
-    if (w == 1.0) return std::pair{Row{k + 1, 1.0}, Row{k + 1, 0.0}};
-    return std::pair{Row{k, 1.0 - w}, Row{k + 1, w}};
+  /// static field, whose values are the answer whole.
+  [[nodiscard]] std::optional<TimeRows> Rows(std::string_view name, const FileVariable& var,
+                                             std::optional<double> date,
+                                             Extrapolation extrapolation, double time_rtol) const {
+    return TimeRowsAt(*detail::TextOf(var.attributes, "time_support"),
+                      *detail::TextOf(var.attributes, "time_interpolation"), date, file_.time,
+                      file_.instant, extrapolation, "surface history", name, time_rtol);
   }
 
   SurfaceFile file_;

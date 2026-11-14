@@ -3,17 +3,31 @@
 A layer function is what a field stores per component: a callable of the
 radius on one interval that also differentiates and integrates itself,
 re-states itself on another interval, and rescales its coordinate and
-value.  Two kinds are shipped.  `PolynomialLayer` wraps a scipy `PPoly`
+value.  Three kinds are shipped.  `PolynomialLayer` wraps a scipy `PPoly`
 and does everything on the coefficients: sums, products and powers of
 polynomials are polynomials, a derivative or an antiderivative is exact,
 and the rescaling f(r) -> v f(r / k) is one multiply per coefficient
-(breakpoints k b, coefficients v c / k^p).  `NumericLayer` wraps any
-callable and supplies the rest honestly: a central difference with a
-step relative to the interval's width, and adaptive quadrature.
+(breakpoints k b, coefficients v c / k^p).  `ExponentialLayer` is
+q(r) exp(p(r)) for piecewise polynomials q and p, the form of a deck's
+column joined in its logarithm: its derivative (q' + q p') exp(p) is of
+the same form, so every derivative is exact, as are products with
+polynomials, numbers and its own kind, powers and the rescaling (q by
+(k, v), p by (k, 1)); its integral is exact on a piece where p is a line
+and q a constant, and adaptive quadrature elsewhere.  `NumericLayer`
+wraps any callable and supplies the rest honestly: a central difference
+with a step relative to the interval's width, and adaptive quadrature.
+
+A layer function whose natural logarithm is a piecewise polynomial says
+so: `logarithm()` gives that logarithm as a `PolynomialLayer`, and None
+where there is none.  An exponential layer has one where q is a positive
+constant on every piece (log q + p), a polynomial layer where it is a
+positive constant on every piece; a model file holds such a function
+exactly by a radial rule in the logarithm (`modelfile.LOG_RULES`).
 
 Arithmetic between layer functions on the same interval follows the
-operands: polynomial with polynomial stays polynomial, anything with a
-numeric layer becomes a numeric closure.  Beyond its interval a
+operands: polynomial with polynomial stays polynomial, an exponential
+layer times a polynomial or an exponential layer stays exponential, and
+anything else becomes a numeric closure.  Beyond its interval a
 polynomial continues as the same polynomial and a callable is called as
 given; `on_interval` is how that continuation is asked for on purpose,
 while the fields built on layer functions refuse radii outside their
@@ -31,10 +45,10 @@ from numpy.typing import ArrayLike
 from scipy.integrate import quad
 from scipy.interpolate import BSpline, PPoly
 
-__all__ = ["LayerFunction", "LayerFunctionLike", "PolynomialLayer", "NumericLayer",
-           "as_layer_function", "polynomial_layer", "constant_layer",
+__all__ = ["LayerFunction", "LayerFunctionLike", "PolynomialLayer", "ExponentialLayer",
+           "NumericLayer", "as_layer_function", "polynomial_layer", "constant_layer",
            "polynomial_fit", "same_interval", "as_interval", "as_values",
-           "as_scalar"]
+           "as_scalar", "PolynomialLike"]
 
 #: Two intervals are the same when their ends agree to this fraction of
 #: the wider one's width.
@@ -196,6 +210,15 @@ class PolynomialLayer:
         """Whether every coefficient is exactly zero."""
         return not np.any(self._p.c)
 
+    def logarithm(self) -> "PolynomialLayer | None":
+        """The natural logarithm, a polynomial layer of the same pieces,
+        where the function is a real positive constant on every piece; None
+        otherwise, the logarithm of a polynomial that varies being none."""
+        c = self._p.c
+        if np.iscomplexobj(c) or np.any(c[:-1]) or not np.all(c[-1] > 0.0):
+            return None
+        return PolynomialLayer(self._interval, PPoly(np.log(c[-1:]), self._p.x))
+
     # -- the exact algebra --------------------------------------------------
 
     def _aligned(self, other: "PolynomialLayer"
@@ -317,6 +340,220 @@ def _mul_c(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     for i, col in enumerate(cols):
         out[deg - col.size:, i] = col
     return out
+
+
+#: What an `ExponentialLayer` takes for its exponent or factor: a
+#: polynomial layer, or a scipy `PPoly` or `BSpline` stated on its interval.
+type PolynomialLike = PolynomialLayer | PPoly | BSpline
+
+
+def _polynomial_on(interval: tuple[float, float],
+                   x: PolynomialLike | float | complex) -> PolynomialLayer:
+    """`x` as a polynomial layer on `interval`: a polynomial restated on
+    it, a `PPoly` or `BSpline` wrapped, a number a constant."""
+    if isinstance(x, PolynomialLayer):
+        return PolynomialLayer(interval, x.ppoly)
+    if isinstance(x, (PPoly, BSpline)):
+        return PolynomialLayer(interval, x)
+    if _is_number(x):
+        return constant_layer(interval, as_scalar(x))
+    raise TypeError(f"expected a polynomial layer, a PPoly, a BSpline or a number, got "
+                    f"{type(x).__name__}")
+
+
+def _piece(p: PPoly, x: float) -> int:
+    """The index of the piece of `p` holding `x`, the end pieces continued."""
+    return int(np.clip(np.searchsorted(p.x, x, side="right") - 1, 0, p.x.size - 2))
+
+
+class ExponentialLayer:
+    """q(r) exp(p(r)) on one interval, q and p piecewise polynomials.
+
+    `exponent` is p, real, and `factor` q, one by default; each is
+    restated on the interval, its end pieces continuing beyond its
+    breakpoints.  A deck's column joined in its logarithm is one: p the
+    kind through log(y_i / y_0) and q the constant y_0
+    (`deck.LOG_KINDS`).  The calculus and the algebra are those of the
+    module docstring.
+    """
+
+    def __init__(self, interval: tuple[float, float], exponent: PolynomialLike, *,
+                 factor: PolynomialLike | float | complex = 1.0) -> None:
+        self._interval = as_interval(interval)
+        if _is_number(exponent):
+            raise TypeError("the exponent of an exponential layer is a polynomial; a "
+                            "constant one is a factor")
+        self._p = _polynomial_on(self._interval, exponent)
+        self._q = _polynomial_on(self._interval, factor)
+        if np.iscomplexobj(self._p.ppoly.c):
+            raise ValueError("the exponent of an exponential layer is real")
+
+    @property
+    def interval(self) -> tuple[float, float]:
+        """The (lo, hi) span of radius the function is stated on."""
+        return self._interval
+
+    @property
+    def exponent(self) -> PolynomialLayer:
+        """p, the polynomial in the exponential."""
+        return self._p
+
+    @property
+    def factor(self) -> PolynomialLayer:
+        """q, the polynomial multiplying the exponential."""
+        return self._q
+
+    def logarithm(self) -> PolynomialLayer | None:
+        """The natural logarithm, log q + p, a polynomial layer on the
+        union of their breakpoints, where q is a real positive constant on
+        every piece; None otherwise."""
+        log_q = self._q.logarithm()
+        return None if log_q is None else self._p + log_q
+
+    def __call__(self, r: ArrayLike) -> np.ndarray:
+        """q(r) exp(p(r)) at `r`, of its shape."""
+        r = np.asarray(r, dtype=float)
+        return as_values(self._q(r) * np.exp(self._p(r)))
+
+    def derivative(self, *, nu: int = 1) -> "ExponentialLayer":
+        """The nu-th derivative, exact: each one (q' + q p') exp(p)."""
+        if nu < 0:
+            raise ValueError("nu must be non-negative")
+        if nu == 0:
+            return self
+        q, dp = self._q, self._p.derivative()
+        for _ in range(nu):
+            q = q.derivative() + q * dp
+        return ExponentialLayer(self._interval, self._p, factor=q)
+
+    def integrate(self, a: float, b: float) -> float | complex:
+        """The signed integral from a to b, piece by piece between the
+        breakpoints of p and q: exact where p is a line and q a constant,
+        q(u) exp(p(u)) h expm1(s) / s over a piece [u, u + h] on which p
+        rises by s; adaptive quadrature to a relative 1e-12 elsewhere."""
+        a, b = float(a), float(b)
+        lo, hi = min(a, b), max(a, b)
+        cuts = np.union1d(self._p.ppoly.x, self._q.ppoly.x)
+        edges = np.unique(np.concatenate([[lo, hi], cuts[(cuts > lo) & (cuts < hi)]]))
+        total: float | complex = 0.0
+        for u, v in zip(edges[:-1], edges[1:]):
+            total += self._integral_of_piece(float(u), float(v))
+        return as_scalar(total if b >= a else -total)
+
+    def _integral_of_piece(self, u: float, v: float) -> float | complex:
+        """The integral over [u, v], within one piece of p and of q."""
+        mid = 0.5 * (u + v)
+        p, q = self._p.ppoly, self._q.ppoly
+        cp, cq = p.c[:, _piece(p, mid)], q.c[:, _piece(q, mid)]
+        if not np.any(cp[:-2]) and not np.any(cq[:-1]):
+            s = float(cp[-2]) * (v - u) if cp.size > 1 else 0.0
+            ratio = float(np.expm1(s) / s) if s != 0.0 else 1.0
+            return as_scalar(self(np.array(u))) * (v - u) * ratio
+        probe = np.abs(self(np.linspace(u, v, 9)))
+        kw = {"limit": 200, "epsrel": 1e-12,
+              "epsabs": 1e-15 * float(np.max(probe)) * (v - u)}
+        if np.iscomplexobj(q.c):
+            re, _ = quad(lambda x: float(self(np.array(x)).real), u, v, **kw)
+            im, _ = quad(lambda x: float(self(np.array(x)).imag), u, v, **kw)
+            return complex(re, im)
+        val, _ = quad(lambda x: float(self(np.array(x))), u, v, **kw)
+        return float(val)
+
+    def on_interval(self, lo: float, hi: float) -> "ExponentialLayer":
+        """The same function on [lo, hi]: both polynomials continue."""
+        return ExponentialLayer((lo, hi), self._p, factor=self._q)
+
+    def rescaled(self, *, k: float, v: float) -> "ExponentialLayer":
+        """v f(r / k) on the interval scaled by k: q rescaled by (k, v) and
+        p by (k, 1)."""
+        k, v = float(k), float(v)
+        if k <= 0.0:
+            raise ValueError(f"the coordinate factor must be positive, got {k}")
+        lo, hi = self._interval
+        return ExponentialLayer((k * lo, k * hi), self._p.rescaled(k=k, v=1.0),
+                                factor=self._q.rescaled(k=k, v=v))
+
+    # -- the algebra --------------------------------------------------------
+
+    def _numeric(self, other: object, op: Callable[[np.ndarray, object], np.ndarray]
+                 ) -> "NumericLayer | NotImplementedType":
+        """op(self, other) as a numeric closure, other a number or a layer
+        function on the same interval."""
+        if _is_number(other):
+            c = as_scalar(other)
+            return NumericLayer(self._interval, lambda r: op(self(r), c))
+        if _is_layer_function(other):
+            interval = _require_same_interval(self, other)
+            return NumericLayer(interval, lambda r: op(self(r), as_values(other(r))))
+        return NotImplemented
+
+    def _inverse(self) -> "ExponentialLayer | None":
+        """1 / f as an exponential layer where q is a non-zero constant on
+        every piece, else None."""
+        c = self._q.ppoly.c
+        if np.any(c[:-1]) or not np.all(c[-1] != 0.0):
+            return None
+        inverse = PPoly((1.0 / c[-1])[None, :], self._q.ppoly.x)
+        return ExponentialLayer(self._interval, -self._p, factor=inverse)
+
+    def __add__(self, other: LayerFunction | float | complex) -> "NumericLayer":
+        return self._numeric(other, np.add)
+
+    __radd__ = __add__
+
+    def __sub__(self, other: LayerFunction | float | complex) -> "NumericLayer":
+        return self._numeric(other, np.subtract)
+
+    def __rsub__(self, other: LayerFunction | float | complex) -> "NumericLayer":
+        return (-self) + other
+
+    def __neg__(self) -> "ExponentialLayer":
+        return ExponentialLayer(self._interval, self._p, factor=-self._q)
+
+    def __mul__(self, other: LayerFunction | float | complex
+                ) -> "ExponentialLayer | NumericLayer":
+        if isinstance(other, ExponentialLayer):
+            interval = _require_same_interval(self, other)
+            return ExponentialLayer(interval, self._p + other._p,
+                                    factor=self._q * other._q)
+        if isinstance(other, PolynomialLayer):
+            interval = _require_same_interval(self, other)
+            return ExponentialLayer(interval, self._p, factor=self._q * other)
+        if _is_number(other):
+            return ExponentialLayer(self._interval, self._p,
+                                    factor=self._q * as_scalar(other))
+        return self._numeric(other, np.multiply)
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, other: LayerFunction | float | complex
+                    ) -> "ExponentialLayer | NumericLayer":
+        if _is_number(other):
+            return self * (1.0 / as_scalar(other))
+        inverse = other._inverse() if isinstance(other, ExponentialLayer) else None
+        if inverse is not None:
+            return self * inverse
+        return self._numeric(other, np.divide)
+
+    def __rtruediv__(self, other: float | complex) -> "ExponentialLayer | NumericLayer":
+        if not _is_number(other):
+            return NotImplemented
+        inverse = self._inverse()
+        if inverse is not None:
+            return inverse * as_scalar(other)
+        c = as_scalar(other)
+        return NumericLayer(self._interval, lambda r: c / self(r))
+
+    def __pow__(self, n: int) -> "ExponentialLayer":
+        if not isinstance(n, (int, np.integer)) or n < 0:
+            raise ValueError("a layer function is raised to a non-negative integer")
+        return ExponentialLayer(self._interval, self._p * int(n),
+                                factor=self._q ** int(n))
+
+    def __repr__(self) -> str:
+        lo, hi = self._interval
+        return (f"ExponentialLayer(exponent of degree {self._p.degree}, factor of "
+                f"degree {self._q.degree} on [{lo:g}, {hi:g}])")
 
 
 def _stencil(offsets: np.ndarray, nu: int) -> np.ndarray:

@@ -18,6 +18,7 @@ from numpy.typing import ArrayLike
 if TYPE_CHECKING:
     from .datasets import Dataset, RegionalGrid, Strata, Surface
     from .displacement import RadialDisplacement
+    from .fault import Fault, Location, Patch
     from .fields import Field
     from .geometry import Geometry
     from .layerfunction import LayerFunction
@@ -36,7 +37,8 @@ __all__ = ["check_displacement", "check_mapping", "check_geometry",
            "check_refinement", "check_sample", "check_spectral_basis",
            "check_spherical_basis", "check_model_file", "check_dataset",
            "check_surface", "check_strata", "check_regional",
-           "check_surface_file"]
+           "check_surface_file", "check_patch", "check_fault_file",
+           "check_fault_mesh"]
 
 
 def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
@@ -302,7 +304,9 @@ def check_layer_function(fn: LayerFunction, *, n: int = 17,
     Checks finite float64 (or complex128) values of the argument's shape; `derivative`
     against a central difference; `integrate` against a fine
     trapezoid rule and its sign convention; `on_interval` agreeing on
-    the overlap; and `rescaled` against v f(r / k) and its round trip.
+    the overlap; `rescaled` against v f(r / k) and its round trip; and,
+    where the function offers `logarithm()` and it gives one, that it is a
+    piecewise polynomial whose exponential is the function.
     Every tolerance is relative to the value or the interval's width.
     """
     lo, hi = (float(x) for x in fn.interval)
@@ -355,6 +359,13 @@ def check_layer_function(fn: LayerFunction, *, n: int = 17,
     assert np.allclose(back(r), y, rtol=1e-12, atol=1e-12 * scale), (
         "rescaled does not round-trip")
 
+    log = getattr(fn, "logarithm", lambda: None)()
+    if log is not None:
+        assert getattr(log, "ppoly", None) is not None, (
+            "logarithm gives no piecewise polynomial")
+        assert np.allclose(np.exp(log(r)), y, rtol=1e-12, atol=0), (
+            "the exponential of the logarithm is not the function")
+
 
 def check_field(field: Field, *, rng: np.random.Generator | None = None,
                 n: int = 64) -> None:
@@ -368,7 +379,9 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     frames related by the rotation the character implies (a factor of
     R on every slot, expanded from Voigt where the field is Voigt);
     `evaluate_at` against `evaluate`; `on_interval` on the overlap;
-    and the `rescaled` round trip.
+    the `rescaled` round trip; and, where the field declares the pieces
+    of its logarithm (`log_radial_pieces`), that it is of rank 0 and
+    positive, the breakpoints spanning the interval in increasing order.
     """
     from .fields import stored_shape
     from .frames import cartesian_points, rotate_slots, spherical_frame
@@ -473,6 +486,17 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     back = g.rescaled(k=1.0 / k, v=1.0 / v)
     assert np.allclose(back.evaluate(r, theta, phi), values,
                        rtol=1e-10, atol=1e-10 * scale), "rescaled does not round-trip"
+
+    pieces = getattr(field, "log_radial_pieces", lambda: None)()
+    if pieces is not None:
+        breaks, degree = pieces
+        assert char.rank == 0, "a field with components declares a logarithm"
+        assert np.all(np.real(values) > 0.0) and not np.iscomplexobj(values), (
+            "a field declaring its logarithm's pieces is not positive")
+        assert breaks[0] == lo and breaks[-1] == hi and np.all(np.diff(breaks) > 0), (
+            "the logarithm's breakpoints do not span the interval increasing")
+        assert isinstance(degree, int) and degree >= 0, (
+            f"the logarithm's degree is {degree!r}")
 
 
 def check_refinement(refinement: Refinement, points: ArrayLike) -> None:
@@ -965,7 +989,9 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
                      rtol: float = 1e-12) -> None:
     """Hold a model file to the model it was written from.
 
-    Checks the structure (`validate_structure`); the skeleton, the layer
+    Checks the structure (`validate_structure`); the schema, the one of a
+    file stating a rule in the logarithm exactly where a variable states
+    one; the skeleton, the layer
     and interface names, the scales and the citation; that the file names
     its source and carries a parseable created stamp; that every variable is held on
     the layers its `layers` attribute names, NaN elsewhere, by fields of
@@ -986,12 +1012,17 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     largest value.  netCDF4 is imported here.
     """
     from .frames import cartesian_points, spherical_frame
-    from .modelfile import (read_model, read_model_file, read_surfaces,
-                            validate_structure)
+    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_WITH_LOG_RULES, read_model,
+                            read_model_file, read_surfaces, validate_structure)
 
     rng = np.random.default_rng(0) if rng is None else rng
     validate_structure(path)
     data = read_model_file(path)
+    logged = any(var.attributes.get("radial_interpolation") in LOG_RULES
+                 for part in data.parts for var in part.variables.values())
+    assert data.schema == (SCHEMA_WITH_LOG_RULES if logged else SCHEMA), (
+        f"the file's schema is {data.schema!r}, and "
+        f"{'a' if logged else 'no'} variable states a rule in the logarithm")
     assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
                        rtol=1e-15), "the file's skeleton is not the model's"
     assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
@@ -1446,3 +1477,532 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
             assert np.array_equal(data.variables[f"{name}_poles"].values, want,
                                   equal_nan=True), (
                 f"{name}: the file's polar values are not as given")
+
+
+def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
+                n: int = 32, rtol: float = 1e-6) -> None:
+    """Hold a fault patch to its protocol (`fault.Patch`) at `n` random
+    parameters inside the square and at its four corners.
+
+    Checks that `position` and `cartesian` are one point through the
+    frame, and the frame's basis orthonormal and right-handed there;
+    `tangents` against central differences of `cartesian` to `rtol` of
+    the largest tangent (a point that disagrees is differenced again on
+    each side, either serving, since a patch that bends at a knot has
+    there the tangent of one side); `normal` a unit vector along
+    x_v x x_u; `area_element` the length of x_u x x_v, and positive;
+    `fault_basis` orthonormal and right-handed, its first column along
+    x_u and its last the normal; for every slice, the slip finite, its
+    `cartesian`, `ambient` and `fault` components one vector in three
+    bases, its component along the normal its opening, and its fault
+    components at the slip's own nodes (cell centres for the `cell`
+    rule) the values it stores; the quadrature's points, positions,
+    normals, weights and slip those of the patch at its parameters; a
+    parameter outside the square refused; `second_derivatives` against
+    differences of the tangents as the tangents are held; and `locate`:
+    points a thousandth of the largest tangent off the patch along its
+    normal, either side, found inside at their parameters and signed
+    distance, given Cartesian or in the frame's coordinates, and points
+    beyond the edge u = 1/2 along the tangent found on it, outside, no
+    farther than their offset; and, for a kind that gives its map as a
+    spline (`spline`), the spline over the square and the map at the
+    parameters.
+    """
+    from .fault import BASES, SQUARE, Patch, PatchQuadrature, parameter_rule
+
+    assert isinstance(patch, Patch), f"{patch!r} is not a fault Patch"
+    rng = np.random.default_rng(0) if rng is None else rng
+    lo, hi = SQUARE
+    h = 1e-5 * (hi - lo)
+    u = np.concatenate([rng.uniform(lo + 2 * h, hi - 2 * h, n), [lo, hi, lo, hi]])
+    v = np.concatenate([rng.uniform(lo + 2 * h, hi - 2 * h, n), [lo, lo, hi, hi]])
+    frame = patch.frame
+    X = np.asarray(patch.cartesian(u, v), dtype=float)
+    assert X.shape == u.shape + (3,) and np.all(np.isfinite(X)), (
+        f"{patch!r}: cartesian is not finite points of the parameters' shape")
+    scale = max(float(np.max(np.abs(X))), 1e-300)
+    position = np.asarray(patch.position(u, v), dtype=float)
+    assert np.allclose(frame.cartesian(position), X, rtol=0, atol=1e-12 * scale), (
+        f"{patch!r}: position and cartesian are not one point through the frame")
+    B = np.asarray(frame.basis(position), dtype=float)
+    assert np.allclose(np.einsum("pki,pkj->pij", B, B), np.eye(3), rtol=0,
+                       atol=1e-12), f"{patch!r}: the frame's basis is not orthonormal"
+    assert np.allclose(np.linalg.det(B), 1.0, rtol=0, atol=1e-12), (
+        f"{patch!r}: the frame's basis is not right-handed")
+
+    xu, xv = (np.asarray(t, dtype=float) for t in patch.tangents(u, v))
+    assert xu.shape == X.shape and xv.shape == X.shape, (
+        f"{patch!r}: tangents of shape {xu.shape} and {xv.shape}")
+    tscale = max(float(np.max(np.linalg.norm(xu, axis=-1))),
+                 float(np.max(np.linalg.norm(xv, axis=-1))))
+    second = [np.asarray(d, dtype=float) for d in patch.second_derivatives(u, v)]
+    assert all(d.shape == X.shape and np.all(np.isfinite(d)) for d in second), (
+        f"{patch!r}: second derivatives that are not finite vectors")
+    sscale = max(float(np.max(np.linalg.norm(d, axis=-1))) for d in second)
+    ui, vi = u[:n], v[:n]
+
+    def against_differences(f: Any, value: np.ndarray, du: float, dv: float,
+                            atol: float, what: str) -> None:
+        def diff(a: float, b: float) -> np.ndarray:
+            return ((np.asarray(f(ui + a * du, vi + a * dv))
+                     - np.asarray(f(ui + b * du, vi + b * dv))) / ((a - b) * h))
+        off = np.any(np.abs(diff(1.0, -1.0) - value[:n]) > atol, axis=-1)
+        if np.any(off):
+            sides = [np.any(np.abs(d[off] - value[:n][off]) > atol, axis=-1)
+                     for d in (diff(1.0, 0.0), diff(0.0, -1.0))]
+            assert not np.any(sides[0] & sides[1]), (
+                f"{patch!r}: {what} disagrees with a difference")
+
+    atol = rtol * tscale + 1e-10 * scale
+    against_differences(patch.cartesian, xu, h, 0.0, atol, "the tangent x_u")
+    against_differences(patch.cartesian, xv, 0.0, h, atol, "the tangent x_v")
+    # tangents carry the rounding of the coordinates, divided by the step
+    atol = rtol * sscale + 1e-14 * scale / h
+    along_u = lambda a, b: patch.tangents(a, b)[0]
+    along_v = lambda a, b: patch.tangents(a, b)[1]
+    against_differences(along_u, second[0], h, 0.0, atol, "x_uu")
+    against_differences(along_u, second[1], 0.0, h, atol, "x_uv")
+    against_differences(along_v, second[2], 0.0, h, atol, "x_vv")
+
+    normal = np.asarray(patch.normal(u, v), dtype=float)
+    cross = np.cross(xv, xu)
+    area = np.linalg.norm(cross, axis=-1)
+    assert np.all(area > 0.0), f"{patch!r}: a degenerate point"
+    assert np.allclose(normal, cross / area[:, None], rtol=0, atol=1e-12), (
+        f"{patch!r}: the normal is not (x_v x x_u) / |x_u x x_v|")
+    assert np.allclose(patch.area_element(u, v), area, rtol=1e-12, atol=0), (
+        f"{patch!r}: the area element is not |x_u x x_v|")
+    F = np.asarray(patch.fault_basis(u, v), dtype=float)
+    assert F.shape == u.shape + (3, 3), f"{patch!r}: fault_basis of shape {F.shape}"
+    assert np.allclose(np.einsum("pki,pkj->pij", F, F), np.eye(3), rtol=0,
+                       atol=1e-12), f"{patch!r}: the fault basis is not orthonormal"
+    assert np.allclose(np.linalg.det(F), 1.0, rtol=0, atol=1e-12), (
+        f"{patch!r}: the fault basis is not right-handed")
+    assert np.allclose(F[..., 0], xu / np.linalg.norm(xu, axis=-1)[:, None],
+                       rtol=0, atol=1e-12), (
+        f"{patch!r}: the fault basis's strike is not along x_u")
+    assert np.allclose(F[..., 2], normal, rtol=0, atol=1e-12), (
+        f"{patch!r}: the fault basis's last column is not the normal")
+
+    slip = patch.slip
+    nodes = np.meshgrid(*slip.nodes(), indexing="ij")
+    for k in range(slip.nslices):
+        got = {b: np.asarray(patch.slip_vector(u, v, index=k, basis=b), dtype=float)
+               for b in BASES}
+        cart = got["cartesian"]
+        sscale = max(float(np.max(np.abs(slip.values))), 1e-300)
+        assert cart.shape == X.shape and np.all(np.isfinite(cart)), (
+            f"{patch!r}: slice {k} of the slip is not finite vectors")
+        assert np.allclose(np.einsum("pij,pj->pi", B, got["ambient"]), cart,
+                           rtol=0, atol=1e-12 * sscale), (
+            f"{patch!r}: slice {k}'s ambient components are not its Cartesian "
+            "ones in the frame's basis")
+        assert np.allclose(np.einsum("pij,pj->pi", F, got["fault"]), cart,
+                           rtol=0, atol=1e-12 * sscale), (
+            f"{patch!r}: slice {k}'s fault components are not its Cartesian "
+            "ones in the fault basis")
+        at_nodes = patch.slip_vector(*nodes, index=k, basis="fault")
+        assert np.allclose(at_nodes, slip.values[k], rtol=0, atol=1e-9 * sscale), (
+            f"{patch!r}: slice {k}'s fault components are not its stored values "
+            "at its nodes")
+        along_n = np.einsum("pi,pi->p", cart, normal)
+        assert np.allclose(along_n, got["fault"][:, 2], rtol=0,
+                           atol=1e-12 * sscale), (
+            f"{patch!r}: slice {k}'s normal component is not its opening")
+
+    q = patch.quadrature(2, 3, points=2)
+    pu, pv, pw = parameter_rule(2, 3, points=2)
+    assert np.array_equal(q.u, pu) and np.array_equal(q.v, pv), (
+        f"{patch!r}: the quadrature is not at parameter_rule's parameters")
+    for name, want in (("points", patch.cartesian(pu, pv)),
+                       ("positions", patch.position(pu, pv)),
+                       ("normals", patch.normal(pu, pv)),
+                       ("weights", patch.area_element(pu, pv) * pw),
+                       ("slip", patch.slip_vector(pu, pv, basis="cartesian"))):
+        got = np.asarray(getattr(q, name), dtype=float)
+        tol = 1e-12 * max(float(np.max(np.abs(want))), 1e-300)
+        assert got.shape == np.shape(want) and np.allclose(got, want, rtol=0,
+                                                           atol=tol), (
+            f"{patch!r}: the quadrature's {name} are not the patch's")
+    assert isinstance(q, PatchQuadrature) and not hasattr(q, "patch"), (
+        f"{patch!r}: a patch's own quadrature is not a PatchQuadrature, which "
+        "names no patch")
+    try:
+        patch.cartesian(hi + 0.1 * (hi - lo), 0.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"{patch!r}: a parameter outside the square is read")
+
+    # points a little off the patch along its normal come back to their
+    # parameters and distance, given either way; points beyond an edge
+    # along the tangent come back to the edge, outside
+    m = min(n, 8)
+    um, vm = 0.9 * u[:m], 0.9 * v[:m]
+    off = 1e-3 * tscale * np.where(np.arange(m) % 2 == 0, 1.0, -1.0)
+    P = (np.asarray(patch.cartesian(um, vm))
+         + off[:, None] * np.asarray(patch.normal(um, vm)))
+    found = patch.locate(P)
+    assert np.all(found.converged) and np.all(found.inside), (
+        f"{patch!r}: points beside it are not located inside it")
+    assert np.allclose(found.u, um, rtol=0, atol=1e-7) and np.allclose(
+        found.v, vm, rtol=0, atol=1e-7), (
+        f"{patch!r}: points beside it are not located at their parameters")
+    assert np.allclose(found.distance, off, rtol=0, atol=1e-7 * tscale), (
+        f"{patch!r}: points beside it are not at their signed distance")
+    assert np.array_equal(found.patch, np.zeros(m, dtype=int))
+    again = patch.locate(frame.coordinates(P), given="frame")
+    assert np.allclose(again.u, found.u, rtol=0, atol=1e-9) and np.allclose(
+        again.distance, found.distance, rtol=0, atol=1e-9 * tscale), (
+        f"{patch!r}: points given in the frame's coordinates are located "
+        "elsewhere")
+    edge = np.full(m, hi)
+    t = np.asarray(patch.tangents(edge, vm)[0])
+    beyond = 0.05 * tscale
+    P = (np.asarray(patch.cartesian(edge, vm))
+         + beyond * t / np.linalg.norm(t, axis=-1)[:, None])
+    out = patch.locate(P)
+    assert np.all(out.u == hi) and not np.any(out.inside), (
+        f"{patch!r}: points beyond its edge are not located on the edge, outside")
+    assert np.all(np.abs(out.distance) <= beyond * (1 + 1e-9)), (
+        f"{patch!r}: points beyond its edge are farther than their offset")
+
+    # a kind that gives its map as a spline gives the map, over the square
+    if callable(getattr(patch, "spline", None)):
+        spline = patch.spline()
+        assert spline.bounds == ((lo, hi), (lo, hi)), (
+            f"{patch!r}: its spline runs over {spline.bounds}, not the square")
+        assert np.allclose(spline(u, v), X, rtol=0, atol=1e-12 * scale), (
+            f"{patch!r}: its spline is not its map")
+
+
+def check_fault_file(path: str | os.PathLike[str], fault: Fault, *,
+                     names: Iterable[str | None] | None = None,
+                     meta: Mapping[str, Any] | None = None,
+                     citation: Iterable[str] = (),
+                     rng: np.random.Generator | None = None, n: int = 32) -> None:
+    """Hold a fault file to the fault it was written from.
+
+    Checks that the file reads (`faultfile.read_fault_file`, which makes
+    every check of the format); that `source` and `created` are present
+    and `created` parses as ISO 8601; that the schema, the frame, the
+    scales, the time support, rule and axis, the patches' names, the
+    meta attributes and the citation read back as given; that each patch
+    is of its kind with its parameters (a plane's) or control positions
+    and rule (a structured patch's) exactly as given, and its slip's rule
+    and values too; and that at `n` random parameters and, for a slip in
+    time, at its nodes and between them, each patch's position, normal,
+    area element and slip in every basis of `fault.BASES` are the
+    given fault's, to 1e-12 of their scale.  netCDF4 is imported here.
+    """
+    from datetime import datetime
+
+    from .fault import BASES, SQUARE
+    from .faultfile import SCHEMA, read_fault_file
+
+    data = read_fault_file(path)
+    back = data.fault
+    assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
+    assert data.source.strip(), "the file names no source"
+    datetime.fromisoformat(data.created)
+    assert back.frame == fault.frame, f"the file's frame is {back.frame!r}"
+    assert back.scales == fault.scales, f"the file is in {back.scales!r}"
+    assert (back.support, back.time_interpolation) == (
+        fault.support, fault.time_interpolation), (
+        f"the file's slip is {back.support} {back.time_interpolation}")
+    assert (fault.time is None) == (back.time is None), (
+        "the file's time axis is not as given")
+    if fault.time is not None:
+        assert np.array_equal(back.time, fault.time), (
+            "the file's time values are not as given")
+    want_names = ((None,) * len(fault.patches) if names is None
+                  else tuple(names))
+    assert data.names == want_names, f"the file names its patches {data.names}"
+    for key, value in (meta or {}).items():
+        assert data.meta.get(key) == value, (
+            f"meta_{key} is {data.meta.get(key)!r}, not {value!r}")
+    assert data.citation == tuple(citation), (
+        "the file does not cite what it was given")
+    assert len(back.patches) == len(fault.patches), (
+        f"the file holds {len(back.patches)} patches, not {len(fault.patches)}")
+    for k, (got, want) in enumerate(zip(back.patches, fault.patches)):
+        assert got.kind == want.kind, f"patch {k} is a {got.kind} patch"
+        if want.kind == "plane":
+            for key in ("strike", "dip", "length", "width"):
+                assert getattr(got, key) == getattr(want, key), (
+                    f"patch {k}'s {key} is {getattr(got, key)!r}")
+            assert np.array_equal(got.centroid, want.centroid), (
+                f"patch {k}'s centroid is {got.centroid}")
+        else:
+            assert got.interpolation == want.interpolation, (
+                f"patch {k}'s rule is {got.interpolation!r}")
+            assert np.array_equal(got.positions, want.positions), (
+                f"patch {k}'s control positions are not as given")
+        assert got.slip.rule == want.slip.rule and np.array_equal(
+            got.slip.values, want.slip.values), (
+            f"patch {k}'s slip is not as given")
+    rng = np.random.default_rng(0) if rng is None else rng
+    u, v = rng.uniform(*SQUARE, (2, n))
+    dates: list[float | None] = [None]
+    if fault.time is not None:
+        t = fault.time
+        dates = list(t) + list(t[0] + (t[-1] - t[0]) * rng.uniform(0.0, 1.0, 4))
+        if fault.time_interpolation == "none":
+            dates = list(t)
+    for k, (got, want) in enumerate(zip(back.patches, fault.patches)):
+        X = want.cartesian(u, v)
+        scale = float(np.max(np.abs(X)))
+        assert np.allclose(got.cartesian(u, v), X, rtol=0, atol=1e-12 * scale), (
+            f"patch {k}'s points are not the given fault's")
+        assert np.allclose(got.normal(u, v), want.normal(u, v), rtol=0,
+                           atol=1e-12), f"patch {k}'s normals are not the given's"
+        assert np.allclose(got.area_element(u, v), want.area_element(u, v),
+                           rtol=1e-12, atol=0), (
+            f"patch {k}'s area element is not the given fault's")
+        sscale = max(float(np.max(np.abs(want.slip.values))), 1e-300)
+        for date in dates:
+            for basis in BASES:
+                a = back.slip_vector(k, u, v, date=date, basis=basis)
+                b = fault.slip_vector(k, u, v, date=date, basis=basis)
+                assert np.allclose(a, b, rtol=0, atol=1e-12 * sscale), (
+                    f"patch {k}'s slip at {date!r} in the {basis} basis is not "
+                    "the given fault's")
+
+
+#: The CAD kernel's tolerance, a fraction of a patch's size: how far a
+#: node gmsh places on a trimmed edge may lie off the surface it trims.
+_CAD_RTOL = 1e-7
+
+#: How far the part of a fault carried across the surface may stray from
+#: the fault's own surface continued, as a fraction of how far beyond the
+#: edge it lies: measured 2e-5 for a plane and 8.3e-4 for a curved patch
+#: under a relief of 0.05, carried by up to 0.07 on a unit ball.
+_CARRIED_SLOPE = 2e-3
+
+
+def _patch_size(patch: Patch) -> float:
+    """The longer diagonal between a patch's corners."""
+    from .fault import SQUARE
+    lo, hi = SQUARE
+    c = np.asarray(patch.cartesian(np.array([lo, hi, lo, hi]),
+                                   np.array([lo, hi, hi, lo])))
+    return max(float(np.linalg.norm(c[1] - c[0])), float(np.linalg.norm(c[3] - c[2])))
+
+
+def _off_continued(patch: Patch, P: np.ndarray, u: np.ndarray,
+                   v: np.ndarray) -> np.ndarray:
+    """The distance of points P from the patch's own surface continued
+    beyond its square (its spline, which continues its end pieces), by
+    Gauss-Newton from the parameters (u, v), the tangents differenced."""
+    spline = patch.spline()
+    w = np.stack([u, v], axis=-1).astype(float)
+    h = 1e-6
+    for _ in range(50):
+        if not len(w):
+            break
+        a, b = w[:, 0], w[:, 1]
+        J = np.stack([(spline(a + h, b) - spline(a - h, b)) / (2 * h),
+                      (spline(a, b + h) - spline(a, b - h)) / (2 * h)], axis=-1)
+        r = P - spline(a, b)
+        step = np.linalg.solve(np.einsum("pki,pkj->pij", J, J),
+                               np.einsum("pki,pk->pi", J, r)[..., None])[..., 0]
+        w = w + step
+        if float(np.max(np.abs(step))) <= 1e-13:
+            break
+    return np.linalg.norm(P - spline(w[:, 0], w[:, 1]), axis=-1)
+
+
+#: The edges of the square by name, as `Location` flags them.
+_EDGES = ("on_u_low", "on_u_high", "on_v_low", "on_v_high")
+
+
+def _nearest_edges(found: Location) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The parameters of each located point moved onto the edge of the
+    square nearest them, which edge that is (an index of `_EDGES`), and
+    whether the point is at a corner, where either edge serves."""
+    from .fault import SQUARE
+    w = np.stack([found.u, found.v], axis=-1)
+    side = np.argmax(np.abs(w), axis=-1)
+    rows = np.arange(len(w))
+    low = w[rows, side] < 0.0
+    w[rows, side] = np.where(low, SQUARE[0], SQUARE[1])
+    corner = np.abs(w[rows, 1 - side]) >= SQUARE[1] * (1.0 - 1e-6)
+    return w, 2 * side + ~low, corner
+
+
+def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray,
+                       tip: np.ndarray, free: np.ndarray, *, distance: float) -> None:
+    """A fault's nodes against the fault (`check_fault_mesh`): `nodes` its
+    faces' nodes, `tip` and `free` those of its tip and free edge,
+    indices into the positions `x`."""
+    found = fault.locate(x[nodes], strict=False)
+    off = np.abs(found.distance)
+    beyond = ~found.inside & (off > distance)
+    worst = float(np.max(off[~beyond], initial=0.0))
+    assert worst <= distance, (
+        f"{name}: a node of its faces lies {worst:.3g} off the fault once mapped, "
+        f"beyond {distance:.3g}")
+    if np.any(beyond):
+        assert free.size, (
+            f"{name}: {int(np.count_nonzero(beyond))} nodes of its faces lie beyond "
+            f"its edges, up to {float(off[beyond].max()):.3g}, and it has no free "
+            "edge to have been carried across the surface")
+        # the edges of the square its free edge lies along or beyond, read
+        # from its nodes clear of its tip, whose ends lie on the tip's edges
+        along = np.setdiff1d(free, tip)
+        along = along if along.size else free
+        _, sides, corner = _nearest_edges(fault.locate(x[along], strict=False))
+        carried = np.zeros(len(nodes), dtype=bool)
+        for k in np.unique(sides[~corner] if np.any(~corner) else sides):
+            carried |= getattr(found, _EDGES[int(k)])
+        assert np.all(carried[beyond]), (
+            f"{name}: {int(np.count_nonzero(beyond & ~carried))} nodes of its faces "
+            "lie beyond an edge of it that is not its free edge, up to "
+            f"{float(off[beyond & ~carried].max()):.3g}")
+        for k in np.unique(found.patch[beyond]):
+            m = beyond & (found.patch == k)
+            patch = fault.patches[int(k)]
+            stray = _off_continued(patch, x[nodes[m]], found.u[m], found.v[m])
+            allowed = (distance + _CARRIED_SLOPE * off[m]
+                       + _CAD_RTOL * _patch_size(patch))
+            assert np.all(stray <= allowed), (
+                f"{name}: a node of the part carried across the surface lies "
+                f"{float(np.max(stray)):.3g} off the fault continued beyond its "
+                f"edge, more than {float(allowed[np.argmax(stray)]):.3g}")
+    # every node of its tip on an edge of the square, held or not
+    on_tip = np.isin(nodes, tip) & ~beyond
+    if np.any(on_tip):
+        w = _nearest_edges(found)[0][on_tip]
+        patches = found.patch[on_tip]
+        for k in np.unique(patches):
+            m = patches == k
+            patch = fault.patches[int(k)]
+            edge = np.asarray(patch.cartesian(w[m, 0], w[m, 1]))
+            gap = np.linalg.norm(x[nodes[on_tip][m]] - edge, axis=-1)
+            allowed = distance + _CAD_RTOL * _patch_size(patch)
+            assert np.all(gap <= allowed), (
+                f"{name}: a node of its tip lies {float(gap.max()):.3g} off the "
+                f"fault's edge, more than {allowed:.3g}")
+
+
+def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Fault], *,
+                     mapping: Mapping | None = None, distance: float) -> None:
+    """Hold a mesh with faults built in to what its manifest promises of
+    them (the format page of the mesh manifest).
+
+    `faults` maps the name of every fault the manifest beside the mesh
+    lists to the fault it was built from; `mapping` is the geometry's,
+    applied to the mesh's reference nodes (the identity where None);
+    `distance` is the farthest a node of a fault's faces may lie from
+    the fault once mapped.  For every fault: its faces are the boundary
+    group of its record's attribute, under its name, and each is a face
+    of exactly two cells (`MeshArrays.face_cells`), of one layer its
+    record lists; each face's vertices, in the order written and
+    mapped, run so that (v1 - v0) x (v2 - v0) agrees with the fault's
+    normal at the point of it nearest the face's centroid, and its two
+    cells lie one on each side of it by the rule a consumer applies
+    (`mesh3d.manifest.plus_cell`); every node of its faces, high-order
+    ones included, lies within `distance` of the fault once mapped, or,
+    for a fault with a free edge, beyond the edge its free edge lies
+    along (`Location` names it), where it was carried across the
+    surface, and there within `distance`, plus a five-hundredth of how
+    far beyond it lies, plus the CAD kernel's tolerance (a
+    ten-millionth of the patch's size), of the patch's own surface
+    continued beyond that edge; every node of
+    its tip lies on an edge of its patch, within `distance` and that
+    tolerance; its curve groups hold the edges of its faces that
+    the rule a consumer of a mesh without curves applies gives
+    (`mesh3d.manifest.fault_curves`), and its `ends_on` the faults that
+    rule finds it ending on.  And the collars: the classification of
+    every fault's walls on the mesh as read
+    (`mesh3d.manifest.walls_of_faults`) gives each cell the element
+    attribute it carries, every cell's attribute is one of the layer it
+    lies in by its corners' radii, and the layers' `attributes` and the
+    faults' `hanging_wall` are the numbering's
+    (`mesh3d.manifest.check_collars`); and every cell of a fault's
+    hanging wall whose centre, once mapped, the fault locates inside
+    its patches lies at a positive distance from it, and every such cell
+    of its footwall at a negative one.  The mesh is read by
+    `mesh3d.read_mesh`, which imports gmsh.
+    """
+    from .mapping import IdentityMapping
+    from .mesh3d import manifest as mf
+    from .mesh3d import read_mesh
+
+    card = mf.read(mf.beside(msh_path, ".json"))
+    listed = [e["name"] for e in card.faults]
+    assert sorted(listed) == sorted(faults), (
+        f"the manifest lists faults {listed}, and {sorted(faults)} were given")
+    mapping = IdentityMapping() if mapping is None else mapping
+    mesh = read_mesh(msh_path)
+    x = np.asarray(mapping(mesh.points), dtype=float)
+    triangles = {e["name"]: mesh.faces_with(e["attribute"]) for e in card.faults}
+    recovered = dict(zip(triangles, mf.fault_curves(
+        [t[:, :3] for t in triangles.values()],
+        mesh.faces_with(card.surface_attribute)[:, :3])))
+    layer = mesh.layers(card)
+    walls = mesh.walls(card)
+    try:
+        mf.check_collars(card, mesh.layers_by_position(card), mesh.cell_attributes,
+                         walls)
+    except ValueError as error:
+        raise AssertionError(f"the collars: {error}") from None
+    centres = x[mesh.cells[:, :4]].mean(axis=1)
+
+    for at, record in enumerate(card.faults):
+        name, fault = record["name"], faults[record["name"]]
+        tri = triangles[name]
+        assert len(tri), f"{name}: no faces carry its attribute {record['attribute']}"
+        assert mesh.names.get((2, record["attribute"])) == name, (
+            f"{name}: boundary group {record['attribute']} is named "
+            f"{mesh.names.get((2, record['attribute']))!r}")
+        corners = tri[:, :3]
+        pair = mesh.face_cells(corners)
+        assert np.all(pair >= 0), (
+            f"{name}: {int(np.count_nonzero(np.any(pair < 0, axis=1)))} faces are "
+            "not a face of exactly two cells")
+        their = layer[pair]
+        assert np.all(their[:, 0] == their[:, 1]) and set(
+            their[:, 0].tolist()) <= set(record["layers"]), (
+            f"{name}: its faces lie in layers {sorted(set(their.ravel().tolist()))}, "
+            f"and its record lists {record['layers']}")
+        v = x[corners]
+        n = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+        where = fault.locate(v.mean(axis=1), strict=False)
+        normal = np.empty_like(n)
+        for k in np.unique(where.patch):
+            m = where.patch == k
+            normal[m] = fault.patches[int(k)].normal(where.u[m], where.v[m])
+        assert np.all(np.einsum("ij,ij->i", n, normal) > 0.0), (
+            f"{name}: {int(np.count_nonzero(np.einsum('ij,ij->i', n, normal) <= 0))} "
+            "faces do not point from the footwall into the hanging wall")
+        try:
+            mf.plus_cell(x, corners, mesh.cells[pair][..., :4])
+        except ValueError as error:
+            raise AssertionError(f"{name}: {error}") from None
+
+        tip, free = (np.unique(mesh.curves[record[key]]) if record[key] is not None
+                     else np.empty(0, dtype=np.int64) for key in ("tip", "free_edge"))
+        _check_fault_nodes(name, fault, x, np.unique(tri), tip, free,
+                           distance=distance)
+
+        for key in ("tip", "free_edge", "junction"):
+            expected = {(int(a), int(b)) for a, b in getattr(recovered[name], key)}
+            group = record[key]
+            got = (set() if group is None else
+                   {(int(a), int(b)) for a, b in np.sort(mesh.curves.get(
+                       group, np.empty((0, 2), dtype=np.int64))[:, :2], axis=1)})
+            assert got == expected, (
+                f"{name}: its {key} group {group} holds {len(got)} edges, and its "
+                f"faces give {len(expected)}")
+        ends = [card.faults[j]["name"] for j in recovered[name].ends_on]
+        assert record["ends_on"] == ends, (
+            f"{name}: its record ends on {record['ends_on']}, and its faces end "
+            f"on {ends}")
+
+        for wall, sign, what in ((1, 1.0, "hanging"), (-1, -1.0, "foot")):
+            found = fault.locate(centres[walls[at] == wall], strict=False)
+            wrong = found.inside & (sign * found.distance <= 0.0)
+            assert not np.any(wrong), (
+                f"{name}: {int(np.count_nonzero(wrong))} cells of its {what}wall "
+                "lie on its other side")

@@ -19,6 +19,10 @@
 #include "planetmodel/frames.hpp"
 #include "planetmodel/netcdf.hpp"
 
+#ifndef PLANETMODEL_HAS_LOG_RULES
+#error "rules.hpp defines the macro of its rules in the logarithm"
+#endif
+
 namespace {
 
 namespace nc = planetmodel::netcdf;
@@ -82,7 +86,7 @@ TEST(Rules, ReadEveryLateralCaseAsThePythonDoes) {
 }
 
 TEST(Rules, ReadEveryRadialCaseAsThePythonDoes) {
-  for (const auto* method : {"polynomial", "linear"}) {
+  for (const auto* method : {"polynomial", "linear", "log-polynomial", "log-linear"}) {
     SCOPED_TRACE(method);
     PLANETMODEL_FIXTURE(path, std::format("case_radial_{}.nc", method));
     const auto file = nc::File(path);
@@ -183,6 +187,40 @@ TEST(Rules, HoldThePolesAsThePythonDoes) {
   EXPECT_THROW(planetmodel::LateralInterpolant(thin, std::vector<double>{1, 1, 2, 2}, {},
                                                planetmodel::LateralRule::Cubic),
                Error);
+}
+
+TEST(Rules, ARuleInTheLogarithmIsExponentialBetweenNodesAndKeepsAConstant) {
+  using planetmodel::RadialRule;
+  EXPECT_TRUE(planetmodel::IsLogRule(RadialRule::LogLinear));
+  EXPECT_FALSE(planetmodel::IsLogRule(RadialRule::Linear));
+  EXPECT_EQ(planetmodel::BaseRule(RadialRule::LogPolynomial), RadialRule::Polynomial);
+  for (const auto* name : {"polynomial", "linear", "log-polynomial", "log-linear"}) {
+    EXPECT_EQ(planetmodel::RuleName(planetmodel::RadialRuleNamed(name)), name);
+  }
+  // geometric between the two nodes of an element, the slope y log(b / a)
+  const auto layout = planetmodel::RadialLayout({0.0, 1.0, 1.0, 2.0}, 2, 1e-9);
+  const auto f = planetmodel::RadialInterpolant(layout, {1e19, 1e22, 3e21, 3e21},
+                                                RadialRule::LogLinear);
+  EXPECT_NEAR(f.Value(0.5), std::sqrt(1e19 * 1e22), 1e-15 * 1e21);
+  EXPECT_NEAR(f.Value(1.0 / 3.0), 1e20, 1e-15 * 1e20);
+  EXPECT_NEAR(f.Derivative(0.25), f.Value(0.25) * std::log(1e3), 1e-14 * f.Value(0.25) * 7.0);
+  // an element of one value reads it to the bit, with no slope
+  for (const auto r : {1.0, 1.1, 1.5, 1.9, 2.0}) {
+    EXPECT_EQ(f.Value(r), 3e21) << r;
+    EXPECT_EQ(f.Derivative(r), 0.0) << r;
+  }
+  const auto g = planetmodel::RadialInterpolant(
+      planetmodel::RadialLayout({0.0, 0.5, 1.0}, 3, 1e-9), {7e20, 7e20, 7e20},
+      RadialRule::LogPolynomial);
+  EXPECT_EQ(g.Value(0.3), 7e20);
+  // a value that has no logarithm is refused
+  EXPECT_THROW(planetmodel::RadialInterpolant(layout, {1.0, 0.0, 1.0, 1.0}, RadialRule::LogLinear),
+               Error);
+  EXPECT_THROW(planetmodel::RadialInterpolant(layout, {1.0, -2.0, 1.0, 1.0},
+                                              RadialRule::LogPolynomial),
+               Error);
+  EXPECT_NO_THROW(planetmodel::RadialInterpolant(layout, {1.0, -2.0, 1.0, 1.0},
+                                                 RadialRule::Linear));
 }
 
 TEST(Rules, ARadialLayoutIsElementsThatTile) {

@@ -829,6 +829,80 @@ TEST(Writer, CitesEachWorkOnceOnALineOfItsOwn) {
   EXPECT_TRUE(file.Citation().empty());
 }
 
+// A viscosity the exponential of a quadratic on one layer and a constant
+// on the next, read in its logarithm; the closed forms the Python is held
+// to in test_cpp_written.py.
+double LogEta(double r) { return 46.0 + 8.0 * r - 5.0 * r * r; }
+double EtaExp(double r) { return std::exp(LogEta(r)); }
+constexpr auto ETA_CONSTANT = 2e21;
+
+TEST(Writer, WritesAViscosityInItsLogarithmThatReadsBackExactly) {
+  auto file = pm::ModelFile(pm::Skeleton({0.0, 0.3, 0.7, 1.0}));
+  const auto& sk = file.GetSkeleton();
+  file.SetName("written log");
+  file.AddPart(0, 2, pm::ElementEdges(sk, 0, 2, 0.15), 3, pm::GaussLegendre(2));
+  EXPECT_EQ(file.Schema(), pm::MODEL_SCHEMA);
+  file.AddField("rho", {{0, LayerSource::Radial([](double r) { return 5.0 - r; })},
+                        {1, LayerSource::Radial([](double r) { return 4.0 - r; })},
+                        {2, LayerSource::Radial([](double r) { return 3.0 - r; })}});
+  EXPECT_EQ(file.Schema(), pm::MODEL_SCHEMA);
+  file.AddField("viscosity",
+                {{1, LayerSource::Radial(EtaExp)},
+                 {2, LayerSource::Radial([](double) { return ETA_CONSTANT; })}},
+                {.radial = pm::RadialRule::LogPolynomial});
+  EXPECT_EQ(file.Schema(), pm::MODEL_SCHEMA_WITH_LOG_RULES);
+  const auto path = Written("written_log.nc", file);
+  const auto read = pm::ReadModelFile(path);
+  EXPECT_EQ(read.Schema(), pm::MODEL_SCHEMA_WITH_LOG_RULES);
+  EXPECT_EQ(read.Parts()[0].variables.at("viscosity").Text("radial_interpolation"),
+            "log-polynomial");
+  EXPECT_EQ(read.Parts()[0].variables.at("rho").Text("radial_interpolation"), "polynomial");
+  EXPECT_FALSE(read.HasField(0, "viscosity"));
+  // the logarithm is a quadratic, held by three nodes an element: exact
+  // between them, with its slope
+  const auto eta = read.FieldOn(1, "viscosity").AsScalar();
+  for (auto k = 0; k <= 40; ++k) {
+    const auto r = 0.3 + 0.4 * k / 40.0;
+    const auto want = EtaExp(r);
+    EXPECT_NEAR(eta.Value(r, 1.0, 2.0), want, 1e-13 * want) << r;
+    const auto slope = want * (8.0 - 10.0 * r);
+    EXPECT_NEAR(eta.Gradient(r, 1.0, 2.0)[0], slope, 1e-12 * want * 8.0) << r;
+  }
+  // a constant to the bit
+  const auto constant = read.FieldOn(2, "viscosity").AsScalar();
+  for (const auto r : {0.7, 0.71, 0.85, 1.0}) {
+    EXPECT_EQ(constant.Value(r, 0.4, 5.0), ETA_CONSTANT) << r;
+    EXPECT_EQ(constant.Gradient(r, 0.4, 5.0)[0], 0.0) << r;
+  }
+  // a rule in the logarithm reads a positive scalar of the radius alone
+  auto refused = pm::ModelFile(pm::Skeleton({0.0, 1.0}));
+  refused.AddPart(0, 0, {0.0, 0.5, 1.0}, 3, pm::GaussLegendre(2));
+  const auto log = pm::Rules{.radial = pm::RadialRule::LogLinear};
+  EXPECT_THROW(refused.AddField("viscosity", {{0, LayerSource::Radial([](double r) {
+                                                 return r - 0.5;
+                                               })}},
+                                log),
+               Error);
+  EXPECT_THROW(refused.AddField("viscosity",
+                                {{0, LayerSource::Lateral([](double, double t, double) {
+                                    return 2.0 + std::cos(t);
+                                  })}},
+                                log),
+               Error);
+  EXPECT_THROW(refused.AddField("flow", {.character = pm::VECTOR},
+                                {{0, LayerSource::Radial([](double, std::span<double> out) {
+                                    std::ranges::fill(out, 1.0);
+                                  })}},
+                                log),
+               Error);
+  const auto still =
+      LayerSource::Radial([](double, std::span<double> out) { std::ranges::fill(out, 0.0); });
+  EXPECT_THROW(refused.SetDisplacement({{0, still}}, log), Error);
+  EXPECT_EQ(refused.Schema(), pm::MODEL_SCHEMA);
+  refused.AddField("viscosity", {{0, LayerSource::Radial([](double r) { return 1.0 + r; })}}, log);
+  EXPECT_EQ(refused.Schema(), pm::MODEL_SCHEMA_WITH_LOG_RULES);
+}
+
 TEST(Writer, RefusesSourcesThatDoNotFitTheirLayers) {
   auto file = pm::ModelFile(pm::Skeleton({0.0, 0.5, 1.0}));
   const auto& sk = file.GetSkeleton();
@@ -963,3 +1037,15 @@ TEST(Writer, AFailedWriteLeavesNoFileAndAnExistingOneStanding) {
   pm::WriteModelFile(path, again);
   EXPECT_EQ(pm::ReadModelFile(path).Name(), "again");
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST(Writer, GivesTheFileThePermissionsAPlainOpenWould) {
+  auto file = pm::ModelFile(pm::Skeleton({0.0, 1.0}));
+  file.AddPart(0, 0, {0.0, 1.0}, 3, pm::GaussLegendre(2));
+  file.AddField("vs", {{0, LayerSource::Radial([](double r) { return 1.0 + r; })}});
+  const auto dir = pm::testing::WrittenDir() / "permissions";
+  std::filesystem::create_directories(dir);
+  pm::testing::ExpectPlainPermissions(
+      dir / "model.nc", [&file](const std::filesystem::path& p) { pm::WriteModelFile(p, file); });
+}
+#endif

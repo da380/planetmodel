@@ -17,7 +17,15 @@ poles); and PREM given a viscosity and converted by sl3d's chain from a
 perturbation of its shear speeds (`model_converted.nc`, the viscosity a
 log perturbation and the model's citation the chain's), and the same
 with that viscosity made a Burgers body's two Prony branches and
-power-law creep beside them (`model_prony.nc`).
+power-law creep beside them (`model_prony.nc`).  A Maxwell deck's model
+whose viscosity changes by three decades between knots, joined in its
+logarithm, one viscosity through another layer and none in the core and
+crust, every field written (`model_log.nc`, of `planetmodel.model/2`,
+the viscosity stating `log-polynomial`), its prony deck's model, a
+relaxation time so joined (`model_log_prony.nc`), and the Maxwell model
+with that viscosity perturbed in its logarithm by a gridded field and
+placed by a flattening (`model_log_lateral.nc`, the reference stating
+`log-polynomial`).
 
 Beside them, `model_kinds.nc` (an absolute perturbation of `rho` and a
 log one of `viscosity`), `model_tensors.nc` (a rank-2 `stress`, radial
@@ -63,7 +71,8 @@ netCDF file each: for a lateral case the grid (`colatitude`,
 `expected_dtheta` and `expected_dphi`; for a radial case the element
 `breaks`, `ngll`, the node `radius` and the `values` there (element by
 element), the `method`, the query radii and the `expected` values and
-derivatives.
+derivatives, the rules in the logarithm on positive values spanning
+decades with one element of one value.
 Every case covers the poles, the longitude seam and points between
 nodes.  The local rules only: the C++ side does no spherical-harmonic
 work.
@@ -93,29 +102,102 @@ array or an object).
 **Decks** (`deck_*.txt`): the two shipped mineos decks as they are
 (nine and six columns), a Maxwell deck naming its layers and
 interfaces, its viscosity varying by two orders of magnitude across a
-layer, a TauP `.nd` table with labels and comments of the three kinds
-and a `.tvel` one, and a small custom one with layers of two, three,
-four and six knots; each with `<deck>.expect` beside it, one fact per
-line: `knots`, `boundaries`, a TauP table's `label`s (radius and
-label), the mineos `header` fields (a string in hexadecimal), the
-`layer_name` and `interface_name` of every layer and interface that
-`mineos_names`, `maxwell_names` or `nd_names` gives (`-` for none) and
-the count of what the first `ignored`, and for each kind the C++
-reads (and for a Maxwell deck `maxwell`, the default kind with
-`MAXWELL_KINDS`), `value <kind> <layer> <column> <r> <value>
-<derivative>` at the layer's ends and between its knots, or `absent
-<layer> <column>`.  The C++ tests write each deck back, and
-`tests/test_cpp_written_decks.py` holds what they wrote to the Python's
-own writing, character for character.
+layer, a prony deck of three branches on the same knots (layers of
+three branches with a relaxed part, one of two without, one of one
+branch the writer completed, elastic and fluid layers), a burgers deck
+on them (Maxwell, Burgers and elastic layers), a TauP `.nd` table with
+labels and comments of the three kinds and a `.tvel` one, and a small
+custom one with layers of two, three, four and six knots; each with
+`<deck>.expect` beside it, one fact per line: `knots`, `boundaries`, a
+TauP table's `label`s (radius and label), the mineos `header` fields (a
+string in hexadecimal), the `layer_name` and `interface_name` of every
+layer and interface that `mineos_names`, `maxwell_names` or `nd_names`
+gives (`-` for none) and the count of what the first `ignored`, and for
+each kind the C++ reads (and for a Maxwell, prony or burgers deck
+`maxwell`, `prony` or `burgers`, the default kind with the format's
+kinds; and each kind after `log-` on every column positive wherever it
+is not NaN), `value <kind> <layer> <column> <r> <value> <derivative>` at
+the layer's ends and between its knots, or `absent <layer> <column>`.  The
+C++ tests write each deck back, and `tests/test_cpp_written_decks.py`
+holds what they wrote to the Python's own writing, character for
+character.
 
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
-`base.json`; variants the reader accepts (`accept_*.json`: the keys
-added within the schema left out, an unknown key added); and one
-malformed copy per check `validate_structure` makes (`bad_*.json`),
-listed in `bad.txt`, one per line, as the case, a tab, the JSON path
-the fault lies at (empty for the document itself), a tab, and a phrase
-the refusal says.  None needs gmsh.
+`base.json` (schema 5); variants the reader accepts (`accept_*.json`:
+the keys added within the schema left out, an unknown key added, and
+two faults meeting along a junction added with their collars, schema
+6); and one malformed copy per check `validate_structure` makes
+(`bad_*.json`, the faults' and collars' checks on the copy with
+faults), listed in `bad.txt`, one per line, as the case, a tab, the
+JSON path the fault lies at (empty for the document itself), a tab,
+and a phrase the refusal says.  None needs gmsh.
+
+**Meshes with faults** (`fault_meshes/<case>/`, which need gmsh and are
+left out with a note without it): a unit ball of two layers under a
+bump of relief, meshed at order one, with a plane reaching the surface
+(`surface`: a tip and a free edge), with a splay ending on its main
+fault (`splay`: a junction, on the splay's boundary and inside the
+main fault), and with two planes crossing (`crossing`: a junction inside
+both), each held to `testing.check_fault_mesh` first.  Beside each
+manifest (`<case>.json`), `<case>.mesh.txt` holds
+the mesh as plain arrays (as `mesh3d.read_mesh` reads it), one per
+line: `vertex x y z` (the physical positions, the mapping applied, in
+index order), `cell a b c d attribute` (each tetrahedron's corners and
+its element attribute, a collar's where it is in one)
+and `boundary a b c attribute` (each boundary triangle's corners in
+the order the mesh holds them);
+and `<case>.expect` the answers of the Python's rules
+(`mesh3d.manifest.plus_cell`, `fault_curves`, `fault_walls`): `pair
+<boundary> <cell> <cell> <0|1>` for each face of a fault, its two cells
+(indices among the `cell` lines, the smaller first) and which of them
+is the plus one; `edge <fault> <tip|free_edge|junction|junction_end> a
+b` for each edge on a fault's curves; `ends <fault> <fault>` for each
+fault a fault ends on; and `wall <fault> <cell> <1|-1>` for each cell
+in a wall of a fault, every other cell in neither.
+
+**Fault files** (`fault_*.nc`): a static plane in a geographic frame
+with a `cell` slip (`fault_static`); a fault in kilometres and years of
+a plane, a bent bicubic patch and a bilinear patch across the date
+line, its slip on three time nodes read `linear` (`fault_afterslip`);
+and a Cartesian fault of a twisted bilinear patch, a vertical plane and
+a sill, on two nodes read `previous`, far from the time origin against
+their span (`fault_cartesian`); every slip rule among them.  Beside
+each, `<fault>.expect`, the Python's answers,
+one fact per line: `fault <frame> <reference> <support> <rule>
+<patches> <slices>`, `scales`, `time <k> <value>`, `patch <k> <kind>
+<name in hexadecimal | ->`; at stated (u, v) of each patch, corners,
+edges, knots and cell boundaries among them, `point`, `position`,
+`tangents` (x_u then x_v), `second` (x_uu, x_uv, x_vv), `normal`,
+`area` and `basis` (the fault basis by rows) as `<what> <k> <u> <v>`
+and the numbers; `slip <k> <u> <v> <date|-> <refuse|hold>
+<fault|ambient|cartesian>` and the vector, or `refused` in its place;
+`quadrature <points> <date|-> <n_u,...> <n_v,...> <size>` and a
+`qpoint <i> <patch> <u> <v> <weight>` line, then the point, position,
+normal and slip, for each of its points; `slices <points> <n_u,...>
+<n_v,...> <size> <slices>` and an `spoint <i> <patch> <u> <v> <weight>`
+line, then the point, position, normal and the slip of every slice in
+turn, for each point of the slice quadrature; the dates read include
+some within the default tolerance of a node or an end of the span and
+one beyond it; `locate <x> <y> <z> <patch>
+<u> <v> <distance> <inside> <converged>` for physical points beside
+the patches, beyond their edges and corners and near a bilinear
+patch's creases; and `slip_at <max_distance> <date|-> <basis> <x> <y>
+<z>` and the vector, or `slip_at_refused <max_distance> <x> <y> <z>`.
+**Fault files to refuse** (`fault_cases/bad_*.nc`): malformed copies,
+listed in `bad.txt` as the model cases are.  **Slip from a rake**
+(`slip_rake.txt`): for each case `case <nslices> <n_u> <n_v> <rule>`,
+then the `rake`, `magnitude` and `opening` given to `Slip.from_rake`
+(one value, one a point or one a slice and point) and the `values` it
+makes, (nslices, n_u, n_v, 3) in C order.
+
+**Burgers bodies** (`burgers.txt`): `terms <modulus> <viscosity>
+<kelvin_viscosity> <kelvin_modulus_fraction>` and the two strengths and
+two times `conversion.prony.burgers_terms` gives, the faster first, for
+bodies across a mantle's ranges and to the extremes of the Kelvin
+element; and `parameters <modulus> <w_1> <w_2> <tau_1> <tau_2>` and the
+viscosity, Kelvin viscosity and Kelvin modulus fraction
+`burgers_parameters` gives, for each pair of branches in both orders.
 
 **The facts the C++ restates** (`constants.txt`), one per line, a key
 and its value separated by spaces: the version, `G_SI`,
@@ -135,12 +217,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.interpolate import PPoly
 
 import planetmodel as pm
 from planetmodel import units
 from planetmodel.lateral import LateralInterpolant
+from planetmodel.layerfunction import ExponentialLayer
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.modelfile import validate_structure, write_model
+from planetmodel.modelfile import LOG_RULES, validate_structure, write_model
+from planetmodel.surfacefile import TIME_METHODS
 
 
 def smooth(theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
@@ -217,6 +302,22 @@ def radial_cases(directory: Path) -> list[Path]:
             {"breaks": mesh.breakpoints, "radius": mesh.r, "values": values,
              "query_radius": r,
              "expected": pp(r), "expected_dr": pp.derivative()(r)},
+            {"method": method, "ngll": np.int32(mesh.ngll)}))
+    # positive values over decades, the middle element of one value: the
+    # exponential of each element's polynomial through log(y / y_e)
+    positive = 1e21 * np.exp(4.0 * np.sin(5.0 * mesh.r) - 3.0 * mesh.r)
+    positive[1] = 2.5e21
+    first = positive[:, :1]
+    for method in LOG_RULES:
+        exponent = mesh.to_ppoly(np.log(positive / first),
+                                 method=method.removeprefix("log-"))
+        f = ExponentialLayer((0.0, 1.0), exponent,
+                             factor=PPoly(first.T.copy(), mesh.breakpoints))
+        out.append(_write_case(
+            directory / f"case_radial_{method}.nc",
+            {"breaks": mesh.breakpoints, "radius": mesh.r, "values": positive,
+             "query_radius": r,
+             "expected": f(r), "expected_dr": f.derivative()(r)},
             {"method": method, "ngll": np.int32(mesh.ngll)}))
     return out
 
@@ -318,6 +419,53 @@ def model_files(directory: Path) -> list[Path]:
                     fields=["rho", "vsv", "vsh", "viscosity"]),
         write_model(directory / "model_prony.nc", with_burgers(converted()),
                     grid=pm.gauss_legendre(6)),
+    ] + log_model_files(directory)
+
+
+def graded_maxwell() -> pm.MaxwellDeckModel:
+    """A Maxwell deck's model: a fluid core, a mantle whose viscosity
+    changes by three decades between knots, up and down, joined in its
+    logarithm, a mantle of one viscosity and an elastic crust."""
+    knots = [np.linspace(0.0, 1.2e6, 3), np.linspace(1.2e6, 5.0e6, 6),
+             np.linspace(5.0e6, 6.2e6, 4), np.linspace(6.2e6, 6.371e6, 2)]
+    ends = {"rho": [(11000, 10000), (5500, 4500), (4000, 3500), (2900, 2700)],
+            "vp": [(9000, 8500), (13000, 11000), (10000, 8500), (6800, 6500)],
+            "vs": [(0, 0), (7000, 6000), (5500, 4700), (3900, 3700)]}
+    columns = {}
+    for name, column in (("rho", "rho"), ("vpv", "vp"), ("vsv", "vs"),
+                         ("vph", "vp"), ("vsh", "vs")):
+        columns[name] = np.concatenate([np.linspace(a, b, r.size)
+                                        for (a, b), r in zip(ends[column], knots)])
+    columns["eta"] = np.ones(sum(r.size for r in knots))
+    columns["viscosity"] = np.concatenate([
+        np.full(3, np.nan), 10.0 ** (20.0 + 3.0 * np.array([0, 1, 0, 1, 0, 1])),
+        np.full(4, 1e21), np.full(2, np.nan)])
+    return pm.MaxwellDeckModel(pm.Deck(np.concatenate(knots), columns))
+
+
+def log_model_files(directory: Path) -> list[Path]:
+    """The model files stating a rule in the logarithm."""
+    from planetmodel.conversion import prony
+    maxwell = graded_maxwell()
+    lo, hi = maxwell.layer(1).interval
+
+    def dlneta(r: np.ndarray, t: np.ndarray, p: np.ndarray) -> np.ndarray:
+        return 0.3 * np.sin(t) ** 2 * np.cos(p) * (r - lo) / (hi - lo)
+
+    grid = pm.gauss_legendre(4)
+    lateral = pm.perturbed(maxwell, "viscosity", pm.GriddedField.sampled(
+        pm.AnalyticField((lo, hi), dlneta), grid, ngll=3, lateral="cubic"), kind="log")
+    relief = pm.GriddedFunction.sampled(
+        lambda t, p: 2e3 * np.sin(t) ** 2 * np.cos(2 * p), pm.gauss_legendre(8))
+    lateral = lateral.stretched(pm.layer_linear(
+        lateral.skeleton, [None, relief, None, None, relief]))
+    return [
+        write_model(directory / "model_log.nc", maxwell, grid=pm.gauss_legendre(2)),
+        write_model(directory / "model_log_prony.nc",
+                    pm.PronyDeckModel(prony.prony_deck(maxwell)),
+                    grid=pm.gauss_legendre(2)),
+        write_model(directory / "model_log_lateral.nc", lateral, grid=grid,
+                    fields=["rho", "vsv", "viscosity"]),
     ]
 
 
@@ -482,24 +630,153 @@ def manifests(directory: Path) -> list[Path]:
     return written
 
 
+def _fault_cases() -> dict[str, dict[str, Any]]:
+    """The faults of the meshes with faults, by case and name: planes and
+    a bilinear patch on a unit sphere, with no slip."""
+    from planetmodel.fault import Fault, GeographicFrame, Plane, Slip, StructuredPatch
+
+    unit, zero = GeographicFrame(1.0), Slip(np.zeros((1, 1, 3)))
+
+    def plane(depth: float, **kw: Any) -> Any:
+        return Plane.at_depth(unit, 30.0, 40.0, depth, slip=zero, **kw)
+
+    # a plane whose up-dip edge is at the reference surface
+    trace = plane(0.15 * np.sin(np.deg2rad(60.0)), strike=20.0, dip=60.0, length=0.3,
+                  width=0.3)
+    # a main fault, and a splay whose down-dip edge lies in it exactly: a
+    # bilinear patch through two of its points and the same two moved up
+    # dip and into its hanging wall
+    main = plane(0.2, strike=0.0, dip=60.0, length=0.4, width=0.3)
+    foot = main.cartesian(np.array([-0.3, 0.3]), np.array([0.1, 0.1]))
+    rise = (0.08 * main.normal(0.0, 0.0)
+            + 0.2 * (main.cartesian(0.0, -0.5) - main.cartesian(0.0, 0.5)))
+    splay = StructuredPatch(unit, unit.coordinates(np.stack([foot + rise, foot],
+                                                            axis=1)),
+                            slip=zero, interpolation="linear")
+    # two planes crossing at their centres
+    a = plane(0.2, strike=0.0, dip=60.0, length=0.3, width=0.3)
+    b = Plane(unit, a.centroid, strike=90.0, dip=60.0, length=0.3, width=0.3,
+              slip=zero)
+    return {"surface": {"trace": Fault([trace])},
+            "splay": {"main": Fault([main]), "splay": Fault([splay])},
+            "crossing": {"a": Fault([a]), "b": Fault([b])}}
+
+
+def fault_meshes(directory: Path) -> list[Path]:
+    """The meshes with faults of the module docstring, under
+    `fault_meshes/`, each held to `testing.check_fault_mesh` and the
+    answers of the Python's rules written beside it.  None without
+    gmsh."""
+    from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
+                                    UniformInterfaces, read_mesh)
+    from planetmodel.mesh3d import manifest as mf
+    try:
+        from planetmodel.mesh3d import build_layered_mesh
+    except ImportError as error:
+        print(f"no meshes with faults without gmsh: {error}", file=sys.stderr)
+        return []
+    from planetmodel import testing
+
+    def h(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
+        c = (np.cos(theta) * np.cos(np.deg2rad(60.0)) + np.sin(theta)
+             * np.sin(np.deg2rad(60.0)) * np.cos(phi - np.deg2rad(40.0)))
+        return 0.05 * r ** 2 * np.exp(-(1.0 - c) / 0.05)
+
+    geometry = pm.Geometry(pm.Skeleton([0.0, 0.6, 1.0]), layer_names=["core", "mantle"],
+                           interface_names=["cmb", "surface"]).with_mapping(
+        pm.RadialStretch(pm.CallableDisplacement(h, name="bump"), rmax=1.0))
+    near = InterfaceSizing(0.07, 0.3, 0.1)
+    root = directory / "fault_meshes"
+    shutil.rmtree(root, ignore_errors=True)
+    written = []
+    with tempfile.TemporaryDirectory() as scratch:
+        for label, faults in _fault_cases().items():
+            spec = MeshSpec(geometry, UniformInterfaces(0.15, 0.3, 0.3), order=1,
+                            faults=[EmbeddedFault(f, name=n, sizing=near)
+                                    for n, f in faults.items()])
+            res = build_layered_mesh(spec, Path(scratch) / label / label)
+            offset = max(p.offset for v in res.preimages.values() for p in v)
+            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+                                     distance=2.0 * offset + 1e-12)
+            card = mf.read(res.manifest_path)
+            mesh = read_mesh(res.msh_path)
+            cells, layers = mesh.cells, mesh.cell_attributes
+            boundary, attributes = mesh.faces, mesh.face_attributes
+            x = np.asarray(res.mapping(mesh.points), dtype=float)
+            faces = np.flatnonzero(np.isin(attributes, [f["attribute"]
+                                                         for f in card.faults]))
+            pairs = mesh.face_cells(boundary[faces])
+            plus = mf.plus_cell(x, boundary[faces], cells[pairs])
+            curves = mf.fault_curves([boundary[attributes == f["attribute"]]
+                                      for f in card.faults],
+                                     boundary[attributes == card.surface_attribute])
+            walls = mesh.walls(card)
+
+            target = root / label
+            target.mkdir(parents=True)
+            manifest_path = target / f"{label}.json"
+            shutil.copyfile(res.manifest_path, manifest_path)
+            lines = [f"vertex {a!r} {b!r} {c!r}" for a, b, c in x.tolist()]
+            lines += [f"cell {a} {b} {c} {d} {g}"
+                      for (a, b, c, d), g in zip(cells.tolist(), layers.tolist())]
+            lines += [f"boundary {a} {b} {c} {g}"
+                      for (a, b, c), g in zip(boundary.tolist(), attributes.tolist())]
+            mesh_path = target / f"{label}.mesh.txt"
+            mesh_path.write_text("\n".join(lines) + "\n")
+            expect = [f"pair {b} {p} {q} {k}"
+                      for b, (p, q), k in zip(faces.tolist(), pairs.tolist(),
+                                              plus.tolist())]
+            for record, edges, wall in zip(card.faults, curves, walls):
+                for key in ("tip", "free_edge", "junction", "junction_end"):
+                    expect += [f"edge {record['name']} {key} {a} {b}"
+                               for a, b in getattr(edges, key).tolist()]
+                expect += [f"ends {record['name']} {card.faults[j]['name']}"
+                           for j in edges.ends_on]
+                expect += [f"wall {record['name']} {c} {w}"
+                           for c, w in zip(np.flatnonzero(wall).tolist(),
+                                           wall[wall != 0].tolist())]
+            expect_path = target / f"{label}.expect"
+            expect_path.write_text("\n".join(expect) + "\n")
+            written += [manifest_path, mesh_path, expect_path]
+    return written
+
+
 #: The kinds of deck interpolant the C++ reads, of `deck.KINDS`.
 _CPP_KINDS = ("cubic", "natural", "linear")
+
+#: The same through the logarithms, of `deck.LOG_KINDS`.
+_CPP_LOG_KINDS = tuple(f"log-{kind}" for kind in _CPP_KINDS)
+
+
+def _positive_columns(deck: Any) -> list[str]:
+    """The columns of a deck positive and finite wherever they are not
+    NaN, and not NaN throughout: those a kind of `_CPP_LOG_KINDS` joins
+    in the expectations (the C++ test finds the same)."""
+    out = []
+    for name in deck.names:
+        v = deck[name]
+        if (not np.isnan(v).all()
+                and np.all(np.isnan(v) | (np.isfinite(v) & (v > 0.0)))):
+            out.append(name)
+    return out
 
 
 def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
     """The expectation file of a deck, by the module docstring; `names` is
-    the format whose header or labels name its layers, `mineos`, `maxwell`
-    or `nd`."""
+    the format whose header or labels name its layers, `mineos`, `maxwell`,
+    `prony`, `burgers` or `nd`."""
     import warnings
 
-    from planetmodel.deck import (MAXWELL_KINDS, deck_layers, maxwell_names,
-                                  mineos_names, nd_names)
+    from planetmodel.deck import (BURGERS_KINDS, MAXWELL_KINDS, PRONY_KINDS,
+                                  deck_layers, maxwell_names, mineos_names, nd_names)
+    own_kinds = {"maxwell": MAXWELL_KINDS, "prony": PRONY_KINDS,
+                 "burgers": BURGERS_KINDS}
     lines = [f"knots {deck.nknots}",
              "boundaries " + " ".join(repr(float(b)) for b in deck.boundaries)]
     if names == "nd":
         lines += [f"label {float(r)!r} {label}" for r, label in deck.header["labels"]]
-    if names in ("maxwell", "nd"):
-        layers, faces = (maxwell_names if names == "maxwell" else nd_names)(deck)
+    if names in ("nd", *own_kinds):
+        layers, faces = (nd_names if names == "nd" else maxwell_names)(deck)
         lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
     if names == "mineos":
@@ -515,17 +792,19 @@ def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
         lines.append(f"ignored {len(caught)}")
     rng = np.random.default_rng(len(deck.radius))
-    joined = [(kind, {}) for kind in _CPP_KINDS]
-    if names == "maxwell":
-        joined.append(("maxwell", dict(MAXWELL_KINDS)))
-    for label, kinds in joined:
-        kind = "cubic" if label == "maxwell" else label
+    joined = [(kind, kind, {}, deck.names) for kind in _CPP_KINDS]
+    if names in own_kinds:
+        joined.append((names, "cubic", dict(own_kinds[names]), deck.names))
+    positive = _positive_columns(deck)
+    joined += [(kind, "cubic", {n: kind for n in positive}, positive)
+               for kind in _CPP_LOG_KINDS]
+    for label, kind, kinds, columns in joined:
         _, fields = deck_layers(deck, kind=kind, kinds=kinds)
         for i, s in enumerate(deck.layers()):
             r = deck.radius[s]
             between = np.sort(rng.uniform(r[0], r[-1], 3))
             radii = np.concatenate(([r[0]], between, [r[-1]]))
-            for name in deck.names:
+            for name in columns:
                 if name not in fields[i]:
                     lines.append(f"absent {i} {name}")
                     continue
@@ -558,10 +837,54 @@ _TVEL_LINES = (
     "95 7 3 11", "100 7.1 3.1 11.1")
 
 
+def _prony_branches(prem: Any) -> dict[str, np.ndarray]:
+    """Three Prony branches on the knots of PREM's deck: the three layers
+    above the core-mantle boundary with a relaxed part, strengths and times
+    varying across each (the times by orders of magnitude); the next of one
+    branch, NaN in the other two for the writer to complete; the three
+    above it of two branches without a relaxed part; the rest NaN."""
+    out = {f"{stem}_{k}": np.full(prem.nknots, np.nan)
+           for k in (1, 2, 3) for stem in ("relaxation_strength", "relaxation_time")}
+    for i, s in enumerate(prem.layers()):
+        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
+        if 2 <= i <= 4:
+            branches = ((0.3 + 0.1 * x, 10.0 ** (8.0 + x)), (0.2 + 0.0 * x,
+                        10.0 ** (10.0 + 2.0 * x)), (0.1 * x * x, 10.0 ** (12.0 - x)))
+        elif i == 5:
+            branches = ((1.0 + 0.0 * x, 10.0 ** (11.0 + 2.0 * x * x)),)
+        elif 6 <= i <= 8:
+            w = 0.4 + 0.2 * x
+            branches = ((w, 1e8 * 10.0 ** x), (1.0 - w, 1e11 * 10.0 ** (2.0 * x)))
+        else:
+            continue
+        for k, (w, t) in enumerate(branches, start=1):
+            out[f"relaxation_strength_{k}"][s] = w
+            out[f"relaxation_time_{k}"][s] = t
+    return out
+
+
+def _burgers_columns(prem: Any) -> dict[str, np.ndarray]:
+    """A burgers deck's three columns on the knots of PREM's deck: the
+    three layers above the core-mantle boundary Maxwell bodies, the four
+    above them Burgers bodies, every value varying across a layer, the
+    rest NaN."""
+    out = {n: np.full(prem.nknots, np.nan)
+           for n in ("viscosity", "kelvin_viscosity", "kelvin_modulus_fraction")}
+    for i, s in enumerate(prem.layers()):
+        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
+        if 2 <= i <= 4:
+            out["viscosity"][s] = 10.0 ** (21.0 + 2.0 * x ** 2)
+        elif 5 <= i <= 8:
+            out["viscosity"][s] = 10.0 ** (20.0 + x)
+            out["kelvin_viscosity"][s] = 10.0 ** (19.0 + x)
+            out["kelvin_modulus_fraction"][s] = 0.5 + 0.5 * x
+    return out
+
+
 def decks(directory: Path) -> list[Path]:
     """The decks of the module docstring, each with its expectations."""
-    from planetmodel.deck import (MAXWELL, MINEOS, ND, TVEL, Deck, DeckFormat,
-                                  read_deck, write_deck)
+    from planetmodel.deck import (BURGERS, MAXWELL, MINEOS, ND, PRONY, TVEL, Deck,
+                                  DeckFormat, read_deck, write_deck)
     data = Path(__file__).resolve().parents[2] / "examples" / "data"
     out = []
     for label, source in (("prem200", "prem.200"), ("nocrust", "prem.nocrust")):
@@ -585,6 +908,16 @@ def decks(directory: Path) -> list[Path]:
                            "interfaces": tuple(faces)})
     path = write_deck(directory / "deck_maxwell.txt", maxwell, MAXWELL)
     out += [path, _expect_deck(path, read_deck(path, MAXWELL), names="maxwell")]
+    elastic = {n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta")}
+    named = {"layers": tuple(layer_names), "interfaces": tuple(faces)}
+    prony = Deck(prem.radius, {**elastic, **_prony_branches(prem)},
+                 header={"name": "a prony deck", **named})
+    path = write_deck(directory / "deck_prony.txt", prony, PRONY)
+    out += [path, _expect_deck(path, read_deck(path, PRONY), names="prony")]
+    burgers = Deck(prem.radius, {**elastic, **_burgers_columns(prem)},
+                   header={"name": "a burgers deck", **named})
+    path = write_deck(directory / "deck_burgers.txt", burgers, BURGERS)
+    out += [path, _expect_deck(path, read_deck(path, BURGERS), names="burgers")]
     knots = Deck([0.0, 0.4, 0.4, 0.5, 0.7, 0.7, 0.75, 0.8, 0.9, 0.9, 0.92, 0.94, 0.95,
                   0.97, 0.98, 1.0],
                  {"rho": [9.0, 8.5, 6.0, 5.8, 5.5, 4.0, 3.9, 3.8, 3.6, 3.0, 2.95, 2.9,
@@ -680,8 +1013,41 @@ def _both(*edits: Any) -> Any:
     return edit
 
 
+#: Two faults of the base manifest, meeting along a junction: a fault
+#: reaching the surface, pulled back and refined towards, and a splay of
+#: two patches.
+_FAULTS: list[dict[str, Any]] = [
+    {"name": "megathrust", "attribute": 4, "layers": [2], "hanging_wall": [5, 6],
+     "tip": 1, "free_edge": 2, "junction": 3, "meets": ["splay"], "ends_on": [],
+     "controls": [[17, 17]], "offset": 3.3e-08,
+     "sizing": {"size": 0.05, "far_size": 0.3, "decay_width": 0.2}},
+    {"name": "splay", "attribute": 5, "layers": [1, 2], "hanging_wall": [4, 6, 7],
+     "tip": 4, "free_edge": None, "junction": 6, "meets": ["megathrust"],
+     "ends_on": ["megathrust"], "controls": [[9, 9], [5, 17]], "offset": 0,
+     "sizing": None}]
+
+
+#: The element attributes the base's layers carry beside `_FAULTS`: the
+#: splay's collar in the core (4), and in the mantle the megathrust's (5),
+#: both's (6) and the splay's (7).
+_COLLARS = [[1, 4], [2, 5, 6, 7], [3]]
+
+
+def _faulted(*edits: Any) -> Any:
+    """An edit adding `_FAULTS` and their collars to the base, under the
+    schema of a manifest with faults, then doing `edits` in turn."""
+    def edit(card: dict[str, Any]) -> None:
+        card["faults"] = json.loads(json.dumps(_FAULTS))
+        card["schema"] = "planetmodel.mesh.manifest/6"
+        for layer, attributes in zip(card["layers"], _COLLARS):
+            layer["attributes"] = list(attributes)
+        for e in edits:
+            e(card)
+    return edit
+
+
 #: The variants the reader accepts: the keys added within the schema left
-#: out, and an unknown key added.
+#: out, an unknown key added, and faults added.
 _ACCEPTED_MANIFESTS = {
     "optional_keys_absent": _both(_drop("refinements"), _drop("model"),
                                   _drop("scales", "temperature"), _drop("meta"),
@@ -694,6 +1060,7 @@ _ACCEPTED_MANIFESTS = {
                            *(_set("interfaces", i, "values", value=None)
                              for i in range(3)),
                            _set("scales", value=None), _set("constants", value={})),
+    "faults": _faulted(),
 }
 
 #: The malformed variants: (edit, where the fault lies, what the refusal says).
@@ -765,6 +1132,113 @@ _BAD_MANIFESTS = {
     "constants_value": (_set("constants", "G", value="one"), "constants.G",
                         "expected a number"),
     "meta_not_an_object": (_set("meta", value=[]), "meta", "expected an object"),
+    "faults_not_a_list": (_set("faults", value={}), "faults", "expected an array"),
+    "fault_missing_key": (_faulted(_drop("faults", 1, "meets")), "faults[1]",
+                          'no member "meets"'),
+    "fault_name_type": (_faulted(_set("faults", 0, "name", value=4)), "faults[0].name",
+                        "expected a string"),
+    "fault_name_repeated": (_faulted(_set("faults", 1, "name", value="megathrust")),
+                            "faults[0].name", "is repeated"),
+    "fault_name_interface": (_faulted(_set("faults", 1, "name", value="cmb")),
+                             "faults[1].name", "shares its name with an interface"),
+    "fault_attribute": (_faulted(_set("faults", 0, "attribute", value=3)),
+                        "faults[0].attribute", "expected 4, after the 3 interfaces"),
+    "fault_attributes_swapped": (_faulted(_set("faults", 0, "attribute", value=5),
+                                          _set("faults", 1, "attribute", value=4)),
+                                 "faults[0].attribute", "expected 4"),
+    "fault_layers_shell": (_faulted(_set("faults", 0, "layers", value=[2, 3])),
+                           "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_collar": (_faulted(_set("faults", 0, "layers", value=[5])),
+                            "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_empty": (_faulted(_set("faults", 0, "layers", value=[])),
+                           "faults[0].layers", "not attributes of layers of the"),
+    "fault_layers_float": (_faulted(_set("faults", 0, "layers", value=[2.0])),
+                           "faults[0].layers[0]", "expected an integer"),
+    "fault_tip_group": (_faulted(_set("faults", 1, "tip", value=1)), "faults[1].tip",
+                        "is 1, expected 4 or null"),
+    "fault_tip_type": (_faulted(_set("faults", 0, "tip", value="1")), "faults[0].tip",
+                       "expected a number"),
+    "fault_free_edge_group": (_faulted(_set("faults", 0, "free_edge", value=5)),
+                              "faults[0].free_edge", "expected 2 or null"),
+    "fault_junction_group": (_faulted(_set("faults", 0, "junction", value=6)),
+                             "faults[0].junction", "expected 3 or null"),
+    "fault_meets_unknown": (_faulted(_set("faults", 0, "meets", value=["slab"])),
+                            "faults[0].meets", "not the names of other faults"),
+    "fault_meets_itself": (_faulted(_set("faults", 0, "meets", value=["megathrust"])),
+                           "faults[0].meets", "not the names of other faults"),
+    "fault_meets_type": (_faulted(_set("faults", 0, "meets", value=[1])),
+                         "faults[0].meets[0]", "expected a string"),
+    "fault_meets_one_way": (_faulted(_set("faults", 1, "meets", value=[]),
+                                     _set("faults", 1, "junction", value=None)),
+                            "faults[0].meets", "not every one of them meets"),
+    "fault_junction_alone": (_faulted(_set("faults", 0, "meets", value=[]),
+                                      _set("faults", 1, "meets", value=[])),
+                             "faults[0].junction", "a junction is where it meets"),
+    "fault_meets_without_junction": (
+        _faulted(_set("faults", 0, "junction", value=None)), "faults[0].junction",
+        "a junction is where it meets"),
+    "fault_controls_small": (
+        _faulted(_set("faults", 1, "controls", value=[[9, 9], [3, 17]])),
+        "faults[1].controls", "each at least 4"),
+    "fault_controls_shape": (_faulted(_set("faults", 0, "controls", value=[[17]])),
+                             "faults[0].controls", "not [n_u, n_v] per patch"),
+    "fault_controls_float": (
+        _faulted(_set("faults", 0, "controls", value=[[17.0, 17]])),
+        "faults[0].controls[0][0]", "expected an integer"),
+    "fault_offset": (_faulted(_set("faults", 0, "offset", value=-1e-9)),
+                     "faults[0].offset", "not a distance"),
+    "fault_offset_type": (_faulted(_set("faults", 0, "offset", value="0")),
+                          "faults[0].offset", "expected a number"),
+    "fault_sizing": (_faulted(_set("faults", 0, "sizing", "size", value=0.5)),
+                     "faults[0].sizing", "not 0 < size <= far_size"),
+    "fault_sizing_decay": (
+        _faulted(_set("faults", 0, "sizing", "decay_width", value=0)),
+        "faults[0].sizing", "with a positive decay_width"),
+    "fault_sizing_missing": (_faulted(_drop("faults", 0, "sizing", "far_size")),
+                             "faults[0].sizing", 'no member "far_size"'),
+    "schema_5_with_faults": (_faulted(_set("schema",
+                                           value="planetmodel.mesh.manifest/5")),
+                             "faults", "a manifest with faults is"),
+    "schema_6_without_faults": (_set("schema", value="planetmodel.mesh.manifest/6"),
+                                "faults", "has faults"),
+    "fault_ends_on_unmet": (_faulted(_set("faults", 0, "ends_on", value=["slab"])),
+                            "faults[0].ends_on", "not faults it meets"),
+    "fault_ends_on_twice": (_faulted(_set("faults", 1, "ends_on",
+                                          value=["megathrust", "megathrust"])),
+                            "faults[1].ends_on", "each once"),
+    "fault_ends_on_type": (_faulted(_set("faults", 1, "ends_on", value=[4])),
+                           "faults[1].ends_on[0]", "expected a string"),
+    "fault_hanging_wall_missing": (_faulted(_drop("faults", 0, "hanging_wall")),
+                                   "faults[0]", 'no member "hanging_wall"'),
+    "fault_hanging_wall_layer": (_faulted(_set("faults", 0, "hanging_wall",
+                                               value=[2, 5])),
+                                 "faults[0].hanging_wall", "not collar attributes"),
+    "fault_hanging_wall_order": (_faulted(_set("faults", 1, "hanging_wall",
+                                               value=[6, 4, 7])),
+                                 "faults[1].hanging_wall", "in increasing order"),
+    "layer_attributes_missing": (_faulted(_drop("layers", 1, "attributes")),
+                                 "layers[1]", 'no member "attributes"'),
+    "layer_attributes_own": (_faulted(_set("layers", 1, "attributes",
+                                           value=[5, 2, 6, 7])),
+                             "layers[1].attributes", "not its own attribute 2"),
+    "layer_attributes_order": (_faulted(_set("layers", 1, "attributes",
+                                             value=[2, 6, 5, 7])),
+                               "layers[1].attributes", "in increasing order"),
+    "layer_attributes_type": (_faulted(_set("layers", 1, "attributes",
+                                            value=[2, 5.0, 6, 7])),
+                              "layers[1].attributes[1]", "expected an integer"),
+    "shell_collar": (_faulted(_set("layers", 2, "attributes", value=[3, 8])),
+                     "layers[2].attributes", "a shell holds no fault"),
+    "collar_twice": (_faulted(_set("layers", 0, "attributes", value=[1, 4, 5])),
+                     "layers[1].attributes", "which layers[0] lists too"),
+    "collar_gap": (_faulted(_set("layers", 1, "attributes", value=[2, 5, 6, 8]),
+                            _set("faults", 1, "hanging_wall", value=[4, 6, 8])),
+                   "layers", "not 4..7"),
+    "collar_in_no_wall": (_faulted(_set("faults", 1, "hanging_wall", value=[4, 6])),
+                          "layers[1].attributes", "in no fault's hanging wall"),
+    "collar_order": (_faulted(_set("faults", 0, "hanging_wall", value=[6, 7]),
+                              _set("faults", 1, "hanging_wall", value=[4, 5, 7])),
+                     "layers[1].attributes", "out of the order of layer and faults"),
 }
 
 
@@ -963,6 +1437,15 @@ def _renaming(old: str, new: str, *, group: str) -> Any:
     return lambda ds: ds.groups[group].renameVariable(old, new)
 
 
+def _negating(*, variable: str, group: str) -> Any:
+    """An edit storing -1 at the first node holding a variable."""
+    def edit(ds: Any) -> None:
+        var = ds.groups[group].variables[variable]
+        held = np.flatnonzero(~np.isnan(np.ma.filled(var[:], np.nan)))
+        var[int(held[0])] = -1.0
+    return edit
+
+
 _P = {"group": "part_0"}
 _RHO = {"group": "part_0", "variable": "rho"}
 _BETWEEN = {"group": "geometry", "variable": "boundary_displacement"}
@@ -1056,6 +1539,15 @@ _BAD_MODELS: dict[str, tuple[str, Any, str, str]] = {
                               "surfaces/K_shape", "K_shape_poles is missing"),
     "surface_name_taken": ("model_surfaces.nc", _renaming("shift", "rho", **_S),
                            "surfaces/rho", "never both"),
+    "log_rule_schema": ("model_log.nc", _setting("schema", "planetmodel.model/1"),
+                        "part_0/viscosity", "does not hold"),
+    "log_schema_unused": ("model_lateral.nc", _setting("schema", "planetmodel.model/2"),
+                          "schema", "and none does"),
+    "log_rule_lateral": ("model_lateral.nc",
+                         _setting("radial_interpolation", "log-polynomial", **_RHO),
+                         "part_0/rho", "rank 0 of the radius alone"),
+    "log_rule_value": ("model_log.nc", _negating(variable="viscosity", group="part_0"),
+                       "part_0/viscosity", "not positive"),
 }
 
 
@@ -1239,9 +1731,434 @@ def surface_files(directory: Path) -> list[Path]:
     return [path, expect]
 
 
+def _fault_examples() -> dict[str, tuple[Any, dict[str, Any]]]:
+    """The faults of the module docstring, with what they are written with."""
+    from planetmodel.fault import (CartesianFrame, Fault, GeographicFrame, Plane,
+                                   Slip, StructuredPatch)
+
+    rng = np.random.default_rng(23)
+    earth = GeographicFrame(6371e3)
+    rupture = Plane.at_depth(earth, 38.3, 142.4, 20e3, strike=195.0, dip=14.0,
+                             length=400e3, width=160e3,
+                             slip=Slip.from_rake([[80.0, 95.0], [90.0, 110.0],
+                                                  [70.0, 85.0]],
+                                                 [[3.0, 1.0], [8.0, 4.0], [2.0, 0.5]],
+                                                 opening=[[0.0, 0.0], [0.3, 0.0],
+                                                          [0.0, 0.0]]))
+    km = GeographicFrame(6371.0)
+    main = Plane.at_depth(km, 35.0, 140.0, 20.0, strike=200.0, dip=15.0,
+                          length=100.0, width=50.0,
+                          slip=Slip(rng.normal(size=(3, 4, 3, 3)), rule="linear"))
+    U, V = np.meshgrid(np.linspace(-0.5, 0.5, 6), np.linspace(-0.5, 0.5, 5),
+                       indexing="ij")
+    base = Plane.at_depth(km, 34.2, 139.7, 30.0, strike=210.0, dip=25.0, length=60.0,
+                          width=40.0, slip=Slip(np.zeros((1, 1, 3))))
+    bend = np.stack([0.02 * U * V, 0.03 * U ** 2, -4.0 * V ** 2 + 1.0 * U], axis=-1)
+    bent = StructuredPatch(km, base.position(U, V) + bend,
+                           slip=Slip(rng.normal(size=(3, 4, 4, 3)), rule="cubic"),
+                           interpolation="cubic")
+    U, V = np.meshgrid(np.linspace(-0.5, 0.5, 4), np.linspace(-0.5, 0.5, 3),
+                       indexing="ij")
+    lon = 179.6 + 0.8 * (U + 0.5)
+    lon = np.where(lon > 180.0, lon - 360.0, lon)
+    crossing = StructuredPatch(
+        km, np.stack([-10.0 - 0.3 * (V + 0.5) + 0.05 * U ** 2, lon,
+                      6371.0 - 5.0 - 30.0 * (V + 0.5) - 3.0 * (U * V)], axis=-1),
+        slip=Slip(rng.normal(size=(3, 2, 2, 3))), interpolation="linear")
+    local = CartesianFrame(surface=1.5)
+    U, V = np.meshgrid(np.linspace(-0.5, 0.5, 3), np.linspace(-0.5, 0.5, 3),
+                       indexing="ij")
+    twisted = StructuredPatch(local, np.stack([3.0 * U, 2.0 * V, -4.0 + 1.6 * U * V
+                                               - 0.4 * V], axis=-1),
+                              slip=Slip(rng.normal(size=(2, 3, 3, 3)), rule="linear"),
+                              interpolation="linear")
+    wall = Plane(local, [1.0, 2.0, -3.0], strike=250.0, dip=90.0, length=2.0,
+                 width=1.0, slip=Slip(rng.normal(size=(2, 4, 4, 3)), rule="cubic"))
+    sill = Plane(local, [0.0, 0.0, -1.0], strike=30.0, dip=0.0, length=2.0, width=2.0,
+                 slip=Slip.from_rake(0.0, [[[0.0]], [[0.0]]],
+                                     opening=[[[0.4]], [[0.7]]]))
+    return {
+        "fault_static": (Fault([rupture]), {}),
+        "fault_afterslip": (Fault([main, bent, crossing], support="node",
+                                  time_interpolation="linear",
+                                  time=np.array([0.0, 1.0, 2.5]),
+                                  scales=pm.Scales(length=1e3, time=3.15576e7)),
+                            {"names": ["main", None, "splay"],
+                             "meta": {"event": "fixture"}, "citation": ("a work",)}),
+        "fault_cartesian": (Fault([twisted, wall, sill], support="node",
+                                  time_interpolation="previous",
+                                  time=np.array([-1004.0, -999.0])),
+                            {"names": ["twisted", "wall", "sill"]}),
+    }
+
+
+#: The (u, v) at which every patch is evaluated: corners, edges, the
+#: centre, knots of the grids above and cell boundaries among them.
+_FAULT_UV = ((-0.5, -0.5), (0.5, 0.5), (0.5, -0.5), (-0.5, 0.5), (0.0, 0.0),
+             (0.13, -0.37), (-0.42, 0.29), (0.1, -0.25), (-0.3, 0.0),
+             (0.5, 0.11), (-0.1666, 0.5), (1 / 6, 1 / 3), (0.25, 0.4999))
+
+
+def _fault_points(fault: Any, rng: np.random.Generator) -> list[np.ndarray]:
+    """Physical points about a fault: beside each patch along its normal,
+    beyond its edges and corners in its tangent plane, and scattered."""
+    out = []
+    for p in fault.patches:
+        size = float(np.linalg.norm(p.cartesian(0.5, 0.5) - p.cartesian(-0.5, -0.5)))
+        for u, v, off in ((0.1, 0.2, 0.01), (-0.3, -0.1, -0.02), (0.37, 0.41, 0.005),
+                          (0.0, -0.5, 0.0), (-0.1, 0.05, 0.08)):
+            out.append(p.cartesian(u, v) + off * size * p.normal(u, v))
+        for u, v, du, dv in ((0.5, 0.0, 1.0, 0.0), (-0.5, 0.2, -1.0, 0.0),
+                             (0.1, 0.5, 0.0, 1.0), (0.5, 0.5, 1.0, 1.0),
+                             (-0.5, -0.5, -1.0, -0.6)):
+            xu, xv = p.tangents(u, v)
+            out.append(p.cartesian(u, v) + 0.07 * (du * xu + dv * xv)
+                       + 0.01 * size * p.normal(u, v))
+        for _ in range(3):
+            u, v = rng.uniform(-0.45, 0.45, 2)
+            out.append(p.cartesian(u, v) + 0.03 * size * rng.normal(size=3))
+    return out
+
+
+def _vector(values: Any) -> str:
+    return " ".join(repr(float(x)) for x in np.ravel(values))
+
+
+def _expect_fault(fault: Any, names: Any, rng: np.random.Generator) -> list[str]:
+    """The Python's answers about a fault, as the module docstring lists them."""
+    from planetmodel.fault import BASES
+
+    frame = fault.frame
+    reference = frame.radius if frame.kind == "geographic" else frame.surface
+    lines = [f"fault {frame.kind} {reference!r} {fault.support} "
+             f"{fault.time_interpolation} {len(fault.patches)} {fault.nslices}"]
+    s = fault.scales
+    lines.append(f"scales {s.length!r} {s.mass!r} {s.time!r} {s.temperature!r}")
+    if fault.time is not None:
+        lines += [f"time {k} {float(t)!r}" for k, t in enumerate(fault.time)]
+    names = names or [None] * len(fault.patches)
+    for k, (p, name) in enumerate(zip(fault.patches, names)):
+        tag = "-" if name is None else name.encode("utf-8").hex()
+        lines.append(f"patch {k} {p.kind} {tag}")
+        for u, v in _FAULT_UV:
+            head = f"{k} {u!r} {v!r}"
+            xu, xv = p.tangents(u, v)
+            lines += [f"point {head} {_vector(p.cartesian(u, v))}",
+                      f"position {head} {_vector(p.position(u, v))}",
+                      f"tangents {head} {_vector([xu, xv])}",
+                      f"second {head} {_vector(p.second_derivatives(u, v))}",
+                      f"normal {head} {_vector(p.normal(u, v))}",
+                      f"area {head} {float(p.area_element(u, v))!r}",
+                      f"basis {head} {_vector(p.fault_basis(u, v))}"]
+    if fault.time is None:
+        dates = [(None, "refuse")]
+    else:
+        t = fault.time
+        # within the default tolerance of a node and of the ends, and
+        # beyond it, the two languages' tolerances held to one another: the
+        # tolerance is relative to the axis's scale, its span or the
+        # magnitude of its first or last time, whichever is largest
+        tol = 1e-12 * max(float(t[-1] - t[0]), abs(float(t[0])), abs(float(t[-1])))
+        dates = [(float(t[0]), "refuse"), (float(t[-1]), "refuse"),
+                 (float(0.6 * t[0] + 0.4 * t[-1]), "refuse"),
+                 (float(t[-1] + 1.0), "refuse"), (float(t[-1] + 1.0), "hold"),
+                 (float(t[-1] + 0.5 * tol), "refuse"),
+                 (float(t[-1] + 3.0 * tol), "refuse"),
+                 (float(t[-1] - 0.4 * tol), "refuse"),
+                 (float(t[0] - 0.4 * tol), "refuse"),
+                 (float(t[0] - 2.0), "hold")]
+        if t.size > 2:
+            dates += [(float(t[1]), "refuse"), (float(t[1] - 0.3 * tol), "refuse")]
+    for k in range(len(fault.patches)):
+        for u, v in _FAULT_UV[:9]:
+            for date, extrapolation in dates:
+                for basis in BASES:
+                    tag = "-" if date is None else repr(date)
+                    head = f"slip {k} {u!r} {v!r} {tag} {extrapolation} {basis}"
+                    try:
+                        got = fault.slip_vector(k, u, v, date=date, basis=basis,
+                                                extrapolation=extrapolation)
+                    except ValueError:
+                        lines.append(f"{head} refused")
+                        continue
+                    lines.append(f"{head} {_vector(got)}")
+    n = len(fault.patches)
+    for points, n_u, n_v, (date, extrapolation) in (
+            (1, [2] * n, [3] * n, dates[0]),
+            (3, list(range(1, n + 1)), list(range(n, 0, -1)), dates[-1])):
+        q = fault.quadrature(n_u, n_v, points=points, date=date,
+                             extrapolation=extrapolation)
+        lines.append(f"quadrature {points} {'-' if date is None else repr(date)} "
+                     f"{extrapolation} {','.join(map(str, n_u))} "
+                     f"{','.join(map(str, n_v))} {q.size}")
+        for i in range(q.size):
+            lines.append(f"qpoint {i} {int(q.patch[i])} {float(q.u[i])!r} "
+                         f"{float(q.v[i])!r} {float(q.weights[i])!r} "
+                         f"{_vector(q.points[i])} {_vector(q.positions[i])} "
+                         f"{_vector(q.normals[i])} {_vector(q.slip[i])}")
+    for points, n_u, n_v in ((2, [2] * n, [1] * n),
+                             (1, list(range(1, n + 1)), [2] * n)):
+        sq = fault.slice_quadrature(n_u, n_v, points=points)
+        lines.append(f"slices {points} {','.join(map(str, n_u))} "
+                     f"{','.join(map(str, n_v))} {sq.size} {sq.nslices}")
+        for i in range(sq.size):
+            lines.append(f"spoint {i} {int(sq.patch[i])} {float(sq.u[i])!r} "
+                         f"{float(sq.v[i])!r} {float(sq.weights[i])!r} "
+                         f"{_vector(sq.points[i])} {_vector(sq.positions[i])} "
+                         f"{_vector(sq.normals[i])} {_vector(sq.slip[:, i])}")
+    points = _fault_points(fault, rng)
+    for x in points:
+        found = fault.locate(x)
+        lines.append(f"locate {_vector(x)} {int(found.patch)} {float(found.u)!r} "
+                     f"{float(found.v)!r} {float(found.distance)!r} "
+                     f"{int(bool(found.inside))} {int(bool(found.converged))}")
+    near = np.array(points)
+    distance = np.abs(fault.locate(near).distance)
+    limit = float(np.max(distance)) * 1.01
+    date = dates[min(2, len(dates) - 1)][0]
+    for basis in BASES:
+        got = fault.slip_at(near, max_distance=limit, date=date, basis=basis)
+        for x, value in zip(near, got):
+            lines.append(f"slip_at {limit!r} {'-' if date is None else repr(date)} "
+                         f"{basis} {_vector(x)} {_vector(value)}")
+    tight = float(np.median(distance))
+    lines.append(f"slip_at_refused {tight!r} {_vector(near[np.argmax(distance)])}")
+    return lines
+
+
+def _adding_dimension(name: str, *, group: str | None = None) -> Any:
+    """An edit adding a dimension of two to the root or a group."""
+    return lambda ds: (ds if group is None else ds.groups[group]).createDimension(
+        name, 2)
+
+
+def _flattening(group: str) -> Any:
+    """An edit collapsing a Cartesian structured patch onto a line."""
+    def edit(ds: Any) -> None:
+        for name in ("y", "z"):
+            ds.groups[group].variables[name][:] = 0.0
+    return edit
+
+
+_P0 = {"group": "patch_0"}
+_SLIP0 = {"group": "patch_0", "variable": "slip"}
+
+#: The malformed fault files: (the file copied, an edit by netCDF4, where
+#: the fault lies, what the refusal says).
+_BAD_FAULTS: dict[str, tuple[str, Any, str, str]] = {
+    "schema": ("fault_static.nc", _setting("schema", "planetmodel.fault/0"), "schema",
+               "this reader reads planetmodel.fault/1"),
+    "no_schema": ("fault_static.nc", _deleting("schema"), "schema",
+                  "not a planetmodel fault file"),
+    "root_attribute": ("fault_static.nc", _setting("rupture_velocity", 2.5),
+                       "rupture_velocity", "planetmodel.fault/1 does not name it"),
+    "no_created": ("fault_static.nc", _deleting("created"), "created",
+                   "is missing or empty"),
+    "scale": ("fault_static.nc", _setting("scale_time", -1.0), "scale_time",
+              "is missing or not positive"),
+    "frame": ("fault_static.nc", _setting("frame", "spherical"), "frame",
+              "not one of geographic, cartesian"),
+    "radius": ("fault_static.nc", _setting("reference_radius", 0.0), "reference_radius",
+               "not a positive number"),
+    "both_references": ("fault_static.nc", _setting("reference_surface", 0.0),
+                        "reference_surface",
+                        "not an attribute of a geographic fault file"),
+    "no_surface": ("fault_cartesian.nc", _deleting("reference_surface"),
+                   "reference_surface", "is missing or not a finite number"),
+    "interval": ("fault_afterslip.nc", _setting("time_support", "interval"),
+                 "time_support",
+                 "is interval, which is not part of planetmodel.fault/1"),
+    "instant": ("fault_afterslip.nc", _setting("time_support", "instant"),
+                "time_support", "is instant, which is not part of planetmodel.fault/1"),
+    "support": ("fault_static.nc", _setting("time_support", "always"), "time_support",
+                "not one of static, node"),
+    "time_rule": ("fault_static.nc", _setting("time_interpolation", "linear"),
+                  "time_interpolation", "is not sampled between times"),
+    "time_rule_unknown": ("fault_afterslip.nc", _setting("time_interpolation", "cubic"),
+                          "time_interpolation",
+                          "'slip': time_interpolation 'cubic' is not one of "
+                          f"{TIME_METHODS}"),
+    "patches_text": ("fault_static.nc", _setting("patches", "one"), "patches",
+                     "not a positive integer"),
+    "patches_float": ("fault_static.nc", _setting("patches", 1.0), "patches",
+                      "not a positive integer"),
+    "patches_more": ("fault_static.nc", _setting("patches", np.int32(2)), "patch_1",
+                     "is missing: the file states 2 patches"),
+    "patches_fewer": ("fault_afterslip.nc", _setting("patches", np.int32(2)), "patch_2",
+                      "is not one of the 2 patches"),
+    "root_dimension": ("fault_static.nc", _adding_dimension("time"), "time",
+                       "is not a dimension of a static fault file"),
+    "time_order": ("fault_afterslip.nc", _storing((2,), 0.5, variable="time"), "time",
+                   "not finite and strictly increasing"),
+    "time_attribute": ("fault_afterslip.nc",
+                       _setting("calendar", "julian", variable="time"),
+                       "time.calendar", "does not name it"),
+    "kind": ("fault_static.nc", _setting("kind", "triangulated", **_P0),
+             "patch_0.kind", "not one of plane, structured"),
+    "patch_attribute": ("fault_static.nc", _setting("rake", 90.0, **_P0),
+                        "patch_0.rake", "not an attribute of a plane patch"),
+    "name": ("fault_static.nc", _setting("name", 3.0, **_P0), "patch_0.name",
+             "is not text"),
+    "patch_dimension": ("fault_static.nc", _adding_dimension("nu", group="patch_0"),
+                        "patch_0/nu", "not a dimension of a plane patch"),
+    "centroid": ("fault_static.nc", _setting("centroid", [91.0, 0.0, 1e6], **_P0),
+                 "patch_0.centroid", "latitude outside [-90, 90]"),
+    "centroid_size": ("fault_static.nc", _setting("centroid", [1.0, 2.0], **_P0),
+                      "patch_0.centroid", "not three finite numbers"),
+    "dip": ("fault_static.nc", _setting("dip", 95.0, **_P0), "patch_0.dip",
+            "not in [0, 90] degrees"),
+    "width": ("fault_static.nc", _setting("width", 0.0, **_P0), "patch_0.width",
+              "not a positive number"),
+    "strike": ("fault_static.nc", _deleting("strike", **_P0), "patch_0.strike",
+               "is missing or not a finite number"),
+    "interpolation": ("fault_afterslip.nc",
+                      _setting("interpolation", "quintic", group="patch_1"),
+                      "patch_1.interpolation", "not one of linear, cubic"),
+    "nodes": ("fault_afterslip.nc", _setting("interpolation", "cubic", group="patch_2"),
+              "patch_2", "the cubic rule needs at least 4 each way"),
+    "position_renamed": ("fault_afterslip.nc",
+                         _renaming("radius", "r", group="patch_1"),
+                         "patch_1/r", "not a variable of a structured patch"),
+    "position_nan": ("fault_afterslip.nc",
+                     _storing((1, 2), np.nan, variable="radius", group="patch_1"),
+                     "patch_1", "control positions that are not finite"),
+    "position_latitude": ("fault_afterslip.nc",
+                          _storing((0, 0), -91.0, variable="latitude", group="patch_1"),
+                          "patch_1", "latitude outside [-90, 90]"),
+    "position_attribute": ("fault_afterslip.nc",
+                           _setting("axis", "Y", group="patch_1", variable="latitude"),
+                           "patch_1/latitude.axis", "does not name it"),
+    "degenerate": ("fault_cartesian.nc", _flattening("patch_0"), "patch_0",
+                   "is degenerate"),
+    "slip_renamed": ("fault_static.nc", _renaming("slip", "slip_east", **_P0),
+                     "patch_0/slip_east", "not a variable of a plane patch"),
+    "slip_components": ("fault_static.nc",
+                        _setting("components", "east north up", **_SLIP0),
+                        "patch_0/slip.components",
+                        "not \"strike_slip dip_slip opening\""),
+    "slip_rule": ("fault_static.nc", _setting("rule", "nearest", **_SLIP0),
+                  "patch_0/slip.rule", "not one of cell, linear, cubic"),
+    "slip_nodes": ("fault_static.nc", _setting("rule", "cubic", **_SLIP0),
+                   "patch_0/slip", "the cubic rule needs at least 4 nodes"),
+    "slip_nan": ("fault_afterslip.nc",
+                 _storing((1, 0, 1, 2), np.nan, variable="slip", group="patch_0"),
+                 "patch_0/slip", "values that are not finite"),
+    "slip_attribute": ("fault_static.nc", _setting("rake", 90.0, **_SLIP0),
+                       "patch_0/slip.rake", "does not name it"),
+}
+
+
+def fault_files(directory: Path) -> list[Path]:
+    """The fault files of the module docstring, their expectations, and
+    the malformed copies."""
+    import netCDF4
+
+    from planetmodel.faultfile import read_fault_file, write_fault
+    from planetmodel.testing import check_fault_file
+
+    rng = np.random.default_rng(29)
+    out = []
+    for name, (fault, kw) in _fault_examples().items():
+        path = write_fault(directory / f"{name}.nc", fault,
+                           source="planetmodel fixtures", **kw)
+        check_fault_file(path, fault, **kw)
+        back = read_fault_file(path).fault
+        expect = directory / f"{name}.expect"
+        expect.write_text("\n".join(_expect_fault(back, kw.get("names"), rng)) + "\n")
+        out += [path, expect]
+    root = directory / "fault_cases"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+    lines = []
+    for label, (base, edit, where, phrase) in _BAD_FAULTS.items():
+        path = root / f"bad_{label}.nc"
+        shutil.copyfile(directory / base, path)
+        with netCDF4.Dataset(path, "a") as ds:
+            edit(ds)
+        try:
+            read_fault_file(path)
+        except ValueError as error:
+            said = str(error)
+            if f": {where}: " not in said or phrase not in said:
+                raise AssertionError(f"{label}: the Python says {said!r}") from None
+        else:
+            raise AssertionError(f"{label}: the Python reads the malformed file")
+        out.append(path)
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
+
+
+def slip_from_rake(directory: Path) -> list[Path]:
+    """`Slip.from_rake` on grids of every rule, its arguments one value,
+    one a point or one a slice and point, as the module docstring lists
+    them (`slip_rake.txt`)."""
+    from planetmodel.fault import Slip
+
+    rng = np.random.default_rng(37)
+    cases = [
+        (1, 1, 1, "cell", 45.0, 3.0, 0.0),
+        (1, 2, 3, "cell", rng.uniform(-180.0, 180.0, (2, 3)), 2.5, 0.1),
+        (3, 2, 2, "linear", rng.uniform(0.0, 360.0, (2, 2)),
+         rng.uniform(0.0, 4.0, (3, 2, 2)), 0.0),
+        (2, 4, 4, "cubic",
+         np.array([90.0, 180.0, -90.0, 270.0, 1e-3, 359.99, 0.0, -180.0,
+                   30.0, 60.0, 120.0, 150.0, 210.0, 240.0, 300.0, 330.0]
+                  * 2).reshape(2, 4, 4),
+         rng.uniform(-1.0, 5.0, (2, 4, 4)), rng.uniform(0.0, 0.5, (2, 4, 4))),
+    ]
+    lines = []
+    for nslices, n_u, n_v, rule, rake, magnitude, opening in cases:
+        slip = Slip.from_rake(rake, magnitude, opening=opening, rule=rule)
+        lines += [f"case {nslices} {n_u} {n_v} {rule}",
+                  f"rake {_vector(rake)}", f"magnitude {_vector(magnitude)}",
+                  f"opening {_vector(opening)}", f"values {_vector(slip.values)}"]
+    path = directory / "slip_rake.txt"
+    path.write_text("\n".join(lines) + "\n")
+    return [path]
+
+
+def burgers(directory: Path) -> list[Path]:
+    """`burgers_terms` and `burgers_parameters` (`burgers.txt`): `terms
+    <modulus> <viscosity> <kelvin_viscosity> <kelvin_modulus_fraction>`
+    and the strengths and times, faster first, for bodies across the
+    ranges a mantle spans, the Kelvin element far faster and far slower
+    than the Maxwell one and the roots nearly equal among them; and
+    `parameters <modulus> <w_1> <w_2> <tau_1> <tau_2>` and the viscosity
+    and the Kelvin element, for those branches in both orders."""
+    from planetmodel.conversion.prony import burgers_parameters, burgers_terms
+
+    rng = np.random.default_rng(41)
+    bodies = [(7e10, 1e21, 1e20, 0.5), (7e10, 1e21, 2e20, 1.0),
+              (3e10, 1e19, 1e18, 1.0), (7e10, 1e21, 1e25, 1e-3),
+              (7e10, 1e21, 1e15, 1e3), (1.0, 1.0, 1.0, 1.0),
+              (7e10, 1e21, 1e21, 1e-6), (7e10, 1e18, 1e24, 1e6), (2.0, 3.0, 5.0, 7.0)]
+    for _ in range(12):
+        bodies.append((float(10.0 ** rng.uniform(9.0, 12.0)),
+                       float(10.0 ** rng.uniform(17.0, 24.0)),
+                       float(10.0 ** rng.uniform(15.0, 25.0)),
+                       float(10.0 ** rng.uniform(-3.0, 3.0))))
+    lines = []
+    for mu, eta, eta_k, f in bodies:
+        w, tau = burgers_terms(mu, eta, kelvin_viscosity=eta_k,
+                               kelvin_modulus_fraction=f)
+        lines.append(f"terms {mu!r} {eta!r} {eta_k!r} {f!r} {_vector(w)} "
+                     f"{_vector(tau)}")
+        for order in ((0, 1), (1, 0)):
+            ws, ts = w[list(order)], tau[list(order)]
+            back = burgers_parameters(mu, ws, ts)
+            lines.append(f"parameters {mu!r} {_vector(ws)} {_vector(ts)} "
+                         f"{_vector(back)}")
+    path = directory / "burgers.txt"
+    path.write_text("\n".join(lines) + "\n")
+    return [path]
+
+
 def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
     """Every fixture into `directory`, each model file validated; the
-    manifests, which build meshes, only where `meshes` is true."""
+    manifests and the meshes with faults, which build meshes, only where
+    `meshes` is true."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     models = model_files(directory)
@@ -1249,10 +2166,11 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
         validate_structure(path)
     return (models + model_cases(directory) + gll(directory) + grids(directory)
             + vocabulary(directory) + surface_files(directory)
+            + fault_files(directory) + slip_from_rake(directory) + burgers(directory)
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
             + manifest_cases(directory) + decks(directory)
-            + (manifests(directory) if meshes else []))
+            + (manifests(directory) + fault_meshes(directory) if meshes else []))
 
 
 if __name__ == "__main__":
