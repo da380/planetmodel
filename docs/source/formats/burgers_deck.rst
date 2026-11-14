@@ -24,7 +24,10 @@ one branch.  The relaxation is in shear alone; the bulk modulus is
 elastic.  The shear modulus ``mu`` is the Voigt average of the elastic
 values, ``(A + C - 2F + 5N + 6L) / 15`` with ``A = rho vph^2``, ``C =
 rho vpv^2``, ``L = rho vsv^2``, ``N = rho vsh^2`` and ``F = eta (A -
-2L)``.
+2L)``.  As any deck, it is dense enough in knots that the choice of
+interpolation between them does not matter in practice: the kinds the
+readers join them by are a default, not part of the model's definition
+(:doc:`maxwell_deck`).
 
 The Python writes one with ``planetmodel.write_deck(path, deck,
 BURGERS)``, a deck from any model whose layers are Maxwell or Burgers
@@ -120,12 +123,19 @@ combination is refused, as is a value that is not positive and finite.
 The readers and the writers both hold a deck to these rules, naming the
 layer, the column and the radius of the first value that breaks them.
 
-The readers join each layer's knots by a piecewise polynomial: the
-velocities and the density by a not-a-knot cubic spline (the parabola
-through three knots, the line through two), the three rheological
-columns by straight lines, which keep them positive between knots, as a
-Maxwell deck's viscosity is joined.  The Python and the C++ give the same
-functions.
+The readers join each layer's knots: the velocities and the density by a
+not-a-knot cubic spline (the parabola through three knots, the line
+through two), the two viscosities in their logarithm by straight lines,
+``log-linear``, geometric between knots, as a Maxwell deck's viscosity
+is joined, and the Kelvin modulus fraction by straight lines; all three
+stay positive between knots.  The kinds given replace the defaults
+whole: the Python's ``BurgersDeckModel(path, kinds={"viscosity":
+"linear", "kelvin_viscosity": "linear", "kelvin_modulus_fraction":
+"linear"})``, or ``DeckLayers(deck, "cubic", {{"viscosity", "linear"},
+{"kelvin_viscosity", "linear"}, {"kelvin_modulus_fraction", "linear"}})``
+in C++, joins the viscosities' values by straight lines instead.  The
+Python and the C++ give the same functions, values and derivatives, to
+rounding.
 
 ``BurgersDeckModel`` gives a Maxwell layer its viscosity and a Burgers
 layer its two Prony branches at every point, of the joined columns and

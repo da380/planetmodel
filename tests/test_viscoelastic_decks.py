@@ -12,10 +12,11 @@ from planetmodel import (BURGERS, MAXWELL, PRONY, BurgersDeckModel, Deck,
                          MaxwellDeckModel, PronyDeckModel, deck_layers, read_deck,
                          sample_deck, write_deck)
 from planetmodel.conversion import prony
-from planetmodel.deck import (BURGERS_COLUMNS, MAXWELL_COLUMNS, PRONY_COLUMNS,
-                              PRONY_KINDS, STRENGTH_ROUNDING, prony_branches,
-                              prony_columns)
+from planetmodel.deck import (BURGERS_COLUMNS, BURGERS_KINDS, MAXWELL_COLUMNS,
+                              MAXWELL_KINDS, PRONY_COLUMNS, PRONY_KINDS,
+                              STRENGTH_ROUNDING, prony_branches, prony_columns)
 from planetmodel.fields import constant_field
+from planetmodel.layerfunction import ExponentialLayer, PolynomialLayer
 
 YEAR = 3.15576e7
 
@@ -60,10 +61,12 @@ def _viscous(model):
 def test_a_maxwell_deck_is_a_one_branch_prony_deck_of_the_same_body(tmp_path):
     """At every knot the one branch is the Maxwell body to the eight digits
     of the time written, M(s) over eight decades of s about the Maxwell
-    time and the moduli frozen at glacial and seismic periods; between
-    knots the time is the line through the knots' eta / mu where the
-    Maxwell deck's is eta's line over mu's cubic, which differ at second
-    order in the knot spacing."""
+    time and the moduli frozen at glacial and seismic periods.  Between
+    knots the time is geometric in the knots' eta / mu, the viscosity being
+    constant through each layer, where the Maxwell deck's is eta over mu's
+    cubic: they differ by the curvature of log mu between the knots, at
+    second order in their spacing, 8.2e-5 at most on these knots, about
+    32 km apart."""
     path = write_deck(tmp_path / "m.deck",
                       sample_deck(_maxwell_prem(), MAXWELL_COLUMNS), MAXWELL)
     maxwell = MaxwellDeckModel(path)
@@ -84,12 +87,15 @@ def test_a_maxwell_deck_is_a_one_branch_prony_deck_of_the_same_body(tmp_path):
         a, b = _modulus(maxwell.layer(i), r, s), _modulus(one.layer(i), r, s)
         worst_knots = max(worst_knots, float(np.max(np.abs(b / a - 1.0))))
         middle = 0.5 * (r[1:] + r[:-1])
-        between = (one.layer(i)["relaxation_time_1"](middle)
-                   / (maxwell.layer(i)["viscosity"](middle)
-                      / pm.kappa_mu(maxwell.layer(i))[1](middle)))
+        time = one.layer(i)["relaxation_time_1"]
+        written = one.deck["relaxation_time_1"][one.deck.layers()[i]]
+        geometric = np.sqrt(written[1:] * written[:-1])
+        assert np.allclose(time(middle), geometric, rtol=1e-14, atol=0)
+        between = (time(middle) / (maxwell.layer(i)["viscosity"](middle)
+                                   / pm.kappa_mu(maxwell.layer(i))[1](middle)))
         worst_between = max(worst_between, float(np.max(np.abs(between - 1.0))))
     assert worst_knots < 1e-7                     # eight digits of tau
-    assert 1e-7 < worst_between < 1e-3            # second order in the spacing
+    assert 1e-5 < worst_between < 1e-4            # the curvature of log mu
     for omega in (2.0 * np.pi / (1000.0 * YEAR), 2.0 * np.pi / 100.0):
         fa, fb = maxwell.frozen(omega), one.frozen(omega)
         for i in viscous:
@@ -180,7 +186,7 @@ def test_a_burgers_deck_round_trips_the_kelvin_element(tmp_path):
     kelvin = {(row[-2], row[-1]) for row in rows if row[-1] != "nan"}
     assert kelvin == {("2e+20", "0.5")}
     read = BurgersDeckModel(path)
-    _, raw = deck_layers(read.deck, kinds={n: "linear" for n in BURGERS_COLUMNS[-3:]})
+    _, raw = deck_layers(read.deck, kinds=BURGERS_KINDS)
     for i in burgers:
         lay = read.layer(i)
         assert "viscosity" not in lay and len(pm.rheology.branches(lay)) == 2
@@ -472,6 +478,15 @@ def test_the_conversions_refuse_what_is_no_such_body():
     assert np.isnan(d["kelvin_viscosity"][s]).all()
 
 
+def test_the_viscoelastic_decks_join_times_and_viscosities_in_their_logarithm():
+    assert dict(MAXWELL_KINDS) == {"viscosity": "log-linear"}
+    assert dict(PRONY_KINDS) == {"relaxation_strength": "linear",
+                                 "relaxation_time": "log-linear"}
+    assert dict(BURGERS_KINDS) == {"viscosity": "log-linear",
+                                   "kelvin_viscosity": "log-linear",
+                                   "kelvin_modulus_fraction": "linear"}
+
+
 def test_a_family_is_joined_by_the_kind_its_stem_is_given():
     d = Deck([0.0, 0.3, 0.5, 1.0], {"rho": [5.0, 4.0, 4.5, 3.0],
                                     "relaxation_strength_1": [0.1, 0.9, 0.2, 0.8],
@@ -484,7 +499,11 @@ def test_a_family_is_joined_by_the_kind_its_stem_is_given():
     assert np.min(joined[0]["relaxation_time_1"](r)) >= 1e8
     w = joined[0]["relaxation_strength_1"](r)
     assert np.all((w >= 0.1) & (w <= 0.9))
-    assert joined[0]["relaxation_time_1"].function.degree == 1
+    strength, time = (joined[0][n].function for n in ("relaxation_strength_1",
+                                                      "relaxation_time_1"))
+    assert isinstance(strength, PolynomialLayer) and strength.degree == 1
+    assert isinstance(time, ExponentialLayer) and time.exponent.degree == 1
+    assert np.isclose(time(0.15), 1e10, rtol=1e-14, atol=0)    # geometric between knots
     _, own = deck_layers(d, kinds={"relaxation_time": "linear",
                                    "relaxation_time_1": "cubic"})
     assert np.array_equal(own[0]["relaxation_time_1"](r),

@@ -38,7 +38,8 @@ writes files that the Python reads. It reads and writes:
   Python does, with the names their headers or labels give, a prony
   deck's number of branches (`PronyBranches`), and the Python's checks
   of a prony or burgers deck's values, each layer's columns joined into
-  functions of the radius;
+  functions of the radius, through the values or through their
+  logarithms (a Maxwell deck's viscosity by `log-linear`);
 - the units, scales and vocabulary of the Python (`units.hpp`,
   `vocabulary.hpp`).
 

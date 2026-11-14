@@ -304,7 +304,9 @@ def check_layer_function(fn: LayerFunction, *, n: int = 17,
     Checks finite float64 (or complex128) values of the argument's shape; `derivative`
     against a central difference; `integrate` against a fine
     trapezoid rule and its sign convention; `on_interval` agreeing on
-    the overlap; and `rescaled` against v f(r / k) and its round trip.
+    the overlap; `rescaled` against v f(r / k) and its round trip; and,
+    where the function offers `logarithm()` and it gives one, that it is a
+    piecewise polynomial whose exponential is the function.
     Every tolerance is relative to the value or the interval's width.
     """
     lo, hi = (float(x) for x in fn.interval)
@@ -357,6 +359,13 @@ def check_layer_function(fn: LayerFunction, *, n: int = 17,
     assert np.allclose(back(r), y, rtol=1e-12, atol=1e-12 * scale), (
         "rescaled does not round-trip")
 
+    log = getattr(fn, "logarithm", lambda: None)()
+    if log is not None:
+        assert getattr(log, "ppoly", None) is not None, (
+            "logarithm gives no piecewise polynomial")
+        assert np.allclose(np.exp(log(r)), y, rtol=1e-12, atol=0), (
+            "the exponential of the logarithm is not the function")
+
 
 def check_field(field: Field, *, rng: np.random.Generator | None = None,
                 n: int = 64) -> None:
@@ -370,7 +379,9 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     frames related by the rotation the character implies (a factor of
     R on every slot, expanded from Voigt where the field is Voigt);
     `evaluate_at` against `evaluate`; `on_interval` on the overlap;
-    and the `rescaled` round trip.
+    the `rescaled` round trip; and, where the field declares the pieces
+    of its logarithm (`log_radial_pieces`), that it is of rank 0 and
+    positive, the breakpoints spanning the interval in increasing order.
     """
     from .fields import stored_shape
     from .frames import cartesian_points, rotate_slots, spherical_frame
@@ -475,6 +486,17 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     back = g.rescaled(k=1.0 / k, v=1.0 / v)
     assert np.allclose(back.evaluate(r, theta, phi), values,
                        rtol=1e-10, atol=1e-10 * scale), "rescaled does not round-trip"
+
+    pieces = getattr(field, "log_radial_pieces", lambda: None)()
+    if pieces is not None:
+        breaks, degree = pieces
+        assert char.rank == 0, "a field with components declares a logarithm"
+        assert np.all(np.real(values) > 0.0) and not np.iscomplexobj(values), (
+            "a field declaring its logarithm's pieces is not positive")
+        assert breaks[0] == lo and breaks[-1] == hi and np.all(np.diff(breaks) > 0), (
+            "the logarithm's breakpoints do not span the interval increasing")
+        assert isinstance(degree, int) and degree >= 0, (
+            f"the logarithm's degree is {degree!r}")
 
 
 def check_refinement(refinement: Refinement, points: ArrayLike) -> None:
@@ -967,7 +989,9 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
                      rtol: float = 1e-12) -> None:
     """Hold a model file to the model it was written from.
 
-    Checks the structure (`validate_structure`); the skeleton, the layer
+    Checks the structure (`validate_structure`); the schema, the one of a
+    file stating a rule in the logarithm exactly where a variable states
+    one; the skeleton, the layer
     and interface names, the scales and the citation; that the file names
     its source and carries a parseable created stamp; that every variable is held on
     the layers its `layers` attribute names, NaN elsewhere, by fields of
@@ -988,12 +1012,17 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     largest value.  netCDF4 is imported here.
     """
     from .frames import cartesian_points, spherical_frame
-    from .modelfile import (read_model, read_model_file, read_surfaces,
-                            validate_structure)
+    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_WITH_LOG_RULES, read_model,
+                            read_model_file, read_surfaces, validate_structure)
 
     rng = np.random.default_rng(0) if rng is None else rng
     validate_structure(path)
     data = read_model_file(path)
+    logged = any(var.attributes.get("radial_interpolation") in LOG_RULES
+                 for part in data.parts for var in part.variables.values())
+    assert data.schema == (SCHEMA_WITH_LOG_RULES if logged else SCHEMA), (
+        f"the file's schema is {data.schema!r}, and "
+        f"{'a' if logged else 'no'} variable states a rule in the logarithm")
     assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
                        rtol=1e-15), "the file's skeleton is not the model's"
     assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (

@@ -7,8 +7,9 @@ xarray, Panoply and ncview open it as it stands.  The Python here is the
 definition of the format and the reference the C++ readers are held to;
 `docs/source/formats/model_file.rst` describes it for consumers.
 
-**Global attributes**: `schema` (`SCHEMA`, checked by every reader),
-`Conventions`, `source` (the writing code and version) and `created`
+**Global attributes**: `schema` (`SCHEMA`, or `SCHEMA_WITH_LOG_RULES`
+for a file that states a radial rule in the logarithm; checked by every
+reader), `Conventions`, `source` (the writing code and version) and `created`
 (when, ISO 8601) — both stamped by the writers, and empty on reading a
 file from before they were — the model's `name`, `scale_length`, `scale_mass`,
 `scale_time` and `scale_temperature` (what one stored unit is in SI),
@@ -69,27 +70,50 @@ a layer field's or a surface field's, never both, and a surface field
 is a number at each point, its spec's dimensions its own.  A file
 without the group reads as one with none.
 
+**Radial rules.**  `polynomial` and `linear` read the values between a
+part's nodes (`mesh1d.RADIAL_METHODS`).  The rules in the logarithm,
+`log-polynomial` and `log-linear` (`LOG_RULES`), read the logarithms of
+the values by those rules and take the exponential, y_e exp(P(r)) on
+element e, y_e its first value and P the rule's polynomial through the
+log(y / y_e) of its nodes, so that an element of one value reads that
+value to the bit; a variable of rank 0 of the radius alone, positive at
+every node of the layers it holds, states them, and a file in which one
+does is of schema `SCHEMA_WITH_LOG_RULES`, which a reader of `SCHEMA`
+alone refuses.
+
 **The radial layout** is exact where it can be: the writer builds, per
 part, a radial mesh whose element edges are the layer boundaries, every
-breakpoint a field declares (`radial_pieces`) and every knot of the
-mapping, with `ngll` one more than the highest declared degree; a field
-that declares no polynomial description subdivides the elements of its
-layer to the spacing a sample takes from the grid's band (every layer,
-for a mapping written as a displacement field), and raises `ngll` to at
-least 5.  So a deck model
-written and read back is the same polynomials, and a band-limited field
-on a grid of its band is held exactly.  `radial=` gives the layout
-instead.  **Every variable states its intended interpolation**: a
-gridded field its own rules, a harmonic field `polynomial` and
-`harmonic`, any other field the defaults (`polynomial`, and `linear`
-laterally) unless `interpolation=` names others; a reader uses the
-stated rules unless its caller overrides them.
+breakpoint a field declares for its variable's rule (`radial_pieces`, or
+under a rule in the logarithm `log_radial_pieces`, its logarithm's) and
+every knot of the mapping, with `ngll` one more than the highest
+declared degree; a field that declares no such description subdivides
+the elements of its layer to the spacing a sample takes from the grid's
+band (every layer, for a mapping written as a displacement field), and
+raises `ngll` to at least 5, which holds it to that sampling's accuracy
+and no better.  So a field declaring a piecewise polynomial, or the
+exponential of one, written and read back is the same function, a deck
+model's base fields among them, and a band-limited field on a grid of
+its band is held exactly.  `radial=` gives the layout instead.
+**Every variable states its intended interpolation**: a gridded field
+its own rules, a harmonic field `polynomial` and `harmonic`, a variable
+of the radius alone some of whose fields are the exponentials of
+piecewise polynomials, declaring `log_radial_pieces` and not
+`radial_pieces`, and none of which declares the opposite,
+`log-polynomial`, any other the defaults (`polynomial`, and `linear`
+laterally), unless `interpolation=` names others.  A variable some of
+whose layers ask for a rule in the logarithm and others for another, or
+that asks for one and varies with direction, is refused by name:
+`interpolation=` reads it by one rule, approximately where that rule
+does not hold a field.  A reader uses the stated rules unless its
+caller overrides them.
 
 `read_model_file` gives the numbers and the metadata as a `ModelFile`,
 the way `read_deck` gives a deck; `file_layers`, `file_geometry` and
 `file_surfaces` turn them into fields, a geometry and the functions on
 interfaces; `read_model` is the plain model, and `read_surfaces` the
-functions beside it.
+functions beside it; `schema_of` reads the schema alone.  A variable
+read by a rule in the logarithm is an `ExponentialLayer` on each layer,
+or the constant where the layer holds one value.
 netCDF4 (the `netcdf` extra) is imported where a file is opened.  Real
 fields only; a model is never converted on writing, and is read back in
 the file's scales unless `scales=` asks for others.
@@ -106,12 +130,13 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.interpolate import PPoly
 
 from .character import SCALAR, VECTOR, Character
 from .fields import Field, RadialField, stored_shape
 from .files import written_whole
 from .frames import from_geographic, geographic, spherical_frame
-from .layerfunction import PolynomialLayer
+from .layerfunction import ExponentialLayer, PolynomialLayer, constant_layer
 from .lateral import METHODS as LATERAL_METHODS
 from .lateral import check_rule
 from .mesh1d.mesh import RADIAL_METHODS, Mesh1D, RadialMesh
@@ -128,16 +153,35 @@ if TYPE_CHECKING:
     from .model import Model
     from .sampling import AngularGrid
 
-__all__ = ["SCHEMA", "CONVENTIONS", "DEFAULT_INTERPOLATION", "Grids",
+__all__ = ["SCHEMA", "SCHEMA_WITH_LOG_RULES", "SCHEMAS", "LOG_RULES", "RADIAL_RULES",
+           "CONVENTIONS", "DEFAULT_INTERPOLATION", "Grids",
            "Interpolation", "Surfaces", "FileVariable",
            "FilePart", "FileGeometry", "FileSurfaces", "ModelFile", "write_model",
            "read_model_file", "file_layers", "file_geometry", "file_surfaces",
-           "read_model", "read_surfaces", "validate_structure",
+           "read_model", "read_surfaces", "validate_structure", "schema_of",
            "netcdf_module", "put_variable", "variable_attributes",
            "variable_values", "grid_degrees", "grid_of_group"]
 
-#: The schema string every reader checks; bumped only for an incompatible change.
+#: The schema string every reader checks, of a file in which no variable
+#: states a rule in the logarithm; bumped only for an incompatible change.
 SCHEMA = "planetmodel.model/1"
+
+#: The schema of a file in which some variable states a rule in the
+#: logarithm (`LOG_RULES`), which a reader of `SCHEMA` alone does not
+#: know, and so refuses the file by its schema before reading a value.
+SCHEMA_WITH_LOG_RULES = "planetmodel.model/2"
+
+#: The schemas the readers read.
+SCHEMAS = (SCHEMA, SCHEMA_WITH_LOG_RULES)
+
+#: The radial rules in the logarithm: the logarithms of the values read
+#: by the rule of `mesh1d.RADIAL_METHODS` they name, the value their
+#: exponential, so that a positive field whose logarithm is a piecewise
+#: polynomial is held exactly.
+LOG_RULES = tuple(f"log-{method}" for method in RADIAL_METHODS)
+
+#: Every radial rule a variable may state.
+RADIAL_RULES = RADIAL_METHODS + LOG_RULES
 
 #: The CF conventions the file follows; groups are admitted from 1.8.
 CONVENTIONS = "CF-1.8"
@@ -316,9 +360,34 @@ def _mapping_form(model: Model) -> str:
     return "field"
 
 
+def _pieces(field: object, rule: str) -> tuple[np.ndarray, int] | None:
+    """The pieces a field declares that hold it exactly by a radial rule:
+    its logarithm's under a rule in the logarithm, its own otherwise."""
+    method = "log_radial_pieces" if rule in LOG_RULES else "radial_pieces"
+    return getattr(field, method, lambda: None)()
+
+
+def _held_pieces(field: Field, name: str, rules: Mapping[str, tuple[str, str]]
+                 ) -> tuple[np.ndarray, int] | None:
+    """The pieces that hold one layer's field by the rules its variables
+    state: a reference and its perturbation written apart each by its
+    own variable's, both or neither."""
+    split = f"{name}_perturbation"
+    if split in rules and getattr(field, "reference", None) is not None:
+        parts = [_pieces(field.reference, rules[name][0]),
+                 _pieces(field.perturbation, rules[split][0])]
+        if any(p is None for p in parts):
+            return None
+        return (np.unique(np.concatenate([p[0] for p in parts])),
+                max(p[1] for p in parts))
+    return _pieces(field, rules[name][0])
+
+
 def _part_mesh(model: Model, layers: list[int], grid: AngularGrid,
-               names: Sequence[str], form: str) -> RadialMesh:
-    """The exact radial layout of a part, by the rule of the module docstring."""
+               names: Sequence[str], form: str,
+               rules: Mapping[str, tuple[str, str]]) -> RadialMesh:
+    """The exact radial layout of a part, by the rule of the module
+    docstring, each field's pieces those its variables' `rules` hold."""
     b = model.skeleton.boundaries
     lo, hi = float(b[layers[0]]), float(b[layers[-1] + 1])
     edges, degree = [b[layers[0]:layers[-1] + 2]], 1
@@ -328,7 +397,7 @@ def _part_mesh(model: Model, layers: list[int], grid: AngularGrid,
         for name in names:
             if name not in layer:
                 continue
-            pieces = getattr(layer[name], "radial_pieces", lambda: None)()
+            pieces = _held_pieces(layer[name], name, rules)
             if pieces is None:
                 inexact.add(i)
                 continue
@@ -408,13 +477,22 @@ def _stated(fields: Sequence[object], name: str, interpolation: Interpolation,
     name.  A field's harmonic rule is stated only on a grid whose
     transforms reproduce it, a shipped kind of band at least its own,
     and the default lateral rule otherwise; the caller's rule must be
-    one the grid can carry."""
+    one the grid can carry, and a rule in the logarithm one of a variable
+    of rank 0 of the radius alone."""
     if name in interpolation:
         radial, lateral = interpolation[name]
-        if radial not in RADIAL_METHODS or lateral not in LATERAL_METHODS:
+        if radial not in RADIAL_RULES or lateral not in LATERAL_METHODS:
             raise ValueError(
-                f"{name!r}: the rules must be one of {RADIAL_METHODS} and one of "
+                f"{name!r}: the rules must be one of {RADIAL_RULES} and one of "
                 f"{LATERAL_METHODS}, got ({radial!r}, {lateral!r})")
+        if radial in LOG_RULES and not all(
+                getattr(f, "is_radial", False)
+                and getattr(getattr(f, "character", None), "rank", None) == 0
+                for f in fields):
+            raise ValueError(
+                f"{name!r}: {radial} reads the logarithm of a number, so a variable "
+                "of rank 0 of the radius alone states it, and this one varies with "
+                "direction or has components")
         if not all(getattr(f, "is_radial", False) for f in fields):
             check_rule(grid, lateral)
         return radial, lateral
@@ -436,6 +514,114 @@ def _stated(fields: Sequence[object], name: str, interpolation: Interpolation,
                 or any(b is None or b > grid.lmax for b in bands)):
             lateral = default[1]
     return radial, lateral
+
+
+def _asks_log(field: object) -> bool:
+    """Whether a rule in the logarithm alone holds a field exactly: its
+    logarithm declares pieces and it declares none of its own."""
+    return (_pieces(field, LOG_RULES[0]) is not None
+            and _pieces(field, RADIAL_METHODS[0]) is None)
+
+
+def _asks_values(field: object) -> bool:
+    """Whether a rule in the values alone holds a field exactly: it states
+    one, or declares pieces of its own and its logarithm none."""
+    if getattr(field, "radial", None) is not None:
+        return True
+    return (_pieces(field, RADIAL_METHODS[0]) is not None
+            and _pieces(field, LOG_RULES[0]) is None)
+
+
+def _field_rules(fields: Mapping[int, object], name: str, interpolation: Interpolation,
+                 grid: AngularGrid) -> tuple[str, str]:
+    """The rules a variable of the fields on its layers states: the
+    caller's; else `log-polynomial` where a field asks for a rule in the
+    logarithm (`_asks_log`) and none for one in its values
+    (`_asks_values`), a field held exactly by either (a positive
+    constant) or by neither (no pieces declared) following; else
+    `_stated`'s.  A variable whose layers ask for both, or that asks for a
+    rule in the logarithm and varies with direction, is refused by name."""
+    rules = _stated(list(fields.values()), name, interpolation, DEFAULT_INTERPOLATION,
+                    grid)
+    if name in interpolation:
+        return rules
+    logs = sorted(i for i, f in fields.items() if _asks_log(f))
+    if not logs:
+        return rules
+    values = sorted(i for i, f in fields.items() if _asks_values(f))
+    varying = sorted(i for i, f in fields.items() if not getattr(f, "is_radial", False))
+    if values or varying:
+        why = (f"is held exactly by a rule in its values on layers {values}" if values
+               else f"varies with direction on layers {varying}, where a rule in the "
+                    "logarithm is stated by a variable of the radius alone")
+        raise ValueError(
+            f"{name!r} is the exponential of a piecewise polynomial on layers {logs}, "
+            f"held exactly by a rule in the logarithm, and {why}; one variable states "
+            f"one radial rule: give interpolation={{{name!r}: (radial, lateral)}} to "
+            "read every layer by one, approximately where it does not hold the "
+            "field, or put the layers in parts of their own")
+    return LOG_RULES[0], rules[1]
+
+
+def _is_split(fields: Mapping[int, Field]) -> bool:
+    """Whether a variable's fields are written as a radial reference and a
+    perturbation: every layer perturbed, by one kind, or radial."""
+    kinds = {getattr(f, "kind", None) for f in fields.values()
+             if getattr(f, "reference", None) is not None}
+    return len(kinds) == 1 and all(
+        getattr(f, "reference", None) is not None or getattr(f, "is_radial", False)
+        for f in fields.values())
+
+
+def _in_values(interpolation: Interpolation, name: str) -> Interpolation:
+    """`interpolation` with the radial rule asked for `name` taken in the
+    values, a rule in the logarithm by the rule it names."""
+    if name not in interpolation:
+        return interpolation
+    radial, lateral = interpolation[name]
+    return {**interpolation, name: (str(radial).removeprefix("log-"), lateral)}
+
+
+def _part_rules(model: Model, layers: list[int], grid: AngularGrid,
+                names: Sequence[str], interpolation: Interpolation
+                ) -> dict[str, tuple[str, str]]:
+    """The rules of every variable a part holds, by `_field_rules`: a
+    field's under its name, and a field written as a reference and a
+    perturbation, the reference's under its name and the perturbation's
+    under `<name>_perturbation`.  A rule in the logarithm the caller asks
+    for such a field is its reference's; the perturbation, of either sign,
+    is read by the rule it names in its values."""
+    out: dict[str, tuple[str, str]] = {}
+    for name in names:
+        fields = {i: model.layer(i)[name] for i in layers if name in model.layer(i)}
+        if not fields:
+            continue
+        if not _is_split(fields):
+            out[name] = _field_rules(fields, name, interpolation, grid)
+            continue
+        references = {i: f if getattr(f, "reference", None) is None else f.reference
+                      for i, f in fields.items()}
+        perturbations = {i: f.perturbation for i, f in fields.items()
+                         if getattr(f, "reference", None) is not None}
+        out[name] = _field_rules(references, name, interpolation, grid)
+        out[f"{name}_perturbation"] = _field_rules(
+            perturbations, name, _in_values(interpolation, name), grid)
+    return out
+
+
+def _check_positive(values: np.ndarray, r: np.ndarray, name: str, layer: int,
+                    rule: str) -> None:
+    """Refuse a layer's values that a rule in the logarithm cannot read,
+    naming the first that is not positive and finite."""
+    if rule not in LOG_RULES:
+        return
+    bad = ~(np.isfinite(values) & (values > 0.0))
+    if bad.any():
+        j = np.unravel_index(int(np.argmax(bad)), bad.shape)
+        raise ValueError(
+            f"{name!r} is {values[j]:g} at r = {r[j[0]]:g} on layer {layer}; a "
+            f"variable read by {rule}, its logarithm interpolated, is positive and "
+            "finite at every node of a layer holding it")
 
 
 def _attributes(name: str, model: Model, character: Character, layers: list[int],
@@ -503,8 +689,9 @@ def grid_degrees(grid: AngularGrid) -> tuple[np.ndarray, np.ndarray]:
 
 def _write_part(group: Any, model: Model, index: int, layers: list[int],
                 grid: AngularGrid, mesh: RadialMesh, names: Sequence[str],
+                rules: Mapping[str, tuple[str, str]],
                 interpolation: Interpolation, form: str) -> None:
-    """One part's layout, grid and variables."""
+    """One part's layout, grid and variables, each stating its `rules`."""
     group.createDimension("node", mesh.nspec * mesh.ngll)
     group.createDimension("element", mesh.nspec)
     group.createDimension("bound", 2)
@@ -553,28 +740,25 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
         char = next(iter(fields.values())).character
         axes = _axes(group, char)
         c = stored_shape(char)
-        kinds = {getattr(f, "kind", None) for f in fields.values()
-                 if getattr(f, "reference", None) is not None}
-        split = (len(kinds) == 1 and all(
-            getattr(f, "reference", None) is not None or getattr(f, "is_radial", False)
-            for f in fields.values()))
-        if split:
+        if _is_split(fields):
+            kind = next(getattr(f, "kind", None) for f in fields.values()
+                        if getattr(f, "reference", None) is not None)
             _write_perturbed(group, model, name, fields, mesh, node_layer, grid,
-                             interpolation, kinds.pop(), lacks_pole)
+                             rules[name], rules[f"{name}_perturbation"], kind,
+                             lacks_pole)
             continue
         radial = all(getattr(f, "is_radial", False) for f in fields.values())
         shape = (r.size,) + (() if radial else (grid.ntheta, grid.nphi)) + c
         values = np.full(shape, np.nan)
         poles = None if radial or not lacks_pole else np.full((r.size, 2) + c, np.nan)
-        rules = _stated(list(fields.values()), name, interpolation,
-                        DEFAULT_INTERPOLATION, grid)
         for i, f in fields.items():
             m = node_layer == i
             values[m] = _evaluate(f, r[m], grid, radial=radial)
+            _check_positive(values[m], r[m], name, i, rules[name][0])
             if poles is not None:
                 poles[m] = _poles_of(f, r[m])
         dims = ("node",) if radial else ("node", "latitude", "longitude")
-        attrs = _attributes(name, model, char, holders, rules, lateral=not radial)
+        attrs = _attributes(name, model, char, holders, rules[name], lateral=not radial)
         attrs["coordinates"] = "radius"
         if not radial:
             _mark_radial_layers(attrs, fields)
@@ -612,9 +796,10 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
 def _write_perturbed(group: Any, model: Model, name: str,
                      fields: Mapping[int, Field], mesh: RadialMesh,
                      node_layer: np.ndarray, grid: AngularGrid,
-                     interpolation: Interpolation, kind: str,
+                     ref_rules: tuple[str, str], rules: tuple[str, str], kind: str,
                      lacks_pole: bool) -> None:
-    """A field held as a radial reference with a perturbation: two variables."""
+    """A field held as a radial reference with a perturbation: two
+    variables, stating `ref_rules` and `rules`."""
     r = mesh.r.ravel()
     any_field = next(iter(fields.values()))
     char = any_field.character
@@ -625,23 +810,19 @@ def _write_perturbed(group: Any, model: Model, name: str,
     dp = np.full(dp_shape, np.nan)
     poles = None if pert_radial or not lacks_pole else np.full((r.size, 2), np.nan)
     pert_char = None
-    references, perturbations = [], []
     for i, f in fields.items():
         m = node_layer == i
         reference = getattr(f, "reference", None)
+        ref[m] = _evaluate(f if reference is None else reference, r[m], grid,
+                           radial=True)
+        _check_positive(ref[m], r[m], name, i, ref_rules[0])
         if reference is None:
-            ref[m] = _evaluate(f, r[m], grid, radial=True)
-            references.append(f)
             continue
-        ref[m] = _evaluate(reference, r[m], grid, radial=True)
         dp[m] = _evaluate(f.perturbation, r[m], grid, radial=pert_radial)
+        _check_positive(dp[m], r[m], f"{name}_perturbation", i, rules[0])
         if poles is not None:
             poles[m] = _poles_of(f.perturbation, r[m])
-        references.append(reference)
-        perturbations.append(f.perturbation)
         pert_char = f.perturbation.character
-    ref_rules = _stated(references, name, interpolation, DEFAULT_INTERPOLATION, grid)
-    rules = _stated(perturbations, name, interpolation, DEFAULT_INTERPOLATION, grid)
     holders = sorted(fields)
     attrs = _attributes(name, model, char, holders, ref_rules, lateral=False)
     attrs.update({"perturbation": f"{name}_perturbation", "perturbation_kind": kind,
@@ -865,7 +1046,10 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     module docstring.  `fields` are the names to write, every name the
     model holds by default; `interpolation` maps names (and
     `displacement`, `boundary_displacement`) to the (radial, lateral)
-    rules to state in place of the fields' own; `meta` becomes
+    rules to state in place of the fields' own, the radial one of
+    `RADIAL_RULES` (a rule in the logarithm asked for a field written as
+    a reference and a perturbation is the reference's, the perturbation
+    read by the rule it names in its values); `meta` becomes
     `meta_<key>` attributes.  `surfaces` maps names to functions of
     (theta, phi) on interfaces (by index or name), written to the group
     `surfaces` on `surface_grid`: by default the grid the functions are
@@ -876,7 +1060,8 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     this library and its version unless given.  The model is
     written in its own units, and the file whole or not at all, with the
     permissions a plain `open(path, "w")` would give it
-    (`files.written_whole`).
+    (`files.written_whole`); it is of schema `SCHEMA_WITH_LOG_RULES` where
+    a variable states a rule in the logarithm, and `SCHEMA` otherwise.
     """
     from .model import Model
     if not isinstance(model, Model):
@@ -931,8 +1116,15 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
     from datetime import datetime, timezone
 
     from . import __version__
+    plans = []
+    for layers, g in parts:
+        rules = _part_rules(model, layers, g, names, interpolation)
+        mesh = (_part_mesh(model, layers, g, names, form, rules) if radial is None
+                else _restricted(radial, layers))
+        plans.append((layers, g, mesh, rules))
+    logged = any(rule[0] in LOG_RULES for *_, rules in plans for rule in rules.values())
     with nc.Dataset(path, "w", format="NETCDF4") as root:
-        root.setncattr("schema", SCHEMA)
+        root.setncattr("schema", SCHEMA_WITH_LOG_RULES if logged else SCHEMA)
         root.setncattr("Conventions", CONVENTIONS)
         root.setncattr("title", f"planetmodel model {model.name or ''}".strip())
         root.setncattr("source", source or f"planetmodel {__version__}")
@@ -979,11 +1171,9 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
             part_of[layers] = k
         var[...] = part_of
         var.long_name = "the part, part_<k>, holding the layer"
-        for k, (layers, g) in enumerate(parts):
-            mesh = (_part_mesh(model, layers, g, names, form) if radial is None
-                    else _restricted(radial, layers))
+        for k, (layers, g, mesh, rules) in enumerate(plans):
             _write_part(root.createGroup(f"part_{k}"), model, k, layers, g, mesh,
-                        names, interpolation, form)
+                        names, rules, interpolation, form)
         if form == "stack":
             _write_stack(root, model, parts, interpolation)
         if held:
@@ -1043,14 +1233,25 @@ def validate_structure(source: str | os.PathLike[str] | Any) -> None:
         _validate(source, getattr(source, "filepath", lambda: "<dataset>")())
 
 
+def schema_of(path: str | os.PathLike[str]) -> str:
+    """The schema a model file declares, its global attribute `schema`,
+    read without the rest of the file; ValueError where it declares none."""
+    nc = netcdf_module()
+    with nc.Dataset(path, "r") as ds:
+        if "schema" not in ds.ncattrs():
+            _fail(path, "no schema attribute: not a planetmodel model file")
+        return str(ds.getncattr("schema"))
+
+
 def _validate(ds: Any, path: object) -> None:
     """The checks of `validate_structure` on an open dataset."""
     attrs = set(ds.ncattrs())
     if "schema" not in attrs:
         _fail(path, "no schema attribute: not a planetmodel model file")
-    if ds.getncattr("schema") != SCHEMA:
-        _fail(path, f"schema is {ds.getncattr('schema')!r}, this reader reads "
-                    f"{SCHEMA!r}")
+    schema = ds.getncattr("schema")
+    if isinstance(schema, np.ndarray) or schema not in SCHEMAS:
+        _fail(path, f"schema is {schema!r}, this reader reads "
+                    f"{' and '.join(map(repr, SCHEMAS))}")
     for base in ("length", "mass", "time", "temperature"):
         key = f"scale_{base}"
         if key not in attrs or not float(ds.getncattr(key)) > 0.0:
@@ -1081,9 +1282,18 @@ def _validate(ds: Any, path: object) -> None:
         layers = np.flatnonzero(layer_part == k)
         if not np.array_equal(layers, np.arange(layers[0], layers[-1] + 1)):
             _fail(path, f"the layers of part {k} are not contiguous")
+    logged = []
     for k in np.unique(layer_part):
         layers = np.flatnonzero(layer_part == k)
-        _validate_part(ds.groups[f"part_{k}"], f"part_{k}", layers, bounds, path)
+        logged += _validate_part(ds.groups[f"part_{k}"], f"part_{k}", layers, bounds,
+                                 path)
+    if logged and schema != SCHEMA_WITH_LOG_RULES:
+        _fail(path, f"{logged[0]} states a rule in the logarithm, which a file of "
+                    f"schema {schema!r} does not hold: such a file is "
+                    f"{SCHEMA_WITH_LOG_RULES!r}")
+    if not logged and schema == SCHEMA_WITH_LOG_RULES:
+        _fail(path, f"schema is {schema!r}, a file in which a variable states a rule "
+                    "in the logarithm, and none does")
     has_stack = "geometry" in ds.groups
     holding = [k for k in np.unique(layer_part)
                if "displacement" in ds.groups[f"part_{k}"].variables]
@@ -1104,8 +1314,10 @@ def _validate(ds: Any, path: object) -> None:
 
 
 def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
-                   path: object) -> None:
-    """The checks on one part."""
+                   path: object) -> list[str]:
+    """The checks on one part; the variables stating a rule in the
+    logarithm, as `part_<k>/<name>`."""
+    logged: list[str] = []
     for dim in ("node", "element", "bound", "latitude", "longitude"):
         if dim not in g.dimensions:
             _fail(path, f"{where} has no dimension {dim!r}")
@@ -1160,9 +1372,19 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
         if tuple(tail) != tuple(want):
             _fail(path, f"{where}/{name} has trailing axes {tuple(tail)}, but its "
                         f"character stores {tuple(want)}")
-        if "radial_interpolation" in a and var.getncattr(
-                "radial_interpolation") not in RADIAL_METHODS:
+        rule = var.getncattr("radial_interpolation")
+        if not isinstance(rule, str) or rule not in RADIAL_RULES:
             _fail(path, f"{where}/{name} states an unknown radial rule")
+        if rule in LOG_RULES:
+            if lateral or want != () or name == "displacement":
+                _fail(path, f"{where}/{name} states {rule}, a rule in the logarithm, "
+                            "which a variable of rank 0 of the radius alone states")
+            v = variable_values(var)
+            held = ~np.isnan(v)
+            if not np.all(np.isfinite(v[held]) & (v[held] > 0.0)):
+                _fail(path, f"{where}/{name} states {rule}, a rule in the logarithm, "
+                            "and holds a value that is not positive")
+            logged.append(f"{where}/{name}")
         if "radial_layers" in a:
             listed = _radial_layers(variable_attributes(var))
             held = (set(int(i) for i in np.atleast_1d(var.getncattr("layers")))
@@ -1187,6 +1409,7 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
                     or var.getncattr("perturbation_kind") not in PERTURBATION_KINDS):
                 _fail(path, f"{where}/{name} states no known perturbation_kind, one "
                             f"of {PERTURBATION_KINDS}")
+    return logged
 
 
 def _validate_stack(g: Any, path: object) -> None:
@@ -1357,9 +1580,36 @@ def _layer_mesh(part: FilePart, layer: int) -> tuple[np.ndarray, np.ndarray, Mes
     return mask, elems, Mesh1D(breaks, ngll=part.mesh.ngll)
 
 
+def _radial_log_field(interval: tuple[float, float], nodal: np.ndarray, mesh: Mesh1D,
+                      method: str, character: Character, name: str | None
+                      ) -> RadialField:
+    """Nodal values (nelem, ngll) of a rank-0 variable read by a rule in
+    the logarithm: the constant where they are one value, else the
+    exponential layer y_e exp(P_e) on each element, y_e its first value
+    and P_e the rule's polynomial through log(y / y_e) at its nodes."""
+    y = np.asarray(nodal, dtype=float)
+    if character.rank or y.ndim != 2:
+        raise ValueError(f"{name!r}: {method} reads the logarithm of a number, and "
+                         f"the field is of rank {character.rank}")
+    if not np.all(np.isfinite(y) & (y > 0.0)):
+        raise ValueError(f"{name!r} is read by {method}, its logarithm interpolated, "
+                         "and holds a value that is not positive and finite")
+    if np.all(y == y.flat[0]):
+        return RadialField(interval, constant_layer(interval, float(y.flat[0])),
+                           character=character, name=name)
+    first = y[:, :1]
+    exponent = mesh.to_ppoly(np.log(y / first), method=method.removeprefix("log-"))
+    factor = PPoly(first.T.copy(), mesh.breakpoints)
+    return RadialField(interval, ExponentialLayer(interval, exponent, factor=factor),
+                       character=character, name=name)
+
+
 def _radial_field(interval: tuple[float, float], nodal: np.ndarray, mesh: Mesh1D,
                   method: str, character: Character, name: str | None) -> RadialField:
-    """Nodal values (nelem, ngll) + c as a radial field of exact pieces."""
+    """Nodal values (nelem, ngll) + c as a radial field of exact pieces,
+    read by a rule in the logarithm by `_radial_log_field`."""
+    if method in LOG_RULES:
+        return _radial_log_field(interval, nodal, mesh, method, character, name)
     pp = mesh.to_ppoly(nodal, method=method)
     c = nodal.shape[2:]
     if not c:
@@ -1402,6 +1652,9 @@ def _variable_field(data: ModelFile, part: FilePart, layer: int, name: str,
     if radial:
         nodal = values.reshape((elems.size, mesh.ngll) + values.shape[1:])
         return _radial_field(interval, nodal, mesh, rules[0], char, name)
+    if rules[0] in LOG_RULES:
+        raise ValueError(f"{name!r} varies with direction on layer {layer}, and "
+                         f"{rules[0]} reads a variable of the radius alone")
     lateral = rules[1] or DEFAULT_INTERPOLATION[1]
     poles = part.variables.get(f"{name}_poles")
     return _gridded_field(interval, part, mask, elems, mesh, var, poles,
@@ -1411,9 +1664,10 @@ def _variable_field(data: ModelFile, part: FilePart, layer: int, name: str,
 def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
                 ) -> list[dict[str, Field]]:
     """One mapping of name to field per layer: radial variables as exact
-    polynomial layers through the nodes, the others as gridded fields,
-    and references with perturbations as perturbed fields, read by the
-    stated rules unless `interpolation` names others."""
+    polynomial layers through the nodes (exponential layers under a rule
+    in the logarithm), the others as gridded fields, and references with
+    perturbations as perturbed fields, read by the stated rules unless
+    `interpolation` names others."""
     from .perturbation import PerturbedField
     interpolation = dict(interpolation or {})
     out: list[dict[str, Field]] = [{} for _ in range(data.skeleton.nlayers)]
@@ -1428,8 +1682,9 @@ def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
                     continue
                 if pert_name is not None:
                     # the perturbation is read by the rules asked for its
-                    # field, or by its own stated ones
-                    asked = ({pert_name: interpolation[name]}
+                    # field, a rule in the logarithm by the one it names
+                    # in the values, or by its own stated ones
+                    asked = ({pert_name: _in_values(interpolation, name)[name]}
                              if name in interpolation else {})
                     dp = _variable_field(data, part, layer, pert_name,
                                          part.variables[pert_name], asked)

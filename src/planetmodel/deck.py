@@ -3,7 +3,12 @@
 A deck is a table of knots, radius first, one column per named field,
 in which a repeated radius marks a boundary: the layering comes from
 that structure, so a boundary is recorded even where the tabulated
-values happen to agree across it.  What the columns are called and what
+values happen to agree across it.  It is dense enough in knots that the
+choice of interpolation between them does not matter in practice: the
+kinds that join them (below) are a reasonable default, not part of the
+model's definition, and a model that is a particular function in each
+layer (a given polynomial, say) belongs in a format that states that
+function, not in a deck.  What the columns are called and what
 the header lines mean is a `DeckFormat`: the column names (by row
 width, where a format admits more than one), the number of header
 lines and the keywords of the `#` lines that may follow them as part of
@@ -37,20 +42,27 @@ the values than their layering checks every deck it reads or writes.
 
 `read_deck` turns a file into a `Deck`, numbers and a header, nothing
 else.  `deck_layers` turns a deck into the base fields of a model: the
-knots of every layer are interpolated by a piecewise polynomial (a
-cubic spline by default, another kind for a column, or for every member
-of a family, where asked), which is a `PolynomialLayer`, so the field
+knots of every layer are joined by a kind of `KINDS` (a cubic spline by
+default, another kind for a column, or for every member of a family,
+where asked), a piecewise polynomial, a `PolynomialLayer`, so the field
 algebra downstream is exact on it and the moduli of a deck model are
-products of piecewise polynomials, never refits.  A Maxwell deck's
-viscosity is joined by straight lines (`MAXWELL_KINDS`): a cubic through
-a viscosity spanning orders of magnitude within a layer overshoots, and
-can go negative.  So are a prony deck's branches (`PRONY_KINDS`), lines
-that keep every strength in [0, 1], their sum at most one and every
-time positive between knots, and a burgers deck's three columns
-(`BURGERS_KINDS`).  A column
-that is NaN throughout a layer is absent from that layer, the way a
-fluid layer holds no shear quality factor; NaN on part of a layer is
-refused.  From those base fields the rest of a model is built the
+products of piecewise polynomials, never refits.  A kind of `LOG_KINDS`
+(`log-linear`, `log-cubic`, ...) joins the logarithms of a column's
+values by that kind instead, the value their exponential, an
+`ExponentialLayer` with exact derivatives, for a column positive at
+every knot that changes by orders of magnitude within a layer, where a
+cubic through the values overshoots and can go negative and straight
+lines through them are far above the geometric mean between knots.  A
+Maxwell deck's viscosity is joined so, by `log-linear`
+(`MAXWELL_KINDS`), as are a prony deck's relaxation times, its
+strengths by straight lines, which keep every strength in [0, 1] and
+their sum at most one (`PRONY_KINDS`), and a burgers deck's two
+viscosities, its Kelvin modulus fraction by straight lines
+(`BURGERS_KINDS`); `kinds` names another kind for any of them.  A
+column constant through a layer is that constant under every kind.  A
+column that is NaN throughout a layer is absent from that layer, the
+way a fluid layer holds no shear quality factor; NaN on part of a layer
+is refused.  From those base fields the rest of a model is built the
 normal way, by the mixins of `planetmodel.behaviours`.
 
 `sample_deck` goes the other way, any model to a deck in SI: each
@@ -82,7 +94,8 @@ from numpy.typing import ArrayLike
 from . import materials
 from .character import SCALAR, Character
 from .fields import Field, RadialField
-from .layerfunction import PolynomialLayer, same_interval
+from .layerfunction import (ExponentialLayer, PolynomialLayer, constant_layer,
+                            same_interval)
 from .rheology import BRANCH_STEMS
 from .skeleton import Skeleton
 from .units import LENGTH, Scales
@@ -97,7 +110,7 @@ __all__ = ["Deck", "DeckFormat", "MINEOS", "MINEOS_COLUMNS", "MINEOS_ISOTROPIC_C
            "STRENGTH_ROUNDING", "prony_columns", "prony_branches", "ND", "TVEL",
            "ND_COLUMNS", "ND_LABELS", "Table", "read_deck", "write_deck", "deck_layers",
            "deck_knots", "mineos_names", "maxwell_names", "nd_names", "sample_deck",
-           "SAMPLE_SPACING", "Tabulated", "KINDS"]
+           "SAMPLE_SPACING", "Tabulated", "KINDS", "LOG_KINDS"]
 
 #: The interpolants a deck's knots may be joined by, each a piecewise
 #: polynomial: a not-a-knot cubic spline, the parabola through three
@@ -105,6 +118,13 @@ __all__ = ["Deck", "DeckFormat", "MINEOS", "MINEOS_COLUMNS", "MINEOS_ISOTROPIC_C
 #: shape-preserving cubic (pchip), Akima's cubic, or straight lines.  Two
 #: knots give a line under every kind.
 KINDS = ("cubic", "natural", "pchip", "akima", "linear")
+
+#: The kinds of `KINDS` applied to the logarithm of a column: the
+#: logarithms of the knot values joined by the kind, the value their
+#: exponential, so that `log-linear` is geometric between knots,
+#: y_i (y_{i+1} / y_i)^t.  The values of a layer so joined are positive
+#: and finite at every knot.  Two knots give `log-linear` under every one.
+LOG_KINDS = tuple(f"log-{kind}" for kind in KINDS)
 
 #: The columns of a transversely isotropic mineos deck, after the radius.
 MINEOS_COLUMNS = ("rho", "vpv", "vsv", "qkappa", "qmu", "vph", "vsh", "eta")
@@ -483,8 +503,11 @@ MINEOS = DeckFormat({8: MINEOS_COLUMNS, 5: MINEOS_ISOTROPIC_COLUMNS}, name="mine
 MAXWELL_COLUMNS = ("rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity")
 
 #: The kinds a Maxwell deck's columns are joined by where not the default:
-#: the viscosity by straight lines, which keep it positive between knots.
-MAXWELL_KINDS: Mapping[str, str] = MappingProxyType({"viscosity": "linear"})
+#: the viscosity in its logarithm by straight lines, geometric between
+#: knots, which keeps it positive and follows a viscosity that changes by
+#: orders of magnitude within a layer; `{"viscosity": "linear"}` joins
+#: the values themselves by straight lines instead.
+MAXWELL_KINDS: Mapping[str, str] = MappingProxyType({"viscosity": "log-linear"})
 
 #: The keywords of a Maxwell deck's naming lines, and the header keys
 #: they are read into.
@@ -570,11 +593,13 @@ MAXWELL = DeckFormat(MAXWELL_COLUMNS, name="maxwell", header_lines=2,
 PRONY_COLUMNS = MAXWELL_COLUMNS[:-1]
 
 #: The kinds a prony deck's columns are joined by where not the default,
-#: by the stems of the branches' families: straight lines, which keep
-#: every strength in [0, 1], their sum at most one and every time
-#: positive between knots, as a Maxwell deck's viscosity is joined.
-PRONY_KINDS: Mapping[str, str] = MappingProxyType({stem: "linear"
-                                                   for stem in BRANCH_STEMS})
+#: by the stems of the branches' families: the strengths by straight
+#: lines, which keep every one in [0, 1] and their sum at most one
+#: between knots; the times in their logarithm by straight lines,
+#: positive and geometric between knots, as a Maxwell deck's viscosity is
+#: joined.
+PRONY_KINDS: Mapping[str, str] = MappingProxyType(
+    {BRANCH_STEMS[0]: "linear", BRANCH_STEMS[1]: "log-linear"})
 
 #: The columns of a burgers deck, after the radius: a Maxwell deck's, then
 #: the Kelvin element's viscosity and its shear modulus as a fraction of
@@ -582,10 +607,11 @@ PRONY_KINDS: Mapping[str, str] = MappingProxyType({stem: "linear"
 BURGERS_COLUMNS = MAXWELL_COLUMNS + ("kelvin_viscosity", "kelvin_modulus_fraction")
 
 #: The kinds a burgers deck's columns are joined by where not the default:
-#: the viscosity and the Kelvin element's two by straight lines, which
-#: keep them positive between knots.
+#: the two viscosities in their logarithm by straight lines, as a Maxwell
+#: deck's viscosity is joined, and the Kelvin element's modulus fraction
+#: by straight lines; all three stay positive between knots.
 BURGERS_KINDS: Mapping[str, str] = MappingProxyType(
-    {**MAXWELL_KINDS, "kelvin_viscosity": "linear",
+    {**MAXWELL_KINDS, "kelvin_viscosity": "log-linear",
      "kelvin_modulus_fraction": "linear"})
 
 #: How far, per branch, a prony deck's strengths may stand from what
@@ -974,12 +1000,37 @@ def maxwell_names(deck: Deck) -> tuple[list[str | None], list[str | None]]:
 
 # -- fields by interpolation ---------------------------------------------------
 
-def _interpolant(r: np.ndarray, y: np.ndarray, kind: str) -> PolynomialLayer:
-    """The piecewise polynomial through the knots (r, y) of one layer."""
-    if kind not in KINDS:
-        raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+def _check_kind(kind: str) -> None:
+    """Refuse a kind of neither `KINDS` nor `LOG_KINDS`."""
+    if kind not in KINDS and kind not in LOG_KINDS:
+        raise ValueError(f"kind must be one of {KINDS + LOG_KINDS}, got {kind!r}")
+
+
+def _interpolant(r: np.ndarray, y: np.ndarray, kind: str
+                 ) -> PolynomialLayer | ExponentialLayer:
+    """The function through the knots (r, y) of one layer: the piecewise
+    polynomial of `kind`, or for a kind of `LOG_KINDS` y_0 exp(L), L the
+    polynomial of its kind through log(y_i / y_0), the values being
+    positive and finite and their ratios within the range of a float; a
+    constant y is that constant under every kind."""
+    _check_kind(kind)
     if not np.all(np.diff(r) > 0.0):
         raise ValueError("the knots of a layer must increase strictly")
+    if kind in LOG_KINDS:
+        if not np.all(np.isfinite(y) & (y > 0.0)):
+            raise ValueError(f"a column joined by {kind} is positive and finite at "
+                             "every knot")
+        interval = (float(r[0]), float(r[-1]))
+        if np.all(y == y[0]):
+            return constant_layer(interval, float(y[0]))
+        with np.errstate(over="ignore", under="ignore", divide="ignore"):
+            ratios = np.log(y / y[0])
+        if not np.all(np.isfinite(ratios)):
+            raise ValueError(f"a column joined by {kind} spans more than the range of "
+                             "a float within a layer: the ratio of two of its values "
+                             "is not finite")
+        log = _interpolant(r, ratios, kind.removeprefix("log-"))
+        return ExponentialLayer(interval, log, factor=float(y[0]))
     if r.size == 2 or kind == "linear":
         slopes = np.diff(y) / np.diff(r)
         ppoly = PPoly(np.vstack([slopes, y[:-1]]), r)
@@ -1000,20 +1051,24 @@ def deck_layers(deck: Deck, *, kind: str = "cubic",
                 ) -> tuple[Skeleton, list[dict[str, Field]]]:
     """The skeleton of a deck and the base fields of every layer.
 
-    Every column becomes one `RadialField` per layer on the piecewise
-    polynomial through that layer's knots, of the kind `kinds` gives the
-    column, or else the stem of its family (`vocabulary.member`), or else
-    of `kind`, with the character the vocabulary or `specs` give the
-    name (SCALAR for a name neither knows).  A column that is NaN
-    throughout a layer is absent from that layer; NaN on part of one is
-    refused, as are a kind not of `KINDS` and a name of `kinds` that is
-    neither a column of the deck nor the stem of a family it holds a
-    member of.
+    Every column becomes one `RadialField` per layer on the function
+    through that layer's knots of the kind `kinds` gives the column, or
+    else the stem of its family (`vocabulary.member`), or else of
+    `kind`, with the character the vocabulary or `specs` give the name
+    (SCALAR for a name neither knows).  A kind of `KINDS` gives the
+    piecewise polynomial, a `PolynomialLayer`; one of `LOG_KINDS` the
+    exponential of that kind through the logarithms of the values, an
+    `ExponentialLayer`, or the constant where the values are all equal,
+    a `PolynomialLayer`.  A column that is NaN throughout a layer is
+    absent from that layer; NaN on part of one is refused, as are a
+    column joined by a kind of `LOG_KINDS` that is not positive and
+    finite at every knot of a layer holding it, a kind of neither tuple
+    and a name of `kinds` that is neither a column of the deck nor the
+    stem of a family it holds a member of.
     """
     kinds = dict(kinds or {})
     for k in (kind, *kinds.values()):
-        if k not in KINDS:
-            raise ValueError(f"kind must be one of {KINDS}, got {k!r}")
+        _check_kind(k)
     stems = {found[0] for found in map(member, deck.names) if found is not None}
     lacking = [name for name in kinds if name not in deck and name not in stems]
     if lacking:
@@ -1043,10 +1098,17 @@ def deck_layers(deck: Deck, *, kind: str = "cubic",
                 raise ValueError(f"column {name!r} is NaN on part of layer {i}; a "
                                  "column is absent from a layer only when NaN "
                                  "throughout it")
+            joined = kind_of(name)
+            off = ~(np.isfinite(y) & (y > 0.0))
+            if joined in LOG_KINDS and off.any():
+                j = int(np.argmax(off))
+                raise ValueError(f"column {name!r} is {y[j]:g} at r = {r[j]:g} on "
+                                 f"layer {i}; a column joined by {joined}, its "
+                                 "logarithm interpolated, is positive and finite at "
+                                 "every knot of a layer holding it")
             spec = known.get(name) or family_spec(name)
             character: Character = SCALAR if spec is None else spec.character
-            fields[name] = RadialField(skeleton.interval(i),
-                                       _interpolant(r, y, kind_of(name)),
+            fields[name] = RadialField(skeleton.interval(i), _interpolant(r, y, joined),
                                        character=character, name=name)
         layers.append(fields)
     return skeleton, layers

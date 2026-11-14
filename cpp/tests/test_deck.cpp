@@ -1,6 +1,8 @@
 // Decks: the shipped mineos decks, a Maxwell, a prony and a burgers deck,
 // TauP's two tables and one of short layers read as the Python reads them,
-// each kind of interpolant the Python's, a malformed deck refused by name, a
+// each kind of interpolant the Python's, through the values or their
+// logarithms, a column joined in its logarithm refused where it is not
+// positive, a malformed deck refused by name, a
 // prony or burgers deck breaking its format's rules refused with the
 // Python's message; and every fixture written back, and a Maxwell, a prony
 // and a burgers deck built here, left for the Python to read.
@@ -8,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <format>
@@ -44,14 +47,35 @@ std::string Unhex(const std::string& hex) {
 /// burgers header, or a TauP table's labels.
 enum class Named { None, Mineos, Maxwell, Prony, Burgers, Nd };
 
+/// The columns of a deck positive and finite wherever they are not NaN, and
+/// not NaN throughout, as the fixtures' `_positive_columns` finds them.
+std::vector<std::string> PositiveColumns(const Deck& deck) {
+  auto out = std::vector<std::string>{};
+  for (const auto& name : deck.Names()) {
+    const auto& v = deck.Column(name);
+    const auto held = std::ranges::any_of(v, [](double x) { return !std::isnan(x); });
+    const auto positive = std::ranges::all_of(
+        v, [](double x) { return std::isnan(x) || (std::isfinite(x) && x > 0.0); });
+    if (held && positive) out.push_back(name);
+  }
+  return out;
+}
+
 /// The deck against the Python's expectations: the layering, the header
-/// and its names, and every kind's values and derivatives.
+/// and its names, and every kind's values and derivatives, those after
+/// `log-` on the columns positive throughout.
 void ExpectAsThePython(const Deck& deck, const std::filesystem::path& expect, Named named) {
   auto in = std::ifstream(expect);
   auto values = 0;
   auto functions = std::map<std::string, planetmodel::DeckFunctions>{};
   for (const auto* kind : {"cubic", "natural", "linear"}) {
     functions.emplace(kind, planetmodel::DeckLayers(deck, kind));
+  }
+  const auto positive = PositiveColumns(deck);
+  for (const auto* kind : {"log-cubic", "log-natural", "log-linear"}) {
+    auto kinds = std::map<std::string, std::string, std::less<>>{};
+    for (const auto& name : positive) kinds.emplace(name, kind);
+    functions.emplace(kind, planetmodel::DeckLayers(deck, "cubic", kinds));
   }
   if (named == Named::Maxwell) {
     functions.emplace("maxwell",
@@ -313,6 +337,90 @@ TEST(Deck, JoinsAColumnByAKindOfItsOwn) {
   EXPECT_THROW(
       static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "pchip"}})),
       Error);
+  EXPECT_THROW(
+      static_cast<void>(planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "log-akima"}})),
+      Error);
+}
+
+TEST(Deck, JoinsAMaxwellViscosityGeometricallyBetweenKnotsAndLinearlyWhenAsked) {
+  const auto deck = Deck({0.0, 0.3, 0.5, 1.0}, {{"rho", {5.0, 4.0, 4.5, 3.0}},
+                                                {"viscosity", {1e20, 1e23, 1e21, 1e22}}});
+  const auto eta = planetmodel::DeckLayers(deck, "cubic", planetmodel::MAXWELL_KINDS)
+                        .layers[0]
+                        .at("viscosity");
+  const auto line =
+      planetmodel::DeckLayers(deck, "cubic", {{"viscosity", "linear"}}).layers[0].at("viscosity");
+  // y_0 (y_1 / y_0)^t between the first two knots, its derivative the
+  // value times the slope of the logarithm (at the second knot, the next
+  // piece's)
+  for (const auto t : {0.0, 0.25, 0.5, 0.9, 1.0}) {
+    const auto r = 0.3 * t;
+    const auto want = 1e20 * std::pow(1e3, t);
+    EXPECT_NEAR(eta.Value(r), want, 1e-14 * want) << t;
+    if (t < 1.0) {
+      EXPECT_NEAR(eta.Derivative(r), want * std::log(1e3) / 0.3, 1e-13 * want / 0.3) << t;
+    }
+    EXPECT_NEAR(line.Value(r), 1e20 + t * (1e23 - 1e20), 1e-15 * 1e23) << t;
+  }
+  EXPECT_EQ(eta.Value(0.0), 1e20);  // the first knot to the bit, the others to rounding
+  EXPECT_NEAR(eta.Value(0.5), 1e21, 1e-15 * 1e21);
+  // values whose ratio leaves the range of a double are refused
+  EXPECT_THROW(static_cast<void>(planetmodel::ThroughKnots(
+                   {0.0, 1.0}, {1e-200, 1e200}, planetmodel::KnotKind::LogLinear, 0.0)),
+               Error);
+  // a viscosity constant through a layer is that constant, to the bit
+  const auto flat = Deck({0.0, 0.4, 1.0}, {{"viscosity", {3e21, 3e21, 3e21}}});
+  const auto constant =
+      planetmodel::DeckLayers(flat, "cubic", planetmodel::MAXWELL_KINDS).layers[0].at("viscosity");
+  for (const auto r : {0.0, 0.1, 0.4, 0.77, 1.0}) {
+    EXPECT_EQ(constant.Value(r), 3e21);
+    EXPECT_EQ(constant.Derivative(r), 0.0);
+  }
+  // the logarithm of every kind
+  for (const auto* kind : {"log-cubic", "log-natural"}) {
+    const auto f = planetmodel::DeckLayers(deck, kind).layers[0].at("viscosity");
+    const auto g = planetmodel::DeckLayers(
+                        Deck({0.0, 0.3, 0.5, 1.0},
+                             {{"viscosity", {0.0, std::log(1e3), std::log(10.0), std::log(1e2)}}}),
+                        std::string_view{kind}.substr(4))
+                        .layers[0]
+                        .at("viscosity");
+    for (const auto r : {0.1, 0.42, 0.8}) {
+      EXPECT_NEAR(std::log(f.Value(r) / 1e20), g.Value(r), 1e-13) << kind << " " << r;
+      EXPECT_NEAR(f.Derivative(r), f.Value(r) * g.Derivative(r), 1e-13 * f.Value(r)) << kind;
+    }
+  }
+}
+
+TEST(Deck, RefusesAColumnJoinedInItsLogarithmThatIsNotPositive) {
+  const auto refusal = [](std::vector<double> viscosity, std::string_view kind) {
+    try {
+      static_cast<void>(planetmodel::DeckLayers(
+          Deck({0.0, 1.0, 1.0, 2.0, 3.0},
+               {{"rho", {4.0, 4.0, 3.0, 3.0, 3.0}}, {"viscosity", std::move(viscosity)}},
+               {}, "v.deck"),
+          "cubic", {{"viscosity", std::string{kind}}}));
+    } catch (const Error& e) {
+      return std::string{e.what()};
+    }
+    return std::string{"accepted"};
+  };
+  const auto nan = std::nan("");
+  EXPECT_EQ(refusal({nan, nan, 1e21, -1.0, 1e22}, "log-linear"),
+            "v.deck: viscosity: is -1 at r = 2 on layer 1; a column joined by log-linear, its "
+            "logarithm interpolated, is positive and finite at every knot of a layer holding it");
+  EXPECT_NE(refusal({nan, nan, 0.0, 1e21, 1e22}, "log-cubic").find("is 0 at r = 1 on layer 1"),
+            std::string::npos);
+  EXPECT_NE(refusal({1.0, 2.0, 1e21, std::numeric_limits<double>::infinity(), 1e22},
+                    "log-natural")
+                .find("is inf at r = 2"),
+            std::string::npos);
+  EXPECT_EQ(refusal({nan, nan, 1e21, -1.0, 1e22}, "linear"), "accepted");
+  EXPECT_EQ(refusal({nan, nan, 1e21, 1e21, 1e22}, "log-linear"), "accepted");
+  EXPECT_THROW(static_cast<void>(planetmodel::ThroughKnots({0.0, 1.0}, {1.0, 0.0},
+                                                           planetmodel::KnotKind::LogLinear,
+                                                           0.0)),
+               Error);
 }
 
 TEST(Deck, WritesEveryFixtureBackForThePython) {

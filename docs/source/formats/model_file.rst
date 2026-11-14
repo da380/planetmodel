@@ -15,9 +15,14 @@ In C++, planetmodel's own library (:doc:`../cpp`) reads the file, its
 fields evaluated by the rules below, and writes one from a code's own
 fields, checked as the readers check it.
 
-**Schema string**: the global attribute ``schema``,
-``planetmodel.model/1``.  Readers check it; it is bumped only for an
-incompatible change.
+**Schema string**: the global attribute ``schema``.  A file in which no
+variable states a radial rule in the logarithm (``log-polynomial``,
+``log-linear``, below) is ``planetmodel.model/1``; a file in which one
+does is ``planetmodel.model/2``, so that a reader that knows ``/1``
+alone refuses it by its schema before it reads a value by a rule it
+does not know.  Readers check it, and a reader of both refuses a ``/1``
+file stating a rule in the logarithm and a ``/2`` file stating none; a
+number is added only for an incompatible change.
 
 **Units.**  A file holds the model in the model's own units and says
 what they are: one stored unit of length, mass, time and temperature is
@@ -41,7 +46,8 @@ Global attributes
    * - attribute
      - meaning
    * - ``schema``
-     - ``planetmodel.model/1``
+     - ``planetmodel.model/1``, or ``planetmodel.model/2`` where a
+       variable states a radial rule in the logarithm
    * - ``Conventions``
      - ``CF-1.8``
    * - ``source``
@@ -155,7 +161,8 @@ attributes:
    * - ``layers``
      - the layers holding the field
    * - ``radial_interpolation``
-     - ``polynomial`` or ``linear`` (below)
+     - ``polynomial``, ``linear``, ``log-polynomial`` or ``log-linear``
+       (below)
    * - ``lateral_interpolation``
      - ``linear``, ``cubic`` or ``harmonic`` (below), on a variable that
        varies with direction
@@ -256,15 +263,38 @@ Interpolation between nodes
 Every variable states how it is read between nodes, and a reader uses
 the stated rules unless it is asked for others.  The writer states the
 rule the fields hold themselves to, the same on every layer of the
-variable, and states ``harmonic`` only on a grid of a shipped kind
-whose band is at least the field's.
+variable (see below for which), and states ``harmonic`` only on a grid
+of a shipped kind whose band is at least the field's.
 
 **Radially**, within the element holding the radius (the element above,
 at a shared boundary):
 
 - ``polynomial``: the Lagrange polynomial through the element's GLL
   nodes;
-- ``linear``: straight lines between consecutive nodes.
+- ``linear``: straight lines between consecutive nodes;
+- ``log-polynomial`` and ``log-linear``, the rules in the logarithm: the
+  natural logarithms of the values are read by ``polynomial`` or
+  ``linear``, and the value is their exponential.  A reader evaluates it
+  on element ``e`` as ``y_e exp(P(r))``, ``y_e`` the element's first
+  value and ``P`` the rule's interpolant through ``log(y_k / y_e)`` at
+  its nodes, which is the same function and gives an element of one
+  value that value to the bit; its radial derivative is ``y_e exp(P(r))
+  P'(r)``.  A variable stating one is of rank 0 and of the radius alone
+  (``name(node)``), and every value it holds is positive and finite;
+  NaN still marks a layer that lacks it.  A positive field whose
+  logarithm is a piecewise polynomial, such as a deck's column joined
+  in its logarithm, is held by it exactly.
+
+A viscosity joined in its logarithm, through two layers of a part:
+
+.. code-block:: text
+
+   :schema = "planetmodel.model/2" ;
+   ...
+   double viscosity(node) ;
+       :long_name = "dynamic viscosity" ; :units = "kg m-1 s-1" ;
+       :dimensions = 1, -1, -1, 0 ; :rank = 0 ; :layers = 1, 2 ;
+       :radial_interpolation = "log-polynomial" ; ...
 
 **Laterally**, at every node of that element, on a *padded grid*: the
 grid's longitudes gain a wrap column at ``phi_0 + 2 pi``, a copy of the
@@ -289,11 +319,39 @@ Components of rank 1 and above are interpolated as Cartesian components
 and turned back into the spherical frame at the point.
 
 **The layout is exact where it can be.**  The writer puts element edges
-at every breakpoint of a field's piecewise-polynomial description and
-at every knot of the mapping, with ``ngll`` one more than the highest
-degree, so that a tabulated model written and read back is the same
-polynomials; a grid of a field's band holds a band-limited field
-exactly.
+at every breakpoint of a field's piecewise-polynomial description, or
+of its logarithm's under a rule in the logarithm, and at every knot of
+the mapping, with ``ngll`` one more than the highest degree, so that a
+tabulated model written and read back is the same functions:
+polynomials, and the exponentials of polynomials of a column joined in
+its logarithm.  A grid of a field's band holds a band-limited field
+exactly.  A field with no such description (a function of other
+fields, say) is sampled on elements of the spacing the grid's band
+sets, with ``ngll`` at least 5, and holds to that sampling's accuracy.
+
+**Which rule the writer states.**  A variable of the radius alone that
+is, on some of its layers, a positive field whose logarithm is a
+piecewise polynomial and which is no polynomial itself, and on the rest
+a positive constant, a field with no description, or absent, states
+``log-polynomial``; a constant comes back to the bit under it.  A
+variable that would need a rule in the logarithm on one layer and a
+rule in the values on another (a polynomial that varies, or a layer that
+varies with direction) is refused by the writer, naming the layers:
+in parts of their own each layer is held exactly, and by one rule
+named for the variable (``interpolation=``) approximately where that
+rule does not hold it.  Any variable may be
+written by a rule named for it; a rule in the logarithm so named for a
+reference with a perturbation is the reference's, the perturbation
+stating the rule it names in the values.  A reference whose
+perturbation varies with direction (a viscosity perturbed in its
+logarithm about a radial profile) states a rule in the logarithm as any
+radial variable does.
+
+**For a consumer in C++**, ``planetmodel::ModelFile::FieldOn`` reads a
+variable under any of the four radial rules, with its derivatives, and
+``RadialInterpolant`` reads nodal values by them; ``WriteModelFile``
+writes a variable added with ``Rules{.radial =
+RadialRule::LogPolynomial}``, and the file's schema follows.
 
 An example
 ----------

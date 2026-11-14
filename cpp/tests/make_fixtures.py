@@ -17,7 +17,15 @@ poles); and PREM given a viscosity and converted by sl3d's chain from a
 perturbation of its shear speeds (`model_converted.nc`, the viscosity a
 log perturbation and the model's citation the chain's), and the same
 with that viscosity made a Burgers body's two Prony branches and
-power-law creep beside them (`model_prony.nc`).
+power-law creep beside them (`model_prony.nc`).  A Maxwell deck's model
+whose viscosity changes by three decades between knots, joined in its
+logarithm, one viscosity through another layer and none in the core and
+crust, every field written (`model_log.nc`, of `planetmodel.model/2`,
+the viscosity stating `log-polynomial`), its prony deck's model, a
+relaxation time so joined (`model_log_prony.nc`), and the Maxwell model
+with that viscosity perturbed in its logarithm by a gridded field and
+placed by a flattening (`model_log_lateral.nc`, the reference stating
+`log-polynomial`).
 
 Beside them, `model_kinds.nc` (an absolute perturbation of `rho` and a
 log one of `viscosity`), `model_tensors.nc` (a rank-2 `stress`, radial
@@ -63,7 +71,8 @@ netCDF file each: for a lateral case the grid (`colatitude`,
 `expected_dtheta` and `expected_dphi`; for a radial case the element
 `breaks`, `ngll`, the node `radius` and the `values` there (element by
 element), the `method`, the query radii and the `expected` values and
-derivatives.
+derivatives, the rules in the logarithm on positive values spanning
+decades with one element of one value.
 Every case covers the poles, the longitude seam and points between
 nodes.  The local rules only: the C++ side does no spherical-harmonic
 work.
@@ -106,8 +115,9 @@ layer and interface that `mineos_names`, `maxwell_names` or `nd_names`
 gives (`-` for none) and the count of what the first `ignored`, and for
 each kind the C++ reads (and for a Maxwell, prony or burgers deck
 `maxwell`, `prony` or `burgers`, the default kind with the format's
-kinds), `value <kind> <layer> <column> <r> <value> <derivative>` at the
-layer's ends and between its knots, or `absent <layer> <column>`.  The
+kinds; and each kind after `log-` on every column positive wherever it
+is not NaN), `value <kind> <layer> <column> <r> <value> <derivative>` at
+the layer's ends and between its knots, or `absent <layer> <column>`.  The
 C++ tests write each deck back, and `tests/test_cpp_written_decks.py`
 holds what they wrote to the Python's own writing, character for
 character.
@@ -194,12 +204,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.interpolate import PPoly
 
 import planetmodel as pm
 from planetmodel import units
 from planetmodel.lateral import LateralInterpolant
+from planetmodel.layerfunction import ExponentialLayer
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.modelfile import validate_structure, write_model
+from planetmodel.modelfile import LOG_RULES, validate_structure, write_model
 
 
 def smooth(theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
@@ -276,6 +288,22 @@ def radial_cases(directory: Path) -> list[Path]:
             {"breaks": mesh.breakpoints, "radius": mesh.r, "values": values,
              "query_radius": r,
              "expected": pp(r), "expected_dr": pp.derivative()(r)},
+            {"method": method, "ngll": np.int32(mesh.ngll)}))
+    # positive values over decades, the middle element of one value: the
+    # exponential of each element's polynomial through log(y / y_e)
+    positive = 1e21 * np.exp(4.0 * np.sin(5.0 * mesh.r) - 3.0 * mesh.r)
+    positive[1] = 2.5e21
+    first = positive[:, :1]
+    for method in LOG_RULES:
+        exponent = mesh.to_ppoly(np.log(positive / first),
+                                 method=method.removeprefix("log-"))
+        f = ExponentialLayer((0.0, 1.0), exponent,
+                             factor=PPoly(first.T.copy(), mesh.breakpoints))
+        out.append(_write_case(
+            directory / f"case_radial_{method}.nc",
+            {"breaks": mesh.breakpoints, "radius": mesh.r, "values": positive,
+             "query_radius": r,
+             "expected": f(r), "expected_dr": f.derivative()(r)},
             {"method": method, "ngll": np.int32(mesh.ngll)}))
     return out
 
@@ -377,6 +405,53 @@ def model_files(directory: Path) -> list[Path]:
                     fields=["rho", "vsv", "vsh", "viscosity"]),
         write_model(directory / "model_prony.nc", with_burgers(converted()),
                     grid=pm.gauss_legendre(6)),
+    ] + log_model_files(directory)
+
+
+def graded_maxwell() -> pm.MaxwellDeckModel:
+    """A Maxwell deck's model: a fluid core, a mantle whose viscosity
+    changes by three decades between knots, up and down, joined in its
+    logarithm, a mantle of one viscosity and an elastic crust."""
+    knots = [np.linspace(0.0, 1.2e6, 3), np.linspace(1.2e6, 5.0e6, 6),
+             np.linspace(5.0e6, 6.2e6, 4), np.linspace(6.2e6, 6.371e6, 2)]
+    ends = {"rho": [(11000, 10000), (5500, 4500), (4000, 3500), (2900, 2700)],
+            "vp": [(9000, 8500), (13000, 11000), (10000, 8500), (6800, 6500)],
+            "vs": [(0, 0), (7000, 6000), (5500, 4700), (3900, 3700)]}
+    columns = {}
+    for name, column in (("rho", "rho"), ("vpv", "vp"), ("vsv", "vs"),
+                         ("vph", "vp"), ("vsh", "vs")):
+        columns[name] = np.concatenate([np.linspace(a, b, r.size)
+                                        for (a, b), r in zip(ends[column], knots)])
+    columns["eta"] = np.ones(sum(r.size for r in knots))
+    columns["viscosity"] = np.concatenate([
+        np.full(3, np.nan), 10.0 ** (20.0 + 3.0 * np.array([0, 1, 0, 1, 0, 1])),
+        np.full(4, 1e21), np.full(2, np.nan)])
+    return pm.MaxwellDeckModel(pm.Deck(np.concatenate(knots), columns))
+
+
+def log_model_files(directory: Path) -> list[Path]:
+    """The model files stating a rule in the logarithm."""
+    from planetmodel.conversion import prony
+    maxwell = graded_maxwell()
+    lo, hi = maxwell.layer(1).interval
+
+    def dlneta(r: np.ndarray, t: np.ndarray, p: np.ndarray) -> np.ndarray:
+        return 0.3 * np.sin(t) ** 2 * np.cos(p) * (r - lo) / (hi - lo)
+
+    grid = pm.gauss_legendre(4)
+    lateral = pm.perturbed(maxwell, "viscosity", pm.GriddedField.sampled(
+        pm.AnalyticField((lo, hi), dlneta), grid, ngll=3, lateral="cubic"), kind="log")
+    relief = pm.GriddedFunction.sampled(
+        lambda t, p: 2e3 * np.sin(t) ** 2 * np.cos(2 * p), pm.gauss_legendre(8))
+    lateral = lateral.stretched(pm.layer_linear(
+        lateral.skeleton, [None, relief, None, None, relief]))
+    return [
+        write_model(directory / "model_log.nc", maxwell, grid=pm.gauss_legendre(2)),
+        write_model(directory / "model_log_prony.nc",
+                    pm.PronyDeckModel(prony.prony_deck(maxwell)),
+                    grid=pm.gauss_legendre(2)),
+        write_model(directory / "model_log_lateral.nc", lateral, grid=grid,
+                    fields=["rho", "vsv", "viscosity"]),
     ]
 
 
@@ -655,6 +730,22 @@ def fault_meshes(directory: Path) -> list[Path]:
 #: The kinds of deck interpolant the C++ reads, of `deck.KINDS`.
 _CPP_KINDS = ("cubic", "natural", "linear")
 
+#: The same through the logarithms, of `deck.LOG_KINDS`.
+_CPP_LOG_KINDS = tuple(f"log-{kind}" for kind in _CPP_KINDS)
+
+
+def _positive_columns(deck: Any) -> list[str]:
+    """The columns of a deck positive and finite wherever they are not
+    NaN, and not NaN throughout: those a kind of `_CPP_LOG_KINDS` joins
+    in the expectations (the C++ test finds the same)."""
+    out = []
+    for name in deck.names:
+        v = deck[name]
+        if (not np.isnan(v).all()
+                and np.all(np.isnan(v) | (np.isfinite(v) & (v > 0.0)))):
+            out.append(name)
+    return out
+
 
 def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
     """The expectation file of a deck, by the module docstring; `names` is
@@ -687,17 +778,19 @@ def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
         lines.append(f"ignored {len(caught)}")
     rng = np.random.default_rng(len(deck.radius))
-    joined = [(kind, {}) for kind in _CPP_KINDS]
+    joined = [(kind, kind, {}, deck.names) for kind in _CPP_KINDS]
     if names in own_kinds:
-        joined.append((names, dict(own_kinds[names])))
-    for label, kinds in joined:
-        kind = "cubic" if label in own_kinds else label
+        joined.append((names, "cubic", dict(own_kinds[names]), deck.names))
+    positive = _positive_columns(deck)
+    joined += [(kind, "cubic", {n: kind for n in positive}, positive)
+               for kind in _CPP_LOG_KINDS]
+    for label, kind, kinds, columns in joined:
         _, fields = deck_layers(deck, kind=kind, kinds=kinds)
         for i, s in enumerate(deck.layers()):
             r = deck.radius[s]
             between = np.sort(rng.uniform(r[0], r[-1], 3))
             radii = np.concatenate(([r[0]], between, [r[-1]]))
-            for name in deck.names:
+            for name in columns:
                 if name not in fields[i]:
                     lines.append(f"absent {i} {name}")
                     continue
@@ -1330,6 +1423,15 @@ def _renaming(old: str, new: str, *, group: str) -> Any:
     return lambda ds: ds.groups[group].renameVariable(old, new)
 
 
+def _negating(*, variable: str, group: str) -> Any:
+    """An edit storing -1 at the first node holding a variable."""
+    def edit(ds: Any) -> None:
+        var = ds.groups[group].variables[variable]
+        held = np.flatnonzero(~np.isnan(np.ma.filled(var[:], np.nan)))
+        var[int(held[0])] = -1.0
+    return edit
+
+
 _P = {"group": "part_0"}
 _RHO = {"group": "part_0", "variable": "rho"}
 _BETWEEN = {"group": "geometry", "variable": "boundary_displacement"}
@@ -1423,6 +1525,15 @@ _BAD_MODELS: dict[str, tuple[str, Any, str, str]] = {
                               "surfaces/K_shape", "K_shape_poles is missing"),
     "surface_name_taken": ("model_surfaces.nc", _renaming("shift", "rho", **_S),
                            "surfaces/rho", "never both"),
+    "log_rule_schema": ("model_log.nc", _setting("schema", "planetmodel.model/1"),
+                        "part_0/viscosity", "does not hold"),
+    "log_schema_unused": ("model_lateral.nc", _setting("schema", "planetmodel.model/2"),
+                          "schema", "and none does"),
+    "log_rule_lateral": ("model_lateral.nc",
+                         _setting("radial_interpolation", "log-polynomial", **_RHO),
+                         "part_0/rho", "rank 0 of the radius alone"),
+    "log_rule_value": ("model_log.nc", _negating(variable="viscosity", group="part_0"),
+                       "part_0/viscosity", "not positive"),
 }
 
 

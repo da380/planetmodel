@@ -22,7 +22,10 @@ modulus, and a :doc:`burgers_deck` that of two summing to one.  The
 elastic values are the unrelaxed ones, and the shear modulus ``mu`` is
 their Voigt average, ``(A + C - 2F + 5N + 6L) / 15`` with ``A = rho
 vph^2``, ``C = rho vpv^2``, ``L = rho vsv^2``, ``N = rho vsh^2`` and
-``F = eta (A - 2L)``.
+``F = eta (A - 2L)``.  As any deck, it is dense enough in knots that
+the choice of interpolation between them does not matter in practice:
+the kinds the readers join them by are a default, not part of the
+model's definition (:doc:`maxwell_deck`).
 
 The Python writes one with ``planetmodel.write_deck(path, deck, PRONY)``,
 a deck from any model being ``conversion.prony.prony_deck(model)``, which
@@ -126,18 +129,25 @@ eight significant digits.  The readers and the writers both hold a deck
 to these rules, naming the layer, the column and the radius of the
 first value that breaks them.
 
-The readers join each layer's knots by a piecewise polynomial: the
-velocities and the density by a not-a-knot cubic spline (the parabola
-through three knots, the line through two), every branch column by
-straight lines.  Straight lines keep every strength in [0, 1], their sum
-at most one and every time positive between knots, and join the times,
-which can change by orders of magnitude within a layer, as a Maxwell
-deck's viscosity is joined.  A one-branch deck made from a Maxwell deck
-is the same body at the knots; between them its time is the line
-through the knots' viscosity over shear modulus, where the Maxwell deck
-divides the line of the viscosity by the cubic of the modulus, and the
-two differ at second order in the spacing of the knots.  The Python and
-the C++ give the same functions.
+The readers join each layer's knots: the velocities and the density by a
+not-a-knot cubic spline (the parabola through three knots, the line
+through two), the strengths by straight lines, which keep every strength
+in [0, 1] and their sum at most one between knots, and the times in
+their logarithm by straight lines, ``log-linear``, geometric between
+knots, as a Maxwell deck's viscosity is joined: a time can change by
+orders of magnitude within a layer.  A one-branch deck made from a
+Maxwell deck is the same body at the knots; between them its time is
+geometric in the knots' viscosity over shear modulus, where the Maxwell
+deck divides its viscosity by the cubic of the modulus, and the two
+differ by the curvature of the modulus's logarithm between the knots, at
+second order in their spacing.  The kinds given replace the defaults
+whole: the Python's ``PronyDeckModel(path, kinds={"relaxation_strength":
+"linear", "relaxation_time": "linear"})``, or ``DeckLayers(deck, "cubic",
+{{"relaxation_strength", "linear"}, {"relaxation_time", "linear"}})`` in
+C++, joins the times' values by straight lines instead; a kind given to
+``relaxation_time`` is every branch's, and one given to
+``relaxation_time_2`` that branch's alone.  The Python and the C++ give
+the same functions, values and derivatives, to rounding.
 
 ``PronyDeckModel`` makes each layer's branches its fields
 ``relaxation_strength_k`` and ``relaxation_time_k``, which the library's

@@ -9,8 +9,8 @@ from planetmodel import (DENSITY, SCALAR, Deck, DeckFormat, Elastic, FieldSpec,
                          Geometry, MINEOS, MineosModel, Model, PREM, SelfGravitating,
                          Tabulated, Viscoelastic, deck_layers, read_deck, testing,
                          write_deck)
-from planetmodel.deck import KINDS, deck_knots, mineos_names, nd_names
-from planetmodel.layerfunction import PolynomialLayer
+from planetmodel.deck import KINDS, LOG_KINDS, deck_knots, mineos_names, nd_names
+from planetmodel.layerfunction import ExponentialLayer, PolynomialLayer
 from planetmodel.units import VISCOSITY
 
 DATA = Path(__file__).resolve().parent.parent / "examples" / "data"
@@ -575,6 +575,149 @@ def test_a_column_may_be_joined_by_a_kind_of_its_own():
         deck_layers(d, kinds={"qmu": "linear"})
     with pytest.raises(ValueError, match="kind must be one of"):
         deck_layers(d, kinds={"viscosity": "quintic"})
+    with pytest.raises(ValueError, match="kind must be one of"):
+        deck_layers(d, kind="log-quintic")
+
+
+# -- kinds in the logarithm -----------------------------------------------------------
+
+#: Knots of one layer, and values over five decades on them, up and down.
+_KNOTS = np.array([0.0, 0.13, 0.31, 0.52, 0.74, 1.0])
+_SPAN = 10.0 ** np.array([19.0, 21.5, 20.0, 23.0, 22.0, 24.0])
+
+
+def test_log_linear_is_geometric_between_knots():
+    """y_i (y_{i+1} / y_i)^t on every piece, to the rounding of the
+    logarithms of the ratios, and the first knot to the bit; two knots give
+    it under every kind in the logarithm."""
+    _, layers = deck_layers(Deck(_KNOTS, {"viscosity": _SPAN}), kind="log-linear")
+    f = layers[0]["viscosity"]
+    assert isinstance(f.function, ExponentialLayer) and f.function.exponent.degree == 1
+    assert f(0.0) == _SPAN[0]
+    t = np.linspace(0.0, 1.0, 11)
+    for i in range(_KNOTS.size - 1):
+        x = _KNOTS[i] + t * (_KNOTS[i + 1] - _KNOTS[i])
+        want = _SPAN[i] * (_SPAN[i + 1] / _SPAN[i]) ** t
+        assert np.allclose(f(x), want, rtol=5e-15, atol=0), i
+    two = Deck([0.0, 1.0], {"viscosity": [1e19, 1e23]})
+    for kind in LOG_KINDS:
+        _, layers = deck_layers(two, kind=kind)
+        eta = layers[0]["viscosity"]([0.25, 0.5, 0.75])
+        assert np.allclose(eta, [1e20, 1e21, 1e22], rtol=2e-15, atol=0), kind
+
+
+@pytest.mark.parametrize("kind", LOG_KINDS)
+def test_a_column_joined_in_its_logarithm_is_the_exponential_of_its_kind(kind):
+    """The logarithm of the column over its first value is the kind's
+    polynomial through the logarithms; the column passes through the knots;
+    its first and second derivatives agree with central differences between
+    them, and its integral with quadrature piece by piece."""
+    from scipy.integrate import quad
+    _, layers = deck_layers(Deck(_KNOTS, {"viscosity": _SPAN}),
+                            kinds={"viscosity": kind})
+    f = layers[0]["viscosity"]
+    assert isinstance(f.function, ExponentialLayer)
+    assert np.allclose(f(_KNOTS), _SPAN, rtol=5e-15, atol=0)
+    plain = kind.removeprefix("log-")
+    _, logs = deck_layers(Deck(_KNOTS, {"log": np.log(_SPAN / _SPAN[0])}), kind=plain)
+    x = np.sort(np.concatenate([0.5 * (_KNOTS[1:] + _KNOTS[:-1]), _KNOTS[:-1] + 0.03]))
+    assert np.allclose(np.log(f(x) / _SPAN[0]), logs[0]["log"](x), rtol=0, atol=1e-13)
+    h = 1e-6
+    for nu in (1, 2):
+        before, d = f.derivative(nu=nu - 1), f.derivative(nu=nu)
+        fd = (before(x + h) - before(x - h)) / (2.0 * h)
+        assert np.allclose(d(x), fd, rtol=1e-6, atol=0), nu
+    whole = sum(quad(lambda s: float(f(s)), a, b, epsrel=1e-12, epsabs=0, limit=200)[0]
+                for a, b in zip(_KNOTS[:-1], _KNOTS[1:]))
+    assert f.integrate(0.0, 1.0) == pytest.approx(whole, rel=1e-10, abs=0)
+
+
+@pytest.mark.parametrize("values, kind, says", [
+    ([np.nan, np.nan, 1e21, -1.0, 1e22], "log-linear",
+     "column 'viscosity' is -1 at r = 2 on layer 1; a column joined by log-linear, its "
+     "logarithm interpolated, is positive and finite at every knot of a layer holding "
+     "it"),
+    ([np.nan, np.nan, 0.0, 1e21, 1e22], "log-cubic",
+     "column 'viscosity' is 0 at r = 1 on layer 1; a column joined by log-cubic"),
+    ([1.0, 2.0, 1e21, np.inf, 1e22], "log-pchip",
+     "column 'viscosity' is inf at r = 2 on layer 1"),
+])
+def test_a_column_joined_in_its_logarithm_is_positive_at_every_knot(values, kind, says):
+    d = Deck([0.0, 1.0, 1.0, 2.0, 3.0], {"rho": [4.0, 4.0, 3.0, 3.0, 3.0],
+                                         "viscosity": values})
+    with pytest.raises(ValueError) as caught:
+        deck_layers(d, kinds={"viscosity": kind})
+    assert says in str(caught.value)
+    with pytest.raises(ValueError, match="spans more than the range of a float"):
+        deck_layers(Deck([0.0, 1.0], {"v": [1e-200, 1e200]}), kind="log-linear")
+
+
+def _graded_maxwell_deck():
+    """`_maxwell_prem`'s Maxwell deck with the lower mantle's viscosity
+    falling from 1e23 Pa s at its base to 1e21 at its top, exponentially
+    in radius."""
+    from planetmodel import sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS
+    model = _maxwell_prem()
+    d = sample_deck(model, MAXWELL_COLUMNS)
+    eta = np.array(d["viscosity"])
+    s = d.layers()[model.layer("lower_mantle").index]
+    x = (d.radius[s] - d.radius[s][0]) / np.ptp(d.radius[s])
+    eta[s] = 10.0 ** (23.0 - 2.0 * x)
+    return Deck(d.radius, {**d.columns, "viscosity": eta}, header=d.header)
+
+
+def test_a_viscosity_constant_through_a_layer_reads_as_straight_lines_did(tmp_path):
+    """The default reading of a Maxwell deck and the reading by straight
+    lines give the same viscosity, its derivative and the frozen moduli to
+    the bit where the viscosity is constant through each layer."""
+    from planetmodel import MAXWELL, MaxwellDeckModel, sample_deck
+    from planetmodel.deck import MAXWELL_COLUMNS
+    path = write_deck(tmp_path / "m.deck",
+                      sample_deck(_maxwell_prem(), MAXWELL_COLUMNS), MAXWELL)
+    new = MaxwellDeckModel(path)
+    old = MaxwellDeckModel(path, kinds={"viscosity": "linear"})
+    omega = 2.0 * np.pi / (1000 * 3.15576e7)
+    fnew, fold = new.frozen(omega), old.frozen(omega)
+    viscous = [lay.index for lay in new.layers if "viscosity" in lay]
+    assert viscous == [2, 3, 4, 5, 6, 7]
+    for i in viscous:
+        r = np.linspace(*new.layer(i).interval, 101)
+        a, b = new.layer(i)["viscosity"], old.layer(i)["viscosity"]
+        assert np.array_equal(a(r), b(r)) and np.array_equal(a.derivative()(r),
+                                                            b.derivative()(r))
+        assert np.array_equal(fnew.layer(i)["N"](r), fold.layer(i)["N"](r))
+
+
+def test_straight_lines_through_a_viscosity_remain_by_asking(tmp_path):
+    """A viscosity varying through a layer: by default geometric between
+    knots, which holds a viscosity exponential in radius to the digits
+    written; with `kinds={"viscosity": "linear"}` the straight lines
+    through the values, above it between knots by their arithmetic over
+    geometric mean; both through the knots."""
+    from planetmodel import MAXWELL, MaxwellDeckModel
+    d = _graded_maxwell_deck()
+    path = write_deck(tmp_path / "graded.deck", d, MAXWELL)
+    new = MaxwellDeckModel(path)
+    old = MaxwellDeckModel(path, kinds={"viscosity": "linear"})
+    i = new.layer("lower_mantle").index
+    a, b = new.layer(i)["viscosity"], old.layer(i)["viscosity"]
+    assert isinstance(a.function, ExponentialLayer)
+    assert isinstance(b.function, PolynomialLayer) and b.function.degree == 1
+    r = new.knots[i]
+    y = read_deck(path, MAXWELL)["viscosity"][d.layers()[i]]
+    assert np.allclose(a(r), y, rtol=1e-14, atol=0) and np.allclose(b(r), y, rtol=1e-15)
+    middle = 0.5 * (r[1:] + r[:-1])
+    assert np.allclose(a(middle), np.sqrt(y[1:] * y[:-1]), rtol=1e-14, atol=0)
+    assert np.allclose(b(middle), 0.5 * (y[1:] + y[:-1]), rtol=1e-14, atol=0)
+    x = (middle - r[0]) / (r[-1] - r[0])
+    assert np.allclose(a(middle), 10.0 ** (23.0 - 2.0 * x), rtol=5e-8, atol=0)
+    above = b(middle) / a(middle) - 1.0
+    assert np.all(above > 0.0) and 6e-4 < np.max(above) < 8e-4
+    assert np.array_equal(new.layer(i - 1)["viscosity"](r[:1]),
+                          old.layer(i - 1)["viscosity"](r[:1]))
+    again = write_deck(tmp_path / "again.deck", new.to_deck(), MAXWELL)
+    assert again.read_text() == path.read_text()
 
 
 # -- any model as a deck ------------------------------------------------------------
@@ -700,7 +843,9 @@ def test_a_maxwell_deck_model_reads_back_what_was_written(tmp_path):
         lo, hi = layer.interval
         r = np.linspace(lo, hi, 13)
         assert np.allclose(m.layer(i)["rho"](r), layer["rho"](r), rtol=1e-7)
-    assert m.layer("lower_mantle")["viscosity"].function.degree == 1
+    eta = m.layer("lower_mantle")["viscosity"]       # constant: that constant
+    r = np.linspace(*eta.interval, 13)
+    assert np.array_equal(eta(r), np.full(r.size, 1e22)) and eta.function.degree == 0
     assert m.columns == MAXWELL_COLUMNS
     testing.check_model(m)
     again = MaxwellDeckModel(write_deck(tmp_path / "again.deck", m.to_deck(), MAXWELL))

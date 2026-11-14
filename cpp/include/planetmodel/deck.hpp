@@ -43,10 +43,19 @@
  * `MaxwellNames` (of a Maxwell, prony or burgers deck) and `NdNames` give
  * the layer and interface names a header or a table's labels imply, and
  * `DeckLayers` each layer's columns as functions of the radius, joined by
- * the kind asked for, by column or by a family's stem where asked (a
- * Maxwell deck's viscosity by straight lines, `MAXWELL_KINDS`; a prony
- * deck's branches, `PRONY_KINDS`; a burgers deck's three, `BURGERS_KINDS`),
- * on the deck's skeleton.
+ * the kind asked for, by column or by a family's stem where asked, on the
+ * deck's skeleton.  A kind is `cubic`, `natural` or `linear`, a piecewise
+ * polynomial through the values, or the same with `log-` before it, the
+ * polynomial through the logarithms of values positive and finite at every
+ * knot of the layer and the value its exponential, `log-linear` being
+ * geometric between knots.  A Maxwell deck's viscosity is joined by
+ * `log-linear` (`MAXWELL_KINDS`), which keeps it positive and follows a
+ * viscosity changing by orders of magnitude within a layer; so are a prony
+ * deck's relaxation times, its strengths by `linear` (`PRONY_KINDS`), and
+ * a burgers deck's two viscosities, its Kelvin modulus fraction by
+ * `linear` (`BURGERS_KINDS`).  A map of kinds of one's own joins any of
+ * them otherwise: `{{"viscosity", "linear"}}` joins a viscosity's values
+ * by straight lines.
  */
 
 #include <algorithm>
@@ -93,11 +102,13 @@ inline const auto MAXWELL_COLUMNS = std::vector<std::string>{
 
 /**
  * @brief The kinds a Maxwell deck's columns are joined by where not the
- * default: the viscosity by straight lines, which keep it positive between
- * knots.
+ * default: the viscosity in its logarithm by straight lines, geometric
+ * between knots, which keeps it positive and follows a viscosity that
+ * changes by orders of magnitude within a layer; `{{"viscosity",
+ * "linear"}}` joins the values themselves by straight lines instead.
  */
 inline const auto MAXWELL_KINDS =
-    std::map<std::string, std::string, std::less<>>{{"viscosity", "linear"}};
+    std::map<std::string, std::string, std::less<>>{{"viscosity", "log-linear"}};
 
 /**
  * @brief The stems of a Prony branch's two names, its strength and its time,
@@ -116,12 +127,13 @@ inline const auto PRONY_COLUMNS =
 
 /**
  * @brief The kinds a prony deck's columns are joined by where not the
- * default, by the stems of the branches' families: straight lines, which
- * keep every strength in [0, 1], their sum at most one and every time
- * positive between knots, as a Maxwell deck's viscosity is joined.
+ * default, by the stems of the branches' families: the strengths by
+ * straight lines, which keep every one in [0, 1] and their sum at most one
+ * between knots; the times in their logarithm by straight lines, positive
+ * and geometric between knots, as a Maxwell deck's viscosity is joined.
  */
 inline const auto PRONY_KINDS = std::map<std::string, std::string, std::less<>>{
-    {"relaxation_strength", "linear"}, {"relaxation_time", "linear"}};
+    {"relaxation_strength", "linear"}, {"relaxation_time", "log-linear"}};
 
 /**
  * @brief The columns of a burgers deck, after the radius: a Maxwell deck's,
@@ -134,11 +146,14 @@ inline const auto BURGERS_COLUMNS =
 
 /**
  * @brief The kinds a burgers deck's columns are joined by where not the
- * default: the viscosity and the Kelvin element's two by straight lines,
- * which keep them positive between knots.
+ * default: the two viscosities in their logarithm by straight lines, as a
+ * Maxwell deck's viscosity is joined, and the Kelvin element's modulus
+ * fraction by straight lines; all three stay positive between knots.
  */
 inline const auto BURGERS_KINDS = std::map<std::string, std::string, std::less<>>{
-    {"viscosity", "linear"}, {"kelvin_viscosity", "linear"}, {"kelvin_modulus_fraction", "linear"}};
+    {"viscosity", "log-linear"},
+    {"kelvin_viscosity", "log-linear"},
+    {"kelvin_modulus_fraction", "linear"}};
 
 /**
  * @brief How far, per branch, a prony deck's strengths may stand from what
@@ -1658,36 +1673,44 @@ struct DeckFunctions {
 
 /**
  * @brief A kind a deck's knots may be joined by in C++, by name.
- * @param kind `cubic`, `natural` or `linear`.
+ * @param kind `cubic`, `natural` or `linear`, or one of them after `log-`.
  * @throws planetmodel::Error if the kind is the Python's alone (`pchip`,
- *         `akima`) or no kind.
+ *         `akima`, with or without `log-`) or no kind.
  */
 [[nodiscard]] inline KnotKind KnotKindNamed(std::string_view kind) {
   if (kind == "cubic") return KnotKind::Cubic;
   if (kind == "natural") return KnotKind::Natural;
   if (kind == "linear") return KnotKind::Linear;
-  if (kind == "pchip" || kind == "akima") {
+  if (kind == "log-cubic") return KnotKind::LogCubic;
+  if (kind == "log-natural") return KnotKind::LogNatural;
+  if (kind == "log-linear") return KnotKind::LogLinear;
+  constexpr auto kinds = std::string_view{
+      "cubic, natural and linear, each also after log-"};
+  if (kind == "pchip" || kind == "akima" || kind == "log-pchip" || kind == "log-akima") {
     throw Error("DeckLayers", "kind",
-                std::format("{} is the Python's alone; in C++ the kinds are cubic, natural "
-                            "and linear", kind));
+                std::format("{} is the Python's alone; in C++ the kinds are {}", kind, kinds));
   }
-  throw Error("DeckLayers", "kind",
-              std::format("{} is not a kind; they are cubic, natural and linear", kind));
+  throw Error("DeckLayers", "kind", std::format("{} is not a kind; they are {}", kind, kinds));
 }
 
 /**
  * @brief The skeleton of a deck and every layer's columns, each the
- * piecewise polynomial through the layer's knots of the kind `kinds` gives
- * the column, or else the stem of its family (`Member`), or else of `kind`,
- * on its layer with the skeleton's default tolerance.
+ * function through the layer's knots of the kind `kinds` gives the column,
+ * or else the stem of its family (`Member`), or else of `kind`, on its
+ * layer with the skeleton's default tolerance: a piecewise polynomial, or
+ * for a kind after `log-` the exponential of one through the logarithms
+ * (`ThroughKnots`).
  * @param deck The deck.
- * @param kind How the knots are joined: `cubic`, `natural` or `linear`.
+ * @param kind How the knots are joined: `cubic`, `natural` or `linear`, or
+ *        one of them after `log-`.
  * @param kinds The kind of a column joined otherwise, by its name or by
  *        its family's stem; `MAXWELL_KINDS` for a Maxwell deck,
  *        `PRONY_KINDS` for a prony deck, `BURGERS_KINDS` for a burgers deck.
  * @throws planetmodel::Error if a kind is refused, `kinds` names neither a
  *         column of the deck nor the stem of a family it holds a member of,
- *         or a column is NaN on part of a layer.
+ *         a column is NaN on part of a layer, or a column joined after
+ *         `log-` is not positive and finite at every knot of a layer
+ *         holding it.
  */
 [[nodiscard]] inline DeckFunctions DeckLayers(
     const Deck& deck, std::string_view kind = "cubic",
@@ -1730,11 +1753,26 @@ struct DeckFunctions {
                                 i));
       }
       auto joined = knot_kind;
+      auto joined_name = std::string{kind};
       if (const auto own = column_kinds.find(name); own != column_kinds.end()) {
         joined = own->second;
+        joined_name = kinds.find(name)->second;
       } else if (const auto found = Member(name)) {
         if (const auto stem = column_kinds.find(found->first); stem != column_kinds.end()) {
           joined = stem->second;
+          joined_name = kinds.find(found->first)->second;
+        }
+      }
+      if (IsLogarithmic(joined)) {
+        const auto off =
+            std::ranges::find_if(y, [](double v) { return !(std::isfinite(v) && v > 0.0); });
+        if (off != y.end()) {
+          const auto j = static_cast<std::size_t>(std::distance(y.begin(), off));
+          throw Error(deck.Source(), name,
+                      std::format("is {:g} at r = {:g} on layer {}; a column joined by {}, its "
+                                  "logarithm interpolated, is positive and finite at every "
+                                  "knot of a layer holding it",
+                                  *off, knots[j], i, joined_name));
         }
       }
       fields.emplace(name, ThroughKnots(std::move(knots), std::move(y), joined, tolerance));

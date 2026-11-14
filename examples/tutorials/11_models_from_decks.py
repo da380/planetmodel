@@ -148,15 +148,17 @@ print("\n".join(line[:96] for line in path.read_text().splitlines()[:5]))
 # %% [markdown]
 # `MaxwellDeckModel` is the model type of that format. It reads the
 # deck, names the layers and interfaces from the naming lines, and joins
-# each layer's knots by a cubic spline, except the viscosity's, which
-# are joined by straight lines: a viscosity can change by orders of
+# each layer's knots by a cubic spline, except the viscosity's, whose
+# logarithms are joined by straight lines (`log-linear`), so that the
+# viscosity is geometric between knots: it can change by orders of
 # magnitude across a layer, and a cubic through such values overshoots,
-# even below zero. The elastic, gravity and viscoelastic mixins are the
-# same as `PREM`'s, and `frozen` gives the model with complex moduli at
-# a chosen period. The shear modulus of the lower mantle keeps its
-# elastic value at ten years, and has relaxed most of the way to zero at
-# a hundred thousand years, well past the Maxwell time of about two
-# thousand years.
+# even below zero. `kinds={"viscosity": "linear"}` joins the values
+# themselves by straight lines instead. The elastic, gravity and
+# viscoelastic mixins are the same as `PREM`'s, and `frozen` gives the
+# model with complex moduli at a chosen period. The shear modulus of the
+# lower mantle keeps its elastic value at ten years, and has relaxed
+# most of the way to zero at a hundred thousand years, well past the
+# Maxwell time of about two thousand years.
 
 # %%
 maxwell = MaxwellDeckModel(path)

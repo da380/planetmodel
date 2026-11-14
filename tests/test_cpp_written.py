@@ -1,7 +1,9 @@
 """The model files the C++ writer wrote, read by the Python: each
 validates, reads as a model with its fields on interfaces, and holds the
-values the C++ reader reads from it; a fixture the C++ read and wrote
-back reads as the fixture does; the fault files the C++ wrote read by
+values the C++ reader reads from it; a viscosity written in its
+logarithm reads as its closed form, a constant to the bit; a fixture
+the C++ read and wrote back reads as the fixture does; the fault files
+the C++ wrote read by
 the Python's strict reader, a fixture written back to the same fault
 and metadata, evaluating number for number as the fixture does, and a
 fault built in C++ to the C++'s own evaluations of it; and the kernel the example
@@ -83,9 +85,34 @@ def _check_expect(model, expect: Path, *, rtol: float, surfaces=None) -> int:
 def test_the_cpp_wrote_its_files():
     names = {p.name for p in _written("*.nc")}
     assert {"written_si.nc", "written_custom.nc", "written_tensors.nc",
-            "written_surfaces.nc", "kernel.nc", "roundtrip_model_prem.nc",
-            "roundtrip_model_harmonic.nc", "roundtrip_model_surfaces.nc",
+            "written_surfaces.nc", "written_log.nc", "kernel.nc",
+            "roundtrip_model_prem.nc", "roundtrip_model_harmonic.nc",
+            "roundtrip_model_surfaces.nc", "roundtrip_model_log.nc",
             "surface_written.nc"} <= names
+
+
+@needs_written
+def test_a_viscosity_the_cpp_wrote_in_its_logarithm_reads_exactly():
+    """The C++'s exp(46 + 8 r - 5 r^2) on its middle layer, three nodes an
+    element, read by the Python as an exponential layer: exact between
+    the nodes, with its derivative, and the constant above it to the bit."""
+    from planetmodel.layerfunction import ExponentialLayer
+    from planetmodel.modelfile import SCHEMA_WITH_LOG_RULES, read_model_file
+    path = Path(WRITTEN) / "written_log.nc"
+    assert read_model_file(path).schema == SCHEMA_WITH_LOG_RULES
+    model = read_model(path)
+    assert model.layers_with("viscosity") == (1, 2)
+    eta = model.layer(1)["viscosity"]
+    assert isinstance(eta.function, ExponentialLayer)
+    r = np.linspace(0.3, 0.7, 101)
+    want = np.exp(46.0 + 8.0 * r - 5.0 * r ** 2)
+    assert np.allclose(eta(r), want, rtol=1e-13, atol=0)
+    assert np.allclose(eta.derivative()(r), want * (8.0 - 10.0 * r), rtol=1e-12,
+                       atol=1e-12 * 8.0 * want.max())
+    above = model.layer(2)["viscosity"]
+    r = np.linspace(0.7, 1.0, 13)
+    assert np.array_equal(above(r), np.full(r.size, 2e21))
+    assert np.array_equal(above.derivative()(r), np.zeros(r.size))
 
 
 @needs_written

@@ -12,6 +12,13 @@ would otherwise reach glacial periods.  A :doc:`prony_deck` holds any
 number of Prony branches in place of the viscosity, and a
 :doc:`burgers_deck` a Kelvin element beside it.
 
+A deck is a table dense enough in knots that the choice of
+interpolation between them does not matter in practice: the kinds the
+readers join the knots by (below) are a reasonable default, not part of
+the model's definition.  A model that is a particular function in each
+layer (a given polynomial, say) belongs in a format that states that
+function, not in a deck.
+
 The Python writes one with ``planetmodel.write_deck(path, deck,
 MAXWELL)``, a deck from any model being ``sample_deck(model,
 MAXWELL.columns)``, and reads one with ``read_deck(path, MAXWELL)``, the
@@ -93,8 +100,25 @@ layer: that is how the table carries a viscosity that some layers do
 not have.  A column that is ``nan`` on some knots of a layer and not
 others is refused.
 
-The readers join each layer's knots by a piecewise polynomial: the
-velocities and the density by a not-a-knot cubic spline (the parabola
-through three knots, the line through two), the viscosity by straight
-lines, which keep it positive between knots where it changes by orders
-of magnitude.  The Python and the C++ give the same functions.
+The readers join each layer's knots: the velocities and the density by a
+not-a-knot cubic spline (the parabola through three knots, the line
+through two), and the viscosity in its logarithm by straight lines,
+``log-linear``, so that between two knots of viscosities ``eta_1`` and
+``eta_2`` it is geometric, ``eta_1 (eta_2 / eta_1)^t`` a fraction ``t``
+of the way from one to the other.  A viscosity changes by orders of
+magnitude within a layer: a cubic through the values overshoots, below
+zero where it falls steeply, and straight lines through them lie above
+the geometric values between knots by the ratio of the two knots'
+arithmetic and geometric means, 1.74 between knots a decade apart.  A
+viscosity in a layer holding one is therefore positive and finite at
+every knot; a viscosity constant through a layer is that constant.  The
+Python's ``MaxwellDeckModel(path, kinds={"viscosity": "linear"})``, or
+``DeckLayers(deck, "cubic", {{"viscosity", "linear"}})`` in C++, joins
+the values themselves by straight lines instead, and any column may be
+given any kind, through the values (``cubic``, ``natural``, ``linear``,
+and in the Python ``pchip`` and ``akima``) or through their logarithms
+(the same after ``log-``).  The Python and the C++ give the same
+functions, values and derivatives, to rounding.  A model read from a
+deck and written to a :doc:`model_file` comes back as the same
+functions, a column joined in its logarithm by the file's radial rules
+in the logarithm.

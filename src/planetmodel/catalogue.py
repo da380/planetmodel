@@ -310,11 +310,13 @@ class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
 
     The columns are interpolated layer by layer by `kind`, and by the
     kind `kinds` gives a column where it gives one (see
-    `planetmodel.deck.KINDS`); by default the viscosity is joined by
-    straight lines, `MAXWELL_KINDS`, which keep it positive between
-    knots.  The elastic values are the unrelaxed moduli of the Maxwell
-    body, so `frozen(omega)` relaxes each layer holding a viscosity with
-    tau = viscosity / mu, and the deck holds no quality factors.  The
+    `planetmodel.deck.KINDS` and `LOG_KINDS`); by default the viscosity
+    is joined in its logarithm by straight lines, `MAXWELL_KINDS`,
+    positive and geometric between knots, and `kinds={"viscosity":
+    "linear"}` joins its values by straight lines instead.  The elastic
+    values are the unrelaxed moduli of the Maxwell body, so
+    `frozen(omega)` relaxes each layer holding a viscosity with tau =
+    viscosity / mu, and the deck holds no quality factors.  The
     `# layers` and `# interfaces` lines of the header name the layers
     and interfaces (`maxwell_names`); its title is the model's name.
     The deck is kept as `deck`, its knots per layer as `knots`, its
@@ -350,8 +352,9 @@ class PronyDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
 
     The columns are interpolated layer by layer by `kind`, and by the
     kind `kinds` gives a column or a family's stem (see
-    `planetmodel.deck.KINDS`); by default every branch column is joined
-    by straight lines, `PRONY_KINDS`.  The elastic values are the
+    `planetmodel.deck.KINDS` and `LOG_KINDS`); by default the strengths
+    are joined by straight lines and the times in their logarithm by
+    straight lines, `PRONY_KINDS`.  The elastic values are the
     unrelaxed moduli, and each layer holds the Prony branches it uses as
     `relaxation_strength_k` and `relaxation_time_k`, a generalised
     Maxwell body in shear that `frozen` relaxes: the branches after the
@@ -408,8 +411,9 @@ class BurgersDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
     line naming the columns, NaN where a layer lacks a field.
 
     The columns are interpolated layer by layer by `kind`, and by the
-    kind `kinds` gives a column (see `planetmodel.deck.KINDS`); by
-    default the viscosity and the Kelvin element's two are joined by
+    kind `kinds` gives a column (see `planetmodel.deck.KINDS` and
+    `LOG_KINDS`); by default the two viscosities are joined in their
+    logarithm by straight lines and the Kelvin modulus fraction by
     straight lines, `BURGERS_KINDS`.  The elastic values are the
     unrelaxed moduli.  A layer holding a viscosity alone is a Maxwell
     body and holds it, as a `MaxwellDeckModel`'s layer does; a layer

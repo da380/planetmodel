@@ -1,4 +1,5 @@
-"""Layer functions: the exact polynomial algebra, and the numeric fallback.
+"""Layer functions: the exact polynomial algebra, the exponential of a
+polynomial and the logarithm it declares, and the numeric fallback.
 
 The oracle for every exact claim is the pointwise operation itself:
 whatever is done on coefficients must agree with f(r) * g(r), with the
@@ -8,10 +9,10 @@ import numpy as np
 import pytest
 from scipy.interpolate import CubicSpline, PPoly
 
-from planetmodel.layerfunction import (LayerFunction, NumericLayer, PolynomialLayer,
-                                       as_layer_function, constant_layer,
-                                       polynomial_fit, polynomial_layer,
-                                       same_interval)
+from planetmodel.layerfunction import (ExponentialLayer, LayerFunction, NumericLayer,
+                                       PolynomialLayer, as_layer_function,
+                                       constant_layer, polynomial_fit,
+                                       polynomial_layer, same_interval)
 from planetmodel.testing import check_layer_function
 
 IV = (1.0, 2.0)
@@ -276,6 +277,8 @@ def test_same_interval_is_relative():
     _poly(7), constant_layer(IV, 1.0), _poly(8) * _poly(9),
     NumericLayer(IV, np.exp), NumericLayer(IV, np.exp, derivative=np.exp),
     _poly(7) + NumericLayer(IV, np.exp), polynomial_fit(IV, np.exp, degree=6),
+    ExponentialLayer(IV, _poly(3), factor=2.5),
+    ExponentialLayer(IV, _poly(4), factor=_poly(5)),
 ])
 def test_shipped_layer_functions_pass_the_contract(fn):
     check_layer_function(fn)
@@ -323,3 +326,149 @@ def test_division_with_numeric_layers_and_a_relative_quadrature():
                                                                / 0.01) ** 2))
     exact = 1e-12 * 0.01 * np.sqrt(np.pi)
     assert np.isclose(tiny.integrate(0.0, 1.0), exact, rtol=1e-8)
+
+
+# ------------------------------------------------- the exponential of a polynomial
+
+def _spline_of_logs():
+    """A cubic spline through the logarithms of values spanning six decades,
+    as a deck's column joined by `log-cubic` holds it."""
+    r = np.array([1.0, 1.2, 1.45, 1.6, 2.0])
+    return PolynomialLayer(IV, CubicSpline(r, np.log(10.0) * np.array([0.0, 3.0, 1.0,
+                                                                         6.0, 4.0])))
+
+
+def test_an_exponential_layer_is_its_factor_times_the_exponential():
+    p, q = _spline_of_logs(), _poly(11)
+    f = ExponentialLayer(IV, p, factor=q)
+    r = np.linspace(*IV, 37)
+    assert np.allclose(f(r), q(r) * np.exp(p(r)), rtol=1e-15, atol=0)
+    assert f(1.5).shape == () and f(r.reshape(-1, 1)).shape == (37, 1)
+    assert f.exponent.interval == f.factor.interval == IV
+    assert ExponentialLayer(IV, p.ppoly)(1.3) == np.exp(p(1.3))
+    with pytest.raises(TypeError, match="a constant one is a factor"):
+        ExponentialLayer(IV, 2.0)
+    with pytest.raises(ValueError, match="real"):
+        ExponentialLayer(IV, _poly(1) * 1j)
+
+
+def test_exponential_derivatives_are_exact_to_every_order():
+    """(q' + q p') exp(p) each time, against a central difference of the one
+    before and against the closed second derivative."""
+    p, q = _spline_of_logs(), _poly(12)
+    f = ExponentialLayer(IV, p, factor=q)
+    x = np.array([1.05, 1.3, 1.5, 1.7, 1.95])
+    h = 1e-6
+    for nu in (1, 2, 3):
+        d, before = f.derivative(nu=nu), f.derivative(nu=nu - 1)
+        assert isinstance(d, ExponentialLayer)
+        fd = (before(x + h) - before(x - h)) / (2.0 * h)
+        assert np.allclose(d(x), fd, rtol=1e-6, atol=0), nu
+    dp, ddp = p.derivative()(x), p.derivative(nu=2)(x)
+    dq, ddq = q.derivative()(x), q.derivative(nu=2)(x)
+    closed = (ddq + 2.0 * dq * dp + q(x) * (ddp + dp * dp)) * np.exp(p(x))
+    assert np.allclose(f.derivative(nu=2)(x), closed, rtol=1e-13, atol=0)
+    assert f.derivative(nu=0) is f
+    with pytest.raises(ValueError):
+        f.derivative(nu=-1)
+
+
+def test_exponential_integrals_are_exact_on_lines_and_quadrature_elsewhere():
+    """A line in the exponent and a constant factor are integrated in closed
+    form piece by piece, the rest by quadrature: both against a 40-point
+    Gauss-Legendre rule on every piece, signed, and a derivative's integral
+    against the difference of the function."""
+    knots = np.array([1.0, 1.1, 1.35, 1.6, 2.0])
+    logs = np.log(np.array([1e20, 1e23, 1e21, 1e24, 1e19]) / 1e20)
+    line = PolynomialLayer(IV, PPoly(np.vstack([np.diff(logs) / np.diff(knots),
+                                                logs[:-1]]), knots))
+    x, w = np.polynomial.legendre.leggauss(40)
+    lines = ExponentialLayer(IV, line, factor=1e20)
+    for f in (lines, ExponentialLayer(IV, line, factor=3.0).derivative(),
+              ExponentialLayer(IV, _spline_of_logs(), factor=_poly(2))):
+        for a, b in ((1.0, 2.0), (1.03, 1.52), (1.7, 1.2)):
+            lo, hi = min(a, b), max(a, b)
+            breaks = np.union1d(f.exponent.ppoly.x, f.factor.ppoly.x)
+            inside = breaks[(breaks > lo) & (breaks < hi)]
+            cuts = np.unique(np.concatenate([[lo, hi], inside]))
+            parts = [0.5 * (v - u) * np.sum(w * f(0.5 * (v - u) * x + 0.5 * (u + v)))
+                     for u, v in zip(cuts[:-1], cuts[1:])]
+            want = sum(parts) if b >= a else -sum(parts)
+            scale = sum(abs(part) for part in parts)    # the rule rounds to ~2e-14
+            assert abs(f.integrate(a, b) - want) <= 5e-14 * scale, (a, b)
+    d = lines.derivative()
+    for a, b in ((1.03, 1.52), (1.0, 2.0)):
+        scale = sum(abs(d.integrate(u, v)) for u, v in zip(knots[:-1], knots[1:]))
+        assert abs(d.integrate(a, b) - (lines(b) - lines(a))) <= 1e-14 * scale
+
+
+def test_exponential_algebra_stays_exponential_where_it_can():
+    p, q = _spline_of_logs(), _poly(13)
+    f, g = ExponentialLayer(IV, p, factor=2.0), ExponentialLayer(IV, -0.5 * p, factor=q)
+    poly = _poly(14)
+    r = np.linspace(*IV, 29)
+    exact = [(f * g, f(r) * g(r)), (f * poly, f(r) * poly(r)),
+             (poly * f, f(r) * poly(r)), (3.0 * f, 3.0 * f(r)), (f / 4.0, f(r) / 4.0),
+             (-f, -f(r)), (f ** 3, f(r) ** 3), (1.0 / f, 1.0 / f(r)),
+             (g / f, g(r) / f(r))]
+    for h, want in exact:
+        assert isinstance(h, ExponentialLayer)
+        assert np.allclose(h(r), want, rtol=1e-13, atol=0)
+    numeric = [(f + g, f(r) + g(r)), (f - poly, f(r) - poly(r)),
+               (poly + f, f(r) + poly(r)), (poly - f, poly(r) - f(r)),
+               (f + 1.0, f(r) + 1.0), (2.0 - f, 2.0 - f(r)), (f / g, f(r) / g(r)),
+               (1.0 / g, 1.0 / g(r)), (poly / f, poly(r) / f(r)),
+               (f * NumericLayer(IV, np.sin), f(r) * np.sin(r))]
+    for h, want in numeric:
+        assert isinstance(h, NumericLayer)
+        assert np.allclose(h(r), want, rtol=1e-13, atol=0)
+    with pytest.raises(ValueError, match="different intervals"):
+        f * ExponentialLayer((1.0, 3.0), _poly(1, interval=(1.0, 3.0)))
+    with pytest.raises(ValueError, match="non-negative integer"):
+        f ** -1
+
+
+def test_exponential_rescaled_and_on_interval():
+    p, q = _spline_of_logs(), _poly(15)
+    f = ExponentialLayer(IV, p, factor=q)
+    g = f.rescaled(k=3.0, v=-2.0)
+    r = np.linspace(*IV, 13)
+    assert g.interval == (3.0, 6.0)
+    assert np.allclose(g(3.0 * r), -2.0 * f(r), rtol=1e-13, atol=0)
+    wider = f.on_interval(0.5, 2.5)
+    assert wider.interval == (0.5, 2.5)
+    assert np.allclose(wider(r), f(r), rtol=1e-15, atol=0)
+    assert np.isfinite(wider(np.array([0.6, 2.4]))).all()
+    assert isinstance(as_layer_function(IV, f), ExponentialLayer)
+    assert isinstance(f, LayerFunction)
+
+
+def test_a_logarithm_that_is_a_polynomial_is_declared_and_no_other():
+    """An exponential layer of a positive constant factor, on every piece,
+    has log q + p, its exponential the function; so has a polynomial layer
+    that is a positive constant on every piece.  A factor that varies or
+    is not positive, and a polynomial that varies, has none."""
+    p = _spline_of_logs()
+    r = np.linspace(*IV, 31)
+    f = ExponentialLayer(IV, p, factor=2.5e20)
+    log = f.logarithm()
+    assert isinstance(log, PolynomialLayer) and log.degree == 3
+    assert np.allclose(log(r), np.log(2.5e20) + p(r), rtol=1e-15, atol=0)
+    assert np.allclose(np.exp(log(r)), f(r), rtol=1e-13, atol=0)
+    assert np.array_equal(log.ppoly.x, p.ppoly.x)
+    for g in (f * f, 1.0 / f, f / 3.0, f.rescaled(k=2.0, v=4.0),
+              ExponentialLayer(IV, p, factor=PPoly([[1.0, 3.0]], [1.0, 1.3, 2.0]))):
+        h = g.logarithm()
+        x = np.linspace(*g.interval, 31)
+        assert h is not None and np.allclose(np.exp(h(x)), g(x), rtol=1e-12, atol=0)
+        check_layer_function(g)
+    for g in (ExponentialLayer(IV, p, factor=_poly(5)), -f,
+              ExponentialLayer(IV, p, factor=PPoly([[1.0, -3.0]], [1.0, 1.3, 2.0])),
+              ExponentialLayer(IV, p, factor=1.0 + 2.0j)):
+        assert g.logarithm() is None
+    c = constant_layer(IV, 7.0).logarithm()
+    assert c.degree == 0 and np.array_equal(c(r), np.full(r.size, np.log(7.0)))
+    for g in (_poly(6), constant_layer(IV, 0.0), constant_layer(IV, -1.0),
+              constant_layer(IV, 2.0 + 1.0j)):
+        assert g.logarithm() is None
+    assert not hasattr(NumericLayer(IV, np.exp), "logarithm")

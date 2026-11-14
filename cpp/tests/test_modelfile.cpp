@@ -235,6 +235,34 @@ TEST(ModelFile, ReadsAPerturbedFieldAsItsKind) {
   EXPECT_EQ(file.FieldsOf("rho").size(), 2u);
 }
 
+TEST(ModelFile, ReadsAViscosityInItsLogarithmExactlyAndAConstantToTheBit) {
+  PLANETMODEL_FIXTURE(path, "model_log.nc");
+  const auto file = planetmodel::ReadModelFile(path);
+  EXPECT_EQ(file.Schema(), planetmodel::MODEL_SCHEMA_WITH_LOG_RULES);
+  EXPECT_EQ(file.PartOf(1).variables.at("viscosity").Text("radial_interpolation"),
+            "log-polynomial");
+  EXPECT_FALSE(file.HasField(0, "viscosity"));
+  EXPECT_FALSE(file.HasField(3, "viscosity"));
+  // three decades up and down between knots 760 km apart: geometric
+  // between them, the knots at 1.2e6 + 760e3 k
+  const auto graded = file.FieldOn(1, "viscosity").AsScalar();
+  for (auto k = 0; k < 5; ++k) {
+    const auto lo = 1.2e6 + 760e3 * k;
+    const auto low = k % 2 == 0;
+    for (const auto t : {0.0, 0.25, 0.5, 0.9}) {
+      const auto want = 1e20 * std::pow(1e3, low ? t : 1.0 - t);
+      EXPECT_NEAR(graded.Value(lo + t * 760e3, 0.3, 1.0), want, 1e-12 * want) << k << " " << t;
+      const auto slope = (low ? 1.0 : -1.0) * std::log(1e3) / 760e3 * want;
+      EXPECT_NEAR(graded.Gradient(lo + t * 760e3, 0.3, 1.0)[0], slope, 1e-11 * std::abs(slope));
+    }
+  }
+  const auto constant = file.FieldOn(2, "viscosity").AsScalar();
+  for (const auto r : {5.0e6, 5.13e6, 5.6e6, 6.2e6}) {
+    EXPECT_EQ(constant.Value(r, 1.0, 2.0), 1e21) << r;
+    EXPECT_EQ(constant.Gradient(r, 1.0, 2.0)[0], 0.0) << r;
+  }
+}
+
 TEST(ModelFile, ReadsTensorsAndRefusesThemAsScalars) {
   PLANETMODEL_FIXTURE(path, "model_tensors.nc");
   const auto file = planetmodel::ReadModelFile(path);

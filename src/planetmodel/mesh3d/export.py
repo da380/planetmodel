@@ -680,7 +680,8 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     card.constants = manifest.constants_block(model)
     _annotate_from_model(card, model, written)
     if model_path is not None:
-        card.model = {"file": model_path.name, "schema": modelfile.SCHEMA}
+        card.model = {"file": model_path.name,
+                      "schema": modelfile.schema_of(model_path)}
     manifest.validate_structure(card)
     manifest_path = manifest.write(path_base, card)
     return dataclasses.replace(export, manifest_path=manifest_path,
