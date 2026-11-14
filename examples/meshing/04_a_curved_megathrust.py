@@ -57,12 +57,18 @@ geometry = Geometry(Skeleton([0.0, 0.55, 0.8, 1.0]), layer_names=list(LAYERS),
 # %% [markdown]
 # The mesh, of order 2, refined to 0.03 on the interface. The trench is
 # on the reference sphere, so the mesher carries the interface's upper
-# edge across the outer boundary and trims it there: its free edge.
+# edge across the outer boundary and trims it there: its free edge. The
+# surfaces are meshed by gmsh's Delaunay algorithm (`algorithm_2d=5`): a
+# mesh with a fault is not optimised by Netgen, so a flat element the
+# volume mesher leaves beside a shallow interface stays, the mesh then
+# fails its validation and is refused, and the surface mesh decides
+# whether one is left.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_megathrust_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
+             algorithm_2d=5,
              faults=[EmbeddedFault(Fault([slab]), name="megathrust",
                                    sizing=InterfaceSizing(0.03, 0.12, 0.15))]),
     work / "megathrust")
