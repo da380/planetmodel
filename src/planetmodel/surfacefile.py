@@ -55,16 +55,23 @@ between its nodes (`linear`), read from the latest node not after the
 date (`previous`), or served at its stored nodes alone (`none`); an
 `interval` field from the interval holding the date, the last closed
 at its end; an `instant` field at its stored instants alone; a
-`static` field at any date.  Outside its span a field refuses the
-date, or holds its nearest value where the caller asks.  A date within
-a tolerance of a stored time is that time: `time_rtol` (`TIME_RTOL` by
-default, zero for exact matching) times the span of the axis, its last
-time less its first, or the magnitude of its one time where it has
-one.  So a date a rounding error from a node reads that node alone
-under every rule (`none` and `instant` serve it, `previous` and
-`interval` read from it), and a date that close beyond an end of the
-span is that end; the nearest stored time within the tolerance is
-taken, the earlier on a tie.  That
+`static` field at any date.  Outside its span a `linear` or `previous`
+`node` field and an `interval` field refuse the date, or hold their
+nearest value where the caller asks; a `none` `node` field and an
+`instant` field refuse any date that is not one of their stored times,
+held or not.  A date within a tolerance of a stored time is that time:
+`time_rtol` (`TIME_RTOL` by default, zero for exact matching) times the
+scale of the axis, the largest of its span (its last time less its
+first) and the magnitudes of its first and last times.  A date formed
+by arithmetic on times of that size is a rounding error relative to
+them from the time it stands for, however short the span; an axis of
+one time has the magnitude of that time as its scale, and an axis whose
+one time is zero a scale of zero, matching exactly.  So a date a
+rounding error from a node reads that node alone under every rule
+(`none` and `instant` serve it, `previous` and `interval` read from
+it), and a date that close beyond an end of the span is that end; the
+nearest stored time within the tolerance is taken, the earlier on a
+tie.  That
 arithmetic is `time_rows`, and `time_axis`, `check_time_rule` and
 `leading_shape` check an axis, a support's rule and a support's shape:
 whatever else in the library holds slices in time states and reads
@@ -502,12 +509,13 @@ def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
 
 # -- the file as a function of time -----------------------------------------------
 
-#: What a field does with a date outside its span: refuse it, or hold the
-#: nearest value.
+#: What a field read between nodes does with a date outside its span: refuse
+#: it, or hold the nearest value; a field served at its stored times alone
+#: refuses any other date either way.
 EXTRAPOLATIONS = ("refuse", "hold")
 
 #: The tolerance of a date on a stored time by default, relative to the
-#: span of the axis (module docstring).
+#: scale of the axis (module docstring).
 TIME_RTOL = 1e-12
 
 #: The leading rows a date reads and their weights, ((k0, w0), (k1, w1)):
@@ -530,10 +538,10 @@ def _stored_time_at(axis: np.ndarray, date: float, tolerance: float) -> int | No
 
 
 def _time_tolerance(axis: np.ndarray, rtol: float) -> float:
-    """A date's tolerance on an axis: `rtol` times its span, or the
-    magnitude of its one time."""
-    span = float(axis[-1]) - float(axis[0])
-    return rtol * (span if span > 0.0 else abs(float(axis[0])))
+    """A date's tolerance on an axis: `rtol` times its scale, the largest
+    of its span and the magnitudes of its first and last times."""
+    first, last = float(axis[0]), float(axis[-1])
+    return rtol * max(last - first, abs(first), abs(last))
 
 
 def time_rows(support: str, rule: str, date: float | None, *,
@@ -547,9 +555,10 @@ def time_rows(support: str, rule: str, date: float | None, *,
     `time` is the axis of `node` and `interval` values, `instant` that of
     `instant` values; `extrapolation` is one of `EXTRAPOLATIONS`, `hold`
     clamping a date outside the span of a `linear`, `previous` or
-    `interval` field to its nearer end; `time_rtol` is the tolerance of a
-    date on a stored time, relative to the span (module docstring), zero
-    matching exactly.  A date on a stored node, or within the tolerance
+    `interval` field to its nearer end (a `none` or `instant` field
+    refuses a date not stored, held or not); `time_rtol` is the tolerance
+    of a date on a stored time, relative to the scale of the axis (module
+    docstring), zero matching exactly.  A date on a stored node, or within the tolerance
     of one, reads that node alone, its weight one and the other row's
     zero and the same row, so that a NaN beside it stays out.  The field
     `name` is named in a refusal.

@@ -20,7 +20,7 @@
  * components (strike-slip, dip-slip positive up dip, opening) on a grid
  * of its own, read by its rule (constant a cell, or the splines), and the
  * vector at a point is the components on the fault basis there.  Slices
- * in time are read by `TimeRowsAt`.
+ * in time are read by `TimeRowsAt`, a date as `DateOptions` say.
  *
  * What a consumer does with a fault is here: positions, normals, the
  * fault basis and the area element at any (u, v); the slip at any
@@ -56,6 +56,12 @@
 #include "planetmodel/frames.hpp"
 #include "planetmodel/time.hpp"
 #include "planetmodel/units.hpp"
+
+/** @brief Defined where this header provides `Fault::SliceQuadrature` and
+ * `FaultSliceQuadrature::SlipOf`, a fault's date read by `DateOptions`
+ * (`Fault::Rows`, `Fault::SlipVector`, `Fault::Quadrature`), and
+ * `FaultSlip::FromRake`. */
+#define PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE 1
 
 namespace planetmodel {
 
@@ -116,6 +122,24 @@ inline Vector3 Unit(const Vector3& a) {
 
 inline Vector3 Minus(const Vector3& a, const Vector3& b) {
   return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+/// The fault basis as columns (s, a, n) from the tangents: s = x_u / |x_u|,
+/// n = x_v x x_u over its length, a = n x s.
+inline Matrix3 FaultBasisOf(const Vector3& xu, const Vector3& xv) {
+  const auto s = Unit(xu);
+  const auto n = Unit(Cross(xv, xu));
+  const auto a = Cross(n, s);
+  auto out = Matrix3{};
+  for (auto i = 0; i < 3; ++i) out[i] = {s[i], a[i], n[i]};
+  return out;
+}
+
+/// Fault components on a fault basis F, in Cartesian components: F c.
+inline Vector3 OnBasis(const Matrix3& F, const Vector3& c) {
+  auto out = Vector3{};
+  for (auto i = 0; i < 3; ++i) out[i] = F[i][0] * c[0] + F[i][1] * c[1] + F[i][2] * c[2];
+  return out;
 }
 
 /// numpy's linspace(start, stop, num): start + i step, the last exactly stop.
@@ -462,6 +486,16 @@ class FaultFrame {
 };
 
 /**
+ * @brief What `FaultSlip::FromRake` takes besides the rake and the
+ * magnitude: the Python's keywords.
+ */
+struct RakeOptions {
+  std::vector<double> opening{0.0}; /**< Along the normal: one value, one a point, or one a slice
+                                         and point. */
+  std::string rule = "cell";        /**< One of `SLIP_RULES`. */
+};
+
+/**
  * @brief The slip on one patch: its fault components (strike-slip,
  * dip-slip, opening) on a grid over the square, and the rule between
  * them.
@@ -516,6 +550,52 @@ class FaultSlip {
       }
     }
     rule_reader_ = detail::GridRule(std::move(moved), n_u_, n_v_, nslices_ * 3, rule_);
+  }
+
+  /**
+   * @brief Slip of a magnitude m in the fault plane at a rake, with an
+   * opening along the normal: the components (m cos rake, m sin rake,
+   * opening), as the Python's `Slip.from_rake` forms them.  Each of the
+   * rake, the magnitude and the opening is one value, for every slice and
+   * point of the grid; one a point, (n_u, n_v) in C order, the same in
+   * every slice; or one a slice and point, (nslices, n_u, n_v) in C order.
+   * @param rake The rake in degrees, from the strike towards up dip.
+   * @param magnitude The magnitude in the fault plane.
+   * @param nslices The slices in time.
+   * @param n_u The cells or nodes along u.
+   * @param n_v The cells or nodes along v.
+   * @param options The opening (none by default) and the rule (`cell` by
+   *        default).
+   * @throws planetmodel::Error for values of none of those numbers, and as
+   *         the constructor.
+   */
+  [[nodiscard]] static FaultSlip FromRake(const std::vector<double>& rake,
+                                          const std::vector<double>& magnitude,
+                                          std::size_t nslices = 1, std::size_t n_u = 1,
+                                          std::size_t n_v = 1, const RakeOptions& options = {}) {
+    const auto points = n_u * n_v;
+    const auto total = nslices * points;
+    const auto at = [points, total](const std::vector<double>& values, std::string_view what,
+                                    std::size_t s, std::size_t ij) {
+      if (values.size() == 1) return values[0];
+      if (values.size() == points) return values[ij];
+      if (values.size() == total) return values[s * points + ij];
+      throw Error("fault slip", what,
+                  std::format("{} values; one, one a point ({}), or one a slice and point ({})",
+                              values.size(), points, total));
+    };
+    auto values = std::vector<double>{};
+    values.reserve(3 * total);
+    for (auto s = std::size_t{0}; s < nslices; ++s) {
+      for (auto ij = std::size_t{0}; ij < points; ++ij) {
+        const auto lambda = detail::Radians(at(rake, "rake", s, ij));
+        const auto m = at(magnitude, "magnitude", s, ij);
+        values.push_back(m * std::cos(lambda));
+        values.push_back(m * std::sin(lambda));
+        values.push_back(at(options.opening, "opening", s, ij));
+      }
+    }
+    return FaultSlip(std::move(values), nslices, n_u, n_v, options.rule);
   }
 
   /** @brief The values, (nslices, n_u, n_v, 3) in C order. */
@@ -784,6 +864,18 @@ struct ParameterPoints {
   return out;
 }
 
+namespace detail {
+
+/// A patch's quadrature points with what each stands for but its slip,
+/// and the fault basis at each (`FaultPatch::Geometry`).
+struct PatchGeometry {
+  std::vector<Vector3> points{}, positions{}, normals{};
+  std::vector<double> weights{}, u{}, v{};
+  std::vector<Matrix3> basis{};
+};
+
+}  // namespace detail
+
 /**
  * @brief One patch of a fault: a map of the parameter square, its frame,
  * and its slip (file comment).
@@ -977,12 +1069,7 @@ class FaultPatch {
    */
   [[nodiscard]] Matrix3 FaultBasis(double u, double v) const {
     const auto [xu, xv] = Tangents(u, v);
-    const auto s = detail::Unit(xu);
-    const auto n = detail::Unit(detail::Cross(xv, xu));
-    const auto a = detail::Cross(n, s);
-    auto out = Matrix3{};
-    for (auto i = 0; i < 3; ++i) out[i] = {s[i], a[i], n[i]};
-    return out;
+    return detail::FaultBasisOf(xu, xv);
   }
 
   /**
@@ -1000,10 +1087,7 @@ class FaultPatch {
     detail::CheckParameters(u, v);
     const auto comp = slip_.Components(u, v, index);
     if (basis == SlipBasis::Fault) return comp;
-    const auto F = FaultBasis(u, v);
-    auto cart = Vector3{};
-    for (auto i = 0; i < 3; ++i)
-      cart[i] = F[i][0] * comp[0] + F[i][1] * comp[1] + F[i][2] * comp[2];
+    const auto cart = detail::OnBasis(FaultBasis(u, v), comp);
     if (basis == SlipBasis::Cartesian) return cart;
     const auto B = frame_.Basis(Position(u, v));
     auto out = Vector3{};
@@ -1025,21 +1109,16 @@ class FaultPatch {
    */
   [[nodiscard]] PatchQuadrature Quadrature(std::size_t n_u, std::size_t n_v, std::size_t points = 1,
                                            std::size_t index = 0) const {
-    const auto rule = ParameterRule(n_u, n_v, points);
-    auto q = PatchQuadrature{};
-    for (auto p = std::size_t{0}; p < rule.u.size(); ++p) {
-      const auto u = rule.u[p], v = rule.v[p];
-      const auto x = Cartesian(u, v);
-      const auto [xu, xv] = Tangents(u, v);
-      const auto c = detail::Cross(xv, xu);
-      const auto area = detail::Length(c);
-      q.points.push_back(x);
-      q.positions.push_back(frame_.Coordinates(x));
-      q.normals.push_back({c[0] / area, c[1] / area, c[2] / area});
-      q.weights.push_back(area * rule.w[p]);
-      q.slip.push_back(SlipVector(u, v, index, SlipBasis::Cartesian));
-      q.u.push_back(u);
-      q.v.push_back(v);
+    auto g = Geometry(n_u, n_v, points);
+    auto q = PatchQuadrature{.points = std::move(g.points),
+                             .positions = std::move(g.positions),
+                             .normals = std::move(g.normals),
+                             .weights = std::move(g.weights),
+                             .slip = {},
+                             .u = std::move(g.u),
+                             .v = std::move(g.v)};
+    for (auto p = std::size_t{0}; p < q.Size(); ++p) {
+      q.slip.push_back(detail::OnBasis(g.basis[p], slip_.Components(q.u[p], q.v[p], index)));
     }
     return q;
   }
@@ -1129,8 +1208,36 @@ class FaultPatch {
   }
 
  private:
+  friend class Fault;
+
   FaultPatch(Kind kind, const FaultFrame& frame, FaultSlip slip)
       : kind_(kind), frame_(frame), slip_(std::move(slip)) {}
+
+  /// The points of `ParameterRule(n_u, n_v, points)` on the patch with
+  /// what each stands for but its slip, and the fault basis at each, which
+  /// turns a slice's components there into its Cartesian slip: the
+  /// tangents formed once a point, for this patch's quadrature and a
+  /// fault's.
+  [[nodiscard]] detail::PatchGeometry Geometry(std::size_t n_u, std::size_t n_v,
+                                               std::size_t points) const {
+    const auto rule = ParameterRule(n_u, n_v, points);
+    auto g = detail::PatchGeometry{};
+    for (auto p = std::size_t{0}; p < rule.u.size(); ++p) {
+      const auto u = rule.u[p], v = rule.v[p];
+      const auto x = Cartesian(u, v);
+      const auto [xu, xv] = Tangents(u, v);
+      const auto c = detail::Cross(xv, xu);
+      const auto area = detail::Length(c);
+      g.points.push_back(x);
+      g.positions.push_back(frame_.Coordinates(x));
+      g.normals.push_back({c[0] / area, c[1] / area, c[2] / area});
+      g.weights.push_back(area * rule.w[p]);
+      g.u.push_back(u);
+      g.v.push_back(v);
+      g.basis.push_back(detail::FaultBasisOf(xu, xv));
+    }
+    return g;
+  }
 
   /// The map or a derivative of it, (u, v) unchecked.
   [[nodiscard]] Vector3 Map(double u, double v, std::size_t du, std::size_t dv) const {
@@ -1325,7 +1432,7 @@ struct SlipAtOptions {
   Extrapolation extrapolation = Extrapolation::Refuse; /**< Outside the time span. */
   SlipBasis basis = SlipBasis::Ambient;                /**< The basis of the answer. */
   double rtol = 1e-10;                                 /**< `Locate`'s tolerance. */
-  double time_rtol = TIME_RTOL; /**< The date's tolerance on a time node (`TimeRowsAt`). */
+  double time_rtol = TIME_RTOL; /**< The date's tolerance on a time node (`DateOptions`). */
 };
 
 /**
@@ -1335,9 +1442,12 @@ struct SlipAtOptions {
  * The support is `TimeSupport::Static` (one slice, any date, and no date
  * given) or `TimeSupport::Node` (a slice a time node, read between them
  * by the time rule, `TimeRowsAt`), `FAULT_SUPPORTS` by name; the slip at
- * a node is the cumulative slip.  A date within `time_rtol` of a node,
- * relative to the span (`TIME_RTOL` by default), is that node.  `Scales`
- * says what the numbers are in.
+ * a node is the cumulative slip.  A date is read as `DateOptions` say: a
+ * date within `time_rtol` of a node, relative to the scale of the axis
+ * (`TIME_RTOL` by default), is that node, and outside the span a `linear`
+ * or `previous` slip refuses the date or holds its nearest slice, a
+ * `none` slip refusing any date not a node either way.  `Scales` says
+ * what the numbers are in.
  */
 class Fault {
  public:
@@ -1424,20 +1534,18 @@ class Fault {
    * @brief The slices a date reads and their weights; a static slip reads
    * its one slice, and takes no date.
    * @param date The date; a static slip takes none.
-   * @param extrapolation What to do outside the span.
-   * @param time_rtol The date's tolerance on a node and on an end of the
-   *        span, relative to the span (`TimeRowsAt`); zero matches exactly.
+   * @param options What to do outside the span, and the date's tolerance
+   *        on a node and on an end of the span, relative to the scale of
+   *        the axis (`TimeRowsAt`).
    * @throws planetmodel::Error for a date refused, none where one is
    *         needed, or one given to a static slip.
    */
-  [[nodiscard]] TimeRows Rows(std::optional<double> date,
-                              Extrapolation extrapolation = Extrapolation::Refuse,
-                              double time_rtol = TIME_RTOL) const {
+  [[nodiscard]] TimeRows Rows(std::optional<double> date, const DateOptions& options = {}) const {
     if (support_ == TimeSupport::Static && date) {
       throw Error("fault", "slip", "is static, the same at every date, and takes no date");
     }
-    const auto rows = TimeRowsAt(support_, rule_, date, time_, std::nullopt, extrapolation, "fault",
-                                 "slip", time_rtol);
+    const auto rows = TimeRowsAt(support_, rule_, date, time_, std::nullopt, options.extrapolation,
+                                 "fault", "slip", options.time_rtol);
     return rows ? *rows : TimeRows{TimeRow{0, 1.0}, TimeRow{0, 0.0}};
   }
 
@@ -1447,19 +1555,17 @@ class Fault {
    * @param u Along strike.
    * @param v Down dip.
    * @param date The date; a static slip takes none.
-   * @param extrapolation What to do outside the span.
    * @param basis The basis of the answer.
-   * @param time_rtol The date's tolerance (`Rows`).
+   * @param options How the date is read (`Rows`).
    * @throws planetmodel::Error for a patch the fault lacks, (u, v) outside
    *         the square, or a date refused.
    */
   [[nodiscard]] Vector3 SlipVector(std::size_t patch, double u, double v,
                                    std::optional<double> date = {},
-                                   Extrapolation extrapolation = Extrapolation::Refuse,
                                    SlipBasis basis = SlipBasis::Ambient,
-                                   double time_rtol = TIME_RTOL) const {
+                                   const DateOptions& options = {}) const {
     const auto& p = PatchAt(patch);
-    const auto [first, second] = Rows(date, extrapolation, time_rtol);
+    const auto [first, second] = Rows(date, options);
     auto out = p.SlipVector(u, v, first.first, basis);
     for (auto& x : out) x *= first.second;
     if (second.second != 0.0) {
@@ -1476,37 +1582,30 @@ class Fault {
    * @param n_v The cells along v, one a patch.
    * @param points The Gauss-Legendre points each way in a cell.
    * @param date The date; a static slip takes none.
-   * @param extrapolation What to do outside the span.
-   * @param time_rtol The date's tolerance (`Rows`).
+   * @param options How the date is read (`Rows`).
    * @throws planetmodel::Error for counts not one a patch, or a date
    *         refused.
    */
   [[nodiscard]] FaultQuadrature Quadrature(std::span<const std::size_t> n_u,
                                            std::span<const std::size_t> n_v, std::size_t points = 1,
                                            std::optional<double> date = {},
-                                           Extrapolation extrapolation = Extrapolation::Refuse,
-                                           double time_rtol = TIME_RTOL) const {
-    const auto [first, second] = Rows(date, extrapolation, time_rtol);
+                                           const DateOptions& options = {}) const {
+    const auto [first, second] = Rows(date, options);
     CheckCounts(n_u, n_v);
     auto out = FaultQuadrature{};
     for (auto k = std::size_t{0}; k < patches_.size(); ++k) {
-      auto q = patches_[k].Quadrature(n_u[k], n_v[k], points, first.first);
-      for (auto i = std::size_t{0}; i < q.Size(); ++i) {
-        auto slip = q.slip[i];
+      const auto& p = patches_[k];
+      const auto g = p.Geometry(n_u[k], n_v[k], points);
+      Append(out, g, k);
+      for (auto i = std::size_t{0}; i < g.weights.size(); ++i) {
+        auto slip = detail::OnBasis(g.basis[i], p.Slip().Components(g.u[i], g.v[i], first.first));
         for (auto& x : slip) x *= first.second;
         if (second.second != 0.0) {
           const auto more =
-              patches_[k].SlipVector(q.u[i], q.v[i], second.first, SlipBasis::Cartesian);
+              detail::OnBasis(g.basis[i], p.Slip().Components(g.u[i], g.v[i], second.first));
           for (auto d = 0; d < 3; ++d) slip[d] = slip[d] + second.second * more[d];
         }
-        out.points.push_back(q.points[i]);
-        out.positions.push_back(q.positions[i]);
-        out.normals.push_back(q.normals[i]);
-        out.weights.push_back(q.weights[i]);
         out.slip.push_back(slip);
-        out.u.push_back(q.u[i]);
-        out.v.push_back(q.v[i]);
-        out.patch.push_back(k);
       }
     }
     return out;
@@ -1519,25 +1618,23 @@ class Fault {
    * @param n_v The cells along v on every patch.
    * @param points The Gauss-Legendre points each way in a cell.
    * @param date The date; a static slip takes none.
-   * @param extrapolation What to do outside the span.
-   * @param time_rtol The date's tolerance (`Rows`).
+   * @param options How the date is read (`Rows`).
    * @throws planetmodel::Error for a count of zero, or a date refused.
    */
   [[nodiscard]] FaultQuadrature Quadrature(std::size_t n_u, std::size_t n_v, std::size_t points = 1,
                                            std::optional<double> date = {},
-                                           Extrapolation extrapolation = Extrapolation::Refuse,
-                                           double time_rtol = TIME_RTOL) const {
+                                           const DateOptions& options = {}) const {
     const auto nu = std::vector<std::size_t>(patches_.size(), n_u);
     const auto nv = std::vector<std::size_t>(patches_.size(), n_v);
-    return Quadrature(nu, nv, points, date, extrapolation, time_rtol);
+    return Quadrature(nu, nv, points, date, options);
   }
 
   /**
    * @brief Every patch's quadrature with the slip of every slice: the
    * points, normals, weights, parameters and patches once, as
-   * `Quadrature` gives them, and each slice's Cartesian slip at them.  The
-   * slip at a date is `SlipOf(Rows(date))`, what `Quadrature` gives at
-   * that date.
+   * `Quadrature` gives them, and each slice's Cartesian slip at them, the
+   * geometry and the fault basis formed once a point.  The slip at a date
+   * is `SlipOf(Rows(date))`, what `Quadrature` gives at that date.
    * @param n_u The cells along u, one a patch.
    * @param n_v The cells along v, one a patch.
    * @param points The Gauss-Legendre points each way in a cell.
@@ -1552,25 +1649,12 @@ class Fault {
     out.slip.resize(NSlices());
     for (auto k = std::size_t{0}; k < patches_.size(); ++k) {
       const auto& p = patches_[k];
-      const auto q = p.Quadrature(n_u[k], n_v[k], points, 0);
-      for (auto i = std::size_t{0}; i < q.Size(); ++i) {
-        out.points.push_back(q.points[i]);
-        out.positions.push_back(q.positions[i]);
-        out.normals.push_back(q.normals[i]);
-        out.weights.push_back(q.weights[i]);
-        out.u.push_back(q.u[i]);
-        out.v.push_back(q.v[i]);
-        out.patch.push_back(k);
-        // the fault basis once, each slice's components on it, as
-        // FaultPatch::SlipVector forms them
-        const auto F = p.FaultBasis(q.u[i], q.v[i]);
+      const auto g = p.Geometry(n_u[k], n_v[k], points);
+      Append(out, g, k);
+      for (auto i = std::size_t{0}; i < g.weights.size(); ++i) {
         for (auto s = std::size_t{0}; s < NSlices(); ++s) {
-          const auto comp = p.Slip().Components(q.u[i], q.v[i], s);
-          auto cart = Vector3{};
-          for (auto d = 0; d < 3; ++d) {
-            cart[d] = F[d][0] * comp[0] + F[d][1] * comp[1] + F[d][2] * comp[2];
-          }
-          out.slip[s].push_back(cart);
+          out.slip[s].push_back(
+              detail::OnBasis(g.basis[i], p.Slip().Components(g.u[i], g.v[i], s)));
         }
       }
     }
@@ -1651,9 +1735,10 @@ class Fault {
                               far, points.size(), max_distance, farthest));
     }
     auto out = std::vector<Vector3>{};
+    const auto reading =
+        DateOptions{.extrapolation = options.extrapolation, .time_rtol = options.time_rtol};
     for (const auto& w : where) {
-      out.push_back(SlipVector(w.patch, w.u, w.v, options.date, options.extrapolation,
-                               options.basis, options.time_rtol));
+      out.push_back(SlipVector(w.patch, w.u, w.v, options.date, options.basis, reading));
     }
     return out;
   }
@@ -1664,6 +1749,19 @@ class Fault {
       throw Error("fault", "patch", std::format("{} of a fault of {}", patch, patches_.size()));
     }
     return patches_[patch];
+  }
+
+  /// A patch's points, with what each stands for but its slip, added to a
+  /// fault's quadrature, each named as on patch `k`.
+  template <class Q>
+  static void Append(Q& out, const detail::PatchGeometry& g, std::size_t k) {
+    out.points.insert(out.points.end(), g.points.begin(), g.points.end());
+    out.positions.insert(out.positions.end(), g.positions.begin(), g.positions.end());
+    out.normals.insert(out.normals.end(), g.normals.begin(), g.normals.end());
+    out.weights.insert(out.weights.end(), g.weights.begin(), g.weights.end());
+    out.u.insert(out.u.end(), g.u.begin(), g.u.end());
+    out.v.insert(out.v.end(), g.v.begin(), g.v.end());
+    out.patch.insert(out.patch.end(), g.weights.size(), k);
   }
 
   /// Refuse counts that are not one a patch.

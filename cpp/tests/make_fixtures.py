@@ -161,8 +161,9 @@ with a `cell` slip (`fault_static`); a fault in kilometres and years of
 a plane, a bent bicubic patch and a bilinear patch across the date
 line, its slip on three time nodes read `linear` (`fault_afterslip`);
 and a Cartesian fault of a twisted bilinear patch, a vertical plane and
-a sill, on two nodes read `previous` (`fault_cartesian`); every slip
-rule among them.  Beside each, `<fault>.expect`, the Python's answers,
+a sill, on two nodes read `previous`, far from the time origin against
+their span (`fault_cartesian`); every slip rule among them.  Beside
+each, `<fault>.expect`, the Python's answers,
 one fact per line: `fault <frame> <reference> <support> <rule>
 <patches> <slices>`, `scales`, `time <k> <value>`, `patch <k> <kind>
 <name in hexadecimal | ->`; at stated (u, v) of each patch, corners,
@@ -184,7 +185,19 @@ the patches, beyond their edges and corners and near a bilinear
 patch's creases; and `slip_at <max_distance> <date|-> <basis> <x> <y>
 <z>` and the vector, or `slip_at_refused <max_distance> <x> <y> <z>`.
 **Fault files to refuse** (`fault_cases/bad_*.nc`): malformed copies,
-listed in `bad.txt` as the model cases are.
+listed in `bad.txt` as the model cases are.  **Slip from a rake**
+(`slip_rake.txt`): for each case `case <nslices> <n_u> <n_v> <rule>`,
+then the `rake`, `magnitude` and `opening` given to `Slip.from_rake`
+(one value, one a point or one a slice and point) and the `values` it
+makes, (nslices, n_u, n_v, 3) in C order.
+
+**Burgers bodies** (`burgers.txt`): `terms <modulus> <viscosity>
+<kelvin_viscosity> <kelvin_modulus_fraction>` and the two strengths and
+two times `conversion.prony.burgers_terms` gives, the faster first, for
+bodies across a mantle's ranges and to the extremes of the Kelvin
+element; and `parameters <modulus> <w_1> <w_2> <tau_1> <tau_2>` and the
+viscosity, Kelvin viscosity and Kelvin modulus fraction
+`burgers_parameters` gives, for each pair of branches in both orders.
 
 **The facts the C++ restates** (`constants.txt`), one per line, a key
 and its value separated by spaces: the version, `G_SI`,
@@ -212,6 +225,7 @@ from planetmodel.lateral import LateralInterpolant
 from planetmodel.layerfunction import ExponentialLayer
 from planetmodel.mesh1d import Mesh1D
 from planetmodel.modelfile import LOG_RULES, validate_structure, write_model
+from planetmodel.surfacefile import TIME_METHODS
 
 
 def smooth(theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
@@ -1773,7 +1787,7 @@ def _fault_examples() -> dict[str, tuple[Any, dict[str, Any]]]:
                              "meta": {"event": "fixture"}, "citation": ("a work",)}),
         "fault_cartesian": (Fault([twisted, wall, sill], support="node",
                                   time_interpolation="previous",
-                                  time=np.array([-1.0, 4.0])),
+                                  time=np.array([-1004.0, -999.0])),
                             {"names": ["twisted", "wall", "sill"]}),
     }
 
@@ -1841,8 +1855,10 @@ def _expect_fault(fault: Any, names: Any, rng: np.random.Generator) -> list[str]
     else:
         t = fault.time
         # within the default tolerance of a node and of the ends, and
-        # beyond it, the two languages' tolerances held to one another
-        tol = 1e-12 * float(t[-1] - t[0])
+        # beyond it, the two languages' tolerances held to one another: the
+        # tolerance is relative to the axis's scale, its span or the
+        # magnitude of its first or last time, whichever is largest
+        tol = 1e-12 * max(float(t[-1] - t[0]), abs(float(t[0])), abs(float(t[-1])))
         dates = [(float(t[0]), "refuse"), (float(t[-1]), "refuse"),
                  (float(0.6 * t[0] + 0.4 * t[-1]), "refuse"),
                  (float(t[-1] + 1.0), "refuse"), (float(t[-1] + 1.0), "hold"),
@@ -1959,7 +1975,9 @@ _BAD_FAULTS: dict[str, tuple[str, Any, str, str]] = {
     "time_rule": ("fault_static.nc", _setting("time_interpolation", "linear"),
                   "time_interpolation", "is not sampled between times"),
     "time_rule_unknown": ("fault_afterslip.nc", _setting("time_interpolation", "cubic"),
-                          "time_interpolation", "is not one of"),
+                          "time_interpolation",
+                          "'slip': time_interpolation 'cubic' is not one of "
+                          f"{TIME_METHODS}"),
     "patches_text": ("fault_static.nc", _setting("patches", "one"), "patches",
                      "not a positive integer"),
     "patches_float": ("fault_static.nc", _setting("patches", 1.0), "patches",
@@ -2072,6 +2090,71 @@ def fault_files(directory: Path) -> list[Path]:
     return out + [index]
 
 
+def slip_from_rake(directory: Path) -> list[Path]:
+    """`Slip.from_rake` on grids of every rule, its arguments one value,
+    one a point or one a slice and point, as the module docstring lists
+    them (`slip_rake.txt`)."""
+    from planetmodel.fault import Slip
+
+    rng = np.random.default_rng(37)
+    cases = [
+        (1, 1, 1, "cell", 45.0, 3.0, 0.0),
+        (1, 2, 3, "cell", rng.uniform(-180.0, 180.0, (2, 3)), 2.5, 0.1),
+        (3, 2, 2, "linear", rng.uniform(0.0, 360.0, (2, 2)),
+         rng.uniform(0.0, 4.0, (3, 2, 2)), 0.0),
+        (2, 4, 4, "cubic",
+         np.array([90.0, 180.0, -90.0, 270.0, 1e-3, 359.99, 0.0, -180.0,
+                   30.0, 60.0, 120.0, 150.0, 210.0, 240.0, 300.0, 330.0]
+                  * 2).reshape(2, 4, 4),
+         rng.uniform(-1.0, 5.0, (2, 4, 4)), rng.uniform(0.0, 0.5, (2, 4, 4))),
+    ]
+    lines = []
+    for nslices, n_u, n_v, rule, rake, magnitude, opening in cases:
+        slip = Slip.from_rake(rake, magnitude, opening=opening, rule=rule)
+        lines += [f"case {nslices} {n_u} {n_v} {rule}",
+                  f"rake {_vector(rake)}", f"magnitude {_vector(magnitude)}",
+                  f"opening {_vector(opening)}", f"values {_vector(slip.values)}"]
+    path = directory / "slip_rake.txt"
+    path.write_text("\n".join(lines) + "\n")
+    return [path]
+
+
+def burgers(directory: Path) -> list[Path]:
+    """`burgers_terms` and `burgers_parameters` (`burgers.txt`): `terms
+    <modulus> <viscosity> <kelvin_viscosity> <kelvin_modulus_fraction>`
+    and the strengths and times, faster first, for bodies across the
+    ranges a mantle spans, the Kelvin element far faster and far slower
+    than the Maxwell one and the roots nearly equal among them; and
+    `parameters <modulus> <w_1> <w_2> <tau_1> <tau_2>` and the viscosity
+    and the Kelvin element, for those branches in both orders."""
+    from planetmodel.conversion.prony import burgers_parameters, burgers_terms
+
+    rng = np.random.default_rng(41)
+    bodies = [(7e10, 1e21, 1e20, 0.5), (7e10, 1e21, 2e20, 1.0),
+              (3e10, 1e19, 1e18, 1.0), (7e10, 1e21, 1e25, 1e-3),
+              (7e10, 1e21, 1e15, 1e3), (1.0, 1.0, 1.0, 1.0),
+              (7e10, 1e21, 1e21, 1e-6), (7e10, 1e18, 1e24, 1e6), (2.0, 3.0, 5.0, 7.0)]
+    for _ in range(12):
+        bodies.append((float(10.0 ** rng.uniform(9.0, 12.0)),
+                       float(10.0 ** rng.uniform(17.0, 24.0)),
+                       float(10.0 ** rng.uniform(15.0, 25.0)),
+                       float(10.0 ** rng.uniform(-3.0, 3.0))))
+    lines = []
+    for mu, eta, eta_k, f in bodies:
+        w, tau = burgers_terms(mu, eta, kelvin_viscosity=eta_k,
+                               kelvin_modulus_fraction=f)
+        lines.append(f"terms {mu!r} {eta!r} {eta_k!r} {f!r} {_vector(w)} "
+                     f"{_vector(tau)}")
+        for order in ((0, 1), (1, 0)):
+            ws, ts = w[list(order)], tau[list(order)]
+            back = burgers_parameters(mu, ws, ts)
+            lines.append(f"parameters {mu!r} {_vector(ws)} {_vector(ts)} "
+                         f"{_vector(back)}")
+    path = directory / "burgers.txt"
+    path.write_text("\n".join(lines) + "\n")
+    return [path]
+
+
 def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
     """Every fixture into `directory`, each model file validated; the
     manifests and the meshes with faults, which build meshes, only where
@@ -2083,7 +2166,7 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
         validate_structure(path)
     return (models + model_cases(directory) + gll(directory) + grids(directory)
             + vocabulary(directory) + surface_files(directory)
-            + fault_files(directory)
+            + fault_files(directory) + slip_from_rake(directory) + burgers(directory)
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
             + manifest_cases(directory) + decks(directory)

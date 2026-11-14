@@ -425,10 +425,13 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
  * stored nodes alone (`none`); an `interval` field from the interval
  * holding the date, the last closed at its end; an `instant` field at
  * its stored instants alone; a `static` field at any date.  Outside its
- * span a field refuses the date, or holds its nearest value under
- * `Extrapolation::Hold`; a date within the tolerance of a stored time is
- * that time.  The arithmetic is `TimeRowsAt`, the Python
- * `SurfaceHistory`'s, so the two read a file identically.
+ * span a `linear` or `previous` `node` field and an `interval` field
+ * refuse the date, or hold their nearest value under
+ * `Extrapolation::Hold`; a `none` `node` field and an `instant` field
+ * refuse any date that is not one of their stored times, held or not.  A
+ * date within the tolerance of a stored time is that time.  The
+ * arithmetic is `TimeRowsAt`, the Python `SurfaceHistory`'s, so the two
+ * read a file identically.
  */
 class SurfaceHistory {
  public:
@@ -473,8 +476,8 @@ class SurfaceHistory {
    *        (the default), or hold its nearest value (`linear`,
    *        `previous` and `interval` fields).
    * @param time_rtol The date's tolerance on a stored time and on an end
-   *        of the span, relative to the span (`TimeRowsAt`); zero matches
-   *        exactly.
+   *        of the span, relative to the scale of the axis (`TimeRowsAt`);
+   *        zero matches exactly.
    * @throws planetmodel::Error where the file holds no such field, the
    *         date is refused, or a dated field is given no date.
    */

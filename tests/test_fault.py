@@ -551,6 +551,48 @@ def test_the_slice_quadrature_is_the_quadrature_at_every_date(support, rule):
                                                       np.repeat([0, 1, 2], 6))
 
 
+def test_the_quadratures_form_a_patch_s_geometry_once(monkeypatch):
+    """Each patch's tangents are formed once for all its points and every
+    slice, and the numbers are, to the bit, the patch's own evaluations
+    point by point: the normal and the weight from the tangents there,
+    each slice's slip as `slip_vector` reads it."""
+    fault = _slices_case("node", "linear")
+    calls = []
+    for kind in {type(p) for p in fault.patches}:
+        def counted(self, u, v, _tangents=kind.tangents):
+            calls.append(self)
+            return _tangents(self, u, v)
+        monkeypatch.setattr(kind, "tangents", counted)
+    sq = fault.slice_quadrature(3, 2, points=2)
+    assert len(calls) == len(fault.patches)
+    calls.clear()
+    q = fault.quadrature(3, 2, points=2, date=1.7)
+    assert len(calls) == len(fault.patches)
+    calls.clear()
+    own = fault.patches[1].quadrature(3, 2, points=2, index=2)
+    assert len(calls) == 1
+    monkeypatch.undo()
+    (k0, w0), (k1, w1) = fault.rows(1.7)
+    for k, p in enumerate(fault.patches):
+        m = q.patch == k
+        u, v = q.u[m], q.v[m]
+        xu, xv = p.tangents(u, v)
+        c = np.cross(xv, xu)
+        area = np.linalg.norm(c, axis=-1)
+        assert np.array_equal(q.normals[m], c / area[:, None])
+        assert np.array_equal(q.weights[m], area * parameter_rule(3, 2, points=2)[2])
+        assert np.array_equal(q.points[m], p.cartesian(u, v))
+        want = w0 * p.slip_vector(u, v, index=k0, basis="cartesian")
+        if w1 != 0.0:
+            want = want + w1 * p.slip_vector(u, v, index=k1, basis="cartesian")
+        assert np.array_equal(q.slip[m], want)
+        for s in range(fault.nslices):
+            assert np.array_equal(sq.slip[s][m],
+                                  p.slip_vector(u, v, index=s, basis="cartesian"))
+    assert np.array_equal(own.slip, sq.slip[2][sq.patch == 1])
+    assert np.array_equal(own.normals, sq.normals[sq.patch == 1])
+
+
 def test_a_patch_s_quadrature_names_no_patch_and_a_fault_s_names_each():
     from planetmodel.fault import PatchQuadrature, Quadrature
     fault = _slices_case("node", "linear")
@@ -632,6 +674,61 @@ def test_a_date_within_the_tolerance_of_a_stored_time_is_that_time():
     assert fault.rows(2.5 + 5e-12) == ((2, 1.0), (2, 0.0))
     with pytest.raises(ValueError, match="stored nodes alone"):
         fault.rows(2.5 + 5e-12, time_rtol=0.0)
+
+
+def test_the_tolerance_is_relative_to_the_times_as_well_as_the_span():
+    """A clock whose zero is far from the file's reaches a time stored at
+    -999 as -998.99999999999511, 4.9e-12 off: on a span of 1 the span
+    alone would refuse it; the scale is the largest of the span and the
+    magnitudes of the first and last times, here 1000."""
+    from planetmodel.surfacefile import time_rows
+    axis = np.array([-1000.0, -999.0])
+    reached = -998.99999999999511
+    assert reached - -999.0 > 4.8e-12
+    one, zero = ((1, 1.0), (1, 0.0)), ((0, 1.0), (0, 0.0))
+    for rule in ("linear", "previous", "none"):
+        assert time_rows("node", rule, reached, time=axis) == one
+        assert time_rows("node", rule, -1000.0 - 4.9e-12, time=axis) == zero
+        # 1e-12 of the span alone, and exact matching, refuse it
+        for tight in (1e-15, 0.0):
+            with pytest.raises(ValueError):
+                time_rows("node", rule, reached, time=axis, time_rtol=tight)
+        # beyond 1e-12 of the scale, 1e-9, it is not the node
+        with pytest.raises(ValueError):
+            time_rows("node", rule, -999.0 + 2e-9, time=axis)
+    assert time_rows("node", "linear", -999.0 + 2e-9, time=axis,
+                     extrapolation="hold") == one
+    with pytest.raises(ValueError, match="stored nodes alone"):
+        time_rows("node", "none", -999.0 + 2e-9, time=axis, extrapolation="hold")
+    assert time_rows("node", "linear", -999.5, time=axis) == ((0, 0.5), (1, 0.5))
+    assert time_rows("node", "none", 999.0 - 4.9e-12,
+                     time=np.array([999.0, 1000.0])) == zero
+    assert time_rows("instant", "none", reached, instant=axis) == one
+    # a fault on such an axis reads it alike: nodes at -1006 to -1000, a
+    # date 8e-12 past the last within 1e-12 of 1006 but not of the span 6
+    fault = _slices_case("node", "previous")
+    late = Fault(fault.patches, support="node", time_interpolation="previous",
+                 time=fault.time - 1006.0)
+    assert late.rows(-1000.0 + 8e-12) == ((3, 1.0), (3, 0.0))
+    with pytest.raises(ValueError, match="outside"):
+        late.rows(-1000.0 + 8e-12, time_rtol=1e-12 * 6.0 / 1006.0)
+
+
+def test_an_axis_of_the_one_time_zero_matches_exactly():
+    """Its scale is zero: the date 0 is that time and any other is not."""
+    from planetmodel.surfacefile import time_rows
+    zero = np.array([0.0])
+    for rule in ("linear", "previous", "none"):
+        for date in (0.0, -0.0):
+            assert time_rows("node", rule, date, time=zero) == ((0, 1.0), (0, 0.0))
+        with pytest.raises(ValueError):
+            time_rows("node", rule, 1e-300, time=zero)
+    assert time_rows("node", "linear", 1e-300, time=zero,
+                     extrapolation="hold") == ((0, 1.0), (0, 0.0))
+    assert time_rows("node", "previous", -1.0, time=zero,
+                     extrapolation="hold") == ((0, 1.0), (0, 0.0))
+    with pytest.raises(ValueError, match="stored nodes alone"):
+        time_rows("node", "none", 1e-300, time=zero, extrapolation="hold")
 
 # -- the poles and the date line ------------------------------------------------------
 

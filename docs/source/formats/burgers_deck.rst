@@ -38,7 +38,12 @@ Prony branches (``conversion.prony.burgers_terms``).  In C++,
 planetmodel's own library (:doc:`../cpp`) reads one with ``ReadDeck(path,
 BURGERS())`` and each layer's columns as functions of the radius with
 ``DeckLayers(deck, "cubic", BURGERS_KINDS)``, and writes one with
-``WriteDeck``, the same text the Python writes, character for character.
+``WriteDeck``, the same text the Python writes, character for character;
+``BurgersTerms(mu, {.viscosity = ..., .kelvin_viscosity = ...,
+.kelvin_modulus_fraction = ...})`` gives a Burgers body's two Prony
+branches, the faster first, and ``BurgersParameters(mu, strengths,
+times)`` the body of two branches (``prony.hpp``), as the Python forms
+them, to rounding.
 
 Layout
 ------

@@ -109,3 +109,66 @@ TEST(Time, ADateWithinTheToleranceOfAStoredTimeIsThatTime) {
     EXPECT_THROW(static_cast<void>(Rows(TimeSupport::Node, TimeRule::Linear, 1.0, bad)), pm::Error);
   }
 }
+
+TEST(Time, TheToleranceIsRelativeToTheTimesAsWellAsTheSpan) {
+  // a clock whose zero is far from the file's reaches a time stored at
+  // -999 as -998.99999999999511, 4.9e-12 off: on a span of 1 the span
+  // alone would refuse it, the magnitude of the times (1000) does not
+  const auto axis = std::optional<std::vector<double>>{std::vector{-1000.0, -999.0}};
+  const auto reached = -998.99999999999511;
+  ASSERT_GT(reached - -999.0, 4.8e-12);
+  auto read = [&axis](TimeRule rule, double date, pm::DateOptions options = {}) {
+    return pm::TimeRowsAt(TimeSupport::Node, rule, date, axis, std::nullopt, options.extrapolation,
+                          "test", "slip", options.time_rtol);
+  };
+  for (const auto rule : {TimeRule::Linear, TimeRule::Previous, TimeRule::None}) {
+    EXPECT_EQ(read(rule, reached), Node(1));
+    EXPECT_EQ(read(rule, -1000.0 - 4.9e-12), Node(0));
+    // a tolerance of 1e-12 of the span alone, and exact matching, refuse it
+    EXPECT_THROW(static_cast<void>(read(rule, reached, {.time_rtol = 1e-15})), pm::Error);
+    EXPECT_THROW(static_cast<void>(read(rule, reached, {.time_rtol = 0.0})), pm::Error);
+    // beyond 1e-12 of the scale, 1e-9, it is not the node
+    EXPECT_THROW(static_cast<void>(read(rule, -999.0 + 2e-9)), pm::Error);
+  }
+  EXPECT_EQ(read(TimeRule::Linear, -999.0 + 2e-9, {.extrapolation = Extrapolation::Hold}),
+            Node(1));
+  EXPECT_THROW(static_cast<void>(read(TimeRule::None, -999.0 + 2e-9,
+                                      {.extrapolation = Extrapolation::Hold})),
+               pm::Error);
+  // between the nodes, a date that close to neither is read between them
+  const auto [first, second] = *read(TimeRule::Linear, -999.5);
+  EXPECT_EQ(first, (pm::TimeRow{0, 0.5}));
+  EXPECT_EQ(second, (pm::TimeRow{1, 0.5}));
+  // the scale is the larger magnitude whichever end it is at
+  const auto positive = std::optional<std::vector<double>>{std::vector{999.0, 1000.0}};
+  EXPECT_EQ(pm::TimeRowsAt(TimeSupport::Node, TimeRule::None, 999.0 - 4.9e-12, positive,
+                           std::nullopt, Extrapolation::Refuse, "test", "slip"),
+            Node(0));
+  // an instant axis is scaled the same way
+  EXPECT_EQ(pm::TimeRowsAt(TimeSupport::Instant, TimeRule::None, reached, std::nullopt, axis,
+                           Extrapolation::Refuse, "test", "slip"),
+            Node(1));
+}
+
+TEST(Time, AnAxisOfTheOneTimeZeroMatchesExactly) {
+  // its scale is zero: the date 0 is that time, and any other is not
+  const auto zero = std::optional<std::vector<double>>{std::vector{0.0}};
+  auto at = [&zero](TimeRule rule, double date, Extrapolation extrapolation) {
+    return pm::TimeRowsAt(TimeSupport::Node, rule, date, zero, std::nullopt, extrapolation, "test",
+                          "slip");
+  };
+  for (const auto rule : {TimeRule::Linear, TimeRule::Previous, TimeRule::None}) {
+    EXPECT_EQ(at(rule, 0.0, Extrapolation::Refuse), Node(0));
+    EXPECT_EQ(at(rule, -0.0, Extrapolation::Refuse), Node(0));
+    EXPECT_THROW(static_cast<void>(at(rule, 1e-300, Extrapolation::Refuse)), pm::Error);
+  }
+  EXPECT_EQ(at(TimeRule::Linear, 1e-300, Extrapolation::Hold), Node(0));
+  EXPECT_EQ(at(TimeRule::Previous, -1.0, Extrapolation::Hold), Node(0));
+  EXPECT_THROW(static_cast<void>(at(TimeRule::None, 1e-300, Extrapolation::Hold)), pm::Error);
+}
+
+TEST(Time, ADateIsReadByItsOptions) {
+  const auto options = pm::DateOptions{};
+  EXPECT_EQ(options.extrapolation, Extrapolation::Refuse);
+  EXPECT_EQ(options.time_rtol, pm::TIME_RTOL);
+}

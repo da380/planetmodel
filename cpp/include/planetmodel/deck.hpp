@@ -55,7 +55,8 @@
  * a burgers deck's two viscosities, its Kelvin modulus fraction by
  * `linear` (`BURGERS_KINDS`).  A map of kinds of one's own joins any of
  * them otherwise: `{{"viscosity", "linear"}}` joins a viscosity's values
- * by straight lines.
+ * by straight lines.  A burgers deck's Burgers body is its two Prony
+ * branches by `BurgersTerms` (`prony.hpp`).
  */
 
 #include <algorithm>
@@ -85,6 +86,13 @@
 #include "planetmodel/radial.hpp"
 #include "planetmodel/skeleton.hpp"
 #include "planetmodel/vocabulary.hpp"
+
+/** @brief Defined where this header provides the prony and burgers decks
+ * beside the Maxwell deck (`PRONY()`, `BURGERS()`, `PRONY_KINDS`,
+ * `BURGERS_KINDS`, `PronyColumns`, `PronyBranches`, `PronyHeader`,
+ * `BurgersHeader`), and `MAXWELL_KINDS` joining a Maxwell deck's viscosity
+ * by `log-linear`. */
+#define PLANETMODEL_HAS_VISCOELASTIC_DECKS 1
 
 namespace planetmodel {
 
@@ -965,7 +973,7 @@ inline std::vector<std::string> MineosHeaderLines(const Deck& deck) {
                 detail::Tokens(detail::MaxwellColumnLine())) {
               throw Error(source, "header",
                           std::format("a Maxwell deck's second line names its columns, "
-                                      "{}; got {}",
+                                      "{}; got '{}'",
                                       detail::MaxwellColumnLine(),
                                       detail::Trimmed(lines.at(1))));
             }
@@ -1322,7 +1330,6 @@ inline void CheckBurgersTable(const Deck& deck) {
       .check_table = detail::CheckBurgersTable};
   return format;
 }
-
 
 /**
  * @brief The columns of a TauP `.nd` or `.tvel` row after the depth, by

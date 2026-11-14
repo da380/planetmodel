@@ -62,6 +62,14 @@ struct FieldSpec {
        {ELASTIC, u::MODULUS,
         "the second elasticity tensor, static, Voigt-reduced in the spherical frame"}},
       {"viscosity", {SCALAR, u::VISCOSITY, "dynamic viscosity"}},
+      {"kelvin_viscosity",
+       {SCALAR, u::VISCOSITY,
+        "viscosity of the Kelvin element of a Burgers body, in series with its Maxwell "
+        "element"}},
+      {"kelvin_modulus_fraction",
+       {SCALAR, u::DIMENSIONLESS,
+        "shear modulus of the Kelvin element of a Burgers body, as a fraction of the unrelaxed "
+        "shear modulus"}},
       {"temperature", {SCALAR, u::TEMPERATURE, "absolute temperature"}},
       {"stress_exponent",
        {SCALAR, u::DIMENSIONLESS,

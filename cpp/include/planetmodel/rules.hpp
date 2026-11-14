@@ -60,6 +60,11 @@
 #include "planetmodel/frames.hpp"
 #include "planetmodel/grid.hpp"
 
+/** @brief Defined where this header provides the model file's radial rules
+ * in the logarithm, `RadialRule::LogPolynomial` and `RadialRule::LogLinear`
+ * (`IsLogRule`, `BaseRule`). */
+#define PLANETMODEL_HAS_LOG_RULES 1
+
 namespace planetmodel {
 
 /** @brief How a variable is read between the radial nodes of an element. */

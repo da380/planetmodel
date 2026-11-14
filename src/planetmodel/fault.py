@@ -98,7 +98,12 @@ carry a leading axis of slices, and the fault states one support of
 `node` and `interval`, `instant` for `instant`) and its rule between
 nodes; `surfacefile.time_rows` gives the slices a date reads and
 their weights, a date within `time_rtol` of a stored time (relative to
-the span, `surfacefile.TIME_RTOL` by default) being that time.  A
+the scale of the axis, its span or the magnitude of its first or last
+time, whichever is largest; `surfacefile.TIME_RTOL` by default) being
+that time.  Outside the span a `node` slip read `linear` or `previous`
+and an `interval` slip refuse a date, or hold their nearest slice where
+the caller asks; a `node` slip read `none` and an `instant` slip refuse
+any date that is not one of their stored times, held or not.  A
 `static` slip is one slice and takes no date.  The fault file
 (`faultfile`) holds the `static` and `node` supports, the slip at a
 node the cumulative slip.
@@ -315,6 +320,18 @@ def _unit(x: np.ndarray) -> np.ndarray:
 def _dot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """The dot products of two stacks of vectors along the last axis."""
     return np.einsum("...i,...i->...", a, b)
+
+
+def _fault_basis(xu: np.ndarray, xv: np.ndarray) -> np.ndarray:
+    """(strike, up dip, normal) as columns, (..., 3, 3), from the tangents
+    (module docstring)."""
+    s, n = _unit(xu), _unit(np.cross(xv, xu))
+    return np.stack([s, np.cross(n, s), n], axis=-1)
+
+
+def _on_basis(F: np.ndarray, components: np.ndarray) -> np.ndarray:
+    """Fault components (P, 3) on the fault bases F (P, 3, 3), Cartesian."""
+    return np.einsum("pij,pj->pi", F, components)
 
 
 def _positive(x: object, what: str) -> float:
@@ -712,6 +729,53 @@ def parameter_rule(n_u: int, n_v: int, *, points: int = 1
     pv, wv = composite(n_v)
     U, V = np.meshgrid(pu, pv, indexing="ij")
     return U.ravel(), V.ravel(), np.outer(wu, wv).ravel()
+
+
+@dataclass(frozen=True, eq=False)
+class _Geometry:
+    """A patch's quadrature points with what each stands for but its slip,
+    as `PatchQuadrature` holds them, and `basis`, the fault basis at each
+    (`_geometry`)."""
+
+    points: np.ndarray
+    positions: np.ndarray
+    normals: np.ndarray
+    weights: np.ndarray
+    u: np.ndarray
+    v: np.ndarray
+    basis: np.ndarray
+
+    def slip(self, patch: Patch, index: int) -> np.ndarray:
+        """The Cartesian slip of slice `index` of `patch` at the points: its
+        components there on the fault basis there."""
+        return _on_basis(self.basis, patch.slip_vector(self.u, self.v, index=index,
+                                                       basis="fault"))
+
+
+def _geometry(patch: Patch, n_u: int, n_v: int, points: int) -> _Geometry:
+    """`parameter_rule(n_u, n_v, points=points)` on `patch`, each point with
+    what it stands for but its slip and with the fault basis there, the
+    tangents formed once: what a patch's quadrature and a fault's are
+    built from."""
+    u, v, w = parameter_rule(n_u, n_v, points=points)
+    X = patch.cartesian(u, v)
+    xu, xv = patch.tangents(u, v)
+    c = np.cross(xv, xu)
+    area = np.linalg.norm(c, axis=-1)
+    return _Geometry(points=X, positions=patch.frame.coordinates(X),
+                     normals=c / area[:, None], weights=area * w, u=u, v=v,
+                     basis=_fault_basis(xu, xv))
+
+
+def _joined(parts: Sequence[_Geometry]) -> dict[str, np.ndarray]:
+    """The patches' points, with what each stands for but its slip, in
+    turn, and `patch`, each point's patch: a fault's quadrature but its
+    slip."""
+    out = {name: np.concatenate([getattr(g, name) for g in parts])
+           for name in ("points", "positions", "normals", "weights", "u", "v")}
+    out["patch"] = np.concatenate([np.full(g.u.size, k, dtype=int)
+                                   for k, g in enumerate(parts)])
+    return out
 
 
 # -- the spline form ----------------------------------------------------------------
@@ -1115,9 +1179,7 @@ class PatchBase:
         """(strike, up dip, normal) as columns, Cartesian, (..., 3, 3):
         s = x_u / norm(x_u), n the normal, a = n x s; right-handed, and the
         basis of the `fault` components."""
-        xu, xv = self.tangents(u, v)
-        s, n = _unit(xu), _unit(np.cross(xv, xu))
-        return np.stack([s, np.cross(n, s), n], axis=-1)
+        return _fault_basis(*self.tangents(u, v))
 
     def slip_vector(self, u: ArrayLike, v: ArrayLike, *, index: int = 0,
                     basis: str = "ambient") -> np.ndarray:
@@ -1134,7 +1196,7 @@ class PatchBase:
         comp = self._slip_rule(fu, fv, index=int(index))
         if basis == "fault":
             return comp.reshape(shape + (3,))
-        cart = np.einsum("pij,pj->pi", self.fault_basis(fu, fv), comp)
+        cart = _on_basis(self.fault_basis(fu, fv), comp)
         if basis == "ambient":
             B = self._frame.basis(self.position(fu, fv))
             cart = np.einsum("pji,pj->pi", B, cart)
@@ -1146,16 +1208,10 @@ class PatchBase:
         the slip of slice `index`; a fault's quadratures say which patch
         each point is on (`Fault.quadrature`), which a patch alone does
         not know."""
-        u, v, w = parameter_rule(n_u, n_v, points=points)
-        X = self.cartesian(u, v)
-        xu, xv = self.tangents(u, v)
-        c = np.cross(xv, xu)
-        area = np.linalg.norm(c, axis=-1)
-        return PatchQuadrature(points=X, positions=self._frame.coordinates(X),
-                               normals=c / area[:, None], weights=area * w,
-                               slip=self.slip_vector(u, v, index=index,
-                                                     basis="cartesian"),
-                               u=u, v=v)
+        g = _geometry(self, n_u, n_v, points)
+        return PatchQuadrature(points=g.points, positions=g.positions,
+                               normals=g.normals, weights=g.weights,
+                               slip=g.slip(self, index), u=g.u, v=g.v)
 
     def locate(self, points: ArrayLike, *, given: str = "cartesian",
                rtol: float = 1e-10, iterations: int = 50,
@@ -1801,9 +1857,9 @@ class Fault:
     `instant` that of an `instant` support, and an axis the support
     does not use is refused.  Every patch's slip has the slices the
     support implies: one for `static`, which takes no date.  A date
-    within `time_rtol` of a stored time, relative to the span, is that
-    time (`surfacefile.time_rows`).  `scales` says what the numbers are
-    in, and is not consulted.
+    within `time_rtol` of a stored time, relative to the scale of the
+    axis, is that time (`surfacefile.time_rows`).  `scales` says what the
+    numbers are in, and is not consulted.
     """
 
     def __init__(self, patches: Sequence[Patch], *, support: str = "static",
@@ -1932,21 +1988,15 @@ class Fault:
         (k0, w0), (k1, w1) = self.rows(date, extrapolation=extrapolation,
                                        time_rtol=time_rtol)
         counts = self._counts(n_u, n_v)
-        parts = []
-        for k, (p, nu, nv) in enumerate(zip(self._patches, *counts)):
-            q = p.quadrature(nu, nv, points=points, index=k0)
-            slip = w0 * q.slip
+        parts, slips = [], []
+        for p, nu, nv in zip(self._patches, *counts):
+            g = _geometry(p, nu, nv, points)
+            slip = w0 * g.slip(p, k0)
             if w1 != 0.0:
-                slip = slip + w1 * p.slip_vector(q.u, q.v, index=k1,
-                                                 basis="cartesian")
-            parts.append(Quadrature(points=q.points, positions=q.positions,
-                                    normals=q.normals, weights=q.weights,
-                                    slip=slip, u=q.u, v=q.v,
-                                    patch=np.full(q.u.size, k, dtype=int)))
-        return Quadrature(**{name: np.concatenate([getattr(q, name)
-                                                    for q in parts])
-                             for name in ("points", "positions", "normals",
-                                          "weights", "slip", "u", "v", "patch")})
+                slip = slip + w1 * g.slip(p, k1)
+            parts.append(g)
+            slips.append(slip)
+        return Quadrature(**_joined(parts), slip=np.concatenate(slips))
 
     def slice_quadrature(self, n_u: int | Sequence[int], n_v: int | Sequence[int],
                          *, points: int = 1) -> SliceQuadrature:
@@ -1956,23 +2006,15 @@ class Fault:
         at them, (nslices, P, 3).  The slip at a date is
         `SliceQuadrature.slip_of(self.rows(date))`, what `quadrature`
         gives at that date.  `n_u` and `n_v` are as `quadrature` takes
-        them."""
+        them; the geometry and the fault basis are formed once a point,
+        every slice's components read on them."""
         counts = self._counts(n_u, n_v)
         parts, slips = [], []
-        for k, (p, nu, nv) in enumerate(zip(self._patches, *counts)):
-            q = p.quadrature(nu, nv, points=points, index=0)
-            parts.append(Quadrature(points=q.points, positions=q.positions,
-                                    normals=q.normals, weights=q.weights,
-                                    slip=q.slip, u=q.u, v=q.v,
-                                    patch=np.full(q.u.size, k, dtype=int)))
-            slips.append(np.stack([q.slip] + [
-                p.slip_vector(q.u, q.v, index=s, basis="cartesian")
-                for s in range(1, self._nslices)]))
-        return SliceQuadrature(**{name: np.concatenate([getattr(q, name)
-                                                         for q in parts])
-                                  for name in ("points", "positions", "normals",
-                                               "weights", "u", "v", "patch")},
-                               slip=np.concatenate(slips, axis=1))
+        for p, nu, nv in zip(self._patches, *counts):
+            g = _geometry(p, nu, nv, points)
+            parts.append(g)
+            slips.append(np.stack([g.slip(p, s) for s in range(self._nslices)]))
+        return SliceQuadrature(**_joined(parts), slip=np.concatenate(slips, axis=1))
 
     def locate(self, points: ArrayLike, *, given: str = "cartesian",
                rtol: float = 1e-10, iterations: int = 50,

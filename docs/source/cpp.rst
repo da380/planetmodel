@@ -5,7 +5,10 @@ The repository holds a C++ library beside the Python one, in ``cpp/``. It
 reads what the Python writes and writes files that the Python reads, so
 that a solver written in C++ can take a model from planetmodel and hand
 its own fields back. It is header-only C++23, and its version is
-the Python package's.
+the Python package's, which a C++ preprocessor can test
+(``PLANETMODEL_VERSION_AT_LEAST``); each feature added between releases
+has a macro of its own, defined by the header providing it, which the
+reference's main page lists.
 
 It reads and writes the Python's files:
 
@@ -42,7 +45,9 @@ It reads and writes the Python's files:
   makes of a prony or burgers deck's values, with its messages. Each
   layer's columns are joined into functions of the radius by the rules
   the Python uses, and a deck is written as the Python writes it,
-  character for character.
+  character for character. A burgers deck's Burgers body is turned into
+  its two Prony branches, and two branches into the body, by the
+  Python's arithmetic.
 
 The units, scales and vocabulary are the Python's, restated in C++. Tests
 hold the two sides equal, against fixtures that the Python writes.

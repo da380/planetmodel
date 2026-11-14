@@ -19,6 +19,10 @@
 #include "planetmodel/frames.hpp"
 #include "planetmodel/netcdf.hpp"
 
+#ifndef PLANETMODEL_HAS_LOG_RULES
+#error "rules.hpp defines the macro of its rules in the logarithm"
+#endif
+
 namespace {
 
 namespace nc = planetmodel::netcdf;

@@ -13,9 +13,10 @@ a density is rank 0 weight 1; a modulus is a coefficient of the
 second elasticity tensor, whose density-like factor of 1/J it shares,
 so every modulus (kappa, mu, and the Love moduli A, C, F, L, N) is rank
 0 weight 1 too, and the tensor itself is rank 4 weight 1; a velocity, a
-quality factor, an anisotropy ratio and a viscosity are rank 0 weight 0.
-A velocity is the square root of a modulus over a density, the weights
-cancelling, which is why it has no law of its own.
+quality factor, an anisotropy ratio, a viscosity and a fraction of a
+modulus are rank 0 weight 0.  A velocity is the square root of a modulus
+over a density, the weights cancelling, which is why it has no law of its
+own.
 
 A family is a stem whose every member, the stem with a positive index
 (`relaxation_time_3`), means the same thing for its index (`FAMILIES`):
@@ -25,7 +26,10 @@ modulus that relaxes in it and its `relaxation_time_k`, the relaxed part
 being (1 - sum w_k) mu_U; a viscosity is the one-branch shorthand, w_1 =
 1 and tau_1 = eta / mu.  `member(name)` says whether a name is one and
 of which family, `family_spec` gives its spec, and `shipped(name)` the
-spec of any name the library speaks, of the table or of a family.
+spec of any name the library speaks, of the table or of a family.  A
+Burgers body's Kelvin element is named by `kelvin_viscosity` and
+`kelvin_modulus_fraction`, the columns of a burgers deck; a model holds
+a Burgers layer as its two Prony branches.
 
 `CONSTANTS` holds the named constants a model reads in its own units,
 each declared with its SI value and dimensions.
@@ -109,6 +113,14 @@ VOCABULARY: dict[str, FieldSpec] = {
         meaning="the second elasticity tensor, static, Voigt-reduced in the "
                 "spherical frame"),
     "viscosity": FieldSpec(SCALAR, units.VISCOSITY, meaning="dynamic viscosity"),
+    "kelvin_viscosity": FieldSpec(
+        SCALAR, units.VISCOSITY,
+        meaning="viscosity of the Kelvin element of a Burgers body, in series with "
+                "its Maxwell element"),
+    "kelvin_modulus_fraction": FieldSpec(
+        SCALAR, units.DIMENSIONLESS,
+        meaning="shear modulus of the Kelvin element of a Burgers body, as a fraction "
+                "of the unrelaxed shear modulus"),
     "temperature": FieldSpec(SCALAR, units.TEMPERATURE,
                              meaning="absolute temperature"),
     "stress_exponent": FieldSpec(

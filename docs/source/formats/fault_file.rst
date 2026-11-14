@@ -121,13 +121,15 @@ one slip, read at any date.  A ``node`` fault has the coordinate
 it is read by ``time_interpolation``, as a ``node`` field of the
 surface file is: ``linear`` interpolates between the two nodes about
 the date, ``previous`` reads the latest node not after it, and ``none``
-serves the stored nodes alone.  Outside the span a reader refuses the
-date, or holds the nearer end where its caller asks.  A date within a
-tolerance of a node is that node, and one that close beyond an end of
-the span is that end: the tolerance is relative to the span,
-``1e-12`` of it unless the caller gives another (zero is exact
-matching), by the surface file's rule (:doc:`surface_file`, Reading as
-a history).  A ``static`` fault takes no date, and refuses one.  The
+serves the stored nodes alone.  Outside the span a reader of a
+``linear`` or ``previous`` fault refuses the date, or holds the nearer
+end where its caller asks; a ``none`` fault refuses any date that is not
+one of its nodes, held or not.  A date within a tolerance of a node is
+that node, and one that close beyond an end of the span is that end:
+the tolerance is relative to the scale of the time axis, the largest of
+its span and the magnitudes of its first and last times, ``1e-12`` of
+it unless the caller gives another (zero is exact matching), by the
+surface file's rule (:doc:`surface_file`, Reading as a history).  A ``static`` fault takes no date, and refuses one.  The
 slip at a
 node is always the cumulative slip, the total displacement of the
 hanging wall since the fault's own start: afterslip is a series of

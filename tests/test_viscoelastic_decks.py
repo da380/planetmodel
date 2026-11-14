@@ -403,6 +403,30 @@ def test_a_burgers_deck_breaking_its_rules_is_refused(rows, says):
                  line="r rho vpv vsv vph vsh eta viscosity")
 
 
+#: A wrong column line of each viscoelastic deck and the whole refusal, which
+#: the C++ says character for character (cpp/tests/test_deck.cpp).
+COLUMN_LINE_REFUSALS = (
+    (MAXWELL, "r rho vp vs viscosity # a note",
+     "a Maxwell deck's second line names its columns, r rho vpv vsv vph vsh eta "
+     "viscosity; got 'r rho vp vs viscosity # a note'"),
+    (PRONY, "r rho vp vs relaxation_strength_1 relaxation_time_1",
+     "a prony deck's second line names its columns, r rho vpv vsv vph vsh eta then "
+     "relaxation_strength_k relaxation_time_k for each branch k = 1 to N; got "
+     "'r rho vp vs relaxation_strength_1 relaxation_time_1'"),
+    (BURGERS, "r rho vpv vsv vph vsh eta viscosity",
+     "a burgers deck's second line names its columns, r rho vpv vsv vph vsh eta "
+     "viscosity kelvin_viscosity kelvin_modulus_fraction; got "
+     "'r rho vpv vsv vph vsh eta viscosity'"),
+)
+
+
+@pytest.mark.parametrize("format_, line, says", COLUMN_LINE_REFUSALS)
+def test_a_wrong_column_line_is_refused_quoting_it(format_, line, says):
+    with pytest.raises(ValueError) as caught:
+        read_deck(["a body", line, "0 4 8 4 8 4 1 1e21", "1 4 8 4 8 4 1 1e21"], format_)
+    assert str(caught.value) == says
+
+
 def test_writing_holds_a_deck_to_its_format(tmp_path):
     """A layer of branches that do not run from 1, a value out of bounds,
     a branch without its partner, none at all: refused on writing as on

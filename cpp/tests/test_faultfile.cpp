@@ -24,6 +24,10 @@
 #include "planetmodel/fault.hpp"
 #include "planetmodel/faultfile.hpp"
 
+#if !defined(PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE) || !defined(PLANETMODEL_HAS_FAULT_FILE_WRITER)
+#error "fault.hpp and faultfile.hpp define the macros of their features"
+#endif
+
 namespace {
 
 namespace pm = planetmodel;
@@ -213,14 +217,15 @@ void HoldToExpectations(const std::string& name) {
       auto rest = std::string{};
       if (line.ends_with(" refused")) {
         EXPECT_THROW(static_cast<void>(fault.SlipVector(
-                         k, u, v, DateOf(date), ExtrapolationOf(extrapolation), BasisOf(basis))),
+                         k, u, v, DateOf(date), BasisOf(basis),
+                         {.extrapolation = ExtrapolationOf(extrapolation)})),
                      pm::Error)
             << line;
         continue;
       }
       const auto want = Numbers(words);
-      const auto got = Flat(
-          fault.SlipVector(k, u, v, DateOf(date), ExtrapolationOf(extrapolation), BasisOf(basis)));
+      const auto got = Flat(fault.SlipVector(k, u, v, DateOf(date), BasisOf(basis),
+                                             {.extrapolation = ExtrapolationOf(extrapolation)}));
       agreement.Check("slip", got, want, slip_scale, 1e-12, line);
       ++checked;
     } else if (what == "quadrature") {
@@ -229,7 +234,7 @@ void HoldToExpectations(const std::string& name) {
            nv = std::string{};
       words >> points >> date >> extrapolation >> nu >> nv >> total;
       quadrature = fault.Quadrature(counts(nu), counts(nv), points, DateOf(date),
-                                    ExtrapolationOf(extrapolation));
+                                    {.extrapolation = ExtrapolationOf(extrapolation)});
       EXPECT_EQ(quadrature->Size(), total) << line;
     } else if (what == "qpoint") {
       ASSERT_TRUE(quadrature) << line;
@@ -279,8 +284,9 @@ void HoldToExpectations(const std::string& name) {
         }
       }
       for (const auto& date : dates) {
-        const auto at = fault.Quadrature(counts(nu), counts(nv), points, date, hold);
-        const auto slip = slices->SlipOf(fault.Rows(date, hold));
+        const auto at = fault.Quadrature(counts(nu), counts(nv), points, date,
+                                         {.extrapolation = hold});
+        const auto slip = slices->SlipOf(fault.Rows(date, {.extrapolation = hold}));
         ASSERT_EQ(at.Size(), slices->Size()) << line;
         for (auto i = std::size_t{0}; i < at.Size(); ++i) {
           EXPECT_EQ(slip[i], at.slip[i]) << line << " point " << i;
@@ -388,6 +394,126 @@ TEST(FaultFile, RefusesWhatThePythonRefusesAtItsPlace) {
   EXPECT_THROW(static_cast<void>(pm::ReadFaultFile("/nonexistent.nc")), pm::Error);
 }
 
+TEST(FaultFile, TheQuadraturesAreThePatchsOwnEvaluationsPointByPoint) {
+  // the geometry and the fault basis formed once a point give, to the bit,
+  // what a patch's evaluations give point by point: the point, the normal
+  // and the weight from the tangents there, and each slice's Cartesian
+  // slip as SlipVector reads it, under the weights of a date's rows
+  for (const auto* name : {"fault_static", "fault_afterslip", "fault_cartesian"}) {
+    SCOPED_TRACE(name);
+    PLANETMODEL_FIXTURE(path, std::string{name} + ".nc");
+    const auto fault = pm::ReadFaultFile(path).fault;
+    const auto n = fault.Patches().size();
+    const auto nu = std::vector<std::size_t>(n, 3), nv = std::vector<std::size_t>(n, 2);
+    const auto rule = pm::ParameterRule(3, 2, 2);
+    const auto slices = fault.SliceQuadrature(nu, nv, 2);
+    auto dates = std::vector<std::optional<double>>{std::nullopt};
+    if (fault.Time()) {
+      const auto t0 = fault.Time()->front(), t1 = fault.Time()->back();
+      dates = {t0, (2.0 * t0 + t1) / 3.0, t1};
+    }
+    for (const auto& date : dates) {
+      const auto [first, second] = fault.Rows(date);
+      const auto q = fault.Quadrature(nu, nv, 2, date);
+      ASSERT_EQ(q.Size(), slices.Size());
+      ASSERT_EQ(q.Size(), n * rule.w.size());
+      for (auto i = std::size_t{0}; i < q.Size(); ++i) {
+        const auto& p = fault.Patches().at(q.patch[i]);
+        const auto u = q.u[i], v = q.v[i];
+        EXPECT_EQ(u, rule.u[i % rule.u.size()]);
+        EXPECT_EQ(v, rule.v[i % rule.v.size()]);
+        const auto [xu, xv] = p.Tangents(u, v);
+        const auto c = pm::Vector3{xv[1] * xu[2] - xv[2] * xu[1], xv[2] * xu[0] - xv[0] * xu[2],
+                                   xv[0] * xu[1] - xv[1] * xu[0]};
+        const auto area = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+        EXPECT_EQ(q.points[i], p.Cartesian(u, v));
+        EXPECT_EQ(q.positions[i], p.Position(u, v));
+        EXPECT_EQ(q.normals[i], (pm::Vector3{c[0] / area, c[1] / area, c[2] / area}));
+        EXPECT_EQ(q.weights[i], area * rule.w[i % rule.w.size()]);
+        auto want = p.SlipVector(u, v, first.first, pm::SlipBasis::Cartesian);
+        for (auto& x : want) x *= first.second;
+        if (second.second != 0.0) {
+          const auto more = p.SlipVector(u, v, second.first, pm::SlipBasis::Cartesian);
+          for (auto d = 0; d < 3; ++d) want[d] = want[d] + second.second * more[d];
+        }
+        EXPECT_EQ(q.slip[i], want) << i;
+        EXPECT_EQ(slices.points[i], q.points[i]);
+        EXPECT_EQ(slices.positions[i], q.positions[i]);
+        EXPECT_EQ(slices.normals[i], q.normals[i]);
+        EXPECT_EQ(slices.weights[i], q.weights[i]);
+        for (auto k = std::size_t{0}; k < fault.NSlices(); ++k) {
+          EXPECT_EQ(slices.slip[k][i], p.SlipVector(u, v, k, pm::SlipBasis::Cartesian)) << i;
+        }
+      }
+      EXPECT_EQ(slices.SlipOf({first, second}), q.slip);
+      // a patch's own quadrature is the same points with a slice's slip
+      const auto own = fault.Patches().front().Quadrature(3, 2, 2, fault.NSlices() - 1);
+      for (auto i = std::size_t{0}; i < own.Size(); ++i) {
+        EXPECT_EQ(own.points[i], q.points[i]);
+        EXPECT_EQ(own.normals[i], q.normals[i]);
+        EXPECT_EQ(own.weights[i], q.weights[i]);
+        EXPECT_EQ(own.slip[i], slices.slip[fault.NSlices() - 1][i]);
+      }
+    }
+  }
+}
+
+TEST(Fault, ASlipFromARakeIsThePythons) {
+  PLANETMODEL_FIXTURE(path, "slip_rake.txt");
+  auto in = std::ifstream(path);
+  auto cases = 0;
+  auto nslices = std::size_t{0}, n_u = std::size_t{0}, n_v = std::size_t{0};
+  auto rule = std::string{};
+  auto given = std::map<std::string, std::vector<double>>{};
+  for (auto line = std::string{}; std::getline(in, line);) {
+    auto words = std::istringstream(line);
+    auto what = std::string{};
+    words >> what;
+    if (what == "case") {
+      words >> nslices >> n_u >> n_v >> rule;
+      given.clear();
+      continue;
+    }
+    given[what] = Numbers(words);
+    if (what != "values") continue;
+    const auto slip = pm::FaultSlip::FromRake(given["rake"], given["magnitude"], nslices, n_u, n_v,
+                                              {.opening = given["opening"], .rule = rule});
+    EXPECT_EQ(slip.NSlices(), nslices) << line;
+    EXPECT_EQ(slip.NU(), n_u) << line;
+    EXPECT_EQ(slip.Rule(), rule) << line;
+    const auto& want = given["values"];
+    ASSERT_EQ(slip.Values().size(), want.size()) << line;
+    auto scale = 1.0;
+    for (const auto x : want) scale = std::max(scale, std::abs(x));
+    for (auto i = std::size_t{0}; i < want.size(); ++i) {
+      EXPECT_LE(std::abs(slip.Values()[i] - want[i]), 4.0 * 2.220446049250313e-16 * scale)
+          << "case " << cases << " value " << i;
+    }
+    ++cases;
+  }
+  EXPECT_EQ(cases, 4);
+  // in code: one cell by default, an opening and a rule by name
+  const auto thrust = pm::FaultSlip::FromRake({90.0}, {2.0});
+  EXPECT_NEAR(thrust.Values()[0], 0.0, 1e-15);
+  EXPECT_EQ(thrust.Values()[1], 2.0);
+  EXPECT_EQ(thrust.Values()[2], 0.0);
+  EXPECT_EQ(pm::FaultSlip::FromRake({0.0}, {2.0}, 1, 1, 1, {.opening = {0.5}}).Values(),
+            (std::vector<double>{2.0, 0.0, 0.5}));
+  const auto grid = pm::FaultSlip::FromRake({0.0, 180.0, 0.0, 180.0}, {1.0, 1.0, 2.0, 2.0, 3.0, 3.0,
+                                                                     4.0, 4.0},
+                                            2, 2, 2, {.rule = "linear"});
+  EXPECT_EQ(grid.Values()[3 * 7], -4.0);  // slice 1, point (1, 1): the rake of point 3
+  EXPECT_EQ(grid.Rule(), "linear");
+  try {
+    static_cast<void>(pm::FaultSlip::FromRake({0.0, 1.0}, {1.0}, 1, 2, 2));
+    ADD_FAILURE() << "two rakes on four points were accepted";
+  } catch (const pm::Error& e) {
+    EXPECT_EQ(e.Where(), "rake") << e.what();
+  }
+  EXPECT_THROW(static_cast<void>(pm::FaultSlip::FromRake({0.0}, {1.0}, 1, 1, 1, {.rule = "cubic"})),
+               pm::Error);
+}
+
 TEST(Fault, APlaneBuiltInCodeIsItsClosedForm) {
   // a thrust on an east-striking plane dipping 30 degrees south, in a
   // Cartesian frame: the hanging wall moves north and up
@@ -462,8 +588,10 @@ TEST(Fault, ItsSupportAndRuleAreEnumerationsNamedAsTheFileNamesThem) {
   EXPECT_EQ(timed.SupportName(), "node");
   EXPECT_EQ(timed.TimeInterpolationName(), "previous");
   EXPECT_EQ(timed.Rows(2.0 - 1e-12), (pm::TimeRows{{1, 1.0}, {1, 0.0}}));
-  EXPECT_EQ(timed.Rows(2.0 - 1e-12, pm::Extrapolation::Refuse, 0.0),
-            (pm::TimeRows{{0, 1.0}, {0, 0.0}}));
+  EXPECT_EQ(timed.Rows(2.0 - 1e-12, {.time_rtol = 0.0}), (pm::TimeRows{{0, 1.0}, {0, 0.0}}));
+  EXPECT_EQ(timed.Rows(2.5, {.extrapolation = pm::Extrapolation::Hold}),
+            (pm::TimeRows{{1, 1.0}, {1, 0.0}}));
+  EXPECT_THROW(static_cast<void>(timed.Rows(2.5)), pm::Error);
   for (const auto support : {pm::TimeSupport::Interval, pm::TimeSupport::Instant}) {
     EXPECT_THROW(static_cast<void>(pm::Fault({plane(1)}, support)), pm::Error);
   }
@@ -560,8 +688,7 @@ void ExpectSameFault(const pm::Fault& a, const pm::Fault& b) {
            {std::pair{0.0, 0.0}, std::pair{-0.5, 0.5}, std::pair{0.31, -0.17}}) {
         for (const auto basis :
              {pm::SlipBasis::Fault, pm::SlipBasis::Ambient, pm::SlipBasis::Cartesian}) {
-          EXPECT_EQ(a.SlipVector(k, u, v, date, pm::Extrapolation::Refuse, basis),
-                    b.SlipVector(k, u, v, date, pm::Extrapolation::Refuse, basis));
+          EXPECT_EQ(a.SlipVector(k, u, v, date, basis), b.SlipVector(k, u, v, date, basis));
         }
       }
     }
@@ -666,7 +793,7 @@ void WriteEvaluations(const pm::Fault& fault, const std::filesystem::path& path)
       for (const auto& [u, v] : {std::pair{0.0, 0.0}, std::pair{-0.5, 0.5}, std::pair{0.31, -0.17},
                                  std::pair{0.5, 0.2}}) {
         for (const auto& [basis, name] : names) {
-          const auto s = fault.SlipVector(k, u, v, date, pm::Extrapolation::Refuse, basis);
+          const auto s = fault.SlipVector(k, u, v, date, basis);
           out << std::format("slip {} {:.17g} {:.17g} {} {} {:.17g} {:.17g} {:.17g}\n", k, u, v,
                              date ? std::format("{:.17g}", *date) : std::string{"-"}, name, s[0],
                              s[1], s[2]);

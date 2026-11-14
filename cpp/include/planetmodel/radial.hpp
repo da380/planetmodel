@@ -34,6 +34,11 @@
 
 #include "planetmodel/error.hpp"
 
+/** @brief Defined where this header provides the kinds through the
+ * logarithms of the values, `KnotKind::LogCubic`, `KnotKind::LogNatural`
+ * and `KnotKind::LogLinear` (`log-cubic`, `log-natural`, `log-linear`). */
+#define PLANETMODEL_HAS_LOG_KINDS 1
+
 namespace planetmodel {
 
 /** @brief A function of the radius on [lo, hi] and its first derivative. */

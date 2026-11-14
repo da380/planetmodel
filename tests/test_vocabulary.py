@@ -10,6 +10,7 @@ EXPECTED_NAMES = {
     "rho", "vp", "vs", "vpv", "vsv", "vph", "vsh", "eta", "qkappa", "qmu", "qp",
     "kappa", "mu", "A", "C", "F", "L", "N", "elastic_moduli", "viscosity", "g",
     "drho_dphi0", "temperature", "pressure", "stress_exponent", "transition_stress",
+    "kelvin_viscosity", "kelvin_modulus_fraction",
 }
 
 
@@ -39,6 +40,10 @@ def test_characters_and_dimensions_are_what_the_physics_says():
     assert spec("kappa").dimensions == units.MODULUS
     assert spec("viscosity").dimensions == units.VISCOSITY
     assert spec("viscosity").character is SCALAR
+    assert spec("kelvin_viscosity").dimensions == units.VISCOSITY
+    assert spec("kelvin_viscosity").character is SCALAR
+    assert spec("kelvin_modulus_fraction").dimensions == units.DIMENSIONLESS
+    assert spec("kelvin_modulus_fraction").character is SCALAR
     assert spec("drho_dphi0").dimensions == \
         units.DENSITY / (units.GRAVITY * units.LENGTH)
     assert spec("drho_dphi0").character is DENSITY

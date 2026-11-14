@@ -40,6 +40,10 @@
 #include "planetmodel/time.hpp"
 #include "planetmodel/units.hpp"
 
+/** @brief Defined where this header provides `WriteFaultFile` beside
+ * `ReadFaultFile`. */
+#define PLANETMODEL_HAS_FAULT_FILE_WRITER 1
+
 namespace planetmodel {
 
 /** @brief The schema every reader checks; bumped for any change to what a
@@ -113,6 +117,18 @@ std::string Listed(const Names& names) {
     out += name;
   }
   return out;
+}
+
+/// Names as the Python writes a tuple of them: `('a', 'b', 'c')`, one of
+/// them `('a',)`.
+template <typename Names>
+std::string TupleRepr(const Names& names) {
+  auto out = std::string{"("};
+  for (const auto& name : names) {
+    if (out.size() > 1) out += ", ";
+    out += std::format("'{}'", name);
+  }
+  return out + (std::size(names) == 1 ? ",)" : ")");
 }
 
 /// The reader of one file: its source and the refusals in its words.
@@ -419,9 +435,8 @@ inline std::pair<FaultPatch, std::optional<std::string>> FaultPatchOf(
   const auto rule = detail::TextOf(attrs, "time_interpolation").value_or("");
   if (!std::ranges::contains(TIME_METHODS, std::string_view{rule})) {
     fail("time_interpolation",
-         std::format("'slip': time_interpolation '{}' is not one of ('linear', 'previous', "
-                     "'none')",
-                     rule));
+         std::format("'slip': time_interpolation '{}' is not one of {}", rule,
+                     detail::TupleRepr(TIME_METHODS)));
   }
   if (*support != "node" && rule != "none") {
     fail("time_interpolation", std::format("'slip': a '{}' field is not sampled between times; its "

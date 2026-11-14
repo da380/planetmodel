@@ -38,6 +38,18 @@ endif()
 
 project(planetmodel VERSION ${_pm_version_numbers} LANGUAGES CXX)
 
+# The integers of its first three numbers, which a preprocessor can test; a
+# number it lacks is 0 (version.hpp holds them to the string).
+string(REPLACE "." ";" _pm_version_parts "${_pm_version_numbers}")
+foreach(_pm_part IN ITEMS MAJOR MINOR PATCH)
+  if(_pm_version_parts)
+    list(POP_FRONT _pm_version_parts _pm_number)
+    math(EXPR PLANETMODEL_VERSION_${_pm_part} "${_pm_number}")
+  else()
+    set(PLANETMODEL_VERSION_${_pm_part} 0)
+  endif()
+endforeach()
+
 # The compile commands of planetmodel's own build, for editors (cpp/.clangd
 # looks for them in build/cpp at the repository's root).
 if(PROJECT_IS_TOP_LEVEL)
@@ -91,7 +103,10 @@ target_include_directories(planetmodel INTERFACE
 target_compile_features(planetmodel INTERFACE cxx_std_23)
 target_link_libraries(planetmodel INTERFACE Interpolation::Interpolation)
 target_compile_definitions(planetmodel INTERFACE
-  "PLANETMODEL_VERSION=\"${PLANETMODEL_VERSION_STRING}\"")
+  "PLANETMODEL_VERSION=\"${PLANETMODEL_VERSION_STRING}\""
+  PLANETMODEL_VERSION_MAJOR=${PLANETMODEL_VERSION_MAJOR}
+  PLANETMODEL_VERSION_MINOR=${PLANETMODEL_VERSION_MINOR}
+  PLANETMODEL_VERSION_PATCH=${PLANETMODEL_VERSION_PATCH})
 
 if(PLANETMODEL_WITH_NETCDF)
   # netCDF-C's own CMake package first, then pkg-config; the imported

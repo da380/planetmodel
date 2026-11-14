@@ -13,18 +13,27 @@
  * (`previous`), or served at its stored nodes alone (`none`); an
  * `interval` value from the interval holding the date, the last closed
  * at its end; an `instant` value at its stored instants alone; a
- * `static` value at any date.  Outside its span a value refuses the
- * date, or holds its nearest value under `Extrapolation::Hold`.
+ * `static` value at any date.  Outside its span a `linear` or `previous`
+ * node value and an `interval` value refuse the date, or hold their
+ * nearest value under `Extrapolation::Hold`; a `none` node value and an
+ * `instant` value refuse any date that is not one of their stored times,
+ * held or not.
  *
  * A date within a tolerance of a stored time is that time: the tolerance
  * is `time_rtol` (`TIME_RTOL` by default, zero for exact matching) times
- * the span of the axis, last time less first, or the magnitude of its
- * one time where it has one.  So a date a rounding error from a node
- * reads that node alone, under every rule (`none` and `instant` serve
- * it, `previous` and `interval` read from it), and a date that close
- * beyond an end of the span is that end.  The nearest stored time within
- * the tolerance is taken, the earlier on a tie.  The arithmetic is the
- * Python `time_rows`'s, so the two read slices identically.
+ * the scale of the axis, the largest of its span (last time less first)
+ * and the magnitudes of its first and last times.  A date formed by
+ * arithmetic on times of that size is a rounding error relative to them
+ * from the time it stands for, however short the span; an axis of one
+ * time has the magnitude of that time as its scale, and an axis whose one
+ * time is zero a scale of zero, matching exactly.  So a date a rounding
+ * error from a node reads that node alone, under every rule (`none` and
+ * `instant` serve it, `previous` and `interval` read from it), and a date
+ * that close beyond an end of the span is that end.  The nearest stored
+ * time within the tolerance is taken, the earlier on a tie.  The
+ * arithmetic is the Python `time_rows`'s, so the two read slices
+ * identically.  `DateOptions` holds the two, the extrapolation and the
+ * tolerance, by name, for the readers that take them so (`Fault::Rows`).
  *
  * The supports and rules are the enumerations `TimeSupport` and
  * `TimeRule`; their names, as files state them, are `TIME_SUPPORTS` and
@@ -73,7 +82,7 @@ inline constexpr auto TIME_SUPPORTS =
 inline constexpr auto TIME_METHODS = std::array<std::string_view, 3>{"linear", "previous", "none"};
 
 /** @brief The tolerance of a date on a stored time by default, relative to
- * the span of the axis (file comment). */
+ * the scale of the axis (file comment). */
 inline constexpr double TIME_RTOL = 1e-12;
 
 /**
@@ -117,10 +126,21 @@ inline constexpr double TIME_RTOL = 1e-12;
   return std::nullopt;
 }
 
-/** @brief What a value does with a date outside its span. */
+/** @brief What a value read between nodes does with a date outside its
+ * span; a value served at its stored times alone refuses any other date
+ * either way. */
 enum class Extrapolation {
   Refuse, /**< The date is refused. */
   Hold    /**< The nearest value of the span is served. */
+};
+
+/**
+ * @brief How a date is read on a time axis (`TimeRowsAt`): what is done
+ * with a date outside the span, and the date's tolerance on a stored time.
+ */
+struct DateOptions {
+  Extrapolation extrapolation = Extrapolation::Refuse; /**< Outside the span. */
+  double time_rtol = TIME_RTOL; /**< Relative to the axis's scale; zero matches exactly. */
 };
 
 /** @brief One leading row a date reads, and its weight. */
@@ -150,11 +170,11 @@ inline std::optional<std::size_t> StoredTimeAt(const std::vector<double>& axis, 
   return best;
 }
 
-/// A date's tolerance on an axis: `rtol` times its span, or the magnitude
-/// of its one time.
+/// A date's tolerance on an axis: `rtol` times its scale, the largest of
+/// its span and the magnitudes of its first and last times.
 inline double TimeTolerance(const std::vector<double>& axis, double rtol) {
-  const auto span = axis.back() - axis.front();
-  return rtol * (span > 0.0 ? span : std::abs(axis.front()));
+  return rtol *
+         std::max({axis.back() - axis.front(), std::abs(axis.front()), std::abs(axis.back())});
 }
 
 }  // namespace detail
@@ -174,7 +194,7 @@ inline double TimeTolerance(const std::vector<double>& axis, double rtol) {
  * @param source What the error names as the source.
  * @param name What the error names as the place: the value read.
  * @param time_rtol The tolerance of a date on a stored time, relative to
- *        the span of the axis (file comment); zero matches exactly.
+ *        the scale of the axis (file comment); zero matches exactly.
  * @return The rows, or empty for a `static` value, whose values are the
  *         answer whole.
  * @throws planetmodel::Error where a dated value is given no date, the
@@ -243,7 +263,7 @@ inline double TimeTolerance(const std::vector<double>& axis, double rtol) {
  * @param source What the error names as the source.
  * @param name What the error names as the place: the value read.
  * @param time_rtol The tolerance of a date on a stored time, relative to
- *        the span of the axis; zero matches exactly.
+ *        the scale of the axis; zero matches exactly.
  * @return The rows, or empty for a `static` value.
  * @throws planetmodel::Error for a support or rule that is not one, and as
  *         the overload above.

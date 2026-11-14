@@ -20,9 +20,15 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "fixtures.hpp"
+
+#if !defined(PLANETMODEL_HAS_VISCOELASTIC_DECKS) || !defined(PLANETMODEL_HAS_LOG_KINDS)
+#error "deck.hpp and radial.hpp define the macros of their features"
+#endif
 
 namespace {
 
@@ -521,6 +527,31 @@ TEST(Deck, WritesABurgersDeckBuiltHereForThePython) {
   const auto back = planetmodel::ReadDeck(out, planetmodel::BURGERS());
   EXPECT_EQ(back.Column("kelvin_modulus_fraction")[3], 1.5);
   EXPECT_EQ(planetmodel::MaxwellNames(back).layers.at(2), "asthenosphere");
+}
+
+TEST(Deck, RefusesAWrongColumnLineQuotingItInThePythonsWords) {
+  // tests/test_viscoelastic_decks.py holds the Python to the same words
+  const auto rows = std::string_view{"0 4 8 4 8 4 1 1e21\n1 4 8 4 8 4 1 1e21\n"};
+  const auto cases = std::vector<std::tuple<const planetmodel::DeckFormat*, std::string, std::string>>{
+      {&planetmodel::MAXWELL(), "r rho vp vs viscosity # a note",
+       "a Maxwell deck's second line names its columns, r rho vpv vsv vph vsh eta viscosity; got "
+       "'r rho vp vs viscosity # a note'"},
+      {&planetmodel::PRONY(), "r rho vp vs relaxation_strength_1 relaxation_time_1",
+       "a prony deck's second line names its columns, r rho vpv vsv vph vsh eta then "
+       "relaxation_strength_k relaxation_time_k for each branch k = 1 to N; got 'r rho vp vs "
+       "relaxation_strength_1 relaxation_time_1'"},
+      {&planetmodel::BURGERS(), "r rho vpv vsv vph vsh eta viscosity",
+       "a burgers deck's second line names its columns, r rho vpv vsv vph vsh eta viscosity "
+       "kelvin_viscosity kelvin_modulus_fraction; got 'r rho vpv vsv vph vsh eta viscosity'"}};
+  for (const auto& [format, line, says] : cases) {
+    try {
+      static_cast<void>(
+          planetmodel::ReadDeckText(std::format("a body\n{}\n{}", line, rows), *format, "d.txt"));
+      ADD_FAILURE() << line << ": accepted";
+    } catch (const Error& e) {
+      EXPECT_EQ(std::string{e.what()}, "d.txt: header: " + says);
+    }
+  }
 }
 
 TEST(Deck, RefusesWhatBreaksAPronyOrBurgersDeckAsThePythonDoes) {

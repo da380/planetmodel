@@ -20,6 +20,7 @@ add_executable(planetmodel_tests
   test_faults.cpp
   test_json.cpp
   test_manifest.cpp
+  test_prony.cpp
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_modelfile.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_rules.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_surfacefile.cpp>
