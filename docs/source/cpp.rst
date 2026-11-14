@@ -19,12 +19,14 @@ It reads and writes the Python's files:
 * **Surface files** (:doc:`formats/surface_file`). Reading gives the
   fields on the surface, static or in time, each served at any date by
   its own time rule; writing builds a file from a code's own fields.
-* **Fault files** (:doc:`formats/fault_file`), read only. Reading makes
-  the Python reader's checks and gives the fault, which evaluates as the
-  Python's does, to rounding: positions, normals, the fault basis and the
-  area element anywhere on a patch, the slip at any point and date, a
-  quadrature, and the location of a physical point near the fault (a
-  mesh node on it) with the slip there.
+* **Fault files** (:doc:`formats/fault_file`). Reading makes the Python
+  reader's checks and gives the fault, which evaluates as the Python's
+  does, to rounding: positions, normals, the fault basis and the area
+  element anywhere on a patch, the slip at any point and date, a
+  quadrature with the slip at a date or of every slice, and the location
+  of a physical point near the fault (a mesh node on it) with the slip
+  there. Writing makes the file the Python writes from the same fault,
+  a fault built in code or read.
 * **Mesh manifests** (:doc:`formats/mesh_manifest`). The library reads
   these on a strict JSON reader of its own, the faults built into a mesh
   and the element attributes of their hanging walls among them, and
@@ -32,12 +34,15 @@ It reads and writes the Python's files:
   is on the hanging wall, which edges are the fault's tip, free edge and
   junction and where it ends on another, and which cells are in its
   hanging wall and its footwall.
-* **Decks**, the mineos and Maxwell tables of knots
-  (:doc:`formats/maxwell_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
+* **Decks**, the mineos, Maxwell, prony and burgers tables of knots
+  (:doc:`formats/maxwell_deck`, :doc:`formats/prony_deck`,
+  :doc:`formats/burgers_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
   with the names of the layers and interfaces their headers or labels
-  give. Each layer's columns are joined into
-  functions of the radius by the rules the Python uses, and a deck is
-  written as the Python writes it, character for character.
+  give, a prony deck's number of branches, and the checks the Python
+  makes of a prony or burgers deck's values, with its messages. Each
+  layer's columns are joined into functions of the radius by the rules
+  the Python uses, and a deck is written as the Python writes it,
+  character for character.
 
 The units, scales and vocabulary are the Python's, restated in C++. Tests
 hold the two sides equal, against fixtures that the Python writes.

@@ -285,7 +285,12 @@ its faces lies on the fault, to ``offset``.
   in the mesh it meets the surface exactly, under topography too: its
   free edge is on the outer surface, and its faces near that edge
   continue the fault smoothly up to it.  A fault never ends exactly on
-  an interface: it crosses it or stops clear of it.
+  an interface: it crosses it or stops clear of it, by more than a
+  tenth of the element size there, and the builder refuses one that
+  comes closer.  A fault meant to end on an interface (a crustal fault
+  bottoming at the Moho) is given ending a little short of it or
+  continuing a little past it; a few elements either way keeps the
+  elements there well shaped.
 - ``controls``: for each patch of the fault, the control grid
   ``[n_u, n_v]`` its preimage under the mapping was built through; null
   where the mapping is the identity, and the fault was built in as

@@ -97,17 +97,25 @@ carry a leading axis of slices, and the fault states one support of
 `surfacefile.TIME_SUPPORTS` for them all, with its axis (`time` for
 `node` and `interval`, `instant` for `instant`) and its rule between
 nodes; `surfacefile.time_rows` gives the slices a date reads and
-their weights.  A `static` slip is one slice and needs no date.  The
-fault file (`faultfile`) holds the `static` and `node` supports, the
-slip at a node the cumulative slip.
+their weights, a date within `time_rtol` of a stored time (relative to
+the span, `surfacefile.TIME_RTOL` by default) being that time.  A
+`static` slip is one slice and takes no date.  The fault file
+(`faultfile`) holds the `static` and `node` supports, the slip at a
+node the cumulative slip.
 
 **Quadrature.**  Each patch is cut into n_u by n_v equal cells of the
 square with `points` Gauss-Legendre points each way in each cell (one
 point is the midpoint rule); a point's weight is the area it stands
-for, the area element there times its weight in the square.  A plane's
-area comes out exactly at any density, and for a smooth integrand on a
-smooth patch the error falls as the cell size to the power twice
-`points`.
+for, the area element there times its weight in the square.  A patch's
+own quadrature (`PatchQuadrature`) carries the slip of one slice; a
+fault's carries each point's patch beside it, with the slip at a date
+(`Fault.quadrature`, a `Quadrature`) or with the slip of every slice,
+the geometry formed once (`Fault.slice_quadrature`, a
+`SliceQuadrature`, whose slices the weights of `Fault.rows` combine
+into the slip at a date, `SliceQuadrature.slip_of`, as
+`Fault.quadrature` gives it).  A plane's area comes out exactly at any
+density, and for a smooth integrand on a smooth patch the error falls
+as the cell size to the power twice `points`.
 A cell straddling a jump of a `cell` slip, or a knot where a bilinear
 patch bends, converges more slowly: the densities that suit a
 consumer's own discretisation are its business.
@@ -201,8 +209,8 @@ from scipy.spatial import cKDTree
 
 from .frames import (cartesian_points, from_geographic, geographic,
                      spherical_coordinates, spherical_frame)
-from .surfacefile import (TimeRows, check_time_rule, leading_shape, time_axis,
-                          time_rows)
+from .surfacefile import (TIME_RTOL, TimeRows, check_time_rule, leading_shape,
+                          time_axis, time_rows)
 from .units import Scales
 
 if TYPE_CHECKING:
@@ -211,7 +219,8 @@ if TYPE_CHECKING:
 __all__ = ["SQUARE", "INTERPOLATIONS", "SLIP_RULES", "BASES", "SLIP_COMPONENTS",
            "MIN_NODES", "POINT_FORMS", "Frame", "GeographicFrame",
            "CartesianFrame", "Slip", "Patch", "PatchBase", "Plane",
-           "StructuredPatch", "Quadrature", "Location", "Fault", "parameter_rule",
+           "StructuredPatch", "PatchQuadrature", "Quadrature", "SliceQuadrature",
+           "Location", "Fault", "parameter_rule",
            "DipProfile", "Trace", "GreatCircle", "SmallCircle", "Polyline",
            "finite_block", "TensorSpline", "PULL_BACK_CONTROLS", "Preimage",
            "pull_back"]
@@ -605,16 +614,15 @@ class Slip:
 # -- patches ------------------------------------------------------------------------
 
 @dataclass(frozen=True, eq=False)
-class Quadrature:
-    """Points on a fault, each with what it stands for.
+class PatchQuadrature:
+    """Points on one patch, each with what it stands for
+    (`PatchBase.quadrature`).
 
     `points` are Cartesian, (P, 3), and `positions` the same points in
     the frame's coordinates; `normals` are unit, Cartesian, from the
     footwall into the hanging wall; `weights` are the areas the points
     stand for, in the length scale squared; `slip` is Cartesian, (P, 3);
-    `u`, `v` are the points' parameters and `patch` the index of each
-    point's patch.  The points run over the patches in order, then over
-    `parameter_rule`'s order within a patch.
+    `u`, `v` are the points' parameters, in `parameter_rule`'s order.
     """
 
     points: np.ndarray
@@ -624,12 +632,63 @@ class Quadrature:
     slip: np.ndarray
     u: np.ndarray
     v: np.ndarray
-    patch: np.ndarray
 
     @property
     def size(self) -> int:
         """The number of points."""
         return int(self.weights.size)
+
+
+@dataclass(frozen=True, eq=False)
+class Quadrature(PatchQuadrature):
+    """Points on a fault (`Fault.quadrature`): a `PatchQuadrature` over
+    every patch, the points running over the patches in order, with
+    `patch`, the index of each point's patch."""
+
+    patch: np.ndarray
+
+
+@dataclass(frozen=True, eq=False)
+class SliceQuadrature:
+    """Points on a fault with the slip of every slice
+    (`Fault.slice_quadrature`): `points`, `positions`, `normals`,
+    `weights`, `u`, `v` and `patch` as `Quadrature` holds them, formed
+    once, and `slip`, (nslices, P, 3), the Cartesian slip of each slice
+    at every point."""
+
+    points: np.ndarray
+    positions: np.ndarray
+    normals: np.ndarray
+    weights: np.ndarray
+    u: np.ndarray
+    v: np.ndarray
+    patch: np.ndarray
+    slip: np.ndarray
+
+    @property
+    def size(self) -> int:
+        """The number of points."""
+        return int(self.weights.size)
+
+    @property
+    def nslices(self) -> int:
+        """The number of slices."""
+        return int(self.slip.shape[0])
+
+    def slip_of(self, rows: TimeRows) -> np.ndarray:
+        """The Cartesian slip at every point under a date's rows
+        ((k0, w0), (k1, w1), as `Fault.rows` gives them), (P, 3): w0 times
+        slice k0, plus w1 times slice k1 where w1 is not zero, as
+        `Fault.quadrature` gives the slip at that date."""
+        (k0, w0), (k1, w1) = rows
+        for k in (k0, k1):
+            if isinstance(k, bool) or not isinstance(k, numbers.Integral) \
+                    or not 0 <= k < self.nslices:
+                raise IndexError(f"slice {k!r} of a quadrature of {self.nslices}")
+        out = w0 * self.slip[k0]
+        if w1 != 0.0:
+            out = out + w1 * self.slip[k1]
+        return out
 
 
 def parameter_rule(n_u: int, n_v: int, *, points: int = 1
@@ -971,7 +1030,7 @@ class Patch(Protocol):
         ...
 
     def quadrature(self, n_u: int, n_v: int, *, points: int = 1,
-                   index: int = 0) -> Quadrature:
+                   index: int = 0) -> PatchQuadrature:
         """The patch's quadrature, with the slip of slice `index`."""
         ...
 
@@ -1082,19 +1141,21 @@ class PatchBase:
         return cart.reshape(shape + (3,))
 
     def quadrature(self, n_u: int, n_v: int, *, points: int = 1,
-                   index: int = 0) -> Quadrature:
+                   index: int = 0) -> PatchQuadrature:
         """`parameter_rule(n_u, n_v, points=points)` on this patch, with
-        the slip of slice `index`; `patch` is zero throughout."""
+        the slip of slice `index`; a fault's quadratures say which patch
+        each point is on (`Fault.quadrature`), which a patch alone does
+        not know."""
         u, v, w = parameter_rule(n_u, n_v, points=points)
         X = self.cartesian(u, v)
         xu, xv = self.tangents(u, v)
         c = np.cross(xv, xu)
         area = np.linalg.norm(c, axis=-1)
-        return Quadrature(points=X, positions=self._frame.coordinates(X),
-                          normals=c / area[:, None], weights=area * w,
-                          slip=self.slip_vector(u, v, index=index,
-                                                basis="cartesian"),
-                          u=u, v=v, patch=np.zeros(u.size, dtype=int))
+        return PatchQuadrature(points=X, positions=self._frame.coordinates(X),
+                               normals=c / area[:, None], weights=area * w,
+                               slip=self.slip_vector(u, v, index=index,
+                                                     basis="cartesian"),
+                               u=u, v=v)
 
     def locate(self, points: ArrayLike, *, given: str = "cartesian",
                rtol: float = 1e-10, iterations: int = 50,
@@ -1739,8 +1800,10 @@ class Fault:
     rules; `time` is the axis of a `node` or `interval` support and
     `instant` that of an `instant` support, and an axis the support
     does not use is refused.  Every patch's slip has the slices the
-    support implies: one for `static`.  `scales` says what the numbers
-    are in, and is not consulted.
+    support implies: one for `static`, which takes no date.  A date
+    within `time_rtol` of a stored time, relative to the span, is that
+    time (`surfacefile.time_rows`).  `scales` says what the numbers are
+    in, and is not consulted.
     """
 
     def __init__(self, patches: Sequence[Patch], *, support: str = "static",
@@ -1818,34 +1881,38 @@ class Fault:
         """What one unit of each number is, in SI."""
         return self._scales
 
-    def rows(self, date: float | None, *,
-             extrapolation: str = "refuse") -> TimeRows:
+    def rows(self, date: float | None, *, extrapolation: str = "refuse",
+             time_rtol: float = TIME_RTOL) -> TimeRows:
         """The slices a date reads and their weights, ((k0, w0), (k1, w1)),
-        by `surfacefile.time_rows`; a static slip reads its one slice."""
+        by `surfacefile.time_rows`, `time_rtol` the date's tolerance on a
+        stored time; a static slip reads its one slice, and refuses a
+        date."""
+        if self._support == "static" and date is not None:
+            raise ValueError("the slip is static, the same at every date, and "
+                             f"takes no date; got {date!r}")
         rows = time_rows(self._support, self._rule, date, time=self._time,
                          instant=self._instant, extrapolation=extrapolation,
-                         name="slip")
+                         name="slip", time_rtol=time_rtol)
         return ((0, 1.0), (0, 0.0)) if rows is None else rows
 
     def slip_vector(self, patch: int, u: ArrayLike, v: ArrayLike, *,
                     date: float | None = None, extrapolation: str = "refuse",
-                    basis: str = "ambient") -> np.ndarray:
+                    basis: str = "ambient",
+                    time_rtol: float = TIME_RTOL) -> np.ndarray:
         """The slip of patch `patch` at (u, v) and `date`, in `basis`
         (one of `BASES`), (..., 3)."""
-        (k0, w0), (k1, w1) = self.rows(date, extrapolation=extrapolation)
+        (k0, w0), (k1, w1) = self.rows(date, extrapolation=extrapolation,
+                                       time_rtol=time_rtol)
         p = self._patches[patch]
         out = w0 * p.slip_vector(u, v, index=k0, basis=basis)
         if w1 != 0.0:
             out = out + w1 * p.slip_vector(u, v, index=k1, basis=basis)
         return out
 
-    def quadrature(self, n_u: int | Sequence[int], n_v: int | Sequence[int], *,
-                   points: int = 1, date: float | None = None,
-                   extrapolation: str = "refuse") -> Quadrature:
-        """Every patch's quadrature (`parameter_rule`), with the slip at
-        `date`: `n_u` and `n_v` are the cells each way on every patch,
-        or one count a patch."""
-        (k0, w0), (k1, w1) = self.rows(date, extrapolation=extrapolation)
+    def _counts(self, n_u: int | Sequence[int], n_v: int | Sequence[int]
+                ) -> list[list[int]]:
+        """The cells each way on each patch: one count for every patch, or
+        one a patch."""
         counts = []
         for n, what in ((n_u, "n_u"), (n_v, "n_v")):
             seq = list(n) if isinstance(n, Sequence) else [n] * len(self._patches)
@@ -1853,6 +1920,18 @@ class Fault:
                 raise ValueError(f"{what} gives {len(seq)} counts for "
                                  f"{len(self._patches)} patches")
             counts.append(seq)
+        return counts
+
+    def quadrature(self, n_u: int | Sequence[int], n_v: int | Sequence[int], *,
+                   points: int = 1, date: float | None = None,
+                   extrapolation: str = "refuse",
+                   time_rtol: float = TIME_RTOL) -> Quadrature:
+        """Every patch's quadrature (`parameter_rule`), with the slip at
+        `date`: `n_u` and `n_v` are the cells each way on every patch,
+        or one count a patch."""
+        (k0, w0), (k1, w1) = self.rows(date, extrapolation=extrapolation,
+                                       time_rtol=time_rtol)
+        counts = self._counts(n_u, n_v)
         parts = []
         for k, (p, nu, nv) in enumerate(zip(self._patches, *counts)):
             q = p.quadrature(nu, nv, points=points, index=k0)
@@ -1868,6 +1947,32 @@ class Fault:
                                                     for q in parts])
                              for name in ("points", "positions", "normals",
                                           "weights", "slip", "u", "v", "patch")})
+
+    def slice_quadrature(self, n_u: int | Sequence[int], n_v: int | Sequence[int],
+                         *, points: int = 1) -> SliceQuadrature:
+        """Every patch's quadrature (`parameter_rule`) with the slip of
+        every slice: the points, normals, weights, parameters and patches
+        once, as `quadrature` gives them, and each slice's Cartesian slip
+        at them, (nslices, P, 3).  The slip at a date is
+        `SliceQuadrature.slip_of(self.rows(date))`, what `quadrature`
+        gives at that date.  `n_u` and `n_v` are as `quadrature` takes
+        them."""
+        counts = self._counts(n_u, n_v)
+        parts, slips = [], []
+        for k, (p, nu, nv) in enumerate(zip(self._patches, *counts)):
+            q = p.quadrature(nu, nv, points=points, index=0)
+            parts.append(Quadrature(points=q.points, positions=q.positions,
+                                    normals=q.normals, weights=q.weights,
+                                    slip=q.slip, u=q.u, v=q.v,
+                                    patch=np.full(q.u.size, k, dtype=int)))
+            slips.append(np.stack([q.slip] + [
+                p.slip_vector(q.u, q.v, index=s, basis="cartesian")
+                for s in range(1, self._nslices)]))
+        return SliceQuadrature(**{name: np.concatenate([getattr(q, name)
+                                                         for q in parts])
+                                  for name in ("points", "positions", "normals",
+                                               "weights", "u", "v", "patch")},
+                               slip=np.concatenate(slips, axis=1))
 
     def locate(self, points: ArrayLike, *, given: str = "cartesian",
                rtol: float = 1e-10, iterations: int = 50,
@@ -1896,13 +2001,14 @@ class Fault:
     def slip_at(self, points: ArrayLike, *, max_distance: float,
                 given: str = "cartesian", date: float | None = None,
                 extrapolation: str = "refuse", basis: str = "ambient",
-                rtol: float = 1e-10) -> np.ndarray:
+                rtol: float = 1e-10, time_rtol: float = TIME_RTOL) -> np.ndarray:
         """The slip at points near the fault, (..., 3): each point located
         (`locate`) and the slip of its nearest patch read there, at `date`
         and in `basis` (one of `BASES`, the ambient one at the nearest
         point of the patch).  A point farther than `max_distance` (in the
         length scale) from the fault is refused, all of them with it; a
-        point within it but beyond an edge reads the edge."""
+        point within it but beyond an edge reads the edge.  `rtol` is
+        `locate`'s tolerance, `time_rtol` the date's (`rows`)."""
         limit = _real(max_distance, "max_distance")
         if limit < 0.0:
             raise ValueError(f"max_distance must not be negative, got "
@@ -1918,7 +2024,8 @@ class Fault:
         for k in np.unique(where.patch):
             m = where.patch == k
             out[m] = self.slip_vector(int(k), where.u[m], where.v[m], date=date,
-                                      extrapolation=extrapolation, basis=basis)
+                                      extrapolation=extrapolation, basis=basis,
+                                      time_rtol=time_rtol)
         return out
 
     def __repr__(self) -> str:

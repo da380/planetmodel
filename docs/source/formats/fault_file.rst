@@ -17,7 +17,10 @@ so ncdump, xarray and Panoply open it as it stands.  The Python module
 is the definition of the format.  In C++, planetmodel's own library
 (:doc:`../cpp`) reads a fault file with the same checks and evaluates
 it as the Python does: positions, normals and slip at any point, a
-quadrature, and the location of a point near the fault.
+quadrature, and the location of a point near the fault; and it writes
+one (``WriteFaultFile``), the file the Python writes from the same
+fault.  Either writer writes the file whole or not at all, with the
+permissions a plain open for writing would give it.
 
 **Schema string**: the global attribute ``schema``,
 ``planetmodel.fault/1``.  Readers check it; it is bumped for any change
@@ -119,7 +122,13 @@ it is read by ``time_interpolation``, as a ``node`` field of the
 surface file is: ``linear`` interpolates between the two nodes about
 the date, ``previous`` reads the latest node not after it, and ``none``
 serves the stored nodes alone.  Outside the span a reader refuses the
-date, or holds the nearer end where its caller asks.  The slip at a
+date, or holds the nearer end where its caller asks.  A date within a
+tolerance of a node is that node, and one that close beyond an end of
+the span is that end: the tolerance is relative to the span,
+``1e-12`` of it unless the caller gives another (zero is exact
+matching), by the surface file's rule (:doc:`surface_file`, Reading as
+a history).  A ``static`` fault takes no date, and refuses one.  The
+slip at a
 node is always the cumulative slip, the total displacement of the
 hanging wall since the fault's own start: afterslip is a series of
 growing slices, and a rupture switched on is a static file placed on
@@ -288,6 +297,14 @@ area element there times its weight in the square.  A plane's area
 comes out exactly at any density, and for a smooth integrand on a
 smooth patch the error falls as the cell size to the power 2p.  The
 densities that suit a consumer's own discretisation are its business.
+A fault's quadrature gives each point's patch beside it, and the slip
+either at one date (``Fault.quadrature``, ``Fault::Quadrature``) or for
+every slice at once, the geometry formed once
+(``Fault.slice_quadrature``, ``Fault::SliceQuadrature``): a consumer
+that superposes slices in time forms its sources a slice at a time and
+combines them by the weights a date reads (``Fault.rows``,
+``Fault::Rows``), which is the slip ``quadrature`` gives at that date,
+number for number.
 
 **The moment.**  The file holds no rigidity and no moment.  At each
 quadrature point a consumer contracts its own elastic tensor at the

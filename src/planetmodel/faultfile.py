@@ -8,7 +8,7 @@ what evaluating the fault anywhere takes and no more: no quadrature
 points, no cell counts for a consumer, no rigidity, no moment.  It is
 CF-styled, so that ncdump, xarray and Panoply open it as it stands.
 The Python here is the definition of the format and the reference the
-C++ reader is held to; `docs/source/formats/fault_file.rst` describes
+C++ reader and writer are held to; `docs/source/formats/fault_file.rst` describes
 it for consumers, and `fault`'s module docstring the conventions
 (frames, the parameter square, the normal and the fault basis, the
 slip in fault components and its rules).
@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import numbers
 import os
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from datetime import datetime, timezone
@@ -76,6 +75,7 @@ import numpy as np
 from .fault import (INTERPOLATIONS, MIN_NODES, SLIP_COMPONENTS, SLIP_RULES,
                     CartesianFrame, Fault, Frame, GeographicFrame, Patch, Plane,
                     Slip, StructuredPatch)
+from .files import written_whole
 from .modelfile import CONVENTIONS, netcdf_module, put_variable, variable_values
 from .surfacefile import check_time_rule
 from .units import BASE, LENGTH, TIME, Dimensions, Scales, scaled_unit
@@ -171,7 +171,8 @@ def write_fault(path: str | os.PathLike[str], fault: Fault, *, source: str,
     `meta_<key>` attributes.  Every number is written in the fault's
     `scales`.  A fault whose slip is on intervals or at instants, a frame
     or a kind of patch the format does not name, is refused.  The file
-    is written whole or not at all.
+    is written whole or not at all, with the permissions a plain
+    `open(path, "w")` would give it (`files.written_whole`).
     """
     nc = netcdf_module()
     if not isinstance(fault, Fault):
@@ -203,15 +204,9 @@ def write_fault(path: str | os.PathLike[str], fault: Fault, *, source: str,
             raise TypeError(f"meta[{key!r}] is {value!r}; a netCDF attribute is "
                             "a string or a number")
     path = Path(path)
-    fd, partial = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent or None)
-    os.close(fd)
-    try:
-        _write_file(nc, Path(partial), fault, frame, names, source, title, meta,
+    with written_whole(path) as partial:
+        _write_file(nc, partial, fault, frame, names, source, title, meta,
                     tuple(citation))
-        os.replace(partial, path)
-    finally:
-        if os.path.exists(partial):
-            os.remove(partial)
     return path
 
 

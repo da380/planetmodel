@@ -14,7 +14,9 @@
  * own grid.  `ReadFaultFile(path)` reads a file whole into a `Fault`,
  * making the Python reader's checks in its order and refusing with its
  * places and words: anything the schema does not name is refused, so
- * that an extension is a schema bump.  There is no writer here.
+ * that an extension is a schema bump.  `WriteFaultFile(path, file)`
+ * writes one as the Python's `write_fault` does, whole or not at all,
+ * with the permissions a plain open for writing would give the file.
  */
 
 #include <algorithm>
@@ -27,6 +29,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -46,22 +49,19 @@ inline constexpr std::string_view FAULT_SCHEMA = "planetmodel.fault/1";
 /** @brief The frames a fault file states. */
 inline constexpr auto FAULT_FRAMES = std::array<std::string_view, 2>{"geographic", "cartesian"};
 
-/** @brief The time supports of this version. */
-inline constexpr auto FAULT_SUPPORTS = std::array<std::string_view, 2>{"static", "node"};
-
 /** @brief The kinds of patch. */
 inline constexpr auto PATCH_KINDS = std::array<std::string_view, 2>{"plane", "structured"};
 
 /**
- * @brief A fault file as read: the fault, the patches' names (empty where
- * a patch has none) and the file's metadata.
+ * @brief A fault file as read, or to write: the fault, the patches' names
+ * (empty where a patch has none) and the file's metadata.
  */
 struct FaultFile {
-  std::string schema{};                            /**< `FAULT_SCHEMA`. */
-  Fault fault;                                     /**< The fault. */
+  std::string schema{}; /**< `FAULT_SCHEMA`; empty in one built to write. */
+  Fault fault;          /**< The fault. */
   std::vector<std::optional<std::string>> names{}; /**< Each patch's name, where it has one. */
   std::string source{};                            /**< The writing code and version. */
-  std::string created{};                           /**< When, ISO 8601. */
+  std::string created{};                           /**< When, ISO 8601; stamped where empty. */
   std::optional<std::string> title{};              /**< A name for the contents, where given. */
   netcdf::Attributes meta{};                       /**< The free `meta_<key>` attributes, by key. */
   std::vector<std::string> citation{};             /**< The works cited, one a line. */
@@ -484,7 +484,8 @@ inline std::pair<FaultPatch, std::optional<std::string>> FaultPatchOf(
     }
   }
   return FaultFile{.schema = *schema,
-                   .fault = Fault(std::move(patches), *support, rule, std::move(time),
+                   .fault = Fault(std::move(patches), *TimeSupportNamed(*support),
+                                  *TimeRuleNamed(rule), std::move(time),
                                   Scales({.length = scales[0],
                                           .mass = scales[1],
                                           .time = scales[2],
@@ -495,6 +496,192 @@ inline std::pair<FaultPatch, std::optional<std::string>> FaultPatchOf(
                    .title = detail::TextOf(attrs, "title"),
                    .meta = std::move(meta),
                    .citation = std::move(citation)};
+}
+
+namespace detail {
+
+/// The slip variable's `long_name`.
+inline constexpr std::string_view FAULT_SLIP_MEANING =
+    "displacement of the hanging wall relative to the footwall";
+
+/// The attributes of a structured patch's position variable.
+inline std::vector<std::pair<std::string, netcdf::Attribute>> FaultPositionAttributes(
+    std::string_view name, const std::string& length) {
+  using A = std::vector<std::pair<std::string, netcdf::Attribute>>;
+  if (name == "latitude") {
+    return A{{"long_name", std::string{"latitude of the control positions"}},
+             {"units", std::string{"degrees_north"}},
+             {"standard_name", std::string{"latitude"}}};
+  }
+  if (name == "longitude") {
+    return A{{"long_name", std::string{"longitude of the control positions"}},
+             {"units", std::string{"degrees_east"}},
+             {"standard_name", std::string{"longitude"}}};
+  }
+  const auto meaning = name == "radius" ? std::string{"radius"}
+                       : name == "x"    ? std::string{"x (east)"}
+                       : name == "y"    ? std::string{"y (north)"}
+                                        : std::string{"z (up)"};
+  return A{{"long_name", meaning + " of the control positions"},
+           {"units", length},
+           {"dimensions", Exponents(units::LENGTH)}};
+}
+
+/// The checks the Python's `write_fault` makes before anything is written.
+inline void CheckFaultToWrite(const FaultFile& file, const std::string& source) {
+  if (!file.schema.empty() && file.schema != FAULT_SCHEMA) {
+    Fail(source, "schema", std::format("is {}; this writer writes {}", file.schema, FAULT_SCHEMA));
+  }
+  if (file.source.find_first_not_of(" \t\n\r") == std::string::npos) {
+    Fail(source, "source", "names the writing code and version, and is empty");
+  }
+  const auto npatches = file.fault.Patches().size();
+  if (!file.names.empty() && file.names.size() != npatches) {
+    Fail(source, "names",
+         std::format("gives {} names for {} patches", file.names.size(), npatches));
+  }
+  for (const auto& [key, value] : file.meta) {
+    const auto* text = std::get_if<std::string>(&value);
+    const auto count = text ? std::size_t{1}
+                       : std::holds_alternative<std::vector<double>>(value)
+                           ? std::get<std::vector<double>>(value).size()
+                           : std::get<std::vector<long long>>(value).size();
+    if (key.empty() || count != 1) {
+      Fail(source, "meta_" + key, "a free attribute is named, and is text or one number");
+    }
+  }
+}
+
+}  // namespace detail
+
+/**
+ * @brief Write a fault file, whole or not at all, as the Python's
+ * `write_fault` writes it: the frame, the time axis and the scales at the
+ * root, one group a patch with a plane's parameters or a structured
+ * patch's control positions, and each patch's slip in fault components
+ * on its own grid, every number in the fault's scales.
+ *
+ * The file is written under a name of its own beside `path` and put in
+ * place when whole, so that a failed write leaves no file and an existing
+ * file at `path` stands until it is replaced; it has the permissions a
+ * plain open for writing would give it, an existing file's kept.
+ *
+ * @param path The file to write; one there is replaced.
+ * @param file The fault and the file's metadata: `schema` empty or
+ *        `FAULT_SCHEMA`; `source`, the writing code and version, not
+ *        empty; `names` empty (no patch named) or one a patch, each
+ *        written where it is given; an empty `created` stamped with the
+ *        writing time in UTC; `title` written where given and not empty,
+ *        `citation` one work a line, and `meta` as `meta_<key>`
+ *        attributes, each text or one number.
+ * @throws planetmodel::Error naming what is wrong, before anything is
+ *         written, or what kept the file from being written.
+ */
+inline void WriteFaultFile(const std::filesystem::path& path, const FaultFile& file) {
+  namespace nc = netcdf;
+  const auto source = path.string();
+  detail::CheckFaultToWrite(file, source);
+  const auto& fault = file.fault;
+  const auto& scales = fault.GetScales();
+  const auto& frame = fault.Frame();
+  const auto length = units::ScaledUnit(units::LENGTH, scales);
+  const auto partial = detail::PartialName(path);
+  try {
+    auto out = nc::File::Create(partial);
+    const auto root = out.Id();
+    auto put = [&source](int group, int var, std::string_view key, const nc::Attribute& value) {
+      nc::WriteAttribute(group, var, key, value, source);
+    };
+    auto real = [](double x) { return nc::Attribute{std::vector<double>{x}}; };
+    constexpr auto global = nc::GLOBAL;
+    put(root, global, "schema", std::string{FAULT_SCHEMA});
+    put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
+    if (file.title && !file.title->empty()) put(root, global, "title", *file.title);
+    put(root, global, "source", file.source);
+    put(root, global, "created", file.created.empty() ? detail::CreatedNow() : file.created);
+    put(root, global, "scale_length", real(scales.Length()));
+    put(root, global, "scale_mass", real(scales.Mass()));
+    put(root, global, "scale_time", real(scales.Time()));
+    put(root, global, "scale_temperature", real(scales.Temperature()));
+    if (!file.citation.empty()) {
+      auto joined = file.citation.front();
+      for (auto k = std::size_t{1}; k < file.citation.size(); ++k)
+        joined += "\n" + file.citation[k];
+      put(root, global, "citation", joined);
+    }
+    for (const auto& [key, value] : file.meta) put(root, global, "meta_" + key, value);
+    put(root, global, "frame", std::string{frame.Name()});
+    put(root, global,
+        frame.GetKind() == FaultFrame::Kind::Geographic ? "reference_radius" : "reference_surface",
+        real(frame.Reference()));
+    put(root, global, "time_support", std::string{fault.SupportName()});
+    put(root, global, "time_interpolation", std::string{fault.TimeInterpolationName()});
+    put(root, global, "patches", detail::Integer(static_cast<long long>(fault.Patches().size())));
+    auto leading = std::vector<std::string>{};
+    if (fault.Support() == TimeSupport::Node) {
+      const auto& time = *fault.Time();
+      nc::Dimension(root, "time", time.size(), source);
+      const auto var = nc::WriteDoubles(root, "time", {"time"}, time, source);
+      put(root, var, "long_name", std::string{"time"});
+      put(root, var, "units", units::ScaledUnit(units::TIME, scales));
+      put(root, var, "dimensions", detail::Exponents(units::TIME));
+      leading.emplace_back("time");
+    }
+    for (auto k = std::size_t{0}; k < fault.Patches().size(); ++k) {
+      const auto& patch = fault.Patches()[k];
+      const auto group = nc::CreateGroup(root, std::format("patch_{}", k), source);
+      put(group, global, "kind", std::string{patch.KindName()});
+      if (k < file.names.size() && file.names[k]) put(group, global, "name", *file.names[k]);
+      if (patch.GetKind() == FaultPatch::Kind::Plane) {
+        const auto& plane = patch.PlaneOf();
+        put(group, global, "centroid",
+            nc::Attribute{
+                std::vector<double>{plane.centroid[0], plane.centroid[1], plane.centroid[2]}});
+        put(group, global, "strike", real(plane.strike));
+        put(group, global, "dip", real(plane.dip));
+        put(group, global, "length", real(plane.length));
+        put(group, global, "width", real(plane.width));
+      } else {
+        const auto& grid = patch.Grid();
+        nc::Dimension(group, "nu", grid.n_u, source);
+        nc::Dimension(group, "nv", grid.n_v, source);
+        put(group, global, "interpolation", grid.interpolation);
+        const auto names = detail::FaultPositions(frame.Name());
+        for (auto c = std::size_t{0}; c < 3; ++c) {
+          auto column = std::vector<double>{};
+          column.reserve(grid.positions.size());
+          for (const auto& position : grid.positions) column.push_back(position[c]);
+          const auto var = nc::WriteDoubles(group, names[c], {"nu", "nv"}, column, source);
+          for (const auto& [key, value] : detail::FaultPositionAttributes(names[c], length)) {
+            put(group, var, key, value);
+          }
+        }
+      }
+      const auto& slip = patch.Slip();
+      nc::Dimension(group, "su", slip.NU(), source);
+      nc::Dimension(group, "sv", slip.NV(), source);
+      nc::Dimension(group, "component", 3, source);
+      auto dims = leading;
+      dims.insert(dims.end(), {"su", "sv", "component"});
+      const auto var = nc::WriteDoubles(group, "slip", dims, slip.Values(), source);
+      put(group, var, "long_name", std::string{detail::FAULT_SLIP_MEANING});
+      put(group, var, "units", length);
+      put(group, var, "dimensions", detail::Exponents(units::LENGTH));
+      put(group, var, "rule", slip.Rule());
+      auto components = std::string{};
+      for (const auto name : SLIP_COMPONENTS) {
+        if (!components.empty()) components += " ";
+        components += name;
+      }
+      put(group, var, "components", components);
+    }
+    out.Close();
+    detail::PutInPlace(partial, path, source);
+  } catch (...) {
+    auto error = std::error_code{};
+    std::filesystem::remove(partial, error);
+    throw;
+  }
 }
 
 }  // namespace planetmodel

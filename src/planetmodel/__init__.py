@@ -17,7 +17,7 @@ Modules reached by name, one level down:
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   behaviours   the free functions as methods: `layer_method` and the mixins
-  catalogue    PREM, LayeredIsotropicElastic, MineosModel and MaxwellDeckModel
+  catalogue    PREM, LayeredIsotropicElastic, and the model types of the decks
   deck         tabulated models: decks, their formats, fields by interpolation
   sampling     a model on a radial mesh times an angular grid
   lateral      values between the nodes of an angular grid: the lateral rules
@@ -50,12 +50,21 @@ from .behaviours import (
     with_moduli,
     with_velocities,
 )
-from .catalogue import PREM, LayeredIsotropicElastic, MaxwellDeckModel, MineosModel
+from .catalogue import (
+    PREM,
+    BurgersDeckModel,
+    LayeredIsotropicElastic,
+    MaxwellDeckModel,
+    MineosModel,
+    PronyDeckModel,
+)
 from .character import DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character, Symmetry
 from .deck import (
+    BURGERS,
     MAXWELL,
     MINEOS,
     ND,
+    PRONY,
     TVEL,
     Deck,
     DeckFormat,
@@ -222,10 +231,14 @@ __all__ = [
     "LayeredIsotropicElastic",
     "MineosModel",
     "MaxwellDeckModel",
+    "PronyDeckModel",
+    "BurgersDeckModel",
     "Deck",
     "DeckFormat",
     "MINEOS",
     "MAXWELL",
+    "PRONY",
+    "BURGERS",
     "ND",
     "TVEL",
     "read_deck",

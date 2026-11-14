@@ -241,8 +241,12 @@ def test_two_faults_crossing_each_other(tmp_path):
     b = Plane(UNIT, a.centroid, strike=90.0, dip=60.0, length=0.3, width=0.3,
               slip=ZERO)
     faults = {"a": Fault([a]), "b": Fault([b])}
-    card = held(build(tmp_path / "x", faults), faults)
+    res = build(tmp_path / "x", faults)
+    card = held(res, faults)
     assert [f["meets"] for f in card.faults] == [["b"], ["a"]]
+    # the curve where they cross is in the junction group of each
+    first, second = (curve_nodes(res, f["junction"]) for f in card.faults)
+    assert first.size and np.allclose(np.sort(first, axis=0), np.sort(second, axis=0))
 
 
 def test_a_fault_of_two_patches_is_one_surface(tmp_path):
@@ -499,6 +503,23 @@ def _top_at(d):
 def test_what_the_builder_refuses_before_meshing(make, match, tmp_path):
     with pytest.raises(ValueError, match=match):
         build(tmp_path / "no", {"f": Fault([make()])})
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_fault_ending_on_an_interface_is_refused_with_the_way_round(tmp_path):
+    """A plane whose down-dip edge bottoms out at the core-mantle boundary
+    (at its middle; a straight edge's ends lie above it) is refused, the
+    refusal saying to stop it short of the interface or carry it past."""
+    from scipy.optimize import brentq
+
+    depth = brentq(lambda d: np.linalg.norm(plane(depth=d).cartesian(0.0, 0.5)) - 0.6,
+                   0.2, 0.4, xtol=1e-14)
+    on = plane(depth=depth)
+    with pytest.raises(ValueError, match=(
+            r"interface 'cmb'.*does not end on, touch or run along an interface: "
+            r"stop it short of the interface by more than \S+, or continue it "
+            r"past the interface by as much")):
+        build(tmp_path / "no", {"f": Fault([on])})
     assert not list(tmp_path.iterdir())
 
 

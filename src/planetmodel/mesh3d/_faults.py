@@ -31,7 +31,9 @@ element size of an interface, whatever it does elsewhere, or, carried
 across the outer boundary, reaches no deeper below it than that: the
 fragment would turn each into slivers, a tangency, or a loop too small
 to mesh.  A fault therefore never ends exactly on an interface: it
-crosses it or stops clear of it.
+crosses it or stops clear of it, and a fault meant to end on one (a
+crustal fault bottoming at the Moho) is given ending a little short of
+it or continuing a little past it.
 
 The fragment trims the faults at the geometry's outer boundary
 (`build_concentric`), and each piece left is found in the layer whose
@@ -296,9 +298,12 @@ def _check_sample(spline: TensorSpline, spec: MeshSpec,
             raise ValueError(
                 f"{which} and turns there without crossing it cleanly, closer "
                 f"than {GAP:g} of the element size there ({gap_limit:.3g}): the "
-                "fragment would leave slivers or a tangency; let it cross, or "
-                "end it farther off"
-                + (" (or give a reach to carry it across the surface)"
+                "fragment would leave slivers or a tangency.  A fault does not "
+                "end on, touch or run along an interface: stop it short of the "
+                f"interface by more than {gap_limit:.3g}, or continue it past "
+                "the interface by as much (a few elements either way keeps the "
+                "elements there well shaped)"
+                + ("; or give a reach to carry it across the surface"
                    if rho == outer else ""))
 
 

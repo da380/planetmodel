@@ -34,7 +34,6 @@ import os
 import shutil
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 import warnings
@@ -45,6 +44,7 @@ from pathlib import Path
 from typing import IO, Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from ..files import partial_file
 from .entries import DatasetLike, as_dataset
 from .registry import Source, archive_stem
 
@@ -118,11 +118,11 @@ def sha256_of(path: Path) -> str:
 @contextmanager
 def _partial(directory: Path, name: str) -> Iterator[tuple[IO[bytes], Path]]:
     """A temporary file beside `name` in `directory`, removed unless the
-    caller has moved it into place."""
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{name}.", suffix=".part")
-    path = Path(tmp)
+    caller has moved it into place; it has the permissions a plain
+    `open(path, "w")` would give the file (`files.partial_file`)."""
+    path = partial_file(directory / name)
     try:
-        with os.fdopen(fd, "wb") as out:
+        with open(path, "wb") as out:
             yield out, path
     finally:
         path.unlink(missing_ok=True)

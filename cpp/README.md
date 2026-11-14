@@ -16,22 +16,29 @@ writes files that the Python reads. It reads and writes:
   field's values at any date by the field's own time rule, with the
   Python's arithmetic;
 - **fault files**, a fault's patches of surface and the slip on them,
-  static or in time (`faultfile.hpp`, read only): `ReadFaultFile` makes
-  the Python reader's checks and gives a `Fault` (`fault.hpp`) that
-  evaluates as the Python's does, to rounding: positions, normals, the
-  fault basis and the area element at any (u, v), the slip at any
-  (u, v) and date in fault, ambient or Cartesian components, a
-  quadrature (`Fault::Quadrature`), and the location of physical points
+  static or in time (`faultfile.hpp`): `ReadFaultFile` makes the Python
+  reader's checks and gives a `Fault` (`fault.hpp`) that evaluates as
+  the Python's does, to rounding: positions, normals, the fault basis
+  and the area element at any (u, v), the slip at any (u, v) and date
+  in fault, ambient or Cartesian components, a quadrature with the slip
+  at a date (`Fault::Quadrature`) or of every slice, the geometry formed
+  once (`Fault::SliceQuadrature`), and the location of physical points
   near it with the slip there (`Fault::Locate`, `Fault::SlipAt`);
+  `WriteFaultFile` writes a fault, built in code or read, as the Python
+  writes it; the support and the time rule are the enumerations
+  `TimeSupport` and `TimeRule` (`time.hpp`), and a date within
+  `TIME_RTOL` of the span of a stored time is that time;
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
   writes (`manifest.hpp`), on a strict JSON reader of its own
   (`json.hpp`), with the faults built into a mesh, the element
   attributes of their hanging walls, and the three rules of their faces
   (`PlusCell`, `FaultCurves`, `FaultWalls`);
-- **decks**, mineos and Maxwell tables of knots and TauP's `.nd` and
-  `.tvel` tables (`deck.hpp`), read and written as the Python does, with
-  the names their headers or labels give, each layer's columns joined
-  into functions of the radius;
+- **decks**, mineos, Maxwell, prony and burgers tables of knots and
+  TauP's `.nd` and `.tvel` tables (`deck.hpp`), read and written as the
+  Python does, with the names their headers or labels give, a prony
+  deck's number of branches (`PronyBranches`), and the Python's checks
+  of a prony or burgers deck's values, each layer's columns joined into
+  functions of the radius;
 - the units, scales and vocabulary of the Python (`units.hpp`,
   `vocabulary.hpp`).
 
@@ -103,7 +110,7 @@ changes, so it is cheap to copy and safe to evaluate from many threads.
 A typical code builds the fields it wants, samples them onto its own
 mesh, and discards them.
 
-## Reading a fault file
+## Reading and writing a fault file
 
 ```cpp
 #include <planetmodel/faultfile.hpp>
@@ -124,6 +131,14 @@ for (auto i = std::size_t{0}; i < q.Size(); ++i) {
 const auto where = fault.Locate({x, y, z});
 const auto slip = fault.SlipAt(nodes, /*max_distance=*/1e3,
                                {.date = 1.5, .basis = pm::SlipBasis::Ambient});
+
+// the geometry once and the slip of every slice, combined at any date by
+// the weights the date reads: the quadrature's slip at that date
+const auto slices = fault.SliceQuadrature(20, 8, 2);
+const auto at = slices.SlipOf(fault.Rows(1.5));
+
+// written back, or a fault built in code written: the Python's file
+pm::WriteFaultFile("copy.nc", file);
 ```
 
 A structured patch is read by the same tensor-product B-splines as the

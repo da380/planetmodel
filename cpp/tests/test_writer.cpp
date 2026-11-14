@@ -963,3 +963,15 @@ TEST(Writer, AFailedWriteLeavesNoFileAndAnExistingOneStanding) {
   pm::WriteModelFile(path, again);
   EXPECT_EQ(pm::ReadModelFile(path).Name(), "again");
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST(Writer, GivesTheFileThePermissionsAPlainOpenWould) {
+  auto file = pm::ModelFile(pm::Skeleton({0.0, 1.0}));
+  file.AddPart(0, 0, {0.0, 1.0}, 3, pm::GaussLegendre(2));
+  file.AddField("vs", {{0, LayerSource::Radial([](double r) { return 1.0 + r; })}});
+  const auto dir = pm::testing::WrittenDir() / "permissions";
+  std::filesystem::create_directories(dir);
+  pm::testing::ExpectPlainPermissions(
+      dir / "model.nc", [&file](const std::filesystem::path& p) { pm::WriteModelFile(p, file); });
+}
+#endif

@@ -25,12 +25,15 @@
  * What a consumer does with a fault is here: positions, normals, the
  * fault basis and the area element at any (u, v); the slip at any
  * (u, v) and date in fault, ambient or Cartesian components; a
- * quadrature of n_u by n_v cells with Gauss-Legendre points; and the
- * location of physical points near the fault (`Locate`, `SlipAt`), by the
- * Python's search: closed form on a plane, projected Newton steps with
- * second derivatives elsewhere, every cell of a bilinear patch near the
- * point searched.  Lengths are in the fault's length unit, angles in
- * degrees.  A fault is read from a file by `ReadFaultFile`
+ * quadrature of n_u by n_v cells with Gauss-Legendre points, with the
+ * slip at a date (`Fault::Quadrature`) or the geometry once and the slip
+ * of every slice (`Fault::SliceQuadrature`, whose slices a date's
+ * `Fault::Rows` combine); and the location of physical points near the
+ * fault (`Locate`, `SlipAt`), by the Python's search: closed form on a
+ * plane, projected Newton steps with second derivatives elsewhere, every
+ * cell of a bilinear patch near the point searched.  Lengths are in the
+ * fault's length unit, angles in degrees.  A fault is read from a file
+ * by `ReadFaultFile` and written to one by `WriteFaultFile`
  * (`faultfile.hpp`).
  */
 
@@ -66,6 +69,10 @@ inline constexpr auto FAULT_INTERPOLATIONS = std::array<std::string_view, 2>{"li
 /** @brief The rules of a slip grid: constant a cell, or a spline between
  * nodes. */
 inline constexpr auto SLIP_RULES = std::array<std::string_view, 3>{"cell", "linear", "cubic"};
+
+/** @brief The time supports a fault holds, of `TIME_SUPPORTS`: one slice
+ * at any date, or a slice a time node, the slip at a node cumulative. */
+inline constexpr auto FAULT_SUPPORTS = std::array<std::string_view, 2>{"static", "node"};
 
 /** @brief The names of the slip's three components, in order. */
 inline constexpr auto SLIP_COMPONENTS =
@@ -603,12 +610,12 @@ struct LocateOptions {
 };
 
 /**
- * @brief Points on a fault, each with what it stands for: Cartesian
+ * @brief Points on one patch, each with what it stands for: Cartesian
  * points and the same in the frame's coordinates, unit normals, weights
- * (the areas they stand for), the Cartesian slip, the parameters and the
- * patch of each.
+ * (the areas they stand for), the Cartesian slip and the parameters of
+ * each (`FaultPatch::Quadrature`).
  */
-struct FaultQuadrature {
+struct PatchQuadrature {
   std::vector<Vector3> points{};    /**< Cartesian. */
   std::vector<Vector3> positions{}; /**< In the frame's coordinates. */
   std::vector<Vector3> normals{};   /**< Unit, from the footwall into the hanging wall. */
@@ -616,10 +623,68 @@ struct FaultQuadrature {
   std::vector<Vector3> slip{};      /**< Cartesian. */
   std::vector<double> u{};          /**< The points' u. */
   std::vector<double> v{};          /**< The points' v. */
-  std::vector<std::size_t> patch{}; /**< The points' patches. */
 
   /** @brief The number of points. */
   [[nodiscard]] std::size_t Size() const noexcept { return weights.size(); }
+};
+
+/**
+ * @brief Points on a fault (`Fault::Quadrature`): a patch's quadrature
+ * over every patch in order, with the patch of each point.
+ */
+struct FaultQuadrature : PatchQuadrature {
+  std::vector<std::size_t> patch{}; /**< The points' patches. */
+};
+
+/**
+ * @brief Points on a fault with the slip of every slice
+ * (`Fault::SliceQuadrature`): the geometry once, as `FaultQuadrature`
+ * holds it, and `slip[s][i]`, the Cartesian slip of slice s at point i.
+ *
+ * The slip at a date is the slices a date reads (`Fault::Rows`) under
+ * their weights, `SlipOf`, as `Fault::Quadrature` gives it at that date.
+ */
+struct FaultSliceQuadrature {
+  std::vector<Vector3> points{};            /**< Cartesian. */
+  std::vector<Vector3> positions{};         /**< In the frame's coordinates. */
+  std::vector<Vector3> normals{};           /**< Unit, from the footwall into the hanging wall. */
+  std::vector<double> weights{};            /**< Areas, in the length unit squared. */
+  std::vector<double> u{};                  /**< The points' u. */
+  std::vector<double> v{};                  /**< The points' v. */
+  std::vector<std::size_t> patch{};         /**< The points' patches. */
+  std::vector<std::vector<Vector3>> slip{}; /**< Cartesian, a slice a row, a point a column. */
+
+  /** @brief The number of points. */
+  [[nodiscard]] std::size_t Size() const noexcept { return weights.size(); }
+  /** @brief The number of slices. */
+  [[nodiscard]] std::size_t NSlices() const noexcept { return slip.size(); }
+
+  /**
+   * @brief The Cartesian slip at every point under a date's rows: the
+   * first row's weight times its slice, plus the second's where its
+   * weight is not zero.
+   * @param rows The rows, as `Fault::Rows` gives them.
+   * @throws planetmodel::Error for a row naming a slice it lacks.
+   */
+  [[nodiscard]] std::vector<Vector3> SlipOf(const TimeRows& rows) const {
+    const auto [first, second] = rows;
+    if (first.first >= slip.size() || second.first >= slip.size()) {
+      throw Error(
+          "fault quadrature", "rows",
+          std::format("name slices {} and {} of {}", first.first, second.first, slip.size()));
+    }
+    auto out = slip[first.first];
+    for (auto& s : out) {
+      for (auto& x : s) x *= first.second;
+    }
+    if (second.second != 0.0) {
+      for (auto i = std::size_t{0}; i < out.size(); ++i) {
+        for (auto d = 0; d < 3; ++d)
+          out[i][d] = out[i][d] + second.second * slip[second.first][i][d];
+      }
+    }
+    return out;
+  }
 };
 
 /** @brief Points and weights over the square (`ParameterRule`). */
@@ -948,7 +1013,9 @@ class FaultPatch {
 
   /**
    * @brief The patch's quadrature (`ParameterRule`), with the slip of a
-   * slice; the patch index is zero throughout.
+   * slice; a fault's quadratures say which patch each point is on
+   * (`Fault::Quadrature`, `Fault::SliceQuadrature`), which a patch alone
+   * does not know.
    * @param n_u The cells along u.
    * @param n_v The cells along v.
    * @param points The Gauss-Legendre points each way in a cell.
@@ -956,10 +1023,10 @@ class FaultPatch {
    * @throws planetmodel::Error for a count of zero or a slice the slip
    *         lacks.
    */
-  [[nodiscard]] FaultQuadrature Quadrature(std::size_t n_u, std::size_t n_v, std::size_t points = 1,
+  [[nodiscard]] PatchQuadrature Quadrature(std::size_t n_u, std::size_t n_v, std::size_t points = 1,
                                            std::size_t index = 0) const {
     const auto rule = ParameterRule(n_u, n_v, points);
-    auto q = FaultQuadrature{};
+    auto q = PatchQuadrature{};
     for (auto p = std::size_t{0}; p < rule.u.size(); ++p) {
       const auto u = rule.u[p], v = rule.v[p];
       const auto x = Cartesian(u, v);
@@ -973,7 +1040,6 @@ class FaultPatch {
       q.slip.push_back(SlipVector(u, v, index, SlipBasis::Cartesian));
       q.u.push_back(u);
       q.v.push_back(v);
-      q.patch.push_back(0);
     }
     return q;
   }
@@ -1259,15 +1325,19 @@ struct SlipAtOptions {
   Extrapolation extrapolation = Extrapolation::Refuse; /**< Outside the time span. */
   SlipBasis basis = SlipBasis::Ambient;                /**< The basis of the answer. */
   double rtol = 1e-10;                                 /**< `Locate`'s tolerance. */
+  double time_rtol = TIME_RTOL; /**< The date's tolerance on a time node (`TimeRowsAt`). */
 };
 
 /**
  * @brief Patches in one frame, their slip on one time axis: what a fault
  * file holds (`ReadFaultFile`).
  *
- * The support is `static` (one slice, any date) or `node` (a slice a time
- * node, read between them by the time rule, `TimeRowsAt`); the slip at a
- * node is the cumulative slip.  `Scales` says what the numbers are in.
+ * The support is `TimeSupport::Static` (one slice, any date, and no date
+ * given) or `TimeSupport::Node` (a slice a time node, read between them
+ * by the time rule, `TimeRowsAt`), `FAULT_SUPPORTS` by name; the slip at
+ * a node is the cumulative slip.  A date within `time_rtol` of a node,
+ * relative to the span (`TIME_RTOL` by default), is that node.  `Scales`
+ * says what the numbers are in.
  */
 class Fault {
  public:
@@ -1275,19 +1345,20 @@ class Fault {
    * @brief A fault from its patches.
    * @param patches At least one, all in one frame, each with the slices
    *        the support implies.
-   * @param support `static` or `node`.
-   * @param time_interpolation `none` for `static`; `linear`, `previous` or
-   *        `none` for `node`.
-   * @param time The node times, finite and strictly increasing, for `node`.
+   * @param support `TimeSupport::Static` or `TimeSupport::Node`.
+   * @param time_interpolation `TimeRule::None` for a static slip; any rule
+   *        for a node slip.
+   * @param time The node times, finite and strictly increasing, for a node
+   *        slip.
    * @param scales What the numbers are in.
    * @throws planetmodel::Error for any of these not so.
    */
-  explicit Fault(std::vector<FaultPatch> patches, std::string support = "static",
-                 std::string time_interpolation = "none",
+  explicit Fault(std::vector<FaultPatch> patches, TimeSupport support = TimeSupport::Static,
+                 TimeRule time_interpolation = TimeRule::None,
                  std::optional<std::vector<double>> time = {}, Scales scales = {})
       : patches_(std::move(patches)),
-        support_(std::move(support)),
-        rule_(std::move(time_interpolation)),
+        support_(support),
+        rule_(time_interpolation),
         time_(std::move(time)),
         scales_(scales) {
     auto fail = [](std::string_view where, std::string_view message) {
@@ -1299,14 +1370,16 @@ class Fault {
         fail("", "every patch of a fault is in the same frame");
       }
     }
-    if (support_ != "static" && support_ != "node") fail("support", "is not static or node");
-    if (!std::ranges::contains(TIME_METHODS, std::string_view{rule_}) ||
-        (support_ != "node" && rule_ != "none")) {
-      fail("time_interpolation", std::format("{} is not a rule of a {} slip", rule_, support_));
+    if (!std::ranges::contains(FAULT_SUPPORTS, SupportName())) {
+      fail("support", std::format("is {}, not one of a fault's: static, node", SupportName()));
     }
-    if ((support_ == "node") != time_.has_value()) {
-      fail("time", support_ == "node" ? "a node slip needs its time axis"
-                                      : "a static slip uses no time axis");
+    if (support_ != TimeSupport::Node && rule_ != TimeRule::None) {
+      fail("time_interpolation",
+           std::format("{} is not a rule of a {} slip", TimeInterpolationName(), SupportName()));
+    }
+    const auto node = support_ == TimeSupport::Node;
+    if (node != time_.has_value()) {
+      fail("time", node ? "a node slip needs its time axis" : "a static slip uses no time axis");
     }
     if (time_) {
       auto last = -std::numeric_limits<double>::infinity();
@@ -1321,7 +1394,7 @@ class Fault {
       if (patches_[k].Slip().NSlices() != nslices) {
         fail(std::format("patch_{}", k),
              std::format("has {} slices of slip; a {} fault has {}", patches_[k].Slip().NSlices(),
-                         support_, nslices));
+                         SupportName(), nslices));
       }
     }
   }
@@ -1330,11 +1403,17 @@ class Fault {
   [[nodiscard]] const std::vector<FaultPatch>& Patches() const noexcept { return patches_; }
   /** @brief The frame every patch is in. */
   [[nodiscard]] const FaultFrame& Frame() const noexcept { return patches_.front().Frame(); }
-  /** @brief `static` or `node`. */
-  [[nodiscard]] const std::string& Support() const noexcept { return support_; }
+  /** @brief How the slices sit in time: static or node. */
+  [[nodiscard]] TimeSupport Support() const noexcept { return support_; }
+  /** @brief The support's name, `static` or `node`, as a fault file states it. */
+  [[nodiscard]] std::string_view SupportName() const noexcept { return TimeSupportName(support_); }
   /** @brief The rule between nodes. */
-  [[nodiscard]] const std::string& TimeInterpolation() const noexcept { return rule_; }
-  /** @brief The node times of a `node` slip. */
+  [[nodiscard]] TimeRule TimeInterpolation() const noexcept { return rule_; }
+  /** @brief The rule's name, one of `TIME_METHODS`, as a fault file states it. */
+  [[nodiscard]] std::string_view TimeInterpolationName() const noexcept {
+    return TimeRuleName(rule_);
+  }
+  /** @brief The node times of a node slip. */
   [[nodiscard]] const std::optional<std::vector<double>>& Time() const noexcept { return time_; }
   /** @brief The slices every patch's slip has. */
   [[nodiscard]] std::size_t NSlices() const noexcept { return time_ ? time_->size() : 1; }
@@ -1343,16 +1422,22 @@ class Fault {
 
   /**
    * @brief The slices a date reads and their weights; a static slip reads
-   * its one slice.
+   * its one slice, and takes no date.
    * @param date The date; a static slip takes none.
    * @param extrapolation What to do outside the span.
-   * @throws planetmodel::Error for a date refused, or none where one is
-   *         needed.
+   * @param time_rtol The date's tolerance on a node and on an end of the
+   *        span, relative to the span (`TimeRowsAt`); zero matches exactly.
+   * @throws planetmodel::Error for a date refused, none where one is
+   *         needed, or one given to a static slip.
    */
   [[nodiscard]] TimeRows Rows(std::optional<double> date,
-                              Extrapolation extrapolation = Extrapolation::Refuse) const {
-    const auto rows =
-        TimeRowsAt(support_, rule_, date, time_, std::nullopt, extrapolation, "fault", "slip");
+                              Extrapolation extrapolation = Extrapolation::Refuse,
+                              double time_rtol = TIME_RTOL) const {
+    if (support_ == TimeSupport::Static && date) {
+      throw Error("fault", "slip", "is static, the same at every date, and takes no date");
+    }
+    const auto rows = TimeRowsAt(support_, rule_, date, time_, std::nullopt, extrapolation, "fault",
+                                 "slip", time_rtol);
     return rows ? *rows : TimeRows{TimeRow{0, 1.0}, TimeRow{0, 0.0}};
   }
 
@@ -1364,15 +1449,17 @@ class Fault {
    * @param date The date; a static slip takes none.
    * @param extrapolation What to do outside the span.
    * @param basis The basis of the answer.
+   * @param time_rtol The date's tolerance (`Rows`).
    * @throws planetmodel::Error for a patch the fault lacks, (u, v) outside
    *         the square, or a date refused.
    */
   [[nodiscard]] Vector3 SlipVector(std::size_t patch, double u, double v,
                                    std::optional<double> date = {},
                                    Extrapolation extrapolation = Extrapolation::Refuse,
-                                   SlipBasis basis = SlipBasis::Ambient) const {
+                                   SlipBasis basis = SlipBasis::Ambient,
+                                   double time_rtol = TIME_RTOL) const {
     const auto& p = PatchAt(patch);
-    const auto [first, second] = Rows(date, extrapolation);
+    const auto [first, second] = Rows(date, extrapolation, time_rtol);
     auto out = p.SlipVector(u, v, first.first, basis);
     for (auto& x : out) x *= first.second;
     if (second.second != 0.0) {
@@ -1390,18 +1477,17 @@ class Fault {
    * @param points The Gauss-Legendre points each way in a cell.
    * @param date The date; a static slip takes none.
    * @param extrapolation What to do outside the span.
+   * @param time_rtol The date's tolerance (`Rows`).
    * @throws planetmodel::Error for counts not one a patch, or a date
    *         refused.
    */
-  [[nodiscard]] FaultQuadrature Quadrature(
-      std::span<const std::size_t> n_u, std::span<const std::size_t> n_v, std::size_t points = 1,
-      std::optional<double> date = {}, Extrapolation extrapolation = Extrapolation::Refuse) const {
-    const auto [first, second] = Rows(date, extrapolation);
-    if (n_u.size() != patches_.size() || n_v.size() != patches_.size()) {
-      throw Error("fault", "quadrature",
-                  std::format("gives {} and {} counts for {} patches", n_u.size(), n_v.size(),
-                              patches_.size()));
-    }
+  [[nodiscard]] FaultQuadrature Quadrature(std::span<const std::size_t> n_u,
+                                           std::span<const std::size_t> n_v, std::size_t points = 1,
+                                           std::optional<double> date = {},
+                                           Extrapolation extrapolation = Extrapolation::Refuse,
+                                           double time_rtol = TIME_RTOL) const {
+    const auto [first, second] = Rows(date, extrapolation, time_rtol);
+    CheckCounts(n_u, n_v);
     auto out = FaultQuadrature{};
     for (auto k = std::size_t{0}; k < patches_.size(); ++k) {
       auto q = patches_[k].Quadrature(n_u[k], n_v[k], points, first.first);
@@ -1434,14 +1520,76 @@ class Fault {
    * @param points The Gauss-Legendre points each way in a cell.
    * @param date The date; a static slip takes none.
    * @param extrapolation What to do outside the span.
+   * @param time_rtol The date's tolerance (`Rows`).
    * @throws planetmodel::Error for a count of zero, or a date refused.
    */
-  [[nodiscard]] FaultQuadrature Quadrature(
-      std::size_t n_u, std::size_t n_v, std::size_t points = 1, std::optional<double> date = {},
-      Extrapolation extrapolation = Extrapolation::Refuse) const {
+  [[nodiscard]] FaultQuadrature Quadrature(std::size_t n_u, std::size_t n_v, std::size_t points = 1,
+                                           std::optional<double> date = {},
+                                           Extrapolation extrapolation = Extrapolation::Refuse,
+                                           double time_rtol = TIME_RTOL) const {
     const auto nu = std::vector<std::size_t>(patches_.size(), n_u);
     const auto nv = std::vector<std::size_t>(patches_.size(), n_v);
-    return Quadrature(nu, nv, points, date, extrapolation);
+    return Quadrature(nu, nv, points, date, extrapolation, time_rtol);
+  }
+
+  /**
+   * @brief Every patch's quadrature with the slip of every slice: the
+   * points, normals, weights, parameters and patches once, as
+   * `Quadrature` gives them, and each slice's Cartesian slip at them.  The
+   * slip at a date is `SlipOf(Rows(date))`, what `Quadrature` gives at
+   * that date.
+   * @param n_u The cells along u, one a patch.
+   * @param n_v The cells along v, one a patch.
+   * @param points The Gauss-Legendre points each way in a cell.
+   * @throws planetmodel::Error for counts not one a patch, or a count of
+   *         zero.
+   */
+  [[nodiscard]] FaultSliceQuadrature SliceQuadrature(std::span<const std::size_t> n_u,
+                                                     std::span<const std::size_t> n_v,
+                                                     std::size_t points = 1) const {
+    CheckCounts(n_u, n_v);
+    auto out = FaultSliceQuadrature{};
+    out.slip.resize(NSlices());
+    for (auto k = std::size_t{0}; k < patches_.size(); ++k) {
+      const auto& p = patches_[k];
+      const auto q = p.Quadrature(n_u[k], n_v[k], points, 0);
+      for (auto i = std::size_t{0}; i < q.Size(); ++i) {
+        out.points.push_back(q.points[i]);
+        out.positions.push_back(q.positions[i]);
+        out.normals.push_back(q.normals[i]);
+        out.weights.push_back(q.weights[i]);
+        out.u.push_back(q.u[i]);
+        out.v.push_back(q.v[i]);
+        out.patch.push_back(k);
+        // the fault basis once, each slice's components on it, as
+        // FaultPatch::SlipVector forms them
+        const auto F = p.FaultBasis(q.u[i], q.v[i]);
+        for (auto s = std::size_t{0}; s < NSlices(); ++s) {
+          const auto comp = p.Slip().Components(q.u[i], q.v[i], s);
+          auto cart = Vector3{};
+          for (auto d = 0; d < 3; ++d) {
+            cart[d] = F[d][0] * comp[0] + F[d][1] * comp[1] + F[d][2] * comp[2];
+          }
+          out.slip[s].push_back(cart);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * @brief Every patch's quadrature with the same counts, with the slip of
+   * every slice (the overload above).
+   * @param n_u The cells along u on every patch.
+   * @param n_v The cells along v on every patch.
+   * @param points The Gauss-Legendre points each way in a cell.
+   * @throws planetmodel::Error for a count of zero.
+   */
+  [[nodiscard]] FaultSliceQuadrature SliceQuadrature(std::size_t n_u, std::size_t n_v,
+                                                     std::size_t points = 1) const {
+    const auto nu = std::vector<std::size_t>(patches_.size(), n_u);
+    const auto nv = std::vector<std::size_t>(patches_.size(), n_v);
+    return SliceQuadrature(nu, nv, points);
   }
 
   /**
@@ -1477,8 +1625,8 @@ class Fault {
    * @param points The points, Cartesian.
    * @param max_distance The farthest a point may lie from the fault, in the
    *        length unit.
-   * @param options The date, its extrapolation, the basis and `Locate`'s
-   *        tolerance.
+   * @param options The date, its extrapolation and tolerance, the basis
+   *        and `Locate`'s tolerance.
    * @throws planetmodel::Error for a point beyond `max_distance`, a search
    *         that did not converge, or a date refused.
    */
@@ -1504,8 +1652,8 @@ class Fault {
     }
     auto out = std::vector<Vector3>{};
     for (const auto& w : where) {
-      out.push_back(
-          SlipVector(w.patch, w.u, w.v, options.date, options.extrapolation, options.basis));
+      out.push_back(SlipVector(w.patch, w.u, w.v, options.date, options.extrapolation,
+                               options.basis, options.time_rtol));
     }
     return out;
   }
@@ -1518,9 +1666,18 @@ class Fault {
     return patches_[patch];
   }
 
+  /// Refuse counts that are not one a patch.
+  void CheckCounts(std::span<const std::size_t> n_u, std::span<const std::size_t> n_v) const {
+    if (n_u.size() != patches_.size() || n_v.size() != patches_.size()) {
+      throw Error("fault", "quadrature",
+                  std::format("gives {} and {} counts for {} patches", n_u.size(), n_v.size(),
+                              patches_.size()));
+    }
+  }
+
   std::vector<FaultPatch> patches_;
-  std::string support_;
-  std::string rule_;
+  TimeSupport support_;
+  TimeRule rule_;
   std::optional<std::vector<double>> time_;
   Scales scales_;
 };

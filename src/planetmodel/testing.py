@@ -1479,7 +1479,7 @@ def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
     spline (`spline`), the spline over the square and the map at the
     parameters.
     """
-    from .fault import BASES, SQUARE, Patch, parameter_rule
+    from .fault import BASES, SQUARE, Patch, PatchQuadrature, parameter_rule
 
     assert isinstance(patch, Patch), f"{patch!r} is not a fault Patch"
     rng = np.random.default_rng(0) if rng is None else rng
@@ -1595,8 +1595,9 @@ def check_patch(patch: Patch, *, rng: np.random.Generator | None = None,
         assert got.shape == np.shape(want) and np.allclose(got, want, rtol=0,
                                                            atol=tol), (
             f"{patch!r}: the quadrature's {name} are not the patch's")
-    assert np.array_equal(q.patch, np.zeros(pu.size, dtype=int)), (
-        f"{patch!r}: a patch's own quadrature is not of patch zero")
+    assert isinstance(q, PatchQuadrature) and not hasattr(q, "patch"), (
+        f"{patch!r}: a patch's own quadrature is not a PatchQuadrature, which "
+        "names no patch")
     try:
         patch.cartesian(hi + 0.1 * (hi - lo), 0.0)
     except ValueError:

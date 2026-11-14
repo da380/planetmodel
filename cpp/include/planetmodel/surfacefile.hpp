@@ -295,7 +295,9 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
 }
 
 /**
- * @brief Write a surface file, whole or not at all.
+ * @brief Write a surface file, whole or not at all, with the permissions a
+ * plain open for writing would give it: an existing file's, kept, or the
+ * umask's.
  * @param path The file to write; one there is replaced.
  * @param file The surface file, built or read; an empty `created` is
  *        stamped with the writing time in UTC, and each field's `units`
@@ -406,11 +408,7 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
       if (!field.attributes.contains("long_name")) put(root, var, "long_name", name);
     }
     out.Close();
-    auto error = std::error_code{};
-    std::filesystem::rename(partial, path, error);
-    if (error) {
-      detail::Fail(source, "", std::format("cannot be put in place: {}", error.message()));
-    }
+    detail::PutInPlace(partial, path, source);
   } catch (...) {
     auto error = std::error_code{};
     std::filesystem::remove(partial, error);
@@ -428,7 +426,8 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
  * holding the date, the last closed at its end; an `instant` field at
  * its stored instants alone; a `static` field at any date.  Outside its
  * span a field refuses the date, or holds its nearest value under
- * `Extrapolation::Hold`.  The arithmetic is `TimeRowsAt`, the Python
+ * `Extrapolation::Hold`; a date within the tolerance of a stored time is
+ * that time.  The arithmetic is `TimeRowsAt`, the Python
  * `SurfaceHistory`'s, so the two read a file identically.
  */
 class SurfaceHistory {
@@ -473,15 +472,18 @@ class SurfaceHistory {
    * @param extrapolation What to do outside the field's span: refuse
    *        (the default), or hold its nearest value (`linear`,
    *        `previous` and `interval` fields).
+   * @param time_rtol The date's tolerance on a stored time and on an end
+   *        of the span, relative to the span (`TimeRowsAt`); zero matches
+   *        exactly.
    * @throws planetmodel::Error where the file holds no such field, the
    *         date is refused, or a dated field is given no date.
    */
-  [[nodiscard]] std::vector<double> Values(
-      std::string_view name, std::optional<double> date = {},
-      Extrapolation extrapolation = Extrapolation::Refuse) const {
+  [[nodiscard]] std::vector<double> Values(std::string_view name, std::optional<double> date = {},
+                                           Extrapolation extrapolation = Extrapolation::Refuse,
+                                           double time_rtol = TIME_RTOL) const {
     const auto& var = VariableOf(name);
     const auto size = file_.grid->NTheta() * file_.grid->NPhi();
-    const auto rows = Rows(name, var, date, extrapolation);
+    const auto rows = Rows(name, var, date, extrapolation, time_rtol);
     if (!rows) return var.values;
     const auto [first, second] = *rows;
     const auto [k0, w0] = first;
@@ -504,12 +506,12 @@ class SurfaceHistory {
 
   /// The leading rows a date reads, with their weights; empty for a
   /// static field, whose values are the answer whole.
-  [[nodiscard]] std::optional<TimeRows> Rows(
-      std::string_view name, const FileVariable& var, std::optional<double> date,
-      Extrapolation extrapolation) const {
+  [[nodiscard]] std::optional<TimeRows> Rows(std::string_view name, const FileVariable& var,
+                                             std::optional<double> date,
+                                             Extrapolation extrapolation, double time_rtol) const {
     return TimeRowsAt(*detail::TextOf(var.attributes, "time_support"),
-                      *detail::TextOf(var.attributes, "time_interpolation"), date,
-                      file_.time, file_.instant, extrapolation, "surface history", name);
+                      *detail::TextOf(var.attributes, "time_interpolation"), date, file_.time,
+                      file_.instant, extrapolation, "surface history", name, time_rtol);
   }
 
   SurfaceFile file_;

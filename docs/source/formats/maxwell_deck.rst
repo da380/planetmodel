@@ -8,7 +8,9 @@ knot, radius first.  A layer holding a viscosity is a Maxwell body in
 shear, its relaxation time the viscosity over the shear modulus; the
 elastic values are the unrelaxed ones, and the deck holds no quality
 factors, since a constant-Q dispersion about a seismic reference period
-would otherwise reach glacial periods.
+would otherwise reach glacial periods.  A :doc:`prony_deck` holds any
+number of Prony branches in place of the viscosity, and a
+:doc:`burgers_deck` a Kelvin element beside it.
 
 The Python writes one with ``planetmodel.write_deck(path, deck,
 MAXWELL)``, a deck from any model being ``sample_deck(model,

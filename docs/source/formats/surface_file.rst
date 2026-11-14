@@ -141,7 +141,21 @@ the date (``previous``), or served at its stored nodes alone
 the last closed at its end; an ``instant`` field at its stored
 instants alone; a ``static`` field at any date.  Outside its span a
 field refuses the date, or holds its nearest value where the caller
-asks (``extrapolation="hold"``).  ``function(name, date)`` is the same
+asks (``extrapolation="hold"``).
+
+A date within a tolerance of a stored time is that time: the
+tolerance is ``time_rtol`` times the span of the axis (its last time
+less its first, or the magnitude of its one time where it has one),
+``time_rtol`` being ``TIME_RTOL = 1e-12`` unless the caller gives
+another, and zero matching exactly.  So a date a rounding error from a
+node reads that node alone under every rule (``none`` and ``instant``
+serve it, ``previous`` and ``interval`` read from it, ``linear`` gives
+it weight one), and a date that close beyond an end of the span is that
+end and is not refused; the nearest stored time within the tolerance is
+taken, the earlier on a tie.  A reader that converts its own clock to
+the file's units therefore meets the stored times without matching
+them bit for bit.  ``function(name, date)`` is the same
 field as a ``GriddedFunction`` by its stated lateral rule, stored
 polar values carried along.  The C++ ``SurfaceHistory`` reads a file
-by the same arithmetic, so the two languages serve identical values.
+by the same arithmetic (``TimeRowsAt``, its tolerance ``TIME_RTOL``),
+so the two languages serve identical values.

@@ -98,7 +98,6 @@ from __future__ import annotations
 
 import numbers
 import os
-import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from pathlib import Path
@@ -110,6 +109,7 @@ from numpy.typing import ArrayLike
 
 from .character import SCALAR, VECTOR, Character
 from .fields import Field, RadialField, stored_shape
+from .files import written_whole
 from .frames import from_geographic, geographic, spherical_frame
 from .layerfunction import PolynomialLayer
 from .lateral import METHODS as LATERAL_METHODS
@@ -874,7 +874,9 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     `interpolation` names its lateral rule as for a field.  `source`
     names the writing code and version in the attribute of that name,
     this library and its version unless given.  The model is
-    written in its own units.
+    written in its own units, and the file whole or not at all, with the
+    permissions a plain `open(path, "w")` would give it
+    (`files.written_whole`).
     """
     from .model import Model
     if not isinstance(model, Model):
@@ -912,15 +914,9 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     if held:
         on = _surface_grid(held, parts) if surface_grid is None else surface_grid
     path = Path(path)
-    fd, partial = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent or None)
-    os.close(fd)
-    try:
-        _write_file(nc, Path(partial), model, parts, form, names, radial,
+    with written_whole(path) as partial:
+        _write_file(nc, partial, model, parts, form, names, radial,
                     interpolation, meta, held, on, source)
-        os.replace(partial, path)
-    finally:
-        if os.path.exists(partial):
-            os.remove(partial)
     return path
 
 

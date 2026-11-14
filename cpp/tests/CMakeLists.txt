@@ -23,6 +23,7 @@ add_executable(planetmodel_tests
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_modelfile.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_rules.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_surfacefile.cpp>
+  test_time.cpp
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_writer.cpp>
   test_units.cpp)
 target_link_libraries(planetmodel_tests PRIVATE planetmodel::planetmodel

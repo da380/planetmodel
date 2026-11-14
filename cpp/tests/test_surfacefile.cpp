@@ -2,11 +2,10 @@
 // built from known fields written, read back and left for the Python to
 // read; and the refusals, before anything is written.
 
-#include "planetmodel/surfacefile.hpp"
-
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -16,6 +15,7 @@
 
 #include "fixtures.hpp"
 #include "planetmodel/grid.hpp"
+#include "planetmodel/surfacefile.hpp"
 #include "planetmodel/units.hpp"
 
 namespace {
@@ -316,3 +316,14 @@ TEST(SurfaceFile, RefusesWhatTheFormatCannotHold) {
 }
 
 }  // namespace
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST(SurfaceFile, GivesTheFileThePermissionsAPlainOpenWould) {
+  const auto file = WrittenSurface();
+  const auto dir = pm::testing::WrittenDir() / "permissions";
+  std::filesystem::create_directories(dir);
+  pm::testing::ExpectPlainPermissions(dir / "surface.nc", [&file](const std::filesystem::path& p) {
+    pm::WriteSurfaceFile(p, file);
+  });
+}
+#endif

@@ -2245,6 +2245,28 @@ inline std::filesystem::path PartialName(const std::filesystem::path& path) {
   Fail(path.string(), "", "no name is free beside the file to write it under");
 }
 
+/// Put a file written whole under `partial` in place at `path`, with the
+/// permissions a plain open of `path` for writing would give it: those of
+/// the file there, kept, or for a new file the umask's, which the partial
+/// file was given as netCDF-C created it.
+inline void PutInPlace(const std::filesystem::path& partial, const std::filesystem::path& path,
+                       const std::string& source) {
+  auto error = std::error_code{};
+  const auto there = std::filesystem::status(path, error);
+  if (std::filesystem::exists(there)) {
+    std::filesystem::permissions(partial, there.permissions(),
+                                 std::filesystem::perm_options::replace, error);
+    if (error) {
+      Fail(source, "",
+           std::format("cannot be given the permissions of the file it replaces: {}",
+                       error.message()));
+    }
+  }
+  error.clear();
+  std::filesystem::rename(partial, path, error);
+  if (error) Fail(source, "", std::format("cannot be put in place: {}", error.message()));
+}
+
 }  // namespace detail
 
 /**
@@ -2923,7 +2945,9 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
  * node whose values are not one value), before anything is written; it is
  * written under a name of its own beside `path` and put in place when
  * whole, so that a failed write leaves no file and an existing file at
- * `path` stands until it is replaced.
+ * `path` stands until it is replaced.  The file has the permissions a
+ * plain open for writing would give it: an existing file's, kept, or the
+ * umask's.
  *
  * @param path The file to write; one there is replaced.
  * @param file The model file, read or built.
@@ -2939,9 +2963,7 @@ inline void WriteModelFile(const std::filesystem::path& path, const ModelFile& f
     auto nc = netcdf::File::Create(partial);
     file.WriteTo(nc.Id(), source);
     nc.Close();
-    auto error = std::error_code{};
-    std::filesystem::rename(partial, path, error);
-    if (error) detail::Fail(source, "", std::format("cannot be put in place: {}", error.message()));
+    detail::PutInPlace(partial, path, source);
   } catch (...) {
     auto error = std::error_code{};
     std::filesystem::remove(partial, error);

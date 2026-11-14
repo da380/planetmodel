@@ -29,6 +29,41 @@ nodes would overshoot, where its logarithm does not.  Built:
   so tau_k = -1 / s_k, and the residues of 1/J there give mu_k, which sum
   to mu_M (Ivins et al. 2022 call Delta the relaxation strength; Caron
   et al. 2017 take Delta and the viscosity ratio from 1 to 10);
+- `with_burgers(model, layers, *, kelvin_viscosity,
+  kelvin_modulus_fraction)`: named layers made Burgers bodies over the
+  model's own (Maxwell) viscosity eta, the Kelvin element given
+  absolutely, its viscosity eta_K in the model's units (Pa s in SI) and
+  its shear modulus mu_K as a fraction f of the layer's elastic mu, and
+  written as their two Prony branches exactly (`burgers_terms`), the
+  faster first, as `burgers_series` orders them.  With a = mu / eta,
+  b = mu / eta_K and c = f mu / eta_K the rates 1 / tau_k are the roots
+  of x^2 - (a + b + c) x + a c, and w_1 = (1/tau_1 - c) / g,
+  w_2 = (c - 1/tau_2) / g with g = 1/tau_1 - 1/tau_2 the gap between
+  the roots: c lies between the roots, so both strengths are positive,
+  they sum to one (no relaxed part), and w_1 tau_1 + w_2 tau_2
+  = eta / mu (the steady viscosity is eta).  The terms are formed
+  without cancellation.  Since eta_K is absolute, the terms vary through
+  a layer whose eta does, so they are fields of the layer's eta and mu
+  rather than one `PronySeries`; with eta_K a fixed fraction of eta they
+  are `burgers_series(strength=1 / f, viscosity_ratio=eta / eta_K)`.
+  `burgers_branches` is the same pair of branches over fields of a
+  layer, a Kelvin element that varies with radius among them;
+- `burgers_parameters(modulus, strengths, times)`: the inverse, the
+  viscosity eta and the Kelvin element (eta_K, f) of two branches whose
+  strengths sum to one.  From a c = x_1 x_2 and a + b + c = x_1 + x_2,
+  the rates x_k = 1 / tau_k, and w_1 x_2 + w_2 x_1 = c: with
+  s = w_1 tau_1 + w_2 tau_2 and d = w_1 w_2 (tau_2 - tau_1)^2,
+  eta = mu s, eta_K = mu s tau_1 tau_2 / d and f = s^2 / d, all three
+  positive for any such pair with distinct times, so every two-branch
+  body without a relaxed part is a Burgers body;
+- `prony_deck(model)` and `burgers_deck(model)`: the model as the decks
+  `deck.PRONY` and `deck.BURGERS` hold it, on its own knots where it
+  was read from a deck.  A prony deck holds every layer's branches, a
+  layer holding a viscosity as its one Maxwell branch (`with_branches`
+  of `maxwell_series`), N the most a layer holds; a burgers deck holds
+  each layer as the Maxwell or Burgers body it is, the Kelvin element
+  recovered by `burgers_parameters`, and refuses a layer that is
+  neither;
 - `fitted_series(modulus, *, band, ...)`: the strengths of branches at
   fixed times, `per_decade` of them spread a decade beyond the band each
   way, fitted by non-negative least squares to a complex modulus
@@ -44,6 +79,7 @@ nodes would overshoot, where its logarithm does not.  Built:
 """
 from __future__ import annotations
 
+import numbers
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass
 
@@ -53,13 +89,17 @@ from scipy.optimize import nnls
 from scipy.special import gamma
 
 from ..character import SCALAR
+from ..deck import (BURGERS, BURGERS_COLUMNS, MAXWELL_COLUMNS, PRONY, PRONY_COLUMNS,
+                    SAMPLE_SPACING, STRENGTH_ROUNDING, Deck, prony_columns, sample_deck)
 from ..fields import ComposedField, Field, constant_field
 from ..materials import is_fluid, kappa_mu
-from ..model import Model, cited
+from ..model import Layer, Model, cited
 from ..perturbation import PerturbedField, unperturbed
+from ..rheology import BRANCH_STEMS, branches
 
 __all__ = ["PronySeries", "maxwell_series", "burgers_series", "fitted_series",
-           "andrade_series", "with_branches"]
+           "andrade_series", "with_branches", "burgers_terms", "burgers_branches",
+           "burgers_parameters", "with_burgers", "prony_deck", "burgers_deck"]
 
 
 @dataclass(frozen=True)
@@ -204,6 +244,246 @@ def with_branches(model: Model, series: PronySeries, *,
     return model.replaced(layers=fields).with_citation(*series.citation)
 
 
+
+
+def burgers_terms(modulus: ArrayLike, viscosity: ArrayLike, *,
+                  kelvin_viscosity: ArrayLike, kelvin_modulus_fraction: ArrayLike
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """A Burgers body's two Prony branches at each point, (strengths,
+    times), each of shape (2,) + the broadcast shape of the arguments, the
+    faster branch first (module docstring): a Maxwell element of shear
+    modulus `modulus` and viscosity `viscosity` in series with a Kelvin
+    element of viscosity `kelvin_viscosity` and shear modulus
+    `kelvin_modulus_fraction` times `modulus`.  Every argument is
+    positive and finite; any consistent units."""
+    mu, eta, eta_k, f = np.broadcast_arrays(*(np.asarray(x, dtype=float) for x in (
+        modulus, viscosity, kelvin_viscosity, kelvin_modulus_fraction)))
+    for x, what in ((mu, "modulus"), (eta, "viscosity"),
+                    (eta_k, "kelvin_viscosity"),
+                    (f, "kelvin_modulus_fraction")):
+        if not np.all(np.isfinite(x) & (x > 0.0)):
+            raise ValueError(f"a Burgers body's {what} is positive and finite")
+    a, b = mu / eta, mu / eta_k
+    c = f * b
+    gap = np.sqrt((a - c) ** 2 + b * b + 2.0 * b * (a + c))
+    fast = 0.5 * (a + b + c + gap)
+    slow = a * c / fast                    # the product of the roots is a c
+
+    def plus(s: np.ndarray, product: np.ndarray) -> np.ndarray:
+        """gap + s, formed without cancellation where s < 0 (gap^2 - s^2
+        is 4 product, positive)."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(s >= 0.0, gap + s, 4.0 * product / (gap - s))
+
+    above_slow = c * 0.5 * plus(b + c - a, a * b) / fast   # c - slow
+    below_fast = 0.5 * plus(a + b - c, b * c)              # fast - c
+    return (np.stack([below_fast / gap, above_slow / gap]),
+            np.stack([1.0 / fast, 1.0 / slow]))
+
+
+def burgers_parameters(modulus: ArrayLike, strengths: ArrayLike, times: ArrayLike
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The Burgers body of two Prony branches, the inverse of
+    `burgers_terms`: (viscosity, kelvin_viscosity, kelvin_modulus_fraction)
+    at each point, by the module docstring, of the shear modulus
+    `modulus` and the branches' `strengths` and `times`, each of shape
+    (2,) + the points' shape, in either order.  The strengths are taken
+    to sum to one, as a Burgers body's do; every value is positive and
+    finite and the two times differ at every point; any consistent
+    units."""
+    mu = np.asarray(modulus, dtype=float)
+    w = np.asarray(strengths, dtype=float)
+    tau = np.asarray(times, dtype=float)
+    if w.shape[:1] != (2,) or tau.shape[:1] != (2,):
+        raise ValueError(f"strengths and times are two branches each, of shape "
+                         f"(2, ...); got {w.shape} and {tau.shape}")
+    for x, what in ((mu, "modulus"), (w, "strengths"), (tau, "times")):
+        if not np.all(np.isfinite(x) & (x > 0.0)):
+            raise ValueError(f"a Burgers body's {what} are positive and finite")
+    if np.any(tau[0] == tau[1]):
+        raise ValueError("the two branches have the same time at a point; a Burgers "
+                         "body's two times differ")
+    steady = w[0] * tau[0] + w[1] * tau[1]
+    d = w[0] * w[1] * (tau[1] - tau[0]) ** 2
+    return mu * steady, mu * steady * tau[0] * tau[1] / d, steady * steady / d
+
+
+def burgers_branches(modulus: Field, viscosity: Field, *, kelvin_viscosity: Field,
+                     kelvin_modulus_fraction: Field) -> dict[str, Field]:
+    """A Burgers body's two Prony branches as fields of one layer, by
+    `burgers_terms` at every point, the faster first:
+    `relaxation_strength_k` and `relaxation_time_k` for k = 1, 2, of a
+    Maxwell element of shear modulus `modulus` and viscosity `viscosity`
+    in series with a Kelvin element of viscosity `kelvin_viscosity` and
+    shear modulus `kelvin_modulus_fraction` times `modulus`, each of them
+    a field on the layer."""
+    sources = [modulus, viscosity, kelvin_viscosity, kelvin_modulus_fraction]
+    out: dict[str, Field] = {}
+    for k in range(2):
+        for part, stem in enumerate(BRANCH_STEMS):
+            key = f"{stem}_{k + 1}"
+            out[key] = ComposedField(_burgers_term(part, k), sources, character=SCALAR,
+                                     name=key)
+    return out
+
+
+def with_burgers(model: Model, layers: Iterable[int | str], *,
+                 kelvin_viscosity: float, kelvin_modulus_fraction: float,
+                 name: str = "viscosity") -> Model:
+    """The model with each of `layers` (by index or name) a Burgers body
+    (module docstring): its field `name` the Maxwell element's viscosity,
+    in series with a Kelvin element of viscosity `kelvin_viscosity` (in
+    the model's units) and shear modulus `kelvin_modulus_fraction` times
+    the layer's elastic (Voigt) shear modulus, written as the two Prony
+    branches of `burgers_branches` at every point, the viscosity
+    removed."""
+    for value, what in ((kelvin_viscosity, "kelvin_viscosity"),
+                        (kelvin_modulus_fraction, "kelvin_modulus_fraction")):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) \
+                or not (np.isfinite(value) and value > 0.0):
+            raise ValueError(f"{what} is a positive number, got {value!r}")
+    if isinstance(layers, (str, int)):
+        raise TypeError("layers is a sequence of layers, by index or name")
+    which = sorted({model.layer(k).index for k in layers})
+    if not which:
+        raise ValueError("no layer is named to make a Burgers body")
+    fields = [dict(lay.fields) for lay in model.layers]
+    for i in which:
+        lay = model.layer(i)
+        if name not in lay:
+            raise KeyError(f"layer {i} ({lay.name}) holds no {name!r}: a Burgers "
+                           "body is built over its Maxwell viscosity")
+        if is_fluid(lay):
+            raise ValueError(f"layer {i} ({lay.name}) is fluid: it has no shear to "
+                             "relax")
+        kelvin = {key: constant_field(lay.interval, float(value), name=key)
+                  for key, value in (("kelvin_viscosity", kelvin_viscosity),
+                                     ("kelvin_modulus_fraction",
+                                      kelvin_modulus_fraction))}
+        fields[i].update(burgers_branches(kappa_mu(lay)[1], lay[name], **kelvin))
+        del fields[i][name]
+    return model.replaced(layers=fields)
+
+
+def _burgers_term(part: int, k: int
+                  ) -> Callable[[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                                np.ndarray]:
+    """Branch k's strength (`part` 0) or time (1) of `burgers_terms` as a
+    function of the shear modulus, the viscosity and the Kelvin element's
+    viscosity and modulus fraction."""
+    def term(mu: np.ndarray, eta: np.ndarray, eta_k: np.ndarray,
+             f: np.ndarray) -> np.ndarray:
+        return burgers_terms(mu, eta, kelvin_viscosity=eta_k,
+                             kelvin_modulus_fraction=f)[part][k]
+    return term
+
+
+def _deck_knots(model: Model, knots: Sequence[ArrayLike] | None
+                ) -> Sequence[ArrayLike] | None:
+    """`knots`, or else the model's own where it was read from a deck
+    (`deck.Tabulated`), or else None for `sample_deck` to place them."""
+    if knots is not None:
+        return knots
+    own = getattr(model, "knots", ())
+    return own if len(own) else None
+
+
+def _both(lay: Layer, held: tuple[tuple[Field, Field], ...]) -> None:
+    """Refuse a layer holding a viscosity and Prony branches, as freezing
+    does: the viscosity is the one-branch case."""
+    if held and "viscosity" in lay:
+        raise ValueError(f"layer {lay.index} ({lay.name}) holds a viscosity and Prony "
+                         "branches; the viscosity is the one-branch case, so give one "
+                         "or the other")
+
+
+def prony_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
+               spacing: float = SAMPLE_SPACING) -> Deck:
+    """The model as a prony deck (`deck.PRONY`), in SI, as it is written:
+    the density, the elastic velocities, and the Prony branches of every
+    layer by the module docstring, a solid layer holding a viscosity as
+    its one Maxwell branch (strength one, time the viscosity over the
+    layer's elastic (Voigt) shear modulus), a layer holding branches as
+    it holds them, an elastic or fluid layer NaN in every branch column;
+    N is the most branches a layer holds, and a layer holding fewer is
+    completed as `deck.PRONY` writes it.  `knots` and `spacing` are
+    `sample_deck`'s; without knots a model read from a deck is sampled
+    on its own.  A layer holding a viscosity and branches is refused, as
+    is a model whose every layer is elastic: a prony deck has at least
+    one branch."""
+    knots = _deck_knots(model, knots)
+    viscous = []
+    for lay in model.layers:
+        _both(lay, branches(lay))
+        if "viscosity" in lay and not is_fluid(lay):
+            viscous.append(lay.index)
+    if viscous:
+        model = with_branches(model, maxwell_series(), layers=viscous)
+    n = max((len(branches(lay)) for lay in model.layers), default=0)
+    if n == 0:
+        raise ValueError("no solid layer holds a viscosity or Prony branches; a prony "
+                         "deck has at least one branch")
+    sampled = sample_deck(model, prony_columns(n), knots=knots, spacing=spacing)
+    deck = PRONY.complete(sampled)
+    PRONY.check_table(deck)
+    return deck
+
+
+def burgers_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
+                 spacing: float = SAMPLE_SPACING) -> Deck:
+    """The model as a burgers deck (`deck.BURGERS`), in SI: the density,
+    the elastic velocities, and each layer as the body it is.  A layer
+    holding a viscosity, or one Prony branch of strength one (to
+    `deck.STRENGTH_ROUNDING`; its viscosity mu tau), is a Maxwell body; a
+    layer holding two branches whose strengths sum to one (to twice that)
+    is a Burgers body, its viscosity and Kelvin element by
+    `burgers_parameters` at every knot, mu the layer's elastic (Voigt)
+    shear modulus; an elastic or fluid layer holds none of the three.  A
+    layer holding other branches, more than two or with a relaxed part, is
+    no Burgers body and is refused, as is one holding a viscosity and
+    branches.  `knots` and `spacing` are `prony_deck`'s."""
+    knots = _deck_knots(model, knots)
+    counts = []
+    for lay in model.layers:
+        held = branches(lay)
+        _both(lay, held)
+        if len(held) > 2:
+            raise ValueError(f"layer {lay.index} ({lay.name}) holds {len(held)} Prony "
+                             "branches; a Burgers body has two, a Maxwell body one")
+        counts.append(len(held))
+    n = max(counts, default=0)
+    extra = prony_columns(n)[len(PRONY_COLUMNS):] if n else ()
+    sampled = sample_deck(model, MAXWELL_COLUMNS + extra, knots=knots, spacing=spacing)
+    columns = {name: np.array(sampled[name]) for name in MAXWELL_COLUMNS}
+    for name in BURGERS_COLUMNS[len(MAXWELL_COLUMNS):]:
+        columns[name] = np.full(sampled.nknots, np.nan)
+    for lay, count, s in zip(model.layers, counts, sampled.layers()):
+        if count == 0:
+            continue
+        r = sampled.radius[s]
+        w, tau = (np.array([sampled[f"{stem}_{k}"][s] for k in range(1, count + 1)])
+                  for stem in BRANCH_STEMS)
+        total = np.zeros(r.size)
+        for row in w:
+            total = total + row
+        off = np.abs(total - 1.0) > count * STRENGTH_ROUNDING
+        if off.any():
+            j = int(np.argmax(off))
+            raise ValueError(f"layer {lay.index} ({lay.name}): the strengths of its "
+                             f"branches sum to {total[j]:.9g} at r = {r[j]:g}, not "
+                             "one; a body with a relaxed part is no Maxwell or Burgers "
+                             "body")
+        mu = np.asarray(kappa_mu(lay)[1](r), dtype=float)
+        if count == 1:
+            columns["viscosity"][s] = mu * tau[0]
+            continue
+        eta, eta_k, f = burgers_parameters(mu, w, tau)
+        columns["viscosity"][s] = eta
+        columns["kelvin_viscosity"][s] = eta_k
+        columns["kelvin_modulus_fraction"][s] = f
+    deck = Deck(sampled.radius, columns, header=sampled.header)
+    BURGERS.check_table(deck)
+    return deck
 
 
 def _time(c: float, eta: Field, mu: Field, eta0: Field, mu0: Field,

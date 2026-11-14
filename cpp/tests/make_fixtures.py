@@ -93,20 +93,24 @@ array or an object).
 **Decks** (`deck_*.txt`): the two shipped mineos decks as they are
 (nine and six columns), a Maxwell deck naming its layers and
 interfaces, its viscosity varying by two orders of magnitude across a
-layer, a TauP `.nd` table with labels and comments of the three kinds
-and a `.tvel` one, and a small custom one with layers of two, three,
-four and six knots; each with `<deck>.expect` beside it, one fact per
-line: `knots`, `boundaries`, a TauP table's `label`s (radius and
-label), the mineos `header` fields (a string in hexadecimal), the
-`layer_name` and `interface_name` of every layer and interface that
-`mineos_names`, `maxwell_names` or `nd_names` gives (`-` for none) and
-the count of what the first `ignored`, and for each kind the C++
-reads (and for a Maxwell deck `maxwell`, the default kind with
-`MAXWELL_KINDS`), `value <kind> <layer> <column> <r> <value>
-<derivative>` at the layer's ends and between its knots, or `absent
-<layer> <column>`.  The C++ tests write each deck back, and
-`tests/test_cpp_written_decks.py` holds what they wrote to the Python's
-own writing, character for character.
+layer, a prony deck of three branches on the same knots (layers of
+three branches with a relaxed part, one of two without, one of one
+branch the writer completed, elastic and fluid layers), a burgers deck
+on them (Maxwell, Burgers and elastic layers), a TauP `.nd` table with
+labels and comments of the three kinds and a `.tvel` one, and a small
+custom one with layers of two, three, four and six knots; each with
+`<deck>.expect` beside it, one fact per line: `knots`, `boundaries`, a
+TauP table's `label`s (radius and label), the mineos `header` fields (a
+string in hexadecimal), the `layer_name` and `interface_name` of every
+layer and interface that `mineos_names`, `maxwell_names` or `nd_names`
+gives (`-` for none) and the count of what the first `ignored`, and for
+each kind the C++ reads (and for a Maxwell, prony or burgers deck
+`maxwell`, `prony` or `burgers`, the default kind with the format's
+kinds), `value <kind> <layer> <column> <r> <value> <derivative>` at the
+layer's ends and between its knots, or `absent <layer> <column>`.  The
+C++ tests write each deck back, and `tests/test_cpp_written_decks.py`
+holds what they wrote to the Python's own writing, character for
+character.
 
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
@@ -159,7 +163,12 @@ and the numbers; `slip <k> <u> <v> <date|-> <refuse|hold>
 <fault|ambient|cartesian>` and the vector, or `refused` in its place;
 `quadrature <points> <date|-> <n_u,...> <n_v,...> <size>` and a
 `qpoint <i> <patch> <u> <v> <weight>` line, then the point, position,
-normal and slip, for each of its points; `locate <x> <y> <z> <patch>
+normal and slip, for each of its points; `slices <points> <n_u,...>
+<n_v,...> <size> <slices>` and an `spoint <i> <patch> <u> <v> <weight>`
+line, then the point, position, normal and the slip of every slice in
+turn, for each point of the slice quadrature; the dates read include
+some within the default tolerance of a node or an end of the span and
+one beyond it; `locate <x> <y> <z> <patch>
 <u> <v> <distance> <inside> <converged>` for physical points beside
 the patches, beyond their edges and corners and near a bilinear
 patch's creases; and `slip_at <max_distance> <date|-> <basis> <x> <y>
@@ -649,18 +658,20 @@ _CPP_KINDS = ("cubic", "natural", "linear")
 
 def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
     """The expectation file of a deck, by the module docstring; `names` is
-    the format whose header or labels name its layers, `mineos`, `maxwell`
-    or `nd`."""
+    the format whose header or labels name its layers, `mineos`, `maxwell`,
+    `prony`, `burgers` or `nd`."""
     import warnings
 
-    from planetmodel.deck import (MAXWELL_KINDS, deck_layers, maxwell_names,
-                                  mineos_names, nd_names)
+    from planetmodel.deck import (BURGERS_KINDS, MAXWELL_KINDS, PRONY_KINDS,
+                                  deck_layers, maxwell_names, mineos_names, nd_names)
+    own_kinds = {"maxwell": MAXWELL_KINDS, "prony": PRONY_KINDS,
+                 "burgers": BURGERS_KINDS}
     lines = [f"knots {deck.nknots}",
              "boundaries " + " ".join(repr(float(b)) for b in deck.boundaries)]
     if names == "nd":
         lines += [f"label {float(r)!r} {label}" for r, label in deck.header["labels"]]
-    if names in ("maxwell", "nd"):
-        layers, faces = (maxwell_names if names == "maxwell" else nd_names)(deck)
+    if names in ("nd", *own_kinds):
+        layers, faces = (nd_names if names == "nd" else maxwell_names)(deck)
         lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
     if names == "mineos":
@@ -677,10 +688,10 @@ def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
         lines.append(f"ignored {len(caught)}")
     rng = np.random.default_rng(len(deck.radius))
     joined = [(kind, {}) for kind in _CPP_KINDS]
-    if names == "maxwell":
-        joined.append(("maxwell", dict(MAXWELL_KINDS)))
+    if names in own_kinds:
+        joined.append((names, dict(own_kinds[names])))
     for label, kinds in joined:
-        kind = "cubic" if label == "maxwell" else label
+        kind = "cubic" if label in own_kinds else label
         _, fields = deck_layers(deck, kind=kind, kinds=kinds)
         for i, s in enumerate(deck.layers()):
             r = deck.radius[s]
@@ -719,10 +730,54 @@ _TVEL_LINES = (
     "95 7 3 11", "100 7.1 3.1 11.1")
 
 
+def _prony_branches(prem: Any) -> dict[str, np.ndarray]:
+    """Three Prony branches on the knots of PREM's deck: the three layers
+    above the core-mantle boundary with a relaxed part, strengths and times
+    varying across each (the times by orders of magnitude); the next of one
+    branch, NaN in the other two for the writer to complete; the three
+    above it of two branches without a relaxed part; the rest NaN."""
+    out = {f"{stem}_{k}": np.full(prem.nknots, np.nan)
+           for k in (1, 2, 3) for stem in ("relaxation_strength", "relaxation_time")}
+    for i, s in enumerate(prem.layers()):
+        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
+        if 2 <= i <= 4:
+            branches = ((0.3 + 0.1 * x, 10.0 ** (8.0 + x)), (0.2 + 0.0 * x,
+                        10.0 ** (10.0 + 2.0 * x)), (0.1 * x * x, 10.0 ** (12.0 - x)))
+        elif i == 5:
+            branches = ((1.0 + 0.0 * x, 10.0 ** (11.0 + 2.0 * x * x)),)
+        elif 6 <= i <= 8:
+            w = 0.4 + 0.2 * x
+            branches = ((w, 1e8 * 10.0 ** x), (1.0 - w, 1e11 * 10.0 ** (2.0 * x)))
+        else:
+            continue
+        for k, (w, t) in enumerate(branches, start=1):
+            out[f"relaxation_strength_{k}"][s] = w
+            out[f"relaxation_time_{k}"][s] = t
+    return out
+
+
+def _burgers_columns(prem: Any) -> dict[str, np.ndarray]:
+    """A burgers deck's three columns on the knots of PREM's deck: the
+    three layers above the core-mantle boundary Maxwell bodies, the four
+    above them Burgers bodies, every value varying across a layer, the
+    rest NaN."""
+    out = {n: np.full(prem.nknots, np.nan)
+           for n in ("viscosity", "kelvin_viscosity", "kelvin_modulus_fraction")}
+    for i, s in enumerate(prem.layers()):
+        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
+        if 2 <= i <= 4:
+            out["viscosity"][s] = 10.0 ** (21.0 + 2.0 * x ** 2)
+        elif 5 <= i <= 8:
+            out["viscosity"][s] = 10.0 ** (20.0 + x)
+            out["kelvin_viscosity"][s] = 10.0 ** (19.0 + x)
+            out["kelvin_modulus_fraction"][s] = 0.5 + 0.5 * x
+    return out
+
+
 def decks(directory: Path) -> list[Path]:
     """The decks of the module docstring, each with its expectations."""
-    from planetmodel.deck import (MAXWELL, MINEOS, ND, TVEL, Deck, DeckFormat,
-                                  read_deck, write_deck)
+    from planetmodel.deck import (BURGERS, MAXWELL, MINEOS, ND, PRONY, TVEL, Deck,
+                                  DeckFormat, read_deck, write_deck)
     data = Path(__file__).resolve().parents[2] / "examples" / "data"
     out = []
     for label, source in (("prem200", "prem.200"), ("nocrust", "prem.nocrust")):
@@ -746,6 +801,16 @@ def decks(directory: Path) -> list[Path]:
                            "interfaces": tuple(faces)})
     path = write_deck(directory / "deck_maxwell.txt", maxwell, MAXWELL)
     out += [path, _expect_deck(path, read_deck(path, MAXWELL), names="maxwell")]
+    elastic = {n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta")}
+    named = {"layers": tuple(layer_names), "interfaces": tuple(faces)}
+    prony = Deck(prem.radius, {**elastic, **_prony_branches(prem)},
+                 header={"name": "a prony deck", **named})
+    path = write_deck(directory / "deck_prony.txt", prony, PRONY)
+    out += [path, _expect_deck(path, read_deck(path, PRONY), names="prony")]
+    burgers = Deck(prem.radius, {**elastic, **_burgers_columns(prem)},
+                   header={"name": "a burgers deck", **named})
+    path = write_deck(directory / "deck_burgers.txt", burgers, BURGERS)
+    out += [path, _expect_deck(path, read_deck(path, BURGERS), names="burgers")]
     knots = Deck([0.0, 0.4, 0.4, 0.5, 0.7, 0.7, 0.75, 0.8, 0.9, 0.9, 0.92, 0.94, 0.95,
                   0.97, 0.98, 1.0],
                  {"rho": [9.0, 8.5, 6.0, 5.8, 5.5, 4.0, 3.9, 3.8, 3.6, 3.0, 2.95, 2.9,
@@ -1664,12 +1729,19 @@ def _expect_fault(fault: Any, names: Any, rng: np.random.Generator) -> list[str]
         dates = [(None, "refuse")]
     else:
         t = fault.time
+        # within the default tolerance of a node and of the ends, and
+        # beyond it, the two languages' tolerances held to one another
+        tol = 1e-12 * float(t[-1] - t[0])
         dates = [(float(t[0]), "refuse"), (float(t[-1]), "refuse"),
                  (float(0.6 * t[0] + 0.4 * t[-1]), "refuse"),
                  (float(t[-1] + 1.0), "refuse"), (float(t[-1] + 1.0), "hold"),
+                 (float(t[-1] + 0.5 * tol), "refuse"),
+                 (float(t[-1] + 3.0 * tol), "refuse"),
+                 (float(t[-1] - 0.4 * tol), "refuse"),
+                 (float(t[0] - 0.4 * tol), "refuse"),
                  (float(t[0] - 2.0), "hold")]
         if t.size > 2:
-            dates.append((float(t[1]), "refuse"))
+            dates += [(float(t[1]), "refuse"), (float(t[1] - 0.3 * tol), "refuse")]
     for k in range(len(fault.patches)):
         for u, v in _FAULT_UV[:9]:
             for date, extrapolation in dates:
@@ -1697,6 +1769,16 @@ def _expect_fault(fault: Any, names: Any, rng: np.random.Generator) -> list[str]
                          f"{float(q.v[i])!r} {float(q.weights[i])!r} "
                          f"{_vector(q.points[i])} {_vector(q.positions[i])} "
                          f"{_vector(q.normals[i])} {_vector(q.slip[i])}")
+    for points, n_u, n_v in ((2, [2] * n, [1] * n),
+                             (1, list(range(1, n + 1)), [2] * n)):
+        sq = fault.slice_quadrature(n_u, n_v, points=points)
+        lines.append(f"slices {points} {','.join(map(str, n_u))} "
+                     f"{','.join(map(str, n_v))} {sq.size} {sq.nslices}")
+        for i in range(sq.size):
+            lines.append(f"spoint {i} {int(sq.patch[i])} {float(sq.u[i])!r} "
+                         f"{float(sq.v[i])!r} {float(sq.weights[i])!r} "
+                         f"{_vector(sq.points[i])} {_vector(sq.positions[i])} "
+                         f"{_vector(sq.normals[i])} {_vector(sq.slip[:, i])}")
     points = _fault_points(fault, rng)
     for x in points:
         found = fault.locate(x)

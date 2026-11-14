@@ -18,7 +18,19 @@
  * beside a viscosity: a title, the line naming the columns `r rho vpv vsv
  * vph vsh eta viscosity`, then optionally `# layers` and `# interfaces`
  * lines naming them centre outward (`-` for none), SI, NaN where a layer
- * lacks a field.  `ND()` is TauP's named discontinuities, depth first from
+ * lacks a field.  `PRONY()` is that of a generalised Maxwell body: the
+ * same header and elastic columns, and in place of the viscosity one pair
+ * of columns per Prony branch, `relaxation_strength_k relaxation_time_k`
+ * for k = 1 to N, N read from the column line and the same throughout the
+ * deck (`PronyColumns`, `PronyBranches`); a layer is elastic, NaN in every
+ * branch column, or holds a number in each, a strength of 0 in a branch it
+ * does not use, which the writer completes with the time of the layer's
+ * last branch.  `BURGERS()` is the reduced form of two branches, as
+ * `MAXWELL()` is of one: the Maxwell element's viscosity beside the Kelvin
+ * element's viscosity and shear modulus, the latter a fraction of the
+ * layer's, a Maxwell layer NaN in the two Kelvin columns.  Both formats
+ * check the values of every deck they read or write, as the Python's do,
+ * with the same messages.  `ND()` is TauP's named discontinuities, depth first from
  * the surface in km, km/s and g/cm^3 with label lines naming the regions
  * below them, and `TVEL()` its tabled velocities under two header lines;
  * a format whose table is not radius-first SI rows reads and writes it
@@ -28,11 +40,13 @@
  * comments are skipped and its numbers read as Python reads them, `nan`
  * and a leading `+` included.  `WriteDeck` writes a deck as the Python's
  * `write_deck` does, character for character.  `MineosNames`,
- * `MaxwellNames` and `NdNames` give the layer and interface names a
- * header or a table's labels imply, and `DeckLayers` each
- * layer's columns as functions of the radius, joined by the kind asked
- * for, by column where asked (a Maxwell deck's viscosity by straight
- * lines, `MAXWELL_KINDS`), on the deck's skeleton.
+ * `MaxwellNames` (of a Maxwell, prony or burgers deck) and `NdNames` give
+ * the layer and interface names a header or a table's labels imply, and
+ * `DeckLayers` each layer's columns as functions of the radius, joined by
+ * the kind asked for, by column or by a family's stem where asked (a
+ * Maxwell deck's viscosity by straight lines, `MAXWELL_KINDS`; a prony
+ * deck's branches, `PRONY_KINDS`; a burgers deck's three, `BURGERS_KINDS`),
+ * on the deck's skeleton.
  */
 
 #include <algorithm>
@@ -48,6 +62,8 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <ranges>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -59,6 +75,7 @@
 #include "planetmodel/error.hpp"
 #include "planetmodel/radial.hpp"
 #include "planetmodel/skeleton.hpp"
+#include "planetmodel/vocabulary.hpp"
 
 namespace planetmodel {
 
@@ -81,6 +98,55 @@ inline const auto MAXWELL_COLUMNS = std::vector<std::string>{
  */
 inline const auto MAXWELL_KINDS =
     std::map<std::string, std::string, std::less<>>{{"viscosity", "linear"}};
+
+/**
+ * @brief The stems of a Prony branch's two names, its strength and its time,
+ * as the Python's `rheology.BRANCH_STEMS`: families of the vocabulary
+ * (`Families`).
+ */
+inline const auto BRANCH_STEMS =
+    std::vector<std::string>{"relaxation_strength", "relaxation_time"};
+
+/**
+ * @brief The columns of a prony deck after the radius and before its
+ * branches: a Maxwell deck's, without the viscosity.
+ */
+inline const auto PRONY_COLUMNS =
+    std::vector<std::string>{"rho", "vpv", "vsv", "vph", "vsh", "eta"};
+
+/**
+ * @brief The kinds a prony deck's columns are joined by where not the
+ * default, by the stems of the branches' families: straight lines, which
+ * keep every strength in [0, 1], their sum at most one and every time
+ * positive between knots, as a Maxwell deck's viscosity is joined.
+ */
+inline const auto PRONY_KINDS = std::map<std::string, std::string, std::less<>>{
+    {"relaxation_strength", "linear"}, {"relaxation_time", "linear"}};
+
+/**
+ * @brief The columns of a burgers deck, after the radius: a Maxwell deck's,
+ * then the Kelvin element's viscosity and its shear modulus as a fraction
+ * of the layer's elastic (Voigt) shear modulus.
+ */
+inline const auto BURGERS_COLUMNS =
+    std::vector<std::string>{"rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity",
+                             "kelvin_viscosity", "kelvin_modulus_fraction"};
+
+/**
+ * @brief The kinds a burgers deck's columns are joined by where not the
+ * default: the viscosity and the Kelvin element's two by straight lines,
+ * which keep them positive between knots.
+ */
+inline const auto BURGERS_KINDS = std::map<std::string, std::string, std::less<>>{
+    {"viscosity", "linear"}, {"kelvin_viscosity", "linear"}, {"kelvin_modulus_fraction", "linear"}};
+
+/**
+ * @brief How far, per branch, a prony deck's strengths may stand from what
+ * they were before they were written: the rounding of the eight significant
+ * digits a value is written with, at most 5e-9 on a strength below one,
+ * doubled.  A layer's N strengths may sum to one plus N times this.
+ */
+inline constexpr double STRENGTH_ROUNDING = 1e-8;
 
 namespace detail {
 
@@ -126,156 +192,63 @@ inline std::optional<std::string> Keyword(std::string_view line) {
   return words.front();
 }
 
-}  // namespace detail
+/// Words as the Python writes a list of them: `['a', 'b']`.
+inline std::string ListRepr(const std::vector<std::string>& words) {
+  auto out = std::string{"["};
+  for (const auto& word : words) out += (out.size() > 1 ? ", '" : "'") + word + "'";
+  return out + "]";
+}
 
-class Deck;
+/// Words joined by single spaces.
+inline std::string Joined(const std::vector<std::string>& words) {
+  auto out = std::string{};
+  for (const auto& word : words) out += (out.empty() ? "" : " ") + word;
+  return out;
+}
 
-/**
- * @brief What a format's own table reader gives: the knot radii and the
- * columns at them, SI and radius first, and the labels the table carries.
- */
-struct DeckTable {
-  /** @brief The knots' radii, non-decreasing. */
-  std::vector<double> radius{};
-  /** @brief Each column's name and its value at every knot. */
-  std::vector<std::pair<std::string, std::vector<double>>> columns{};
-  /** @brief Each label's radius and the label, as `Deck::Labels` holds them. */
-  std::vector<std::pair<double, std::string>> labels{};
-};
-
-/** @brief What a family of deck files looks like. */
-struct DeckFormat {
-  /** @brief The format's name, as errors give it. */
-  std::string name = "custom";
-  /**
-   * @brief The column names after the radius, by the number of them a row
-   * has; a deck is written with the widest set it holds.
-   */
-  std::map<std::size_t, std::vector<std::string>> columns{};
-  /** @brief How many lines precede the table. */
-  std::size_t header_lines = 0;
-  /**
-   * @brief The keywords of the `#` lines that may follow the header lines
-   * and are read as part of the header, each such line a `#`, its keyword
-   * and its words.
-   */
-  std::vector<std::string> header_comments{};
-  /**
-   * @brief What the header lines must say: throws `Error` naming `source`
-   * where they do not; none for a header kept verbatim.
-   */
-  std::function<void(const std::vector<std::string>& lines, const std::string& source)>
-      check_header{};
-  /**
-   * @brief The header lines a deck is written with; none to write the
-   * deck's own header lines as they are.
-   */
-  std::function<std::vector<std::string>(const Deck& deck)> write_header{};
-  /**
-   * @brief The value written for a column where a layer lacks it; NaN for
-   * a column not named here.
-   */
-  std::map<std::string, double, std::less<>> fill{};
-  /**
-   * @brief The reader of a table that is not rows of radius and SI values:
-   * the lines after the header to the radii, columns and labels, SI and
-   * radius first; none for rows of radius and SI values.
-   */
-  std::function<DeckTable(const std::vector<std::string>& lines, const std::string& source)>
-      read_table{};
-  /**
-   * @brief The writer of such a table: a deck and the columns to write to
-   * the table's lines; none for rows of radius and SI values.
-   */
-  std::function<std::vector<std::string>(const Deck& deck,
-                                         const std::vector<std::string>& names)>
-      write_table{};
-
-  /**
-   * @brief The column names of a row of a width.
-   * @param width The number of values after the radius.
-   * @param source The deck, as an error names it.
-   * @throws planetmodel::Error if the format has no row of that width.
-   */
-  [[nodiscard]] const std::vector<std::string>& Names(std::size_t width,
-                                                      const std::string& source) const {
-    if (const auto it = columns.find(width); it != columns.end()) return it->second;
-    auto widths = std::string{};
-    for (const auto& [w, names] : columns) widths += (widths.empty() ? "" : " or ") +
-                                                     std::to_string(w);
-    throw Error(source, "",
-                std::format("a {} deck has {} columns after the radius, not {}", name,
-                            widths, width));
+/// The members of the families `stems` for k = 1 to n, one of each stem
+/// for each index, in order.
+inline std::vector<std::string> Members(const std::vector<std::string>& stems, std::size_t n) {
+  auto out = std::vector<std::string>{};
+  for (auto k = std::size_t{1}; k <= n; ++k) {
+    for (const auto& stem : stems) out.push_back(std::format("{}_{}", stem, k));
   }
+  return out;
+}
 
-  /**
-   * @brief Whether a line is a `#` line of one of `header_comments`.
-   * @param line The line.
-   */
-  [[nodiscard]] bool IsHeaderComment(std::string_view line) const {
-    const auto keyword = detail::Keyword(line);
-    return keyword && std::ranges::find(header_comments, *keyword) != header_comments.end();
+/// N where the column `names` hold every member of the families `stems`
+/// for k = 1 to N and no other, N at least one; refused, naming the members
+/// held, otherwise.
+inline std::size_t Groups(const std::vector<std::string>& stems,
+                          const std::vector<std::string>& names, std::string_view what,
+                          const std::string& source) {
+  auto held = std::map<int, std::set<std::string>>{};
+  for (const auto& name : names) {
+    const auto found = Member(name);
+    if (found && std::ranges::find(stems, found->first) != stems.end()) {
+      held[found->second].insert(found->first);
+    }
   }
-};
-
-/** @brief The three header lines of a mineos deck, read. */
-struct MineosHeader {
-  std::string name;    /**< The title, trimmed. */
-  int ifanis = 0;      /**< Whether the deck is anisotropic. */
-  double tref = 0.0;   /**< The reference period of the velocities, in seconds. */
-  int ifdeck = 0;      /**< Whether the deck is a table of knots. */
-  int nknot = 0;       /**< The number of knots the header states. */
-  int nic = 0;         /**< The knots of the inner core. */
-  int noc = 0;         /**< The knots to the top of the outer core. */
-  std::vector<std::string> extras2{}; /**< The tokens after the second line's three. */
-  std::vector<std::string> extras3{}; /**< The tokens after the third line's three. */
-};
-
-namespace detail {
-
-/// A mineos header, or empty where the lines are not one.
-inline std::optional<MineosHeader> ParsedMineosHeader(const std::vector<std::string>& lines) {
-  if (lines.size() < 3) return std::nullopt;
-  const auto h2 = Tokens(lines[1]);
-  const auto h3 = Tokens(lines[2]);
-  if (h2.size() < 3 || h3.size() < 3) return std::nullopt;
-  const auto ifanis = Integer(h2[0]);
-  const auto tref = Number(h2[1]);
-  const auto ifdeck = Integer(h2[2]);
-  const auto nknot = Integer(h3[0]);
-  const auto nic = Integer(h3[1]);
-  const auto noc = Integer(h3[2]);
-  if (!ifanis || !tref || !ifdeck || !nknot || !nic || !noc) return std::nullopt;
-  return MineosHeader{.name = Trimmed(lines[0]),
-                      .ifanis = *ifanis,
-                      .tref = *tref,
-                      .ifdeck = *ifdeck,
-                      .nknot = *nknot,
-                      .nic = *nic,
-                      .noc = *noc,
-                      .extras2 = std::vector<std::string>(h2.begin() + 3, h2.end()),
-                      .extras3 = std::vector<std::string>(h3.begin() + 3, h3.end())};
+  auto whole = !held.empty();
+  auto k = 1;
+  for (const auto& [index, got] : held) {
+    if (index != k++ || got.size() != stems.size()) whole = false;
+  }
+  if (whole) return held.size();
+  auto rule = std::string{};
+  for (const auto& stem : stems) rule += (rule.empty() ? "" : ", ") + stem + "_k";
+  auto got = std::vector<std::string>{};
+  for (const auto& [index, members] : held) {
+    for (const auto& stem : stems) {
+      if (members.contains(stem)) got.push_back(std::format("{}_{}", stem, index));
+    }
+  }
+  throw Error(source, "",
+              std::format("{} holds {} for k = 1 to N, N at least one, each of them; it has {}",
+                          what, rule, got.empty() ? std::string{"none"} : ListRepr(got)));
 }
 
 }  // namespace detail
-
-/**
- * @brief A mineos deck's header, read.
- * @param lines The header lines, three at least.
- * @param source The deck, as an error names it.
- * @throws planetmodel::Error saying what the second and third lines must
- *         carry, where they do not.
- */
-[[nodiscard]] inline MineosHeader ReadMineosHeader(const std::vector<std::string>& lines,
-                                                   const std::string& source) {
-  if (lines.size() < 3) {
-    throw Error(source, "header", "a mineos deck has three header lines");
-  }
-  if (auto header = detail::ParsedMineosHeader(lines)) return *std::move(header);
-  throw Error(source, "header",
-              "a mineos deck's second and third header lines carry `ifanis tref "
-              "ifdeck` and `nknot nic noc`");
-}
 
 /**
  * @brief A table of knots: radii, one column per name, the header lines,
@@ -407,12 +380,201 @@ class Deck {
 };
 
 /**
- * @brief A deck from its text.
+ * @brief What a format's own table reader gives: the knot radii and the
+ * columns at them, SI and radius first, and the labels the table carries.
+ */
+struct DeckTable {
+  /** @brief The knots' radii, non-decreasing. */
+  std::vector<double> radius{};
+  /** @brief Each column's name and its value at every knot. */
+  std::vector<std::pair<std::string, std::vector<double>>> columns{};
+  /** @brief Each label's radius and the label, as `Deck::Labels` holds them. */
+  std::vector<std::pair<double, std::string>> labels{};
+};
+
+/** @brief What a family of deck files looks like. */
+struct DeckFormat {
+  /** @brief The format's name, as errors give it. */
+  std::string name = "custom";
+  /**
+   * @brief The column names after the radius, by the number of them a row
+   * has; a deck is written with the widest set it holds.  A format with
+   * `families` has one set, those before the groups.
+   */
+  std::map<std::size_t, std::vector<std::string>> columns{};
+  /**
+   * @brief Stems of the vocabulary's families (`Families`) whose members
+   * follow the columns in groups, one member of each stem for each index
+   * k = 1 to N in order, N at least one and the same throughout a deck,
+   * read from the width of the rows; a deck is written with every group it
+   * holds.  Empty for a format of fixed columns.
+   */
+  std::vector<std::string> families{};
+  /** @brief How many lines precede the table. */
+  std::size_t header_lines = 0;
+  /**
+   * @brief The keywords of the `#` lines that may follow the header lines
+   * and are read as part of the header, each such line a `#`, its keyword
+   * and its words.
+   */
+  std::vector<std::string> header_comments{};
+  /**
+   * @brief What the header lines must say: throws `Error` naming `source`
+   * where they do not; none for a header kept verbatim.
+   */
+  std::function<void(const std::vector<std::string>& lines, const std::string& source)>
+      check_header{};
+  /**
+   * @brief The header lines a deck is written with; none to write the
+   * deck's own header lines as they are.
+   */
+  std::function<std::vector<std::string>(const Deck& deck)> write_header{};
+  /**
+   * @brief The value written for a column where a layer lacks it; NaN for
+   * a column not named here.
+   */
+  std::map<std::string, double, std::less<>> fill{};
+  /**
+   * @brief The reader of a table that is not rows of radius and SI values:
+   * the lines after the header to the radii, columns and labels, SI and
+   * radius first; none for rows of radius and SI values.
+   */
+  std::function<DeckTable(const std::vector<std::string>& lines, const std::string& source)>
+      read_table{};
+  /**
+   * @brief The writer of such a table: a deck and the columns to write to
+   * the table's lines; none for rows of radius and SI values.
+   */
+  std::function<std::vector<std::string>(const Deck& deck,
+                                         const std::vector<std::string>& names)>
+      write_table{};
+  /**
+   * @brief What the format requires of a deck's values beyond their
+   * layering: throws `Error` where a deck breaks it.  Applied to every deck
+   * read, and to every deck written, as it is written: completed, its
+   * header the lines it is written with, its columns the format's.  None
+   * for no more.
+   */
+  std::function<void(const Deck& deck)> check_table{};
+  /**
+   * @brief A deck as it is written, the values a layer lacks completed
+   * where `fill` does not say what they are; none to write the deck as it
+   * is.
+   */
+  std::function<Deck(const Deck& deck)> complete{};
+
+  /**
+   * @brief The column names of a row of a width.
+   * @param width The number of values after the radius.
+   * @param source The deck, as an error names it.
+   * @throws planetmodel::Error if the format has no row of that width.
+   */
+  [[nodiscard]] std::vector<std::string> Names(std::size_t width,
+                                               const std::string& source) const {
+    if (!families.empty()) {
+      const auto& lead = columns.begin()->second;
+      const auto size = families.size();
+      if (width < lead.size() + size || (width - lead.size()) % size != 0) {
+        auto stems = std::vector<std::string>{};
+        for (const auto& stem : families) stems.push_back(stem + "_k");
+        throw Error(source, "",
+                    std::format("a {} deck has {} columns after the radius, {}, then {} for "
+                                "each index k = 1 to N, {}, N at least one; the table has {}",
+                                name, lead.size(), detail::ListRepr(lead), size,
+                                detail::ListRepr(stems), width));
+      }
+      auto out = lead;
+      for (auto& member : detail::Members(families, (width - lead.size()) / size)) {
+        out.push_back(std::move(member));
+      }
+      return out;
+    }
+    if (const auto it = columns.find(width); it != columns.end()) return it->second;
+    auto widths = std::string{};
+    for (const auto& [w, names] : columns) widths += (widths.empty() ? "" : " or ") +
+                                                     std::to_string(w);
+    throw Error(source, "",
+                std::format("a {} deck has {} columns after the radius, not {}", name,
+                            widths, width));
+  }
+
+  /**
+   * @brief Whether a line is a `#` line of one of `header_comments`.
+   * @param line The line.
+   */
+  [[nodiscard]] bool IsHeaderComment(std::string_view line) const {
+    const auto keyword = detail::Keyword(line);
+    return keyword && std::ranges::find(header_comments, *keyword) != header_comments.end();
+  }
+};
+
+/** @brief The three header lines of a mineos deck, read. */
+struct MineosHeader {
+  std::string name;    /**< The title, trimmed. */
+  int ifanis = 0;      /**< Whether the deck is anisotropic. */
+  double tref = 0.0;   /**< The reference period of the velocities, in seconds. */
+  int ifdeck = 0;      /**< Whether the deck is a table of knots. */
+  int nknot = 0;       /**< The number of knots the header states. */
+  int nic = 0;         /**< The knots of the inner core. */
+  int noc = 0;         /**< The knots to the top of the outer core. */
+  std::vector<std::string> extras2{}; /**< The tokens after the second line's three. */
+  std::vector<std::string> extras3{}; /**< The tokens after the third line's three. */
+};
+
+namespace detail {
+
+/// A mineos header, or empty where the lines are not one.
+inline std::optional<MineosHeader> ParsedMineosHeader(const std::vector<std::string>& lines) {
+  if (lines.size() < 3) return std::nullopt;
+  const auto h2 = Tokens(lines[1]);
+  const auto h3 = Tokens(lines[2]);
+  if (h2.size() < 3 || h3.size() < 3) return std::nullopt;
+  const auto ifanis = Integer(h2[0]);
+  const auto tref = Number(h2[1]);
+  const auto ifdeck = Integer(h2[2]);
+  const auto nknot = Integer(h3[0]);
+  const auto nic = Integer(h3[1]);
+  const auto noc = Integer(h3[2]);
+  if (!ifanis || !tref || !ifdeck || !nknot || !nic || !noc) return std::nullopt;
+  return MineosHeader{.name = Trimmed(lines[0]),
+                      .ifanis = *ifanis,
+                      .tref = *tref,
+                      .ifdeck = *ifdeck,
+                      .nknot = *nknot,
+                      .nic = *nic,
+                      .noc = *noc,
+                      .extras2 = std::vector<std::string>(h2.begin() + 3, h2.end()),
+                      .extras3 = std::vector<std::string>(h3.begin() + 3, h3.end())};
+}
+
+}  // namespace detail
+
+/**
+ * @brief A mineos deck's header, read.
+ * @param lines The header lines, three at least.
+ * @param source The deck, as an error names it.
+ * @throws planetmodel::Error saying what the second and third lines must
+ *         carry, where they do not.
+ */
+[[nodiscard]] inline MineosHeader ReadMineosHeader(const std::vector<std::string>& lines,
+                                                   const std::string& source) {
+  if (lines.size() < 3) {
+    throw Error(source, "header", "a mineos deck has three header lines");
+  }
+  if (auto header = detail::ParsedMineosHeader(lines)) return *std::move(header);
+  throw Error(source, "header",
+              "a mineos deck's second and third header lines carry `ifanis tref "
+              "ifdeck` and `nknot nic noc`");
+}
+
+/**
+ * @brief A deck from its text, held to the format's `check_table`.
  * @param text The deck.
  * @param format Its format.
  * @param source What the deck is, as errors name it.
  * @throws planetmodel::Error naming the line of the first fault, or the
- *         header where it is not as the format says.
+ *         header where it is not as the format says, or as the format's
+ *         `check_table` does.
  */
 [[nodiscard]] inline Deck ReadDeckText(std::string_view text, const DeckFormat& format,
                                        std::string source = "the deck") {
@@ -435,8 +597,10 @@ class Deck {
     auto table = format.read_table(
         std::vector<std::string>(lines.begin() + static_cast<std::ptrdiff_t>(n), lines.end()),
         source);
-    return Deck(std::move(table.radius), std::move(table.columns), header, std::move(source),
-                std::move(table.labels));
+    auto deck = Deck(std::move(table.radius), std::move(table.columns), header,
+                     std::move(source), std::move(table.labels));
+    if (format.check_table) format.check_table(deck);
+    return deck;
   }
 
   auto rows = std::vector<std::vector<double>>{};
@@ -462,7 +626,7 @@ class Deck {
     rows.push_back(std::move(row));
   }
   if (rows.empty()) throw Error(source, "", "no knots after the header");
-  const auto& names = format.Names(rows.front().size() - 1, source);
+  const auto names = format.Names(rows.front().size() - 1, source);
   auto radius = std::vector<double>{};
   auto columns = std::vector<std::pair<std::string, std::vector<double>>>{};
   for (const auto& name : names) columns.emplace_back(name, std::vector<double>{});
@@ -470,7 +634,9 @@ class Deck {
     radius.push_back(row[0]);
     for (auto j = std::size_t{0}; j < names.size(); ++j) columns[j].second.push_back(row[j + 1]);
   }
-  return Deck(std::move(radius), std::move(columns), header, std::move(source));
+  auto deck = Deck(std::move(radius), std::move(columns), header, std::move(source));
+  if (format.check_table) format.check_table(deck);
+  return deck;
 }
 
 /**
@@ -576,14 +742,16 @@ inline std::optional<std::vector<std::optional<std::string>>> NamesOn(
   return std::nullopt;
 }
 
-/// One `# layers` or `# interfaces` line, `-` for no name.
+/// One `# layers` or `# interfaces` line, `-` for no name; `what` is the
+/// deck, as an error names it.
 inline std::string NameLine(std::string_view keyword,
-                            const std::vector<std::optional<std::string>>& names) {
+                            const std::vector<std::optional<std::string>>& names,
+                            std::string_view what = "a Maxwell deck") {
   auto out = std::format("# {}", keyword);
   for (const auto& name : names) {
     if (name && (name->empty() || *name == "-" || name->find('#') != std::string::npos ||
                  std::ranges::any_of(*name, [](unsigned char c) { return std::isspace(c); }))) {
-      throw Error("a Maxwell deck", keyword,
+      throw Error(what, keyword,
                   std::format("a name in a deck is one word, not `-` and without `#`; "
                               "got '{}'",
                               *name));
@@ -598,23 +766,54 @@ inline bool AnyNamed(const std::vector<std::optional<std::string>>& names) {
   return std::ranges::any_of(names, [](const auto& name) { return name.has_value(); });
 }
 
-/// The line naming a Maxwell deck's columns.
-inline std::string MaxwellColumnLine() {
+/// The line naming `r` and the columns.
+inline std::string ColumnLine(const std::vector<std::string>& columns) {
   auto out = std::string{"r"};
-  for (const auto& name : MAXWELL_COLUMNS) out += " " + name;
+  for (const auto& name : columns) out += " " + name;
   return out;
+}
+
+/// The line naming a Maxwell deck's columns.
+inline std::string MaxwellColumnLine() { return ColumnLine(MAXWELL_COLUMNS); }
+
+/// The header lines of a deck of a title, a column line and naming lines:
+/// the title, the line naming `r` and `columns`, and a naming line for the
+/// layers and one for the interfaces where any of them is named.
+inline std::vector<std::string> NamedHeader(
+    std::string_view title, const std::vector<std::string>& columns,
+    const std::vector<std::optional<std::string>>& layers,
+    const std::vector<std::optional<std::string>>& interfaces, std::string_view what) {
+  auto out = std::vector<std::string>{std::string{title}, ColumnLine(columns)};
+  if (AnyNamed(layers)) out.push_back(NameLine("layers", layers, what));
+  if (AnyNamed(interfaces)) out.push_back(NameLine("interfaces", interfaces, what));
+  return out;
+}
+
+/// Refuse a header of a title, a column line and naming lines that has more
+/// than one `# layers` or `# interfaces` line.
+inline void OneNamingLineEach(const std::vector<std::string>& lines, const std::string& source,
+                              std::string_view what) {
+  for (const auto* keyword : {"layers", "interfaces"}) {
+    const auto count = std::ranges::count_if(
+        lines.begin() + 2, lines.end(), [&](const auto& l) { return Keyword(l) == keyword; });
+    if (count > 1) {
+      throw Error(source, "header",
+                  std::format("{} has one `# {}` line; it has {}", what, keyword, count));
+    }
+  }
 }
 
 }  // namespace detail
 
 /**
- * @brief The layer and interface names a Maxwell header gives.
+ * @brief The layer and interface names a Maxwell header gives, or a prony
+ * or burgers header, which name them the same way.
  *
  * Those of its `# layers` and `# interfaces` lines, centre outward, empty
  * for `-`.  Without a line the layers are unnamed, and the interfaces too
  * but for `surface`, the outermost.
  *
- * @param deck A Maxwell deck.
+ * @param deck A Maxwell, prony or burgers deck.
  * @throws planetmodel::Error if a line names other than the deck's layers,
  *         or its interfaces (one per layer, and one more for a hollow
  *         body's inner boundary).
@@ -653,13 +852,30 @@ inline std::string MaxwellColumnLine() {
 [[nodiscard]] inline std::vector<std::string> MaxwellHeader(
     std::string_view title, const std::vector<std::optional<std::string>>& layers = {},
     const std::vector<std::optional<std::string>>& interfaces = {}) {
-  auto out = std::vector<std::string>{std::string{title}, detail::MaxwellColumnLine()};
-  if (detail::AnyNamed(layers)) out.push_back(detail::NameLine("layers", layers));
-  if (detail::AnyNamed(interfaces)) out.push_back(detail::NameLine("interfaces", interfaces));
-  return out;
+  return detail::NamedHeader(title, MAXWELL_COLUMNS, layers, interfaces, "a Maxwell deck");
 }
 
 namespace detail {
+
+/// The header lines a deck of a title, a column line and naming lines is
+/// written with: its title, the line naming `r` and `columns`, and the
+/// naming lines its header has where any of their names is given, their
+/// counts checked against the deck's (`MaxwellNames`).
+inline std::vector<std::string> NamedHeaderLines(const Deck& deck,
+                                                 const std::vector<std::string>& columns,
+                                                 std::string_view what) {
+  const auto names = MaxwellNames(deck);
+  const auto& header = deck.Header();
+  auto out = std::vector<std::string>{header.empty() ? std::string{} : Trimmed(header.front()),
+                                      ColumnLine(columns)};
+  if (NamesOn(header, "layers") && AnyNamed(names.layers)) {
+    out.push_back(NameLine("layers", names.layers, what));
+  }
+  if (NamesOn(header, "interfaces") && AnyNamed(names.interfaces)) {
+    out.push_back(NameLine("interfaces", names.interfaces, what));
+  }
+  return out;
+}
 
 /// A deck's title where its header gives none of its own: its first header
 /// line, else where it was read from, else `deck`, as the Python's writers
@@ -738,32 +954,357 @@ inline std::vector<std::string> MineosHeaderLines(const Deck& deck) {
                                       detail::MaxwellColumnLine(),
                                       detail::Trimmed(lines.at(1))));
             }
-            for (const auto* keyword : {"layers", "interfaces"}) {
-              const auto count = std::ranges::count_if(
-                  lines.begin() + 2, lines.end(),
-                  [&](const auto& l) { return detail::Keyword(l) == keyword; });
-              if (count > 1) {
-                throw Error(source, "header",
-                            std::format("a Maxwell deck has one `# {}` line; it has {}",
-                                        keyword, count));
-              }
-            }
+            detail::OneNamingLineEach(lines, source, "a Maxwell deck");
           },
       .write_header =
           [](const Deck& deck) {
-            const auto names = MaxwellNames(deck);
-            const auto& header = deck.Header();
-            auto out = std::vector<std::string>{
-                header.empty() ? std::string{} : detail::Trimmed(header.front()),
-                detail::MaxwellColumnLine()};
-            if (detail::NamesOn(header, "layers") && detail::AnyNamed(names.layers)) {
-              out.push_back(detail::NameLine("layers", names.layers));
-            }
-            if (detail::NamesOn(header, "interfaces") && detail::AnyNamed(names.interfaces)) {
-              out.push_back(detail::NameLine("interfaces", names.interfaces));
-            }
-            return out;
+            return detail::NamedHeaderLines(deck, MAXWELL_COLUMNS, "a Maxwell deck");
           }};
+  return format;
+}
+
+/**
+ * @brief The columns after the radius of a prony deck of `n` branches:
+ * `PRONY_COLUMNS`, then `relaxation_strength_k` and `relaxation_time_k`
+ * for k = 1 to n.
+ * @param n The number of branches, at least one.
+ * @throws planetmodel::Error if `n` is zero.
+ */
+[[nodiscard]] inline std::vector<std::string> PronyColumns(std::size_t n) {
+  if (n < 1) {
+    throw Error("PronyColumns", "",
+                std::format("a prony deck has a whole number of branches, at least one; got {}",
+                            n));
+  }
+  auto out = PRONY_COLUMNS;
+  for (auto& member : detail::Members(BRANCH_STEMS, n)) out.push_back(std::move(member));
+  return out;
+}
+
+/**
+ * @brief The number of branches N of a prony deck, the same on every layer:
+ * the pairs of branch columns it holds, both of each pair for k = 1 to N.
+ * @param deck A prony deck.
+ * @throws planetmodel::Error if the deck holds other branch columns, or
+ *         none.
+ */
+[[nodiscard]] inline std::size_t PronyBranches(const Deck& deck) {
+  return detail::Groups(BRANCH_STEMS, deck.Names(), "a prony deck", deck.Source());
+}
+
+/**
+ * @brief The header lines of a prony deck of `n` branches: its title, the
+ * line naming the columns, and a naming line for the layers and one for the
+ * interfaces where any of them is named.  A deck is written with the column
+ * line of the branches it holds, whatever `n` its header lines were made
+ * with.
+ * @param title The deck's title.
+ * @param n The number of branches, at least one.
+ * @param layers The layers' names, centre outward, empty where unnamed.
+ * @param interfaces The interfaces' names, centre outward.
+ * @throws planetmodel::Error if `n` is zero, or a name is not one word, is
+ *         `-`, or holds a `#`.
+ */
+[[nodiscard]] inline std::vector<std::string> PronyHeader(
+    std::string_view title, std::size_t n,
+    const std::vector<std::optional<std::string>>& layers = {},
+    const std::vector<std::optional<std::string>>& interfaces = {}) {
+  return detail::NamedHeader(title, PronyColumns(n), layers, interfaces, "a prony deck");
+}
+
+/**
+ * @brief The header lines of a burgers deck: its title, the line naming the
+ * columns, and a naming line for the layers and one for the interfaces
+ * where any of them is named.
+ * @param title The deck's title.
+ * @param layers The layers' names, centre outward, empty where unnamed.
+ * @param interfaces The interfaces' names, centre outward.
+ * @throws planetmodel::Error if a name is not one word, is `-`, or holds a
+ *         `#`.
+ */
+[[nodiscard]] inline std::vector<std::string> BurgersHeader(
+    std::string_view title, const std::vector<std::optional<std::string>>& layers = {},
+    const std::vector<std::optional<std::string>>& interfaces = {}) {
+  return detail::NamedHeader(title, BURGERS_COLUMNS, layers, interfaces, "a burgers deck");
+}
+
+namespace detail {
+
+/// Refuse a prony column line other than `r`, `PRONY_COLUMNS` and the pairs
+/// of branch columns for k = 1 to N in order, N at least one, saying what is
+/// wrong, as the Python does.
+inline void CheckPronyColumnLine(std::string_view line, const std::string& source) {
+  const auto named = Tokens(line.substr(0, line.find('#')));
+  auto lead = std::vector<std::string>{"r"};
+  lead.insert(lead.end(), PRONY_COLUMNS.begin(), PRONY_COLUMNS.end());
+  if (named.size() < lead.size() || !std::equal(lead.begin(), lead.end(), named.begin())) {
+    throw Error(source, "header",
+                std::format("a prony deck's second line names its columns, {} then "
+                            "relaxation_strength_k relaxation_time_k for each branch k = 1 to "
+                            "N; got '{}'",
+                            Joined(lead), Trimmed(line)));
+  }
+  const auto words = std::vector<std::string>(
+      named.begin() + static_cast<std::ptrdiff_t>(lead.size()), named.end());
+  if (words.empty()) {
+    throw Error(source, "header",
+                "a prony deck has at least one branch; its column line names none after eta");
+  }
+  const auto want = Members(BRANCH_STEMS, (words.size() + 1) / 2);
+  constexpr auto rule = std::string_view{
+      "a prony deck's branch columns come in pairs, relaxation_strength_k relaxation_time_k "
+      "for k = 1, 2, ... in order"};
+  for (auto i = std::size_t{0}; i < words.size(); ++i) {
+    if (words[i] != want[i]) {
+      throw Error(source, "header",
+                  std::format("{}; '{}' stands where '{}' belongs", rule, words[i], want[i]));
+    }
+  }
+  if (words.size() % 2 != 0) {
+    throw Error(source, "header",
+                std::format("{}; branch {} has no '{}'", rule, want.size() / 2, want.back()));
+  }
+}
+
+/// A layer's values of one column, the rows [begin, end).
+inline std::vector<double> Rows(const std::vector<double>& values, std::size_t begin,
+                                std::size_t end) {
+  return {values.begin() + static_cast<std::ptrdiff_t>(begin),
+          values.begin() + static_cast<std::ptrdiff_t>(end)};
+}
+
+/// Refuse a prony deck as the Python's `PRONY` does: a column line (the
+/// header's second, where it has one) naming other columns than its
+/// branches'; a layer neither NaN in every branch
+/// column (elastic) nor a number in each; a strength outside [0, 1], or
+/// strengths summing to more than one past `STRENGTH_ROUNDING`; a time not
+/// positive and finite.  Naming the layer, the column and the radius.
+inline void CheckPronyTable(const Deck& deck) {
+  const auto n = PronyBranches(deck);
+  const auto& source = deck.Source();
+  if (const auto& header = deck.Header(); header.size() >= 2) {
+    const auto line = std::string_view{header[1]};
+    const auto named = Tokens(line.substr(0, line.find('#')));
+    const auto columns = PronyColumns(n);
+    if (named.empty() || !std::ranges::equal(named | std::views::drop(1), columns)) {
+      throw Error(source, "",
+                  std::format("the column line names {} columns after the radius; the rows "
+                              "have {}",
+                              named.empty() ? 0 : named.size() - 1, columns.size()));
+    }
+  }
+  const auto& r = deck.Radius();
+  const auto layers = deck.Layers();
+  for (auto i = std::size_t{0}; i < layers.size(); ++i) {
+    const auto [begin, end] = layers[i];
+    const auto where = std::format("layer {}", i);
+    auto w = std::vector<std::vector<double>>{};
+    auto t = std::vector<std::vector<double>>{};
+    auto absent = std::size_t{0};
+    for (auto k = std::size_t{1}; k <= n; ++k) {
+      w.push_back(Rows(deck.Column(std::format("{}_{}", BRANCH_STEMS[0], k)), begin, end));
+      t.push_back(Rows(deck.Column(std::format("{}_{}", BRANCH_STEMS[1], k)), begin, end));
+      for (const auto* values : {&w.back(), &t.back()}) {
+        absent += static_cast<std::size_t>(
+            std::ranges::count_if(*values, [](double v) { return std::isnan(v); }));
+      }
+    }
+    if (absent == 2 * n * (end - begin)) continue;
+    if (absent > 0) {
+      throw Error(source, where,
+                  "holds nan in some of its branch columns and numbers in others; a layer of "
+                  "a prony deck is nan in every branch column (elastic) or holds a number in "
+                  "each, a strength of 0 in a branch it does not use");
+    }
+    for (auto k = std::size_t{0}; k < n; ++k) {
+      for (auto j = std::size_t{0}; j < end - begin; ++j) {
+        if (!(w[k][j] >= 0.0 && w[k][j] <= 1.0)) {
+          throw Error(source, where,
+                      std::format("{}_{} is {:g} at r = {:g}; a strength lies in [0, 1]",
+                                  BRANCH_STEMS[0], k + 1, w[k][j], r[begin + j]));
+        }
+      }
+    }
+    for (auto k = std::size_t{0}; k < n; ++k) {
+      for (auto j = std::size_t{0}; j < end - begin; ++j) {
+        if (!(std::isfinite(t[k][j]) && t[k][j] > 0.0)) {
+          throw Error(source, where,
+                      std::format("{}_{} is {:g} at r = {:g}; a time is positive and finite",
+                                  BRANCH_STEMS[1], k + 1, t[k][j], r[begin + j]));
+        }
+      }
+    }
+    for (auto j = std::size_t{0}; j < end - begin; ++j) {
+      auto total = 0.0;
+      for (auto k = std::size_t{0}; k < n; ++k) total += w[k][j];
+      if (total > 1.0 + static_cast<double>(n) * STRENGTH_ROUNDING) {
+        throw Error(source, where,
+                    std::format("the strengths sum to {:.9g} at r = {:g}, more than one", total,
+                                r[begin + j]));
+      }
+    }
+  }
+}
+
+/// A prony deck as written, as the Python's `PRONY` completes it: on a layer
+/// holding branches 1 to m and NaN throughout in the others, each other
+/// branch is given a strength of 0 and the time of branch m at every knot.
+/// Any other layer is left as it is, for `CheckPronyTable` to hold.
+inline Deck CompletePronyDeck(const Deck& deck) {
+  const auto n = PronyBranches(deck);
+  auto columns = std::vector<std::pair<std::string, std::vector<double>>>{};
+  for (const auto& name : deck.Names()) columns.emplace_back(name, deck.Column(name));
+  const auto column = [&](std::string_view stem, std::size_t k) -> std::vector<double>& {
+    const auto name = std::format("{}_{}", stem, k);
+    return std::ranges::find(columns, name, [](const auto& c) { return c.first; })->second;
+  };
+  const auto finite = [](const std::vector<double>& v, std::size_t b, std::size_t e) {
+    return std::none_of(v.begin() + static_cast<std::ptrdiff_t>(b),
+                        v.begin() + static_cast<std::ptrdiff_t>(e),
+                        [](double x) { return std::isnan(x); });
+  };
+  const auto missing = [](const std::vector<double>& v, std::size_t b, std::size_t e) {
+    return std::all_of(v.begin() + static_cast<std::ptrdiff_t>(b),
+                       v.begin() + static_cast<std::ptrdiff_t>(e),
+                       [](double x) { return std::isnan(x); });
+  };
+  for (const auto& [begin, end] : deck.Layers()) {
+    auto held = std::size_t{0};
+    while (held < n && finite(column(BRANCH_STEMS[0], held + 1), begin, end) &&
+           finite(column(BRANCH_STEMS[1], held + 1), begin, end)) {
+      ++held;
+    }
+    auto rest = held > 0;
+    for (auto k = held + 1; k <= n; ++k) {
+      rest = rest && missing(column(BRANCH_STEMS[0], k), begin, end) &&
+             missing(column(BRANCH_STEMS[1], k), begin, end);
+    }
+    if (!rest) continue;
+    for (auto k = held + 1; k <= n; ++k) {
+      auto& strength = column(BRANCH_STEMS[0], k);
+      auto& time = column(BRANCH_STEMS[1], k);
+      const auto& last = column(BRANCH_STEMS[1], held);
+      for (auto j = begin; j < end; ++j) {
+        strength[j] = 0.0;
+        time[j] = last[j];
+      }
+    }
+  }
+  return Deck(deck.Radius(), std::move(columns), deck.Header(), deck.Source(), deck.Labels());
+}
+
+/// Refuse a burgers deck as the Python's `BURGERS` does: a layer holding
+/// other than none of the viscosity and the Kelvin columns (elastic), the
+/// viscosity alone (a Maxwell body) or all three (a Burgers body), each NaN
+/// throughout the layer or nowhere in it, or holding one that is not
+/// positive and finite.  Naming the layer, the column and the radius.
+inline void CheckBurgersTable(const Deck& deck) {
+  const auto& source = deck.Source();
+  const auto& r = deck.Radius();
+  const auto names = std::vector<std::string>(BURGERS_COLUMNS.end() - 3, BURGERS_COLUMNS.end());
+  const auto layers = deck.Layers();
+  for (auto i = std::size_t{0}; i < layers.size(); ++i) {
+    const auto [begin, end] = layers[i];
+    const auto where = std::format("layer {}", i);
+    auto held = std::vector<std::string>{};
+    for (const auto& name : names) {
+      const auto values = Rows(deck.Column(name), begin, end);
+      const auto absent = std::ranges::count_if(values, [](double v) { return std::isnan(v); });
+      if (absent > 0 && absent < static_cast<std::ptrdiff_t>(values.size())) {
+        throw Error(source, where,
+                    std::format("{} is nan on part of the layer; a column is nan throughout a "
+                                "layer or nowhere in it",
+                                name));
+      }
+      if (absent == 0) held.push_back(name);
+    }
+    if (!(held.empty() || held == std::vector<std::string>{names.front()} || held == names)) {
+      throw Error(source, where,
+                  std::format("holds {}; a layer of a burgers deck holds a viscosity alone (a "
+                              "Maxwell body), a viscosity and both Kelvin columns (a Burgers "
+                              "body), or none of the three (elastic)",
+                              ListRepr(held)));
+    }
+    for (const auto& name : held) {
+      const auto& values = deck.Column(name);
+      for (auto j = begin; j < end; ++j) {
+        if (!(std::isfinite(values[j]) && values[j] > 0.0)) {
+          throw Error(source, where,
+                      std::format("{} is {:g} at r = {:g}; it is positive and finite", name,
+                                  values[j], r[j]));
+        }
+      }
+    }
+  }
+}
+
+}  // namespace detail
+
+/**
+ * @brief The prony format: the Maxwell format's title, naming lines and
+ * layering, its columns with the viscosity replaced by the pairs
+ * `relaxation_strength_k relaxation_time_k` for k = 1 to N, N read from the
+ * column line and the same throughout the deck (`PronyBranches`).  A layer
+ * is NaN in every branch column (elastic) or a number in each, a strength
+ * of 0 in a branch it does not use; every strength lies in [0, 1], their
+ * sum is at most one (to `STRENGTH_ROUNDING` a branch) and every time is
+ * positive and finite, on reading and on writing.  The writer completes a
+ * layer holding branches 1 to m and NaN in the others with strengths of 0
+ * and the time of branch m.
+ */
+[[nodiscard]] inline const DeckFormat& PRONY() {
+  static const auto format = DeckFormat{
+      .name = "prony",
+      .columns = {{PRONY_COLUMNS.size(), PRONY_COLUMNS}},
+      .families = BRANCH_STEMS,
+      .header_lines = 2,
+      .header_comments = {"layers", "interfaces"},
+      .check_header =
+          [](const std::vector<std::string>& lines, const std::string& source) {
+            detail::CheckPronyColumnLine(lines.at(1), source);
+            detail::OneNamingLineEach(lines, source, "a prony deck");
+          },
+      .write_header =
+          [](const Deck& deck) {
+            return detail::NamedHeaderLines(deck, PronyColumns(PronyBranches(deck)),
+                                            "a prony deck");
+          },
+      .check_table = detail::CheckPronyTable,
+      .complete = detail::CompletePronyDeck};
+  return format;
+}
+
+/**
+ * @brief The burgers format: the Maxwell format's title, naming lines and
+ * layering, then `r` and the columns of `BURGERS_COLUMNS`.  A layer holds
+ * none of the viscosity and the Kelvin element's two (elastic), the
+ * viscosity alone (a Maxwell body) or all three (a Burgers body), each
+ * positive and finite, on reading and on writing.
+ */
+[[nodiscard]] inline const DeckFormat& BURGERS() {
+  static const auto format = DeckFormat{
+      .name = "burgers",
+      .columns = {{BURGERS_COLUMNS.size(), BURGERS_COLUMNS}},
+      .header_lines = 2,
+      .header_comments = {"layers", "interfaces"},
+      .check_header =
+          [](const std::vector<std::string>& lines, const std::string& source) {
+            const auto line = std::string_view{lines.at(1)};
+            if (detail::Tokens(line.substr(0, line.find('#'))) !=
+                detail::Tokens(detail::ColumnLine(BURGERS_COLUMNS))) {
+              throw Error(source, "header",
+                          std::format("a burgers deck's second line names its columns, {}; "
+                                      "got '{}'",
+                                      detail::ColumnLine(BURGERS_COLUMNS),
+                                      detail::Trimmed(lines.at(1))));
+            }
+            detail::OneNamingLineEach(lines, source, "a burgers deck");
+          },
+      .write_header =
+          [](const Deck& deck) {
+            return detail::NamedHeaderLines(deck, BURGERS_COLUMNS, "a burgers deck");
+          },
+      .check_table = detail::CheckBurgersTable};
   return format;
 }
 
@@ -991,34 +1532,44 @@ inline std::vector<std::string> NdTableLines(const Deck& deck,
  * @brief A deck's text in a format, as the Python's `write_deck` writes
  * it: the header lines, then one row per knot, the radius as `%14.3f` and
  * the format's columns in order as `%16.8g`, an absent value as the
- * format's `fill` for its column, else `nan`.
- * @param deck The deck.
+ * format's `fill` for its column, else `nan`.  The deck is completed by the
+ * format's `complete` and held to its `check_table` as it is written.
+ * @param given The deck.
  * @param format The format; where it admits several sets of columns, the
- *        widest the deck holds is written.
+ *        widest the deck holds is written, and where it has families, every
+ *        group the deck holds.
  * @throws planetmodel::Error if the deck lacks a column the format needs,
- *         or the header is not the format's lines and `#` lines.
+ *         or the header is not the format's lines and `#` lines, or as the
+ *         format's `check_table` does.
  */
-[[nodiscard]] inline std::string WriteDeckText(const Deck& deck, const DeckFormat& format) {
-  const std::vector<std::string>* names = nullptr;
-  for (auto it = format.columns.rbegin(); it != format.columns.rend(); ++it) {
-    if (std::ranges::all_of(it->second, [&](const auto& n) { return deck.HasColumn(n); })) {
-      names = &it->second;
-      break;
+[[nodiscard]] inline std::string WriteDeckText(const Deck& given, const DeckFormat& format) {
+  auto names = std::vector<std::string>{};
+  auto found = false;
+  if (!format.families.empty()) {
+    names = format.columns.begin()->second;
+    const auto n = detail::Groups(format.families, given.Names(),
+                                  std::format("a {} deck", format.name), given.Source());
+    for (auto& member : detail::Members(format.families, n)) names.push_back(std::move(member));
+    found = std::ranges::all_of(names, [&](const auto& c) { return given.HasColumn(c); });
+  } else {
+    for (auto it = format.columns.rbegin(); it != format.columns.rend(); ++it) {
+      if (std::ranges::all_of(it->second, [&](const auto& c) { return given.HasColumn(c); })) {
+        names = it->second;
+        found = true;
+        break;
+      }
     }
   }
-  if (names == nullptr) {
+  if (!found) {
     auto wanted = std::string{};
     for (const auto& [width, set] : format.columns) {
-      auto words = std::string{};
-      for (const auto& n : set) words += (words.empty() ? "" : " ") + n;
-      wanted += (wanted.empty() ? "" : " or ") + words;
+      wanted += (wanted.empty() ? "" : " or ") + detail::Joined(set);
     }
-    auto held = std::string{};
-    for (const auto& n : deck.Names()) held += (held.empty() ? "" : " ") + n;
-    throw Error(deck.Source(), "",
+    throw Error(given.Source(), "",
                 std::format("a {} deck needs columns {}; the deck has {}", format.name,
-                            wanted, held));
+                            wanted, detail::Joined(given.Names())));
   }
+  const auto deck = format.complete ? format.complete(given) : given;
   const auto header = format.write_header ? format.write_header(deck) : deck.Header();
   const auto extra = header.size() >= format.header_lines
                          ? std::vector<std::string>(header.begin() + static_cast<std::ptrdiff_t>(
@@ -1036,6 +1587,12 @@ inline std::vector<std::string> NdTableLines(const Deck& deck,
                                               format.header_comments.size()),
                             header.size()));
   }
+  if (format.check_table) {
+    auto written = std::vector<std::pair<std::string, std::vector<double>>>{};
+    for (const auto& name : names) written.emplace_back(name, deck.Column(name));
+    format.check_table(
+        Deck(deck.Radius(), std::move(written), header, deck.Source(), deck.Labels()));
+  }
   auto out = std::string{};
   for (const auto& line : header) {
     auto text = std::string_view{line};
@@ -1044,14 +1601,14 @@ inline std::vector<std::string> NdTableLines(const Deck& deck,
     out += '\n';
   }
   if (format.write_table) {
-    for (const auto& line : format.write_table(deck, *names)) {
+    for (const auto& line : format.write_table(deck, names)) {
       out += line;
       out += '\n';
     }
     return out;
   }
   auto columns = std::vector<std::pair<const std::vector<double>*, std::optional<double>>>{};
-  for (const auto& name : *names) {
+  for (const auto& name : names) {
     const auto it = format.fill.find(name);
     columns.emplace_back(&deck.Column(name),
                          it == format.fill.end() ? std::nullopt : std::optional{it->second});
@@ -1121,23 +1678,32 @@ struct DeckFunctions {
 /**
  * @brief The skeleton of a deck and every layer's columns, each the
  * piecewise polynomial through the layer's knots of the kind `kinds` gives
- * the column or else of `kind`, on its layer with the skeleton's default
- * tolerance.
+ * the column, or else the stem of its family (`Member`), or else of `kind`,
+ * on its layer with the skeleton's default tolerance.
  * @param deck The deck.
  * @param kind How the knots are joined: `cubic`, `natural` or `linear`.
- * @param kinds The kind of a column joined otherwise, by its name;
- *        `MAXWELL_KINDS` for a Maxwell deck.
- * @throws planetmodel::Error if a kind is refused, `kinds` names a column
- *         the deck lacks, or a column is NaN on part of a layer.
+ * @param kinds The kind of a column joined otherwise, by its name or by
+ *        its family's stem; `MAXWELL_KINDS` for a Maxwell deck,
+ *        `PRONY_KINDS` for a prony deck, `BURGERS_KINDS` for a burgers deck.
+ * @throws planetmodel::Error if a kind is refused, `kinds` names neither a
+ *         column of the deck nor the stem of a family it holds a member of,
+ *         or a column is NaN on part of a layer.
  */
 [[nodiscard]] inline DeckFunctions DeckLayers(
     const Deck& deck, std::string_view kind = "cubic",
     const std::map<std::string, std::string, std::less<>>& kinds = {}) {
   const auto knot_kind = KnotKindNamed(kind);
   auto column_kinds = std::map<std::string, KnotKind, std::less<>>{};
+  const auto names = deck.Names();
+  const auto stem_held = [&](std::string_view stem) {
+    return std::ranges::any_of(names, [&](const auto& n) {
+      const auto found = Member(n);
+      return found && found->first == stem;
+    });
+  };
   for (const auto& [name, k] : kinds) {
     column_kinds.emplace(name, KnotKindNamed(k));
-    if (!deck.HasColumn(name)) {
+    if (!deck.HasColumn(name) && !stem_held(name)) {
       throw Error("DeckLayers", "kinds",
                   std::format("names {}, a column the deck lacks", name));
     }
@@ -1163,10 +1729,15 @@ struct DeckFunctions {
                                 "layer only when NaN throughout it",
                                 i));
       }
-      const auto own = column_kinds.find(name);
-      fields.emplace(name, ThroughKnots(std::move(knots), std::move(y),
-                                        own == column_kinds.end() ? knot_kind : own->second,
-                                        tolerance));
+      auto joined = knot_kind;
+      if (const auto own = column_kinds.find(name); own != column_kinds.end()) {
+        joined = own->second;
+      } else if (const auto found = Member(name)) {
+        if (const auto stem = column_kinds.find(found->first); stem != column_kinds.end()) {
+          joined = stem->second;
+        }
+      }
+      fields.emplace(name, ThroughKnots(std::move(knots), std::move(y), joined, tolerance));
     }
     out.layers.push_back(std::move(fields));
   }

@@ -67,6 +67,10 @@ for their readers:
   the mesh's numbered attributes and the field files beside it are.
 * :doc:`formats/maxwell_deck`: a radial viscoelastic body as a plain-text
   table, density and elastic velocities beside a viscosity.
+* :doc:`formats/prony_deck`: the same with one pair of columns per Prony
+  branch, a generalised Maxwell body.
+* :doc:`formats/burgers_deck`: the same with a Kelvin element beside the
+  viscosity, each layer a Maxwell or a Burgers body.
 
 .. toctree::
    :maxdepth: 2
@@ -78,6 +82,8 @@ for their readers:
    formats/fault_file
    formats/mesh_manifest
    formats/maxwell_deck
+   formats/prony_deck
+   formats/burgers_deck
 
 The C++ library
 ===============

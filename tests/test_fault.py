@@ -444,10 +444,18 @@ def test_time_by_the_surface_files_rules():
                     assert str(caught.value) == str(error).replace(
                         f"'{name}0'", "'slip'")
                     continue
-                got = fault.slip_vector(0, U, V, date=date,
+                at = date
+                if support == "static":
+                    # a static field serves any date; a static fault takes none
+                    with pytest.raises(ValueError, match="static.*takes no date"):
+                        fault.slip_vector(0, U, V, date=date, basis="fault")
+                    with pytest.raises(ValueError, match="static.*takes no date"):
+                        fault.rows(date)
+                    at = None
+                got = fault.slip_vector(0, U, V, date=at,
                                         extrapolation=extrapolation, basis="fault")
                 assert np.allclose(got, want, rtol=0, atol=1e-15), (name, date)
-                q = fault.quadrature(2, 3, date=date, extrapolation=extrapolation)
+                q = fault.quadrature(2, 3, date=at, extrapolation=extrapolation)
                 assert np.allclose(q.slip.reshape(2, 3, 3), want @ F.T, rtol=0,
                                    atol=1e-14)
     with pytest.raises(ValueError, match="needs a date"):
@@ -481,6 +489,149 @@ def test_a_fault_of_two_patches_with_afterslip():
     for p in fault.patches:
         testing.check_patch(p)
 
+
+
+def _slices_case(support: str, rule: str) -> Fault:
+    """A fault of a plane, a bicubic and a bilinear patch, on four nodes
+    (or static), every slip rule among them."""
+    rng = np.random.default_rng(31)
+    n = 1 if support == "static" else 4
+    lead = () if support == "static" else (n,)
+    a = Plane.at_depth(EARTH, 35.0, 140.0, 20e3, strike=200.0, dip=15.0,
+                       length=100e3, width=50e3,
+                       slip=Slip(rng.normal(size=lead + (3, 2, 3)), rule="cell"))
+    U, V = np.meshgrid(np.linspace(-0.5, 0.5, 5), np.linspace(-0.5, 0.5, 4),
+                       indexing="ij")
+    base = Plane.at_depth(EARTH, 34.2, 139.7, 30e3, strike=210.0, dip=25.0,
+                          length=60e3, width=40e3, slip=Slip(np.zeros((1, 1, 3))))
+    bend = np.stack([1e-3 * U * V, 2e-3 * U ** 2, -4e3 * V ** 2], axis=-1)
+    b = StructuredPatch(EARTH, base.position(U, V) + bend,
+                        slip=Slip(rng.normal(size=lead + (4, 5, 3)), rule="cubic"),
+                        interpolation="cubic")
+    c = StructuredPatch(EARTH, base.position(U, V)[:3, :3],
+                        slip=Slip(rng.normal(size=lead + (2, 3, 3)), rule="linear"),
+                        interpolation="linear")
+    if support == "static":
+        return Fault([a, b, c])
+    return Fault([a, b, c], support=support, time_interpolation=rule,
+                 time=np.array([0.0, 1.0, 2.5, 6.0]))
+
+
+@pytest.mark.parametrize("support, rule", [("static", "none"), ("node", "linear"),
+                                           ("node", "previous"), ("node", "none")])
+def test_the_slice_quadrature_is_the_quadrature_at_every_date(support, rule):
+    """The geometry once and every slice's slip, combined by the rows of a
+    date, is the quadrature at that date, number for number."""
+    fault = _slices_case(support, rule)
+    counts = ([2, 3, 1], [3, 1, 2])
+    sq = fault.slice_quadrature(*counts, points=2)
+    assert sq.nslices == fault.nslices and sq.slip.shape == (fault.nslices, sq.size, 3)
+    sizes = [nu * nv * 4 for nu, nv in zip(*counts)]
+    assert np.array_equal(sq.patch, np.repeat([0, 1, 2], sizes))
+    dates: list = [None]
+    extra = {}
+    if support == "node":
+        t = fault.time
+        dates = list(t) + [t[1] + 1e-13, t[-1] + 1e-12]
+        if rule != "none":
+            dates += [0.4, 2.0, 5.9, 7.0, -3.0]
+            extra = {"extrapolation": "hold"}
+    for date in dates:
+        q = fault.quadrature(*counts, points=2, date=date, **extra)
+        for name in ("points", "positions", "normals", "weights", "u", "v", "patch"):
+            assert np.array_equal(getattr(sq, name), getattr(q, name)), (date, name)
+        rows = fault.rows(date, **extra)
+        assert np.array_equal(sq.slip_of(rows), q.slip), date
+    for k in range(fault.nslices):
+        assert np.array_equal(sq.slip_of(((k, 1.0), (k, 0.0))), sq.slip[k])
+    with pytest.raises(IndexError):
+        sq.slip_of(((fault.nslices, 1.0), (0, 0.0)))
+    same = fault.slice_quadrature(2, 3)
+    assert same.size == 3 * 2 * 3 and np.array_equal(same.patch,
+                                                      np.repeat([0, 1, 2], 6))
+
+
+def test_a_patch_s_quadrature_names_no_patch_and_a_fault_s_names_each():
+    from planetmodel.fault import PatchQuadrature, Quadrature
+    fault = _slices_case("node", "linear")
+    q = fault.patches[1].quadrature(2, 2, index=3)
+    assert type(q) is PatchQuadrature and not hasattr(q, "patch")
+    whole = fault.quadrature(2, 2, date=6.0)
+    assert isinstance(whole, Quadrature) and isinstance(whole, PatchQuadrature)
+    assert np.array_equal(whole.patch, np.repeat([0, 1, 2], 4))
+    assert np.array_equal(whole.slip[whole.patch == 1], q.slip)
+
+
+def test_a_static_fault_takes_no_date():
+    fault = _slices_case("static", "none")
+    assert fault.rows(None) == ((0, 1.0), (0, 0.0))
+    for call in (lambda: fault.rows(0.0),
+                 lambda: fault.slip_vector(0, 0.0, 0.0, date=1.0),
+                 lambda: fault.quadrature(1, 1, date=1.0),
+                 lambda: fault.slip_at(fault.patches[0].cartesian(0.0, 0.0),
+                                       max_distance=1.0, date=1.0)):
+        with pytest.raises(ValueError, match="static, the same at every date"):
+            call()
+
+
+def test_a_date_within_the_tolerance_of_a_stored_time_is_that_time():
+    """The tolerance is time_rtol times the span (here 3, so 3e-12 by
+    default), or the magnitude of a lone time; zero is exact matching."""
+    from planetmodel.surfacefile import TIME_RTOL, time_rows
+    assert TIME_RTOL == 1e-12
+    t, s = np.array([0.0, 1.0, 3.0]), np.array([2.0, 5.0])
+
+    def rows(support, rule, date, **kw):
+        return time_rows(support, rule, date, time=t, instant=s, **kw)
+
+    near, far = 1e-12, 1e-11
+    one = ((1, 1.0), (1, 0.0))
+    # served at the stored times alone
+    assert rows("node", "none", 1.0 + near) == one
+    assert rows("node", "none", 1.0 - near) == one
+    for bad in (dict(), dict(time_rtol=0.0)):
+        date = 1.0 + (far if not bad else near)
+        with pytest.raises(ValueError, match="stored nodes alone"):
+            rows("node", "none", date, **bad)
+    assert rows("instant", "none", 5.0 + near) == one
+    with pytest.raises(ValueError, match="stored instants alone"):
+        rows("instant", "none", 5.0 + near, time_rtol=0.0)
+    # read from a node a rounding error below it
+    assert rows("node", "previous", 1.0 - near) == one
+    assert rows("node", "previous", 1.0 - near, time_rtol=0.0) == ((0, 1.0), (0, 0.0))
+    assert rows("interval", "none", 1.0 - near) == one
+    assert rows("interval", "none", 1.0 - near, time_rtol=0.0) == ((0, 1.0), (0, 0.0))
+    # a node's own values alone, weights exact
+    assert rows("node", "linear", 1.0 + near) == one
+    (k0, w0), (k1, w1) = rows("node", "linear", 1.0 + near, time_rtol=0.0)
+    assert (k0, k1) == (1, 2) and 0.0 < w1 < 1e-11
+    # the ends of the span
+    assert rows("node", "linear", 3.0 + near) == ((2, 1.0), (2, 0.0))
+    assert rows("node", "linear", -near) == ((0, 1.0), (0, 0.0))
+    with pytest.raises(ValueError, match="outside"):
+        rows("node", "linear", 3.0 + far)
+    with pytest.raises(ValueError, match="outside"):
+        rows("node", "linear", 3.0 + near, time_rtol=0.0)
+    assert rows("node", "linear", 3.0 + far, extrapolation="hold") == (
+        (2, 1.0), (2, 0.0))
+    # a lone time: its magnitude is the scale
+    lone = np.array([4.0])
+    assert time_rows("node", "none", 4.0 + 3e-12, time=lone) == ((0, 1.0), (0, 0.0))
+    with pytest.raises(ValueError, match="stored nodes alone"):
+        time_rows("node", "none", 4.0 + 5e-12, time=lone)
+    # the nearest within the tolerance, the earlier on a tie
+    assert time_rows("node", "none", 0.5, time=np.array([0.0, 1.0]),
+                     time_rtol=0.5) == ((0, 1.0), (0, 0.0))
+    assert time_rows("node", "none", 0.6, time=np.array([0.0, 1.0]),
+                     time_rtol=0.5) == ((1, 1.0), (1, 0.0))
+    for bad in (-1e-12, np.inf, np.nan):
+        with pytest.raises(ValueError, match="time_rtol"):
+            rows("node", "linear", 1.0, time_rtol=bad)
+    # the fault and the surface file take it alike
+    fault = _slices_case("node", "none")
+    assert fault.rows(2.5 + 5e-12) == ((2, 1.0), (2, 0.0))
+    with pytest.raises(ValueError, match="stored nodes alone"):
+        fault.rows(2.5 + 5e-12, time_rtol=0.0)
 
 # -- the poles and the date line ------------------------------------------------------
 
