@@ -44,12 +44,14 @@ layers' (`_faults`); the mesh written is read back as a consumer reads
 it and its cells held to the classification and to the layers they lie
 in (`_validate.confirm_collars`).  Netgen's optimisation of the
 linear mesh crashes the process on a solid with a surface embedded in
-it, whichever solids it is given, so a mesh with a fault skips it and
-says so among the report's warnings.  Nothing then removes a flat
-element the volume mesher leaves, which it can beside a fault at a
-shallow angle to an interface or to the outer boundary: such a mesh
-fails its validation or the check of its collars and is refused, never
-written.  Whether one is left depends on the surface meshes, so another
+it, whichever solids it is given, so a mesh with a fault is relocated
+by gmsh's Relocate3D in its place unless the spec names its own
+(`spec.OPTIMISE_WITH_FAULTS`), and one that names Netgen skips it and
+says so among the report's warnings.  Neither removes a flat element
+the volume mesher leaves, which it can beside a fault at a shallow
+angle to an interface or to the outer boundary: such a mesh fails its
+validation or the check of its collars and is refused, never written.
+Whether one is left depends on the surface meshes, so another
 `algorithm_2d` (gmsh's Delaunay, 5, in place of its frontal Delaunay,
 6) or other sizes are what to try.
 """
@@ -76,15 +78,16 @@ from ._sizing import (apply_mesh_options, apply_refinements, apply_size_fields,
 from ._tagging import apply_physical_groups
 from ._validate import confirm_collars, validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import MeshResult, MeshSpec
+from .spec import MeshResult, MeshSpec, largest_size
 
 __all__ = ["build_layered_mesh", "require_mapping_on_shells",
            "require_spherical_outer_boundary", "policy_name", "UNSAFE_WITH_FAULTS"]
 
 #: The gmsh optimisations that crash the process on a solid with a surface
 #: embedded in it, and optimise every solid whatever entities they are
-#: given (Netgen's, in gmsh 4.15): skipped for a mesh with a fault, with a
-#: warning on its validation report.
+#: given (Netgen's, in gmsh 4.15): named for a mesh with a fault, skipped,
+#: with a warning on its validation report ("auto" names none there,
+#: `spec.OPTIMISE_WITH_FAULTS`).
 UNSAFE_WITH_FAULTS = ("netgen",)
 
 
@@ -201,7 +204,7 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
             algorithm_3d=spec.algorithm_3d,
             size_min=min([s.size for s in sizes.values()]
                          + [float(f.size) for f in refinements]),
-            size_max=max(s.far_size for s in sizes.values()))
+            size_max=largest_size(sizes))
         gmsh.model.mesh.generate(d)
         refined()
         timings["mesh"] = clock() - t0

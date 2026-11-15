@@ -33,9 +33,8 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 from planetmodel import Geometry, Skeleton
 from planetmodel.fault import Fault, GeographicFrame, Plane, Slip, StructuredPatch
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import clip_polygons, mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -82,11 +81,10 @@ faults = {"thrust": Fault([thrust]), "splay": Fault([splay]),
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
-near = InterfaceSizing.graded(0.035, 0.15)
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
-             optimise="Relocate3D",
-             faults=[EmbeddedFault(f, name=n, sizing=near) for n, f in faults.items()]),
+             faults=[EmbeddedFault(f, name=n, sizing=0.035)
+                     for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())
 mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
@@ -195,10 +193,13 @@ print(f"{np.count_nonzero(both)} cells in the collars of both the thrust and the
 
 # %% [markdown]
 # The section through the centre spanned by east and up at the thrust's
-# centroid, across its strike: the cells by layer, coloured over them
+# centroid, across its strike, as a crinkle (`plane_cut(...,
+# kind="crinkle")`), the cells the plane passes through drawn whole,
+# where a cut would shred them: the cells by layer, coloured over them
 # by the collar their attribute names (the thrust's, the splay's, or
-# both), the interfaces, and the thrust and the splay where the section
-# crosses them.
+# both); and over them the interfaces, and the thrust and the splay
+# where the section crosses them, which lie in the plane, an element or
+# less behind the cells' faces drawn.
 
 # %%
 sx = fig.add_subplot(1, 2, 2)
@@ -206,7 +207,8 @@ axes = np.stack([east, up])
 fill = np.array(list(LAYERS.values()), dtype=object)[mesh.layers(card) - 1]
 fill[hanging["thrust"]], fill[hanging["splay"]] = COLOURS["thrust"], COLOURS["splay"]
 fill[both] = BOTH
-mesh_section(sx, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes),
+mesh_section(sx, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes,
+                           kind="crinkle"),
              colours=list(fill), edgecolor=EDGES, linewidth=0.5)
 mesh_section(sx, plane_cut(mesh.points, mesh.faces[interfaces, :3], np.zeros(3),
                            axes), colours=GUIDE, linewidth=1.0)

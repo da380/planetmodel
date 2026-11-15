@@ -31,9 +31,8 @@ from matplotlib.patches import Patch
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -73,20 +72,20 @@ print("the up-dip edge:", np.round(plane.cartesian(0.0, -0.5), 6), "the range ab
       f"it {ridge(0.5, 0.0):.3f}")
 
 # %% [markdown]
-# Two meshes of order 2, the fault's size 0.03 graded to the background
-# (`InterfaceSizing.graded`), the linear mesh relocated: one under the
-# range, the fault pulled back through its stretch, and one on the
-# reference box with the fault as given, its nodes moved by the same
+# Two meshes of order 2, the fault's size 0.03 (graded to the
+# background and the linear mesh relocated, `EmbeddedFault`'s rule): one
+# under the range, the fault pulled back through its stretch, and one on
+# the reference box with the fault as given, its nodes moved by the same
 # mapping afterwards (the pull-back off).
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_pullback_"))
-near = InterfaceSizing.graded(0.03, 0.15)
+size = 0.03
 meshes = {}
 for label, g in (("pulled back", geometry), ("built as given", reference)):
     result = build_layered_mesh(
-        MeshSpec(g, UniformInterfaces(0.1, 0.25, 0.3), order=2, optimise="Relocate3D",
-                 faults=[EmbeddedFault(fault, name="thrust", sizing=near)]),
+        MeshSpec(g, UniformInterfaces(0.1, 0.25, 0.3), order=2,
+                 faults=[EmbeddedFault(fault, name="thrust", sizing=size)]),
         work / label.replace(" ", "_"))
     meshes[label] = (read_mesh(result.msh_path), manifest.read(result.manifest_path))
 mapping = geometry.mapping
@@ -110,7 +109,7 @@ for label, (mesh, card) in meshes.items():
     found[label] = (x[~carried], np.abs(where.distance[~carried]))
     print(f"{label}: {nodes.size} nodes, {int(np.count_nonzero(carried))} carried "
           f"across to the surface; the rest within {found[label][1].max():.2g} of the "
-          f"true fault, {found[label][1].max() / near.size:.2g} of an element")
+          f"true fault, {found[label][1].max() / size:.2g} of an element")
 
 # %% [markdown]
 # The section y = 0, zoomed on the fault, in its coordinates (x, z), z
@@ -165,8 +164,8 @@ for label, colour in CASES.items():
     dist.scatter(np.maximum(d, 1e-12), x[:, 2], s=6, color=colour, label=label)
 dist.set(xscale="log", xlim=(1e-12, 1.0), xlabel="distance from the true fault",
          ylabel="z, up (unit lengths)", title="Every node of the fault, moved")
-dist.axvline(near.size, color=INK, lw=0.8, ls=":")
-dist.text(0.7 * near.size, -0.2, "the fault's\nelement size", color=INK, fontsize=8,
+dist.axvline(size, color=INK, lw=0.8, ls=":")
+dist.text(0.7 * size, -0.2, "the fault's\nelement size", color=INK, fontsize=8,
           ha="right", va="bottom")
 dist.legend(loc="upper center", frameon=False, fontsize=9)
 fig.legend(handles=[Patch(facecolor=c, edgecolor=EDGES, label=n)

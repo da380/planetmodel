@@ -27,8 +27,9 @@ mfem = pytest.importorskip("mfem.ser", reason="needs the planetmodel[mfem] extra
 pytestmark = [pytest.mark.gmsh, pytest.mark.mfem]
 
 #: The configurations exported: a fault through a side, one through the
-#: surface and a side, one through the base, two faults, and a splay.
-EXPORTED = ["side", "surface_side", "base", "two", "splay"]
+#: surface and a side, unsized and sized by a number, one through the
+#: base, two faults, and a splay.
+EXPORTED = ["side", "surface_side", "sized", "base", "two", "splay"]
 
 
 @pytest.fixture(scope="module")

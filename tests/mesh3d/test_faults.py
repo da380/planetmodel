@@ -24,6 +24,8 @@ from planetmodel.mapping import MappingBase
 from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec, Shell,
                                 UniformInterfaces, build_layered_mesh,
                                 manifest as sc, read_mesh)
+from planetmodel.mesh3d.spec import (GRADIENT, OPTIMISE, OPTIMISE_WITH_FAULTS,
+                                     largest_size, optimise_methods)
 
 pytestmark = pytest.mark.gmsh
 
@@ -546,6 +548,64 @@ def test_a_finer_mesh_is_asked_for_near_the_fault(tmp_path):
         "size": 0.04, "far_size": 0.3, "decay_width": 0.2}
 
 
+def test_a_fault_sized_by_a_number_is_graded_and_relocated(tmp_path):
+    """The rule a fault is sized by (`EmbeddedFault`): a number is the size
+    on it, graded at `GRADIENT` to the largest size the interfaces' rule
+    gives (SIZING's far size, 0.3), and the linear mesh is relocated by
+    Relocate3D; the mesh is the one that sizing and that optimisation
+    spelled out give, and the manifest records the sizing resolved."""
+    fault = Fault([plane()])
+
+    def spec(sizing, **options):
+        return MeshSpec(two_layers(), SIZING, order=1, **options,
+                        faults=[EmbeddedFault(fault, name="f", sizing=sizing)])
+
+    by_rule = spec(0.06)
+    assert by_rule.optimise == OPTIMISE_WITH_FAULTS == ("Relocate3D",)
+    res = build_layered_mesh(by_rule, tmp_path / "rule")
+    held(res, {"f": fault})
+    assert res.validation.ok and res.validation.warnings == []
+    graded = InterfaceSizing.graded(0.06, 0.3)
+    assert sc.read(res.manifest_path).faults[0]["sizing"] == {
+        "size": 0.06, "far_size": 0.3, "decay_width": graded.decay_width}
+    spelt = build_layered_mesh(spec(graded, optimise="Relocate3D"), tmp_path / "spelt")
+    a, b = read_mesh(res.msh_path), read_mesh(spelt.msh_path)
+    assert np.array_equal(a.cells, b.cells) and np.array_equal(a.faces, b.faces)
+    assert np.allclose(a.points, b.points, rtol=0.0, atol=1e-12)
+
+
+def test_the_relocation_moves_no_node_of_a_fault_or_an_interface(tmp_path):
+    """The steep ramp without the relocation is the caller's to ask for
+    (an InterfaceSizing as it is, `optimise=None`); a Netgen pass named
+    for a mesh with a fault is skipped with a warning, leaving that same
+    mesh; and the relocation the default runs moves nodes inside the
+    layers only, the elements and every node of the faces, the fault's
+    and the interfaces', as they were, the worst element no worse."""
+    fault = Fault([plane()])
+
+    def built(label, **options):
+        return build_layered_mesh(
+            MeshSpec(two_layers(), SIZING, order=1, **options,
+                     faults=[EmbeddedFault(fault, name="f",
+                                           sizing=InterfaceSizing(0.06, 0.3, 0.1))]),
+            tmp_path / label)
+
+    steep, netgen, moved = built("steep", optimise=None), built(
+        "netgen", optimise="Netgen"), built("moved")
+    assert steep.validation.warnings == [] and moved.validation.warnings == []
+    assert netgen.validation.warnings == [
+        "the Netgen optimisation was skipped: it crashes on a solid with a fault "
+        "embedded in it"]
+    held(moved, {"f": fault})
+    a, b, c = (read_mesh(r.msh_path) for r in (steep, netgen, moved))
+    assert np.array_equal(a.points, b.points) and np.array_equal(a.cells, b.cells)
+    assert np.array_equal(a.cells, c.cells) and np.array_equal(a.faces, c.faces)
+    on_faces = np.unique(a.faces[:, :3])
+    assert np.array_equal(a.points[on_faces], c.points[on_faces])
+    assert np.any(a.points != c.points)
+    assert moved.validation.min_sicn >= steep.validation.min_sicn
+
+
 # ------------------------------------------------------------ the record
 
 def test_a_mesh_without_faults_has_the_manifest_it_always_had(tmp_path):
@@ -595,8 +655,48 @@ def test_what_the_spec_refuses():
         EmbeddedFault(fault, controls=3)
     with pytest.raises(ValueError, match="reach"):
         EmbeddedFault(fault, reach=-1.0)
+    for bad in (True, "0.1", (0.1, 0.3)):
+        with pytest.raises(TypeError, match="sizing must be a size"):
+            EmbeddedFault(fault, sizing=bad)
+    for bad in (0.0, -0.1, np.inf, np.nan):
+        with pytest.raises(ValueError, match="positive and finite"):
+            EmbeddedFault(fault, sizing=bad)
     assert MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(fault)]
                     ).fault_names == ["fault_1"]
+
+
+def test_a_fault_s_sizing_resolves_by_the_rule():
+    """A number is graded to the mesh's largest size (`largest_size`, the
+    interfaces' largest far size), held flat where it is not below it;
+    an InterfaceSizing is taken as it is; None is none.  A spec with a
+    fault takes Relocate3D for "auto", one without Netgen, and either
+    takes what it names."""
+    fault = Fault([plane()])
+    sizes = SIZING(two_layers().interfaces, 1.0)
+    assert largest_size(sizes) == 0.3
+    assert largest_size({0: InterfaceSizing(0.1, 0.2, 0.1),
+                         1: InterfaceSizing(0.05, 0.4, 0.1)}) == 0.4
+    with pytest.raises(ValueError, match="no sizing given"):
+        largest_size({})
+    by_rule = EmbeddedFault(fault, sizing=np.float64(0.06))
+    assert type(by_rule.sizing) is float
+    assert by_rule.resolved_sizing(0.3) == InterfaceSizing.graded(0.06, 0.3)
+    assert by_rule.resolved_sizing(0.3).decay_width == pytest.approx(0.24 / GRADIENT)
+    assert EmbeddedFault(fault, sizing=0.5).resolved_sizing(0.3) == \
+        InterfaceSizing(0.5, 0.5, 0.5)
+    steep = InterfaceSizing(0.06, 0.3, 0.1)
+    assert EmbeddedFault(fault, sizing=steep).resolved_sizing(0.3) is steep
+    assert EmbeddedFault(fault).resolved_sizing(0.3) is None
+    with_fault = MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(fault)])
+    assert with_fault.optimise == OPTIMISE_WITH_FAULTS
+    assert MeshSpec(two_layers(), SIZING).optimise == OPTIMISE == ("Netgen",)
+    assert MeshSpec(two_layers(), SIZING, optimise="auto").optimise == OPTIMISE
+    for named, held_as in ((None, ()), ("Netgen", ("Netgen",)),
+                           (["Relocate3D", "Netgen"], ("Relocate3D", "Netgen"))):
+        assert MeshSpec(two_layers(), SIZING, optimise=named,
+                        faults=[EmbeddedFault(fault)]).optimise == held_as
+    assert optimise_methods("auto", faults=True) == OPTIMISE_WITH_FAULTS
+    assert optimise_methods("auto") == OPTIMISE
 
 
 #: The depth of the centroid of `plane()` whose up-dip edge is `d` below

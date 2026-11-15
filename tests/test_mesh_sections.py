@@ -180,6 +180,104 @@ def test_refusals():
     with pytest.raises(ValueError, match="one colour"):
         mesh_section(ax, cut, colours=["r", "g"])
     plt.close(fig)
+    with pytest.raises(ValueError, match="'cut' or 'crinkle'"):
+        plane_cut(CORNERS, cells, np.full(3, 0.5), np.eye(3)[:2], kind="slice")
+    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra"):
+        plane_cut(CORNERS, kuhn()[1], np.full(3, 0.5), np.eye(3)[:2], kind="crinkle")
+
+
+# ------------------------------------------------------------ the crinkle
+
+def lattice(n):
+    """The unit cube in n^3 cubes, each in its six Kuhn tetrahedra: the
+    lattice's points and the cells."""
+    g = np.arange(n + 1) / n
+    points = np.stack(np.meshgrid(g, g, g, indexing="ij"), axis=-1).reshape(-1, 3)
+    number = lambda i, j, k: (i * (n + 1) + j) * (n + 1) + k
+    local, _ = kuhn()
+    cells = [[number(i + a, j + b, k + c) for a, b, c in CORNERS[cell].astype(int)]
+             for i in range(n) for j in range(n) for k in range(n) for cell in local]
+    return points, np.array(cells)
+
+
+@pytest.mark.parametrize(("axes", "height"), [
+    ([[1, 0, 0], [0, 1, 0]], 0.5), ([[1, 0, 0], [0, 1, 0]], 0.45),
+    ([[0, 1, 0], [1, 0, 0]], 0.5), ([[0, 1, 0], [1, 0, 0]], 0.55)])
+def test_a_crinkle_by_a_lattice_plane_is_its_faces(axes, height):
+    """Two cubes deep, a plane on the lattice's middle plane z = 1/2 or
+    just behind it, the normal up or down: the cells kept are the layer
+    on the side opposite the normal, and the crinkle is the eight
+    triangles of the middle plane, whole, tiling the section; each the
+    face of its cell."""
+    points, cells = lattice(2)
+    cut = plane_cut(points, cells, [0.0, 0.0, height], axes, kind="crinkle")
+    assert cut.pieces.shape == (8, 4, 2)
+    assert np.allclose(area(cut.pieces), 1 / 8, rtol=1e-14)
+    below = points[cells].mean(axis=1)[:, 2] < 0.5
+    up = np.cross(*np.asarray(axes, dtype=float))[2] > 0
+    assert np.all(below[cut.index] == up)
+    for piece, cell in zip(cut.pieces, cut.index):
+        corners = points[cells[cell]]
+        on = corners[np.isclose(corners[:, 2], 0.5)]
+        assert len(on) == 3
+        assert np.allclose(np.sort(on @ np.asarray(axes, float).T, axis=0),
+                           np.sort(piece[:3], axis=0), rtol=0, atol=1e-15)
+
+
+def test_a_crinkle_takes_whole_faces_turned_to_the_viewer_farthest_first():
+    """A plane at a slant through a lattice of 3^3 cubes: every piece is a
+    face of its cell projected, the cell kept (a corner on the negative
+    side) and the cell across the face wholly on the positive side, or
+    the face on the cube's boundary and its cell passed through by the
+    plane; the face turned towards the positive side, the pieces from
+    the farthest; the faces cover the cut's section."""
+    points, cells = lattice(3)
+    origin, axes = np.full(3, 0.5), np.array([[1.0, 0.3, -0.2], [0.1, 1.0, 0.4]])
+    cut = plane_cut(points, cells, origin, axes, kind="crinkle")
+    n = cut.normal
+    d = (points[cells] - origin) @ n
+    assert np.all(d[cut.index].min(axis=1) < 0.0)
+    rim, depths = 0, []
+    for piece, cell in zip(cut.pieces, cut.index):
+        corners = points[cells[cell]]
+        projected = cut.coordinates(corners)
+        match = [int(np.flatnonzero(np.all(np.isclose(projected, v, rtol=0,
+                                                      atol=1e-14), axis=1))[0])
+                 for v in piece[:3]]
+        face = corners[match]
+        apex = corners[np.setdiff1d(range(4), match)[0]]
+        normal = np.cross(face[1] - face[0], face[2] - face[0])
+        outward = normal if (apex - face[0]) @ normal < 0 else -normal
+        assert outward @ n > 0.0
+        shared = np.flatnonzero(np.isin(cells, cells[cell][match]).sum(axis=1) == 3)
+        other = shared[shared != cell]
+        if len(other):
+            assert d[other[0]].min() > 0.0
+        else:
+            rim += 1
+            assert np.any(np.isclose(face, 0.0) | np.isclose(face, 1.0), axis=0).any()
+            assert d[cell].max() > 0.0
+        depths.append(((face.mean(axis=0) - origin) @ n))
+    assert 0 < rim < len(cut.pieces)
+    assert np.all(np.diff(depths) >= 0.0)
+    rng = np.random.default_rng(1)
+    section = plane_cut(points, cells, origin, axes).pieces
+    inside = np.concatenate([rng.dirichlet(np.ones(4), 4) @ p for p in section])
+    paths = [matplotlib.path.Path(p[:3]) for p in cut.pieces]
+    assert all(any(q.contains_point(x, radius=1e-12) for q in paths) for x in inside)
+
+
+def test_a_crinkle_is_drawn_in_its_cells_colours():
+    points, cells = lattice(2)
+    cut = plane_cut(points, cells, [0.0, 0.0, 0.5], [[1, 0, 0], [0, 1, 0]],
+                    kind="crinkle")
+    colours = np.where(np.arange(len(cells)) % 2 == 0, "#2a78d6", "#eb6834")
+    fig, ax = plt.subplots()
+    polygons = mesh_section(ax, cut, colours=list(colours), edgecolor="k")
+    assert len(polygons.get_paths()) == 8
+    assert np.allclose(polygons.get_facecolor(),
+                       matplotlib.colors.to_rgba_array(list(colours))[cut.index])
+    plt.close(fig)
 
 
 def area3(polygons):

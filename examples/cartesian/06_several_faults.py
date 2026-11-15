@@ -31,9 +31,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import (FAULT_CURVE_STYLES, block_planes, clip_polygons,
                                   fault_curves, mesh_block, mesh_section, plane_cut)
 
@@ -77,18 +76,17 @@ print("the splay's down-dip edge on the thrust, its tip",
       f"{-splay.cartesian(0.0, -0.5)[2]:.3f} deep")
 
 # %% [markdown]
-# The mesh of order 2, every fault's size 0.03 graded to the background,
-# the linear mesh relocated. Each fault's record: its attribute, its
+# The mesh of order 2, every fault's size 0.03 (graded to the background
+# and the linear mesh relocated, `EmbeddedFault`'s rule). Each fault's
+# record: its attribute, its
 # curve groups by kind (None where it has none), the faults it meets
 # and ends on, and its collars.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_faults_"))
-near = InterfaceSizing.graded(0.03, 0.15)
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.25, 0.3), order=2,
-             optimise="Relocate3D",
-             faults=[EmbeddedFault(f, name=n, sizing=near) for n, f in faults.items()]),
+             faults=[EmbeddedFault(f, name=n, sizing=0.03) for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())
 mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
@@ -167,14 +165,19 @@ ax.set(xlabel="x", ylabel="y", zlabel="z")
 ax.set_title("Three faults in a block of the box (unit lengths, z up)")
 
 # %% [markdown]
-# The section y = 0.3 across the thrust and the splay, in (x, z), z up:
-# the cells by layer, coloured over them by the collar their attribute
-# names, the interfaces, and the faults where the section crosses them.
+# The section y = 0.3 across the thrust and the splay, in (x, z), z up,
+# as a crinkle (`plane_cut(..., kind="crinkle")`), the cells the plane
+# passes through drawn whole, where a cut would shred them: the cells by
+# layer, coloured over them by the collar their attribute names; and
+# over them the interfaces and the faults where the section crosses
+# them, which lie in the plane, an element or less behind the cells'
+# faces drawn.
 
 # %%
 sx = fig.add_subplot(grid[1])
 origin, axes = np.array([0.0, 0.3, 0.0]), np.array([[1.0, 0, 0], [0, 0, 1.0]])
-mesh_section(sx, plane_cut(mesh.points, mesh.cells[:, :4], origin, axes),
+mesh_section(sx, plane_cut(mesh.points, mesh.cells[:, :4], origin, axes,
+                           kind="crinkle"),
              colours=list(fill), edgecolor=EDGES, linewidth=0.5)
 mesh_section(sx, plane_cut(mesh.points, interfaces, origin, axes), colours=GUIDE,
              linewidth=1.0)

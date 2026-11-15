@@ -13,8 +13,8 @@
 # where it touches the slip, its collar, an element attribute of its
 # own, its edge a tip curve group, pinned. The sizes are AdGIA's, at
 # unit scale: 0.01875 on the fault, 0.05 on the surface, 0.1 far away,
-# growing at its gradation, 0.3 per unit distance, which is
-# `InterfaceSizing.graded`'s gradient.
+# growing at its gradation, 0.3 per unit distance, which is the gradient
+# a fault sized by a number is graded at (`EmbeddedFault`'s rule).
 #
 # Needs: meshing, plot
 # Network: none
@@ -33,9 +33,8 @@ from matplotlib.patches import Patch
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -94,10 +93,7 @@ built = {}
 for label, g in (("flat", flat), ("under the range", under)):
     result = build_layered_mesh(
         MeshSpec(g, UniformInterfaces(0.05, 0.1, (0.1 - 0.05) / 0.3), order=2,
-                 optimise="Relocate3D",
-                 faults=[EmbeddedFault(fault, name="fault",
-                                       sizing=InterfaceSizing.graded(0.15 * SCALE,
-                                                                     0.1))]),
+                 faults=[EmbeddedFault(fault, name="fault", sizing=0.15 * SCALE)]),
         work / label.replace(" ", "_"))
     mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
     built[label] = (mesh, card, result.mapping(mesh.points))

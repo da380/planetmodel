@@ -489,7 +489,12 @@ its faces lies on the fault, to ``offset``.
   off the fault once mapped (a sampled maximum, not a strict bound);
   zero under the identity.
 - ``sizing``: ``{size, far_size, decay_width}``, the refinement towards
-  the fault the mesh was sized under, or null.
+  the fault the mesh was sized under, or null: the element size
+  ``size`` on the fault, growing to ``far_size`` over ``decay_width``.
+  A fault given its size alone is graded to the largest element size of
+  the mesh at the builder's gradient (``planetmodel.mesh3d.spec.GRADIENT``
+  per unit distance), and is recorded as that ramp, its ``decay_width``
+  the difference of the two sizes over the gradient.
 
 The walls and the collars
 ~~~~~~~~~~~~~~~~~~~~~~~~~

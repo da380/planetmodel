@@ -93,14 +93,22 @@ CASES = {
             {"a": {"tip"}, "b": {"tip", "face_edge"}}),
     "splay": (splayed(), {"main": {"tip", "junction"},
                           "splay": {"tip", "junction"}}),
+    # rupturing the surface and leaving through a side, sized by a number
+    "sized": ({"f": plane(0.9, 0.0, top_at_surface(), strike=90.0)},
+              {"f": {"tip", "free_edge", "face_edge"}}),
 }
+
+#: The configurations whose faults are sized, by the size on them: graded
+#: to SIZING's far size and relocated (`EmbeddedFault`'s rule).
+SIZES = {"sized": 0.08}
 
 
 def build(root, name, *, order=2, geometry=None, **spec):
     """Build a configuration of `CASES` (or {name: Plane} given) in a box."""
     faults = CASES[name][0] if isinstance(name, str) else name
     tag = name if isinstance(name, str) else "_".join(faults)
-    items = [EmbeddedFault(Fault([p]), name=n) for n, p in faults.items()]
+    items = [EmbeddedFault(Fault([p]), name=n, sizing=SIZES.get(tag))
+             for n, p in faults.items()]
     return build_layered_mesh(MeshSpec(geometry or box(), SIZING, faults=items,
                                        order=order, **spec), root / f"{tag}_{order}")
 

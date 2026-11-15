@@ -7,7 +7,8 @@ changes the order of its vertices; so (v1 - v0) x (v2 - v0) of each,
 in the mesh MFEM holds, still points from the footwall into the hanging
 wall, and of the two elements sharing its face the plus (hanging-wall)
 one is the one on that side.  The curved nodes of the physical delivery
-lie on the true fault to the pull-back's offset.
+lie on the true fault to the pull-back's offset.  The main fault is
+sized by a number (`EmbeddedFault`'s rule), the splay is not.
 """
 import numpy as np
 import pytest
@@ -53,8 +54,9 @@ def exported(tmp_path_factory):
     faults = splayed()
     g = Geometry(Skeleton([0.0, 0.6, 1.0])).with_mapping(bump())
     res = build_layered_mesh(MeshSpec(g, UniformInterfaces(0.15, 0.3, 0.3), order=2,
-                                      faults=[EmbeddedFault(f, name=n)
-                                              for n, f in faults.items()]),
+                                      faults=[EmbeddedFault(f, name=n, sizing=size)
+                                              for (n, f), size
+                                              in zip(faults.items(), (0.08, None))]),
                              root / "built")
     out = {d: export_mfem_mesh(res, root / d, delivery=d)
            for d in ("physical", "referential")}

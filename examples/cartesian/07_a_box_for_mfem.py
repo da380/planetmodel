@@ -36,9 +36,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh,
-                                export_mfem_mesh, manifest)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, export_mfem_mesh, manifest)
 from planetmodel.plotting import BLOCK_VIEW, fault_curves, mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -70,9 +69,7 @@ thrust = Fault([plane])
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_mfem_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.25, 0.3), order=2,
-             optimise="Relocate3D",
-             faults=[EmbeddedFault(thrust, name="thrust",
-                                   sizing=InterfaceSizing.graded(0.03, 0.15))]),
+             faults=[EmbeddedFault(thrust, name="thrust", sizing=0.03)]),
     work / "built")
 export = export_mfem_mesh(result, work / "thrust", delivery="physical")
 card = manifest.read(export.manifest_path)

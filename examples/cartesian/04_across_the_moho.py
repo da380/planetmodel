@@ -32,9 +32,8 @@ from matplotlib.patches import Patch
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import in_plane, mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -77,16 +76,15 @@ print("knots of the mapping (depths where its slope may jump):",
 # %% [markdown]
 # The mesh of order 2, at the default tolerance of the pull-back (each
 # piece within a millionth of the patch's size), the fault's size 0.03
-# graded to the background. Built whole, the plane's preimage would need
+# (graded to the background and the linear mesh relocated,
+# `EmbeddedFault`'s rule). Built whole, the plane's preimage would need
 # far more control nodes than the cap allows at this tolerance.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_moho_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.25, 0.3), order=2,
-             optimise="Relocate3D",
-             faults=[EmbeddedFault(fault, name="thrust",
-                                   sizing=InterfaceSizing.graded(0.03, 0.15))]),
+             faults=[EmbeddedFault(fault, name="thrust", sizing=0.03)]),
     work / "across")
 pieces = result.preimages["thrust"]
 mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)

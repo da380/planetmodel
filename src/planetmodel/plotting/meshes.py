@@ -62,13 +62,32 @@ than starting again at every edge.  On three-dimensional axes they are
 drawn in space, on plain axes projected onto a plane, the coordinates
 `plane_cut` gives.
 
-A section shows a mesh's elements as the plane leaves them, not their
+A cut shows a mesh's elements as the plane leaves them, not their
 shape: a plane passing near a corner or along an edge of a well-shaped
-tetrahedron cuts a thin shard from it, so a section of any tetrahedral
-mesh shows shards beside its cut polygons.  The shape of the elements
-is measured, not read from a section (`mesh3d.cell_quality`); the faces
-of a mesh lying in a plane, a box's side or top, or a fault's own faces
-seen square on (`in_plane`), are its elements as they are.
+tetrahedron cuts a thin shard from it, so a cut of any tetrahedral mesh
+shows shards beside its polygons.  Its geometry is exact: its pieces
+tile the section, and the curves of an interface or a fault cut by the
+same plane run along their edges.  `plane_cut(..., kind="crinkle")`
+shows the elements whole instead, as ParaView's crinkle slice does, the
+cells the plane passes through seen from its positive side: the cells
+with a corner strictly on its negative side are kept, those it passes
+through and those behind it (a corner on the plane, here, is on
+neither side), and the faces between a kept cell and one with no
+corner behind the plane, with the faces on the mesh's boundary of the
+kept cells the plane passes through, are the stepped surface of whole
+faces over the section, which it covers to its edge.  They are
+projected onto the plane, each a triangle held as `in_plane` holds
+one, its kept cell its `index`; only the faces turned towards the
+positive side are taken, in order from the farthest, so that a nearer
+face is drawn over a farther one.  Its triangles are the elements'
+faces as they are, foreshortened by their tilt to the plane, but its
+surface is stepped, lying up to an element in front of the plane, so
+the curves an interface or a fault leaves in the plane, drawn over it
+from their own cut, do not run along its edges, and the colours of the
+cells change along a jagged line beside them.  The shape of the
+elements is measured, not read from either (`mesh3d.cell_quality`); the
+faces of a mesh lying in a plane, a box's side or top, or a fault's own
+faces seen square on (`in_plane`), are its elements as they are.
 """
 from __future__ import annotations
 
@@ -113,9 +132,11 @@ class PlaneCut:
     axes: np.ndarray
     #: The pieces in the plane's coordinates (s, t): (p, 4, 2) polygons
     #: cut from tetrahedra, (p, 2, 2) segments cut from triangles; or, of
-    #: a mesh in the plane (`in_plane`), its triangles and line elements.
+    #: a mesh in the plane (`in_plane`), its triangles and line elements;
+    #: or the projected faces of a crinkle.
     pieces: np.ndarray
-    #: The simplex each piece was cut from, as a row of those given, (p,).
+    #: The simplex each piece was cut from, as a row of those given, (p,):
+    #: of a crinkle, the kept cell whose face it is.
     index: np.ndarray
 
     @property
@@ -155,7 +176,7 @@ def _plane_axes(axes: ArrayLike) -> np.ndarray:
 
 
 def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
-              axes: ArrayLike) -> PlaneCut:
+              axes: ArrayLike, *, kind: str = "cut") -> PlaneCut:
     """The simplices cut by the plane through `origin` spanned by `axes`
     (module docstring).
 
@@ -164,8 +185,12 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     (a curved element's corners: its first columns as a mesh holds
     them); `origin` a point of the plane, (3,); `axes` two vectors
     spanning it, (2, 3), made orthonormal with the first one's direction
-    kept.
+    kept.  `kind` is "cut", the simplices cut by the plane, or, of
+    tetrahedra, "crinkle", the cells it passes through seen whole from
+    its positive side (module docstring).
     """
+    if kind not in ("cut", "crinkle"):
+        raise ValueError(f"kind is 'cut' or 'crinkle', got {kind!r}")
     x = np.asarray(points, dtype=float)
     s = np.asarray(simplices)
     o = np.asarray(origin, dtype=float)
@@ -182,6 +207,11 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
         raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
     ab = _plane_axes(axes)
     k = s.shape[1]
+    if kind == "crinkle":
+        if k != 4:
+            raise ValueError("a crinkle is a section of tetrahedra; cut a surface's "
+                             "triangles with kind='cut'")
+        return _crinkle(x, s, o, ab)
     d = (x - o) @ np.cross(ab[0], ab[1])
     D = d[s]
     above = D > 0.0
@@ -223,6 +253,48 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
         pieces = np.take_along_axis(st, order[..., None], axis=1)
         flat = np.all(pieces[:, 0] == pieces[:, 1], axis=1)
     return PlaneCut(origin=o, axes=ab, pieces=pieces[~flat], index=rows[~flat])
+
+
+#: A tetrahedron's faces by its corners, and the corner opposite each.
+_FACES = np.array([(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)])
+_OPPOSITE = np.array([3, 2, 1, 0])
+
+
+def _crinkle(x: np.ndarray, cells: np.ndarray, o: np.ndarray,
+             ab: np.ndarray) -> PlaneCut:
+    """The crinkle of tetrahedra (module docstring), the arguments
+    checked: the faces between a cell with a corner strictly on the
+    plane's negative side and one with none, and the faces on the mesh's
+    boundary of such a cell the plane passes through, turned towards the
+    positive side, projected, farthest first."""
+    n = np.cross(ab[0], ab[1])
+    d = (x - o) @ n
+    kept = np.any(d[cells] < 0.0, axis=1)
+    crossed = kept & np.any(d[cells] > 0.0, axis=1)
+    faces = cells[:, _FACES].reshape(-1, 3)
+    owner = np.repeat(np.arange(len(cells)), 4)
+    apex = cells[:, _OPPOSITE].reshape(-1)
+    key = np.sort(faces, axis=1)
+    order = np.lexsort(key.T[::-1])
+    key, faces, owner, apex = key[order], faces[order], owner[order], apex[order]
+    # a face of two cells is two rows, adjacent once sorted
+    same = np.all(key[1:] == key[:-1], axis=1)
+    first = np.flatnonzero(same)
+    step = kept[owner[first]] != kept[owner[first + 1]]
+    row = np.where(kept[owner[first[step]]], first[step], first[step] + 1)
+    alone = np.ones(len(key), dtype=bool)
+    alone[first], alone[first + 1] = False, False
+    row = np.concatenate([row, np.flatnonzero(alone & crossed[owner])])
+    p = x[faces[row]]
+    normal = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+    inward = np.einsum("ij,ij->i", x[apex[row]] - p[:, 0], normal) > 0.0
+    towards = np.where(inward, -1.0, 1.0) * (normal @ n) > 0.0
+    depth = d[faces[row]].mean(axis=1)
+    shown = np.flatnonzero(towards)
+    shown = shown[np.argsort(depth[shown], kind="stable")]
+    st = (p[shown] - o) @ ab.T
+    return PlaneCut(origin=o, axes=ab, pieces=np.concatenate([st, st[:, 2:]], axis=1),
+                    index=owner[row[shown]])
 
 
 def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,

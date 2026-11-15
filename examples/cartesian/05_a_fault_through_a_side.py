@@ -33,9 +33,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from planetmodel import Skeleton, cartesian
 from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import (FAULT_CURVE_STYLES, block_planes, clip_polygons,
                                   fault_curves, in_plane, mesh_block, mesh_section)
 
@@ -67,9 +66,7 @@ fault = Fault([plane])
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_side_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.25, 0.3), order=2,
-             optimise="Relocate3D",
-             faults=[EmbeddedFault(fault, name="fault",
-                                   sizing=InterfaceSizing.graded(0.03, 0.15))]),
+             faults=[EmbeddedFault(fault, name="fault", sizing=0.03)]),
     work / "side")
 mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
 record = card.fault_record("fault")

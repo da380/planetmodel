@@ -44,7 +44,10 @@ conforms to it, and labelled with a boundary attribute of its own after
 the interfaces' and a box's faces' (the manifest's `faults[]`).  A
 fault is a surface of a 3D domain, so a spec with faults is
 three-dimensional, and its faults are in the geometry's frame: a
-geographic one on a sphere, a Cartesian one in a box.
+geographic one on a sphere, a Cartesian one in a box.  A fault is
+sized by giving the element size on it, the rest following by the rule
+`EmbeddedFault` states, the same on a sphere and in a box: the size
+graded to the interfaces' own, and the linear mesh relocated.
 
 Nothing here knows about units.  Every length is a number in the
 geometry's own lengths, and the builder hands those numbers to gmsh
@@ -55,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Sequence
+from collections.abc import Mapping as MappingOf
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -75,8 +79,9 @@ __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "CappedInterfaces", "PerInterface", "Refinement",
     "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec",
-    "MeshResult", "ValidationReport", "optimise_methods", "DELIVERIES",
-    "OUTER_BOUNDARIES", "QUALITY_FLOOR", "QUALITY_MEASURE", "GRADIENT",
+    "MeshResult", "ValidationReport", "optimise_methods", "largest_size",
+    "DELIVERIES", "OUTER_BOUNDARIES", "QUALITY_FLOOR", "QUALITY_MEASURE",
+    "GRADIENT", "OPTIMISE", "OPTIMISE_WITH_FAULTS",
 ]
 
 #: The two deliveries of the MFEM export: the nodes moved by the mapping,
@@ -152,8 +157,9 @@ def _require_ramp(size: float, far_size: float, decay_width: float) -> None:
 
 
 #: The growth of the element size per unit distance that `InterfaceSizing.
-#: graded` takes by default: each element about 30 per cent larger than
-#: its neighbour nearer the target, a transition gmsh's Delaunay mesher
+#: graded` takes by default, and a fault sized by a number
+#: (`EmbeddedFault`): each element about 30 per cent larger than its
+#: neighbour nearer the target, a transition gmsh's Delaunay mesher
 #: follows with well-shaped elements whatever the two sizes.
 GRADIENT = 0.3
 
@@ -170,7 +176,8 @@ class InterfaceSizing:
     size from one element to the next, a sharper transition than the
     mesher can follow, which it then smears out by its own rule.
     `graded` gives the decay width from the gradient, so that what is
-    stated is the size on the target and the rest follows.
+    stated is the size on the target and the rest follows; it is what a
+    fault sized by a number is refined by (`EmbeddedFault`).
     """
 
     #: The element size on the interface.
@@ -208,6 +215,17 @@ class InterfaceSizing:
 #: objects with `index`, `radius`, `between` and `name`.
 type SizingRule = Callable[[Sequence[InterfaceInfo], float],
                            dict[int, InterfaceSizing]]
+
+
+def largest_size(sizes: MappingOf[int, InterfaceSizing]) -> float:
+    """The largest element size the interfaces' sizings give anywhere, the
+    largest of their far sizes: the mesh's ceiling (gmsh's largest size),
+    and what the size of a fault sized by a number grows to
+    (`EmbeddedFault`).  `sizes` maps interface index to InterfaceSizing,
+    as a sizing rule returns them."""
+    if not sizes:
+        raise ValueError("no sizing given: every interface needs one")
+    return max(float(s.far_size) for s in sizes.values())
 
 
 class Refinement(Protocol):
@@ -378,15 +396,32 @@ def _require_radii(rule: object, interfaces: Sequence[InterfaceInfo]) -> None:
                 "UniformInterfaces or PerInterface")
 
 
-def optimise_methods(optimise: str | Sequence[str] | None) -> tuple[str, ...]:
+#: What `optimise="auto"` runs on a mesh without faults: Netgen's pass,
+#: which removes the slivers gmsh's Delaunay mesher leaves between
+#: interfaces without moving their nodes.
+OPTIMISE = ("Netgen",)
+
+#: What `optimise="auto"` runs on a mesh with a fault, on whose solid
+#: Netgen's pass crashes: gmsh's Relocate3D, which moves nodes inside the
+#: volumes, none on an interface, a fault or a box's face, to better the
+#: shape of the elements around them.
+OPTIMISE_WITH_FAULTS = ("Relocate3D",)
+
+
+def optimise_methods(optimise: str | Sequence[str] | None, *,
+                     faults: bool = False) -> tuple[str, ...]:
     """The gmsh optimisation methods `optimise` names, as a tuple.
 
-    A single method name, a sequence of names applied in order, or None
-    for no optimisation; each is a method `gmsh.model.mesh.optimize`
-    accepts ("Netgen", "Relocate3D", ...).
+    A single method name, a sequence of names applied in order, None
+    for no optimisation, or "auto" for the one a mesh takes by default:
+    `OPTIMISE_WITH_FAULTS` for a mesh with `faults`, `OPTIMISE` for one
+    without.  Each is a method `gmsh.model.mesh.optimize` accepts
+    ("Netgen", "Relocate3D", ...).
     """
     if optimise is None:
         return ()
+    if isinstance(optimise, str) and optimise == "auto":
+        return OPTIMISE_WITH_FAULTS if faults else OPTIMISE
     if isinstance(optimise, str):
         return (optimise,)
     try:
@@ -587,16 +622,40 @@ class EmbeddedFault:
     leaves a hollow sphere through its inner boundary, lies wholly
     outside the geometry, cuts a layer or an interface right through, or
     overlaps another fault on a surface is refused by name.
-    `sizing` refines the mesh towards the fault, `size` on it growing to
-    `far_size` over `decay_width`; None leaves the sizing to the
+    `name` names the fault in the mesh and the manifest: by default
+    `fault_<k>`, k counted from one in the spec's order.  Every patch
+    must give its map as a spline (`spline`), and the frame must be the
+    geometry's, which the spec checks: a `fault.GeographicFrame` on a
+    sphere, a `fault.CartesianFrame` in a box (`planetmodel.cartesian`),
+    whose points (x, y, z), z up, are the box's own.
+
+    `sizing` refines the mesh towards the fault, on a sphere and in a
+    box alike.  The rule a fault is sized by: what is given is a number,
+    the element size on the fault, and the rest follows.  The size
+    grows away from the fault by `GRADIENT` per unit distance, each
+    element about 30 per cent larger than its neighbour nearer the
+    fault, until it meets the interfaces' sizing: the refinement is
+    `InterfaceSizing.graded` from the size to the largest size the
+    interfaces' rule gives (`largest_size`; `resolved_sizing`).  A
+    refinement is composed in by minimum, so one whose far size is below
+    that would hold the whole mesh to it; graded to the largest, it
+    refines near the fault alone, over a transition as long as the ratio
+    of the sizes needs.  And the linear mesh of a spec with a
+    fault is relocated by gmsh's Relocate3D (`OPTIMISE_WITH_FAULTS`,
+    what `MeshSpec.optimise`'s "auto" runs there), which moves no node
+    of an interface, a fault or a box's face.  Each part is the
+    caller's to change: an InterfaceSizing is taken as it is, whether
+    `InterfaceSizing.graded` to another far size or at another gradient,
+    or a ramp of the caller's own, such as the steep ramp
+    `InterfaceSizing(size, far_size, decay_width)` over a decay width
+    shorter than `far_size - size`, the size more than doubling from one
+    element to the next, which the mesher smears out with worse-shaped
+    elements beside the fault; `MeshSpec.optimise` names another
+    optimisation, or None for none.  None leaves the sizing to the
     interfaces' rule, the fault's faces conforming to it at whatever
-    size that gives.  `name` names the fault in the mesh and the
-    manifest: by default `fault_<k>`, k counted from one in the spec's
-    order.  Every patch must give its map as a spline (`spline`), and
-    the frame must be the geometry's, which the spec checks: a
-    `fault.GeographicFrame` on a sphere, a `fault.CartesianFrame` in a
-    box (`planetmodel.cartesian`), whose points (x, y, z), z up, are the
-    box's own.
+    size that gives.  The sizing the mesh was built under is recorded in
+    the manifest's fault record, a number as the InterfaceSizing it
+    resolved to.
     """
 
     #: The fault, in the geometry's lengths.
@@ -604,8 +663,10 @@ class EmbeddedFault:
     _: KW_ONLY
     #: The fault's name in the mesh and the manifest; None for the default.
     name: str | None = None
-    #: The refinement towards the fault, or None for none.
-    sizing: InterfaceSizing | None = None
+    #: The refinement towards the fault: the element size on it, graded by
+    #: the class's rule; an InterfaceSizing, taken as it is; or None for
+    #: none.
+    sizing: float | InterfaceSizing | None = None
     #: The pull-back's control nodes each way on every patch, or on every
     #: piece of one cut at a knot; None to choose them by `rtol`.
     controls: int | None = None
@@ -628,9 +689,16 @@ class EmbeddedFault:
                                       or not self.name):
             raise ValueError(f"a fault's name is a non-empty string, got "
                              f"{self.name!r}")
-        if self.sizing is not None and not isinstance(self.sizing, InterfaceSizing):
-            raise TypeError(f"sizing must be an InterfaceSizing, got "
-                            f"{type(self.sizing).__name__}")
+        if isinstance(self.sizing, bool) or not (
+                self.sizing is None or isinstance(self.sizing, InterfaceSizing)
+                or isinstance(self.sizing, (int, float, np.integer, np.floating))):
+            raise TypeError(f"sizing must be a size, an InterfaceSizing or None, "
+                            f"got {type(self.sizing).__name__}")
+        if isinstance(self.sizing, (int, float, np.integer, np.floating)):
+            if not (np.isfinite(self.sizing) and self.sizing > 0.0):
+                raise ValueError(f"a fault's size must be positive and finite, got "
+                                 f"{self.sizing}")
+            object.__setattr__(self, "sizing", float(self.sizing))
         if self.controls is not None and (isinstance(self.controls, bool)
                                           or not isinstance(self.controls, int)
                                           or self.controls < 4):
@@ -640,6 +708,16 @@ class EmbeddedFault:
             raise ValueError(f"rtol must be positive, got {self.rtol}")
         if self.reach is not None and not self.reach >= 0.0:
             raise ValueError(f"reach must not be negative, got {self.reach}")
+
+    def resolved_sizing(self, ceiling: float) -> InterfaceSizing | None:
+        """The refinement towards the fault in a mesh whose largest element
+        size is `ceiling` (`largest_size`): a size graded from it to
+        `ceiling` (the class's rule), a size not below `ceiling` held
+        flat, which refines nothing; an InterfaceSizing as it is; None
+        for none."""
+        if self.sizing is None or isinstance(self.sizing, InterfaceSizing):
+            return self.sizing
+        return InterfaceSizing.graded(self.sizing, max(float(ceiling), self.sizing))
 
 
 @dataclass(frozen=True)
@@ -684,12 +762,15 @@ class MeshSpec:
     #: gmsh's Mesh.Algorithm3D.
     algorithm_3d: int = 1
     #: The gmsh optimisation of the linear volume mesh before it is
-    #: curved: a method name, a sequence applied in order, or None for
-    #: none.  3D only; the Delaunay mesher leaves slivers between
-    #: interfaces that a Netgen pass removes without moving their nodes.
-    #: With faults the Netgen pass is skipped, with a warning: it crashes
-    #: on a solid with a surface embedded in it.
-    optimise: str | Sequence[str] | None = "Netgen"
+    #: curved, 3D only: a method name, a sequence applied in order, None
+    #: for none, or "auto": `OPTIMISE`, a Netgen pass, which removes the
+    #: slivers the Delaunay mesher leaves between interfaces without
+    #: moving their nodes; on a mesh with faults `OPTIMISE_WITH_FAULTS`,
+    #: Relocate3D (`EmbeddedFault`'s rule).  Held resolved, as the tuple
+    #: of methods.  A Netgen pass named for a mesh with faults is
+    #: skipped, with a warning: it crashes on a solid with a surface
+    #: embedded in it.
+    optimise: str | Sequence[str] | None = "auto"
     #: False writes a failing mesh; the failures are on the result's report.
     validate: bool = True
     #: Copied into the manifest's `meta` block, for the consumer's own use.
@@ -715,13 +796,14 @@ class MeshSpec:
             raise ValueError(
                 f"outer_boundary must be one of {OUTER_BOUNDARIES}, "
                 f"got {self.outer_boundary!r}")
-        object.__setattr__(self, "optimise", optimise_methods(self.optimise))
+        object.__setattr__(self, "faults", tuple(self.faults))
+        object.__setattr__(self, "optimise", optimise_methods(
+            self.optimise, faults=bool(self.faults)))
         object.__setattr__(self, "shells", tuple(self.shells))
         for shell in self.shells:
             if not isinstance(shell, Shell):
                 raise TypeError(
                     f"shells must be Shell instances, got {type(shell).__name__}")
-        object.__setattr__(self, "faults", tuple(self.faults))
         layout.check(self)
         object.__setattr__(self, "refinements", tuple(self.refinements))
         for i, fine in enumerate(self.refinements):

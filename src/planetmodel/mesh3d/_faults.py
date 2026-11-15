@@ -124,7 +124,7 @@ from . import manifest
 from ._geometry import ConcentricGeometry, default_atol
 from ._layout import Exit, Layout
 from ._tagging import Tagging
-from .spec import EmbeddedFault, InterfaceSizing, MeshSpec, NearPoints
+from .spec import EmbeddedFault, InterfaceSizing, MeshSpec, NearPoints, largest_size
 
 if TYPE_CHECKING:
     from ..fault import Patch
@@ -178,8 +178,9 @@ class PreparedFault:
     the surfaces it is built in through, one for each patch or for each
     piece of a patch (module docstring), the splines built from them in
     the mesh's coordinates, the patch each is of (an index into the
-    fault's patches) and the exits it was carried across (by their
-    names)."""
+    fault's patches), the exits it was carried across (by their names)
+    and the refinement towards it (`EmbeddedFault.resolved_sizing`), or
+    None."""
 
     name: str
     item: EmbeddedFault
@@ -187,6 +188,7 @@ class PreparedFault:
     splines: tuple[TensorSpline, ...]
     patches: tuple[int, ...]
     carried: tuple[frozenset[str], ...]
+    sizing: InterfaceSizing | None
 
 
 @dataclass(frozen=True)
@@ -744,8 +746,9 @@ def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing], *,
     """Pull every patch of every fault back through the geometry's
     mapping, in pieces where it crosses a knot of the mapping, carry the
     edges that reach an exit of the body (`layout`'s) across it, and
-    refuse what the fragment could not cut cleanly (module docstring);
-    nothing touches gmsh."""
+    refuse what the fragment could not cut cleanly (module docstring), and
+    resolve each fault's sizing against the interfaces' `sizes`; nothing
+    touches gmsh."""
     geometry = spec.geometry
     mapping = geometry.mapping
     identity = geometry.is_identity
@@ -753,7 +756,8 @@ def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing], *,
     atol = default_atol(layout.scale(spec))
     prepared = []
     for name, item in zip(spec.fault_names, spec.faults):
-        fine = None if item.sizing is None else item.sizing.size
+        sizing = item.resolved_sizing(largest_size(sizes))
+        fine = None if sizing is None else sizing.size
         preimages, splines, patches, carried = [], [], [], []
         for j, patch in enumerate(item.fault.patches):
             what = f"fault {name!r}, patch {j},"
@@ -777,7 +781,7 @@ def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing], *,
                                       preimages=tuple(preimages),
                                       splines=tuple(splines),
                                       patches=tuple(patches),
-                                      carried=tuple(carried)))
+                                      carried=tuple(carried), sizing=sizing))
     return tuple(prepared)
 
 
@@ -807,7 +811,7 @@ def fault_refinements(prepared: Sequence[PreparedFault]) -> tuple[NearPoints, ..
     a sampling of its splines no coarser than its size."""
     out = []
     for fault in prepared:
-        sizing = fault.item.sizing
+        sizing = fault.sizing
         if sizing is None:
             continue
         points = np.concatenate([_sample(s, sizing.size) for s in fault.splines])
@@ -1002,7 +1006,7 @@ def fault_entries(faults: FaultTagging, groups: FaultGroups,
         # each patch's grid, which every piece of it shares
         controls = [fault.preimages[fault.patches.index(j)].controls
                     for j in range(len(fault.item.fault.patches))]
-        sizing = fault.item.sizing
+        sizing = fault.sizing
         entries.append(manifest.FaultEntry(
             name=fault.name, attribute=int(g["attribute"]),
             layers=[int(a) for a in faults.layers[k]],

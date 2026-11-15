@@ -55,13 +55,15 @@ geometry = Geometry(Skeleton([0.0, 0.55, 0.8, 1.0]), layer_names=list(LAYERS),
                     interface_names=["cmb", "base", "surface"])
 
 # %% [markdown]
-# The mesh, of order 2, refined to 0.03 on the interface. The trench is
-# on the reference sphere, so the mesher carries the interface's upper
-# edge across the outer boundary and trims it there: its free edge. The
-# surfaces are meshed by gmsh's Delaunay algorithm (`algorithm_2d=5`): a
-# mesh with a fault is not optimised by Netgen, so a flat element the
-# volume mesher leaves beside a shallow interface stays, the mesh then
-# fails its validation and is refused, and the surface mesh decides
+# The mesh, of order 2, refined to 0.03 on the interface by a ramp of
+# its own, to 0.12 over 0.15 (an `InterfaceSizing`, taken as it is). The
+# trench is on the reference sphere, so the mesher carries the
+# interface's upper edge across the outer boundary and trims it there:
+# its free edge. The surfaces are meshed by gmsh's Delaunay algorithm
+# (`algorithm_2d=5`): a mesh with a fault is not optimised by Netgen,
+# and its relocation does not remove a flat element the volume mesher
+# leaves beside a shallow interface, so such an element stays, the mesh
+# then fails its validation and is refused, and the surface mesh decides
 # whether one is left.
 
 # %%

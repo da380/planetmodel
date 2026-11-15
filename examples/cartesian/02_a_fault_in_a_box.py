@@ -6,16 +6,21 @@
 # shows the fault as a line along which the element edges run. The
 # fault is built three times: with no refinement towards it, its faces
 # conforming at whatever size the interfaces' rule gives there; refined
-# to a size on it that grows to the background's over a fixed width, a
-# steep ramp (the size more than doubling from one element to the
-# next); and refined by `InterfaceSizing.graded`, the size growing by
-# about 30 per cent an element, the linear mesh relocated by gmsh's
-# Relocate3D pass, which moves no node of a fault or an interface. A
-# section shows the elements as the plane leaves them, thin shards
-# beside polygons whatever their shape, so the shape is measured
-# (`mesh3d.cell_quality`, gmsh's minSICN: 1 for a regular tetrahedron,
-# 0 for a flat one) and the fault's own faces are drawn square on, as
-# they are.
+# by a steep ramp of its own, a size on it growing to a far size over a
+# fixed width (an `InterfaceSizing`, the size more than doubling from
+# one element to the next), the linear mesh left as the mesher made it
+# (`optimise=None`); and by the default, the size on it given alone
+# (`EmbeddedFault`'s rule), the size growing by about 30 per cent an
+# element until it meets the interfaces' sizing and the linear mesh
+# relocated by gmsh's Relocate3D pass, which moves no node of a fault
+# or an interface (the first mesh is relocated too). A cut shows the
+# elements as the plane leaves them, thin shards beside polygons
+# whatever their shape; a crinkle (`plane_cut(..., kind="crinkle")`)
+# shows the faces of the cells the plane passes through whole, on a
+# stepped surface an element or less in front of it. The shape is
+# measured too (`mesh3d.cell_quality`, gmsh's minSICN: 1 for a regular
+# tetrahedron, 0 for a flat one), and the fault's own faces are drawn
+# square on, as they are.
 #
 # Needs: meshing, plot
 # Network: none
@@ -44,7 +49,7 @@ LOCAL = CartesianFrame()
 LAYERS = {"crust": "#f4f3f0", "mantle": "#e1e0d9"}
 FAULT, INK, EDGES = "#2a78d6", "#52514e", "#a3a29b"
 BUILDS = {"no sizing": "#a3a29b", "steep ramp": "#eb6834",
-          "graded, relocated": "#2a78d6"}
+          "graded (the default)": "#2a78d6"}
 
 # %% [markdown]
 # A unit box, x from 0 to 1 and y from -1/2 to 1/2, its crust 0.4 deep
@@ -62,25 +67,26 @@ plane = Plane.at_depth(LOCAL, 0.5, 0.0, 0.62, strike=0.0, dip=50.0, length=0.4,
 fault = Fault([plane])
 
 # %% [markdown]
-# The three meshes, of order 1; the interfaces' size is 0.12, the
-# fault's 0.025. The steep ramp grows to 0.12 over 0.1, a gradient of
-# 0.95; the graded one over (0.12 - 0.025) / 0.3 = 0.32.
+# The three meshes, of order 1; the interfaces' size is 0.12, growing to
+# 0.3 away from them, and the fault's 0.025. The steep ramp grows to
+# 0.12 over 0.1, a gradient of 0.95, and holds the whole mesh to 0.12;
+# the default grows at 0.3 per unit distance until it meets the
+# interfaces' sizing, reaching their largest size, 0.3, at most
+# (0.3 - 0.025) / 0.3 = 0.92 from the fault.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_section_"))
 h = 0.025
-specs = {"no sizing": dict(sizing=None),
-         "steep ramp": dict(sizing=InterfaceSizing(h, 0.12, 0.1)),
-         "graded, relocated": dict(sizing=InterfaceSizing.graded(h, 0.12),
-                                   optimise="Relocate3D")}
+specs = {"no sizing": ({}, {}),
+         "steep ramp": (dict(sizing=InterfaceSizing(h, 0.12, 0.1)),
+                        dict(optimise=None)),
+         "graded (the default)": (dict(sizing=h), {})}
 built = {}
-for label, options in specs.items():
-    optimise = options.pop("optimise", "Netgen")
+for k, (label, (sizing, options)) in enumerate(specs.items()):
     result = build_layered_mesh(
-        MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1,
-                 optimise=optimise,
-                 faults=[EmbeddedFault(fault, name="fault", **options)]),
-        work / label.replace(" ", "_").replace(",", ""))
+        MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1, **options,
+                 faults=[EmbeddedFault(fault, name="fault", **sizing)]),
+        work / f"build_{k}")
     mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
     quality = cell_quality(result.msh_path)
     centres = mesh.points[mesh.cells[:, :4]].mean(axis=1)
@@ -94,18 +100,20 @@ for label, options in specs.items():
           f"{quality[~near].min():.3f}, median {np.median(quality[~near]):.3f}")
 
 # %% [markdown]
-# The section y = 0, across the fault's strike: the cells by layer, the
-# interfaces' faces and the fault's cut by the same plane, the curves
-# they leave in it. In the plane's coordinates, (x, z), z up.
+# The section y = 0, across the fault's strike, as a cut (above) and as
+# a crinkle (below): the cells by layer, and over them the interfaces'
+# faces and the fault's cut by the same plane, the curves they leave in
+# it, which the cut's edges run along and the crinkle's, an element in
+# front, do not. In the plane's coordinates, (x, z), z up.
 
 # %%
 origin, axes = np.zeros(3), np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
 
 
-def draw(ax: plt.Axes, mesh: object, card: object, *, lw: float) -> None:
+def draw(ax: plt.Axes, mesh: object, card: object, *, kind: str, lw: float) -> None:
     """The section of a mesh: cells by layer, interfaces, the fault."""
     colours = np.array(list(LAYERS.values()))[mesh.layers(card) - 1]
-    mesh_section(ax, plane_cut(mesh.points, mesh.cells[:, :4], origin, axes),
+    mesh_section(ax, plane_cut(mesh.points, mesh.cells[:, :4], origin, axes, kind=kind),
                  colours=colours, edgecolor=EDGES, linewidth=lw)
     interfaces = mesh.boundary_of([e["attribute"] for e in card.interfaces])
     mesh_section(ax, plane_cut(mesh.points, interfaces, origin, axes), colours=INK,
@@ -115,23 +123,25 @@ def draw(ax: plt.Axes, mesh: object, card: object, *, lw: float) -> None:
                  linewidth=2.5, capstyle="round")
 
 
-fig = plt.figure(figsize=(13, 3.9), layout="constrained")
-grid = fig.add_gridspec(1, 4)
-whole = fig.add_subplot(grid[0])
-draw(whole, *built["graded, relocated"][:2], lw=0.2)
+fig = plt.figure(figsize=(13, 7.4), layout="constrained")
+grid = fig.add_gridspec(2, 4)
 ends = np.array([plane.cartesian(0.0, v) for v in (-0.5, 0.5)]) @ axes.T
 box = np.array([[-0.14, 0.14]] * 2) + ends.mean(axis=0)[:, None]
-whole.add_patch(plt.Rectangle(box[:, 0], *np.diff(box).ravel(), fill=False,
-                              edgecolor="#0b0b0b", linewidth=1.0))
-whole.set(xlabel="x (unit lengths)", ylabel="z, up (unit lengths)",
-          title="The section y = 0")
-for k, label in enumerate(specs):
-    ax = fig.add_subplot(grid[k + 1])
-    draw(ax, *built[label][:2], lw=0.6)
-    ax.set(xlim=box[0], ylim=box[1], xticks=[], yticks=[], title=label)
-    x0, y0 = box[0, 0] + 0.015, box[1, 0] + 0.015
-    ax.plot([x0, x0 + 0.05], [y0, y0], color="#0b0b0b", lw=2.0, solid_capstyle="butt")
-    ax.text(x0 + 0.025, y0 + 0.006, "0.05", ha="center", va="bottom")
+for row, kind in enumerate(("cut", "crinkle")):
+    whole = fig.add_subplot(grid[row, 0])
+    draw(whole, *built["graded (the default)"][:2], kind=kind, lw=0.2)
+    whole.add_patch(plt.Rectangle(box[:, 0], *np.diff(box).ravel(), fill=False,
+                                  edgecolor="#0b0b0b", linewidth=1.0))
+    whole.set(xlabel="x (unit lengths)" if row else "", ylabel="z, up (unit lengths)",
+              title=f"The section y = 0, a {kind}")
+    for k, label in enumerate(specs):
+        ax = fig.add_subplot(grid[row, k + 1])
+        draw(ax, *built[label][:2], kind=kind, lw=0.6)
+        ax.set(xlim=box[0], ylim=box[1], xticks=[], yticks=[], title=f"{label}, {kind}")
+        x0, y0 = box[0, 0] + 0.015, box[1, 0] + 0.015
+        ax.plot([x0, x0 + 0.05], [y0, y0], color="#0b0b0b", lw=2.0,
+                solid_capstyle="butt")
+        ax.text(x0 + 0.025, y0 + 0.006, "0.05", ha="center", va="bottom")
 fig.legend(handles=[Patch(facecolor=c, edgecolor=EDGES, label=n)
                     for n, c in LAYERS.items()]
            + [Line2D([], [], color=INK, lw=1.0, label="interface"),
@@ -143,8 +153,8 @@ fig.savefig(FIGURES / "cartesian_02_section.png", dpi=120, bbox_inches="tight")
 # The fault's faces, its own triangles, seen square on in its plane
 # (along strike to the right, down dip downward), for each mesh; and
 # the shape of the cells within three fault sizes of it, the steep ramp
-# against the graded sizing (the few cells there without a sizing are
-# left out).
+# against the default (the few cells there without a sizing are left
+# out).
 
 # %%
 basis = plane.fault_basis(0.0, 0.0)
