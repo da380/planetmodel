@@ -66,18 +66,19 @@ plane = Plane.at_depth(UNIT, LAT, LON, 0.5 * width * np.sin(np.deg2rad(dip)),
 fault = Fault([plane])
 
 # %% [markdown]
-# Two meshes of order 2, refined to 0.03 near the fault: one built under
+# Two meshes of order 2, refined to 0.03 near the fault and graded to
+# the background (`InterfaceSizing.graded`), relocated: one built under
 # the hill, the fault pulled back through it, and one built on the
 # reference ball with the fault as given, its nodes moved by the same
 # mapping afterwards (the pull-back off).
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_pullback_"))
-near = InterfaceSizing(0.03, 0.15, 0.1)
+near = InterfaceSizing.graded(0.03, 0.15)
 meshes = {}
 for label, g in (("pulled back", geometry), ("built as given", reference)):
     result = build_layered_mesh(
-        MeshSpec(g, UniformInterfaces(0.1, 0.3, 0.3), order=2,
+        MeshSpec(g, UniformInterfaces(0.1, 0.3, 0.3), order=2, optimise="Relocate3D",
                  faults=[EmbeddedFault(fault, name="thrust", sizing=near)]),
         work / label.replace(" ", "_"))
     meshes[label] = (read_mesh(result.msh_path), manifest.read(result.manifest_path))

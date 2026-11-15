@@ -3,7 +3,10 @@
 The oracle is the unit cube in its six Kuhn tetrahedra and its twelve
 boundary triangles: the polygons cut from the cells have the area of
 the cube's section by the plane, whatever the plane, and the segments
-cut from the faces its perimeter.
+cut from the faces its perimeter.  A block of it drawn in three
+dimensions shows the walls away from the viewer, each tiled by its
+cells' sections; a fault's curves are drawn by kind, in space or
+projected onto a plane.
 """
 from itertools import permutations
 
@@ -16,8 +19,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import LineCollection, PolyCollection  # noqa: E402
 
-from planetmodel.plotting import (PlaneCut, clip_polygons, mesh_section,  # noqa: E402
-                                  plane_cut)
+from planetmodel.plotting import (BLOCK_VIEW, FAULT_CURVE_STYLES,  # noqa: E402
+                                  PlaneCut, block_planes, clip_polygons,
+                                  fault_curves, mesh_block, mesh_section, plane_cut)
 
 CORNERS = np.array([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)],
                    dtype=float)
@@ -176,3 +180,114 @@ def test_refusals():
     with pytest.raises(ValueError, match="one colour"):
         mesh_section(ax, cut, colours=["r", "g"])
     plt.close(fig)
+
+
+def area3(polygons):
+    """The areas of planar polygons in space, each (k, 3)."""
+    out = []
+    for p in polygons:
+        n = sum(np.cross(p[i], p[(i + 1) % len(p)]) for i in range(len(p)))
+        out.append(0.5 * np.linalg.norm(n))
+    return np.array(out)
+
+
+def test_a_block_s_planes_hold_its_inside():
+    normals, offsets = block_planes([[0.0, 1.0], [-1.0, 2.0], [-3.0, 0.0]])
+    inside, outside = np.array([0.5, 0.0, -1.0]), np.array([0.5, 2.5, -1.0])
+    assert np.all(normals @ inside <= offsets)
+    assert not np.all(normals @ outside <= offsets)
+    assert normals.shape == (6, 3) and offsets.tolist() == [0, 1, 3, 1, 2, 0]
+    with pytest.raises(ValueError, match="each lower below its upper"):
+        block_planes([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]])
+
+
+def test_a_block_shows_the_walls_away_from_the_viewer():
+    """Seen from the default view (above the corner of least y and
+    greatest x), the walls drawn are x = 0, y = 1 and z = 0, each tiled
+    by the cells' sections, each piece its cell's colour; the boundary
+    triangles leave the walls' edges on them."""
+    cells, faces = kuhn()
+    colours = ["#2a78d6", "#eb6834", "#eda100", "#1baf7a", "#52514e", "#c3c2b7"]
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    walls = mesh_block(ax, CORNERS, cells, [[0, 1]] * 3, colours=colours,
+                       lines=faces, edgecolor="k", linewidth=0.3)
+    fig.canvas.draw()
+    pieces = walls.get_paths()
+    assert len(ax.collections) == 2 and len(ax.collections[1].get_segments())
+    assert ax.computed_zorder is False
+    assert (ax.elev, ax.azim) == BLOCK_VIEW
+    assert ax.get_xlim() == (0.0, 1.0) and ax.get_zlim() == (0.0, 1.0)
+    plt.close(fig)
+    # the same pieces as the cells' sections by the three walls
+    normals, offsets = block_planes([[0, 1]] * 3)
+    total, count = 0.0, 0
+    for origin, axes in (([0, 0, 0], [[0, 1, 0], [0, 0, 1]]),
+                         ([0, 1, 0], [[1, 0, 0], [0, 0, 1]]),
+                         ([0, 0, 0], [[1, 0, 0], [0, 1, 0]])):
+        cut = plane_cut(CORNERS, cells, origin, axes)
+        parts, _ = clip_polygons(cut.in_space(), normals, offsets)
+        total += area3(parts).sum()
+        count += len(parts)
+    assert np.isclose(total, 3.0, rtol=1e-12) and count == len(pieces)
+
+
+@pytest.mark.parametrize("view", [(25.0, -60.0), (25.0, 120.0), (-30.0, 30.0)])
+def test_a_block_on_the_mesh_s_own_faces_shows_three_walls_from_any_view(view):
+    """Bounds that are the cube's own faces: each wall drawn is a face of
+    the cube, tiled by the cells inside it, area 1, from any view."""
+    cells, _ = kuhn()
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    walls = mesh_block(ax, CORNERS, cells, [[0, 1]] * 3, view=view)
+    fig.canvas.draw()
+    assert len(walls.get_paths()) == 6
+    plt.close(fig)
+
+
+def test_a_block_s_refusals():
+    cells, _ = kuhn()
+    fig = plt.figure()
+    plain = fig.add_subplot(1, 2, 1)
+    with pytest.raises(ValueError, match="three-dimensional axes"):
+        mesh_block(plain, CORNERS, cells, [[0, 1]] * 3)
+    space = fig.add_subplot(1, 2, 2, projection="3d")
+    with pytest.raises(ValueError, match="one for each cell"):
+        mesh_block(space, CORNERS, cells, [[0, 1]] * 3, colours=["r", "g"])
+    plt.close(fig)
+
+
+def test_a_fault_s_curves_are_drawn_by_kind():
+    """Each kind in its own style, labelled, its edges joined end to end;
+    in space as they are, on plain axes projected onto the plane given."""
+    edges = {"tip": np.array([[0, 1], [1, 3]]), "free_edge": np.array([[4, 5]]),
+             "junction": None, "face_edge": np.empty((0, 2), dtype=np.int64)}
+    fig = plt.figure()
+    space = fig.add_subplot(1, 2, 1, projection="3d")
+    drawn = fault_curves(space, CORNERS, edges, color="#2a78d6")
+    assert set(drawn) == {"tip", "free_edge"}
+    assert drawn["tip"].get_label() == "tip"
+    assert drawn["free_edge"].get_label() == "free edge"
+    assert np.isclose(drawn["free_edge"].get_linewidth()[0],
+                      FAULT_CURVE_STYLES["free_edge"]["linewidth"])
+    plain = fig.add_subplot(1, 2, 2)
+    drawn = fault_curves(plain, CORNERS, edges,
+                         plane=([0.0, 0.0, 0.0], [[0, 1, 0], [0, 0, 1]]))
+    # the tip's two edges joined at node 1 into one polyline, 0 - 1 - 3
+    (line,) = drawn["tip"].get_segments()
+    assert np.allclose(line, CORNERS[[0, 1, 3]][:, 1:])
+    with pytest.raises(ValueError, match="give plane"):
+        fault_curves(plain, CORNERS, edges)
+    with pytest.raises(ValueError, match="the kinds of a fault's curves"):
+        fault_curves(space, CORNERS, {"edge": edges["tip"]})
+    with pytest.raises(ValueError, match="rows of node indices"):
+        fault_curves(space, CORNERS, {"tip": edges["tip"] * 1.0})
+    plt.close(fig)
+
+
+def test_edges_are_joined_into_polylines_broken_at_branches():
+    """A path, a branch where three edges meet, and a loop: runs from the
+    ends and the branch, the loop closed on its first node."""
+    from planetmodel.plotting.meshes import _polylines
+    lines = _polylines(np.array([[0, 1], [1, 2], [2, 3], [2, 4],
+                                 [5, 6], [6, 7], [7, 5]]))
+    runs = sorted(tuple(r.tolist()) for r in lines)
+    assert runs == [(0, 1, 2), (2, 3), (2, 4), (5, 6, 7, 5)]

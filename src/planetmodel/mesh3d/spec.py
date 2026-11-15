@@ -76,7 +76,7 @@ __all__ = [
     "UniformInterfaces", "CappedInterfaces", "PerInterface", "Refinement",
     "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec",
     "MeshResult", "ValidationReport", "optimise_methods", "DELIVERIES",
-    "OUTER_BOUNDARIES", "QUALITY_FLOOR",
+    "OUTER_BOUNDARIES", "QUALITY_FLOOR", "QUALITY_MEASURE", "GRADIENT",
 ]
 
 #: The two deliveries of the MFEM export: the nodes moved by the mapping,
@@ -89,6 +89,13 @@ DELIVERIES = ("physical", "referential")
 #: "spherical" requires the mapping to be the identity there, so that
 #: a far-field condition can be applied on a sphere.
 OUTER_BOUNDARIES = ("free", "spherical")
+
+#: The measure of an element's shape the mesher's checks and
+#: `cell_quality` take: gmsh's minSICN, the signed inverse condition
+#: number of its Jacobian at its worst over the element, 1 for a
+#: regular tetrahedron, falling to 0 as it flattens and negative where
+#: it folds, a curved element's curvature included.
+QUALITY_MEASURE = "minSICN"
 
 #: The minSICN below which an element is poorly shaped: the level at
 #: which `raise_order` runs gmsh's high-order optimiser and at which
@@ -144,12 +151,26 @@ def _require_ramp(size: float, far_size: float, decay_width: float) -> None:
             "would refine away from the target rather than towards it")
 
 
+#: The growth of the element size per unit distance that `InterfaceSizing.
+#: graded` takes by default: each element about 30 per cent larger than
+#: its neighbour nearer the target, a transition gmsh's Delaunay mesher
+#: follows with well-shaped elements whatever the two sizes.
+GRADIENT = 0.3
+
+
 @dataclass(frozen=True)
 class InterfaceSizing:
     """Target element size at an interface, and how it relaxes away.
 
     All three are lengths in the geometry's own units, handed to gmsh as
-    they are.
+    they are.  The size grows from `size` to `far_size` at the gradient
+    (far_size - size) / decay_width per unit distance, the factor by
+    which an element is larger than its neighbour nearer the target
+    being about one more than it: a gradient of one or more doubles the
+    size from one element to the next, a sharper transition than the
+    mesher can follow, which it then smears out by its own rule.
+    `graded` gives the decay width from the gradient, so that what is
+    stated is the size on the target and the rest follows.
     """
 
     #: The element size on the interface.
@@ -166,6 +187,20 @@ class InterfaceSizing:
         """The same sizing with every length multiplied by `factor`."""
         return InterfaceSizing(self.size * factor, self.far_size * factor,
                                self.decay_width * factor)
+
+    @classmethod
+    def graded(cls, size: float, far_size: float, *,
+               gradient: float = GRADIENT) -> "InterfaceSizing":
+        """`size` on the target growing to `far_size` at `gradient` per unit
+        distance (`GRADIENT` by default): the decay width (far_size -
+        size) / gradient, the transition as long as the ratio of the two
+        sizes needs, so that the size grows from element to element by a
+        bounded factor whatever they are.  Equal sizes need no
+        transition, and take one `size` for its width."""
+        if not gradient > 0.0:
+            raise ValueError(f"gradient must be positive, got {gradient}")
+        width = (float(far_size) - float(size)) / float(gradient)
+        return cls(size, far_size, width if width > 0.0 else float(size))
 
 
 #: A sizing rule: (interfaces of the computational domain, its outer

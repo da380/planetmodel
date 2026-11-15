@@ -35,7 +35,11 @@ mesh lying in a plane whole (a two-dimensional mesh, or a box's top),
 and `mesh_section` draws either, the elements' sections coloured as
 asked and the faces' as curves, and
 `clip_polygons` keeps the part of polygons on one side of a plane, for
-a cutaway in three dimensions (`meshes`); `style` holds the look they
+a cutaway in three dimensions, `mesh_block` draws a block cut from a
+volume mesh on three-dimensional axes (`block_planes` its six planes,
+to clip what is drawn inside it), and `fault_curves` a fault's curves
+by kind, each in its own line style (`FAULT_CURVE_STYLES`), in space or
+projected onto a plane (`meshes`); `style` holds the look they
 share, a signed field such as a sensitivity kernel drawn symmetric about
 zero with `diverging=True`, its limits at a percentile with `clip=`, and
 divided by its largest value with `normalised=True`, on maps and
@@ -45,7 +49,9 @@ made with the `plot` extra, and cartopy only where a map is drawn.
 from .cutaways import COASTLINE_STYLE, LAND, LIGHT, SEA, cutaway
 from .flat import BLOCK_VIEWS, block, grid_cell_edges, plane_map, vertical_section
 from .maps import cell_edges, sphere_map
-from .meshes import PlaneCut, clip_polygons, in_plane, mesh_section, plane_cut
+from .meshes import (BLOCK_VIEW, FAULT_CURVE_STYLES, PlaneCut, block_planes,
+                     clip_polygons, fault_curves, in_plane, mesh_block, mesh_section,
+                     plane_cut)
 from .profiles import profile, radial_profile
 from .sections import section
 from .spectra import correlation, correlation_total, spectrum
@@ -58,5 +64,7 @@ __all__ = ["profile", "radial_profile", "section", "sphere_map", "cell_edges",
            "cutaway", "spectrum", "correlation", "correlation_total", "write_vtk",
            "write_flat_vtk",
            "PlaneCut", "plane_cut", "in_plane", "mesh_section", "clip_polygons",
+           "block_planes", "mesh_block", "fault_curves", "FAULT_CURVE_STYLES",
+           "BLOCK_VIEW",
            "BOUNDARY_STYLE", "DIVERGING", "SEQUENTIAL", "LIGHT", "LAND", "SEA",
            "COASTLINE_STYLE", "colour_scale", "colour_extend"]

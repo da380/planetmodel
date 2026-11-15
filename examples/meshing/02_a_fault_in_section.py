@@ -52,14 +52,18 @@ fault = Fault([plane])
 
 # %% [markdown]
 # The mesh twice, of order 1, with and without a refinement to 0.025 on
-# the fault; the interfaces' own size is 0.12.
+# the fault, growing to the interfaces' own size, 0.12, by a bounded
+# factor an element (`InterfaceSizing.graded`), the linear mesh
+# relocated by gmsh's Relocate3D pass, which moves no node of a fault or
+# an interface.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_section_"))
 built = {}
-for label, sizing in (("without", None), ("with", InterfaceSizing(0.025, 0.12, 0.1))):
+for label, sizing in (("without", None), ("with", InterfaceSizing.graded(0.025, 0.12))):
     result = build_layered_mesh(
         MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1,
+                 optimise="Relocate3D",
                  faults=[EmbeddedFault(fault, name="fault", sizing=sizing)]),
         work / label)
     mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)

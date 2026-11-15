@@ -22,7 +22,8 @@ its own, its face edge.
 geometry's mapping is applied, moving the nodes or written beside them
 as a field, and `export_mfem` adds the fields of a model to a layered
 one.  The manifest that travels with every mesh is `manifest`, and
-`read_mesh` reads a written mesh as plain arrays (`MeshArrays`).
+`read_mesh` reads a written mesh as plain arrays (`MeshArrays`), and
+`cell_quality` the shape of its cells by the measure its checks take.
 Geometry construction, tagging, sizing fields, orientation repair and
 gmsh session management are private: consumers depend on the mesh and
 its manifest, not on how either was built.
@@ -42,7 +43,7 @@ import importlib
 
 from . import manifest
 from ._extra import GMSH_MISSING, missing_gmsh
-from .arrays import MeshArrays, read_mesh
+from .arrays import MeshArrays, cell_quality, read_mesh
 from .export import ExportResult, export_mfem, export_mfem_mesh
 from .spec import (AngularResolution, CappedInterfaces, EmbeddedFault,
                    InterfaceSizing, MeshResult, MeshSpec, NearPoints, PerInterface,
@@ -55,7 +56,7 @@ __all__ = [
     "PerInterface", "Refinement", "NearPoints", "near_curve", "EmbeddedFault",
     "ValidationReport", "build_layered_mesh",
     "build_offset_mesh", "export_mfem_mesh", "export_mfem", "ExportResult",
-    "manifest", "read_mesh", "MeshArrays",
+    "manifest", "read_mesh", "MeshArrays", "cell_quality",
 ]
 
 #: The names that need gmsh to import, and the modules that hold them.

@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ..slices import Shown, normalised as _normalised
+from .meshes import BLOCK_VIEW
 from .style import BOUNDARY_STYLE, colour_extend, colour_scale
 
 if TYPE_CHECKING:
@@ -60,11 +61,11 @@ __all__ = ["plane_map", "vertical_section", "block", "grid_cell_edges",
 #: The azimuth, in degrees, of matplotlib's three-dimensional view toward
 #: each corner of a block, by compass (x east, y north): the view from
 #: the southeast is matplotlib's own default.
-BLOCK_VIEWS = {"southeast": -60.0, "southwest": -120.0, "northeast": 30.0,
+BLOCK_VIEWS = {"southeast": BLOCK_VIEW[1], "southwest": -120.0, "northeast": 30.0,
                "northwest": 150.0}
 
 #: The elevation of a block's view, in degrees.
-_ELEVATION = 25.0
+_ELEVATION = BLOCK_VIEW[0]
 
 
 def grid_cell_edges(grid: Grid) -> tuple[np.ndarray, ...]:

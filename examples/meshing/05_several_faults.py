@@ -82,9 +82,10 @@ faults = {"thrust": Fault([thrust]), "splay": Fault([splay]),
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
-near = InterfaceSizing(0.035, 0.15, 0.1)
+near = InterfaceSizing.graded(0.035, 0.15)
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
+             optimise="Relocate3D",
              faults=[EmbeddedFault(f, name=n, sizing=near) for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())

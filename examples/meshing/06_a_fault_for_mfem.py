@@ -67,8 +67,9 @@ thrust = Fault([plane])
 work = Path(tempfile.mkdtemp(prefix="planetmodel_mfem_fault_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.3, 0.3), order=2,
+             optimise="Relocate3D",
              faults=[EmbeddedFault(thrust, name="thrust",
-                                   sizing=InterfaceSizing(0.03, 0.15, 0.1))]),
+                                   sizing=InterfaceSizing.graded(0.03, 0.15))]),
     work / "built")
 export = export_mfem_mesh(result, work / "thrust", delivery="physical")
 card = manifest.read(export.manifest_path)

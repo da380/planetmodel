@@ -17,6 +17,10 @@ delivery (`.mesh`) is read by MFEM, whose `Mesh` gives the same arrays
 (`GetVertexArray`, `GetElementVertices`, `GetBdrElementVertices`,
 `GetAttribute`, `GetBdrAttribute`), corners alone.
 
+`cell_quality` reads the shape of every cell of an MSH file in the same
+order, by the measure the mesher's checks take (`spec.QUALITY_MEASURE`,
+gmsh's minSICN, which sees a curved element's curvature).
+
 A cell is an element of the mesh's own dimension in a physical group,
 its attribute the group's number (its layer's own attribute, or in a
 mesh with faults one of its collars', the manifest's `layer_of` saying
@@ -37,8 +41,9 @@ from numpy.typing import ArrayLike
 
 from . import manifest as _manifest
 from ._extra import require_gmsh
+from .spec import QUALITY_MEASURE
 
-__all__ = ["MeshArrays", "read_mesh"]
+__all__ = ["MeshArrays", "read_mesh", "cell_quality"]
 
 
 def _row_index(rows: np.ndarray, table: np.ndarray) -> np.ndarray:
@@ -99,11 +104,20 @@ class MeshArrays:
         layers, as the layer's own attribute, (c,): the layer whose radii,
         or in a flat mesh depths, hold every corner (`MeshManifest.
         layered_coordinate` of the points the mesh's coordinates stand
-        for), to a millionth of the mesh's `scale`, and the first of two
-        where the corners all lie on the surface between them (a cell
-        with its corners on a sphere lies inside it).  The positions are
+        for), to a millionth of the mesh's `scale`.  The positions are
         taken as the reference ones they are in the mesher's file.
-        Refused where a cell's corners span two layers."""
+
+        A cell whose corners all lie on an interface fits the layers on
+        both sides of it, and on a curved interface it need not be flat:
+        where the interface's triangulation folds inward along an edge, a
+        cell of the layer outside fills the fold with its corners on the
+        sphere, and a cell inside spans a convex edge with its corners
+        there too.  Its layer is that of its neighbours across
+        its sides that are not an interface's boundary elements, which
+        lie in one layer with it, the layers meeting at interfaces alone;
+        a neighbour itself undecided is decided first.  Refused where a
+        cell's corners span two layers, and where a cell's neighbours
+        leave its layer undecided."""
         bounds = manifest.boundaries
         d = self.dimension
         X = np.zeros(self.points.shape[:-1] + (3,))
@@ -115,7 +129,32 @@ class MeshArrays:
         if not np.all(fits.any(axis=1)):
             raise ValueError(f"{int(np.count_nonzero(~fits.any(axis=1)))} cells have "
                              "corners in two layers")
-        return np.argmax(fits, axis=1) + 1
+        out = np.argmax(fits, axis=1) + 1
+        open_ = np.count_nonzero(fits, axis=1) > 1
+        if not np.any(open_):
+            return out
+        # the sides two cells hold that are no interface's: their cells pair
+        unique, first, counts, owners = self._sides
+        interfaces = self.boundary_of([e["attribute"] for e in manifest.interfaces])
+        across = counts == 2
+        at = _row_index(np.sort(interfaces, axis=1), unique)
+        across[at[at >= 0]] = False
+        start = first[across]
+        pairs = np.stack([owners[start], owners[start + 1]], axis=1)
+        pairs = pairs[open_[pairs].any(axis=1)]
+        while np.any(open_):
+            known = ~open_[pairs]
+            settle = known[:, 0] != known[:, 1]
+            if not np.any(settle):
+                raise ValueError(
+                    f"{int(np.count_nonzero(open_))} cells have their corners on an "
+                    "interface and no neighbour across a side that is no "
+                    "interface's to say which layer they are in")
+            cell = np.where(known[settle, 0], pairs[settle, 1], pairs[settle, 0])
+            out[cell] = out[np.where(known[settle, 0], pairs[settle, 0],
+                                     pairs[settle, 1])]
+            open_[cell] = False
+        return out
 
     def walls(self, manifest: _manifest.MeshManifest) -> np.ndarray:
         """Every fault's walls on these arrays (`manifest.walls_of_faults`),
@@ -189,6 +228,24 @@ class MeshArrays:
         return out
 
 
+def _groups(gmsh: object, dim: int, groups: Sequence[tuple[int, int]]
+            ) -> dict[int, tuple[list[np.ndarray], list[np.ndarray]]]:
+    """The elements of each physical group of dimension `dim` in the open
+    gmsh model, in the order `read_mesh` takes them: by group, entity and
+    block, each block's element tags (k,) and its node tags (k, j)."""
+    out = {}
+    for _, group in (g for g in groups if g[0] == dim):
+        tags, blocks = [], []
+        for entity in gmsh.model.getEntitiesForPhysicalGroup(dim, group):
+            _, etags, enodes = gmsh.model.mesh.getElements(dim, entity)
+            for t, n in zip(etags, enodes):
+                if len(t):
+                    tags.append(np.asarray(t, dtype=np.int64))
+                    blocks.append(np.asarray(n, dtype=np.int64).reshape(len(t), -1))
+        out[group] = (tags, blocks)
+    return out
+
+
 def read_mesh(path: str | Path) -> MeshArrays:
     """The mesh in an MSH file as plain arrays (module docstring); gmsh is
     imported here, and its absence refused naming the `meshing` extra."""
@@ -212,12 +269,7 @@ def read_mesh(path: str | Path) -> MeshArrays:
 
         def elements(dim: int) -> dict[int, np.ndarray]:
             out = {}
-            for _, group in (g for g in groups if g[0] == dim):
-                blocks = []
-                for entity in gmsh.model.getEntitiesForPhysicalGroup(dim, group):
-                    _, etags, enodes = gmsh.model.mesh.getElements(dim, entity)
-                    blocks += [np.asarray(n, dtype=np.int64).reshape(len(t), -1)
-                               for t, n in zip(etags, enodes) if len(t)]
+            for group, (_, blocks) in _groups(gmsh, dim, groups).items():
                 if len({b.shape[1] for b in blocks}) > 1:
                     raise ValueError(f"group {group} of dimension {dim} in {path} "
                                      "mixes element types")
@@ -244,3 +296,28 @@ def read_mesh(path: str | Path) -> MeshArrays:
                       cell_attributes=cell_attributes, faces=faces,
                       face_attributes=face_attributes, curves=curves,
                       names={k: v for k, v in names.items() if v})
+
+
+def cell_quality(path: str | Path) -> np.ndarray:
+    """The shape of every cell of the mesh in an MSH file, (c,), in the
+    order of `read_mesh`'s cells: `spec.QUALITY_MEASURE`, gmsh's minSICN,
+    1 for a regular tetrahedron (or triangle), near 0 for a flat one,
+    negative for one folded; gmsh is imported here, its absence refused
+    naming the `meshing` extra."""
+    gmsh = require_gmsh()
+    from ._session import session
+
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"no mesh file at {path}")
+    with session(name="quality"):
+        gmsh.merge(str(path))
+        groups = gmsh.model.getPhysicalGroups()
+        if not groups:
+            raise ValueError(f"{path} has no physical groups, so no cells")
+        dimension = max(dim for dim, _ in groups)
+        tags = [t for ts, _ in _groups(gmsh, dimension, groups).values() for t in ts]
+        if not tags:
+            return np.empty(0)
+        return np.asarray(gmsh.model.mesh.getElementQualities(
+            np.concatenate(tags), QUALITY_MEASURE), dtype=float)

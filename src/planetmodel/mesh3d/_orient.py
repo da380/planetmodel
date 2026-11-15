@@ -41,7 +41,7 @@ import gmsh
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .spec import QUALITY_FLOOR
+from .spec import QUALITY_FLOOR, QUALITY_MEASURE
 
 if TYPE_CHECKING:
     from ..fault import Patch
@@ -314,7 +314,7 @@ def element_quality(dimension: int) -> tuple[float, int, int]:
     if not tags:
         return 0.0, 0, 0
     q = np.asarray(gmsh.model.mesh.getElementQualities(
-        np.asarray(tags, dtype=np.int64), "minSICN"), dtype=float)
+        np.asarray(tags, dtype=np.int64), QUALITY_MEASURE), dtype=float)
     return float(q.min()), int((q <= 0.0).sum()), q.size
 
 

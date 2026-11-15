@@ -88,18 +88,22 @@ splay = StructuredPatch(UNIT, UNIT.coordinates(controls),
 faults = {"thrust": Fault([thrust]), "splay": Fault([splay])}
 
 # %% [markdown]
-# The mesh, of order 2, refined towards both faults. The validation
-# report holds the faults' own checks (every face a face of two cells,
-# every face pointing into the hanging wall) and the warnings beside the
-# usual ones; the manifest, of the schema of a mesh with faults, gains
-# one record a fault, and each layer the list of element attributes its
-# cells carry, its collars' after its own.
+# The mesh, of order 2, refined towards both faults, the size on them
+# 0.05 growing to the background's by a bounded factor an element
+# (`InterfaceSizing.graded`), the linear mesh relocated by gmsh's
+# Relocate3D pass, which moves no node of a fault or an interface. The
+# validation report holds the faults' own checks (every face a face of
+# two cells, every face pointing into the hanging wall) and the warnings
+# beside the usual ones; the manifest, of the schema of a mesh with
+# faults, gains one record a fault, and each layer the list of element
+# attributes its cells carry, its collars' after its own.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
-near = InterfaceSizing(0.05, 0.3, 0.1)
+near = InterfaceSizing.graded(0.05, 0.3)
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
+             optimise="Relocate3D",
              faults=[EmbeddedFault(f, name=n, sizing=near) for n, f in faults.items()]),
     work / "faulted")
 print(f"{result.counts['elements']} elements, {result.counts['nodes']} nodes")
