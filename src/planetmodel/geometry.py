@@ -35,7 +35,11 @@ for the outside.  For a hollow geometry the inner boundary is interface
 The lattice of those checks is the geometry's `lattice`, in its
 `coordinates` (`SPHERICAL`'s lattice on the sphere), and is the sample
 the mapping's `is_valid(sample=..., coordinates=...)` takes; the
-messages name the system's coordinates.
+messages, and the repr's skeleton, name the system's coordinates.  A
+leaf states the class of a field of its layered coordinate alone
+(`radial_field_type`: `RadialField` on the sphere, `cartesian.DepthField`
+in a box), which whatever builds such a field for a geometry's layers
+asks for: a model's coarsening, a deck read, a constant put on a layer.
 
 Nothing here knows about units: radii are numbers and every tolerance
 is `rtol` times the skeleton's span.
@@ -44,12 +48,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike
 
 from .coordinates import SPHERICAL, Coordinates
 from .displacement import RadialDisplacement, SphericalFunction
+from .fields import RadialField
 from .mapping import (IdentityMapping, Mapping, RadialStretch, SphericalSample,
                       ValidityReport, scaled_mapping, validity)
 from .skeleton import CoarseningMap, Skeleton
@@ -112,14 +118,19 @@ class GeometryBase:
     """What every geometry shares: a skeleton, a mapping and names; see
     the module docstring.
 
-    A leaf states its `_coordinates`, which boundaries are interfaces and
-    the layers on either side (`_face_boundaries`, `_between`), the
-    lattice covering its body (`_lattice`) and how a copy is built
-    (`_made`); everything else is here.  `check=False` skips the
-    invariant checks, for a mapping already known to satisfy them.
+    A leaf states its `_coordinates` and `radial_field_type`, which
+    boundaries are interfaces and the layers on either side
+    (`_face_boundaries`, `_between`), the lattice covering its body
+    (`_lattice`) and how a copy is built (`_made`); everything else is
+    here.  `check=False` skips the invariant checks, for a mapping already
+    known to satisfy them.
     """
 
     _coordinates: Coordinates
+
+    #: The class of a field of the layered coordinate alone in the
+    #: geometry's system, built without naming the system.
+    radial_field_type: ClassVar[type[RadialField]]
 
     def __init__(self, skeleton: Skeleton, *, mapping: Mapping | None = None,
                  layer_names: Names = None, interface_names: Names = None,
@@ -473,6 +484,7 @@ class Geometry(GeometryBase):
     """
 
     _coordinates: Coordinates = SPHERICAL
+    radial_field_type: ClassVar[type[RadialField]] = RadialField
 
     def _face_boundaries(self, skeleton: Skeleton) -> range:
         """Every boundary but the centre: from boundary 1 on a full skeleton,
@@ -504,7 +516,8 @@ class Geometry(GeometryBase):
 
     def __repr__(self) -> str:
         m = "identity" if self.is_identity else repr(self._m)
-        return f"Geometry({self._sk!r}, mapping={m})"
+        return (f"Geometry({self._sk.describe(self.coordinates.labels[0])}, "
+                f"mapping={m})")
 
 
 def _updated(current: tuple[str | None, ...], new: Renames) -> tuple[str | None, ...]:

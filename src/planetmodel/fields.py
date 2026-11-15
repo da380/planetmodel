@@ -62,7 +62,8 @@ from numpy.typing import ArrayLike
 
 from .character import SCALAR, Character
 from .coordinates import (CARTESIAN, SPHERICAL, Coordinates, checked_coordinates,
-                          common_coordinates, coordinates_of, resolve_frame)
+                          common_coordinates, coordinates_of, require_coordinates,
+                          resolve_frame)
 from .frames import SphericalFunction, bond_matrix, rotate_slots, tensor_to_voigt
 from .layerfunction import (LayerFunction, LayerFunctionLike, as_interval,
                             as_layer_function, as_scalar, as_values, constant_layer,
@@ -560,7 +561,8 @@ class RadialField(FieldBase):
 
     def spherical_mean(self, *, grid: AngularGrid | None = None) -> "RadialField":
         """A radial field of rank 0 is its own spherical mean; `grid` is not
-        needed."""
+        needed.  A field of another system than the sphere's is refused."""
+        require_coordinates(self, SPHERICAL, "a spherical mean")
         if self._character.rank:
             raise ValueError(f"a spherical mean is taken of a field of rank 0, "
                              f"not {self._character}")

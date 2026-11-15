@@ -59,9 +59,9 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
-from .coordinates import coordinates_of, increases_outward
+from .coordinates import Coordinates, coordinates_of, increases_outward
 from .displacement import RadialDisplacement, SphericalFunction
-from .fields import Field, RadialField, held
+from .fields import Field, held
 from .geometry import Geometry, GeometryBase, LayerInfo, Names, Renames
 from .layerfunction import LayerFunction, polynomial_fit, same_interval
 from .mapping import Mapping
@@ -309,6 +309,12 @@ class ModelBase:
     def skeleton(self) -> Skeleton:
         """The geometry's boundaries: radii on the sphere, depths in a box."""
         return self._geometry.skeleton
+
+    @property
+    def coordinates(self) -> Coordinates:
+        """The coordinate system of the geometry and of every field:
+        `SPHERICAL` on the sphere, `cartesian.FLAT` in a box."""
+        return self._geometry.coordinates
 
     @property
     def scales(self) -> Scales:
@@ -590,7 +596,8 @@ class ModelBase:
         selectable.  A layer left whole
         keeps its field objects.  A merged layer holds, for every name
         all its fine layers carry, the least-squares polynomial of
-        `degree` through `n` Chebyshev samples of the fine model, and
+        `degree` through `n` Chebyshev samples of the fine model, a
+        field of the geometry's `radial_field_type`, and
         the returned CoarseningFit reports each fit's relative misfit
         for the caller to judge.  Merging a fluid layer with a solid
         one, a name only some of the merged layers hold, and a field
@@ -615,9 +622,9 @@ class ModelBase:
                 character = self._one_character(group, name)
                 data = self._across(group, name)
                 fitted = polynomial_fit(interval, data, degree=degree, n=n)
-                fields[name] = RadialField(interval, fitted,
-                                           character=character, name=name,
-                                           coordinates=geometry.coordinates)
+                fields[name] = geometry.radial_field_type(interval, fitted,
+                                                          character=character,
+                                                          name=name)
                 residuals[(j, name)] = _misfit(data, fitted, interval, n)
             layers.append(fields)
         coarse = self.replaced(geometry=geometry, layers=layers)

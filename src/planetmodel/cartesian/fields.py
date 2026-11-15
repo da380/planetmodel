@@ -16,11 +16,13 @@ system of their sources and need no flat class: `ComposedField`,
 Components are in the local frame (e_up, e_x, e_y) unless
 `frame="cartesian"`: the first is the upward one.  The derivative of a
 `DepthField` is along depth, downward, d/d depth = -d/dz, of every
-component as stored.
+component as stored.  A `DepthField` is its own horizontal mean
+(`cartesian.horizontal_mean`), of any rank.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -30,6 +32,9 @@ from ..character import SCALAR, Character
 from ..frames import SphericalFunction
 from ..layerfunction import LayerFunctionLike
 from .coordinates import FLAT
+
+if TYPE_CHECKING:
+    from .grid import Grid
 
 __all__ = ["DepthField", "AnalyticField", "constant_field"]
 
@@ -52,6 +57,11 @@ class DepthField(fields.RadialField):
                  rtol: float = 1e-9) -> None:
         super().__init__(interval, function, character=character, name=name,
                          rtol=rtol)
+
+    def horizontal_mean(self, *, grid: Grid | None = None) -> "DepthField":
+        """A field of depth alone is its own horizontal mean, of any rank,
+        the frame being the same everywhere; `grid` is not needed."""
+        return self
 
 
 class AnalyticField(fields.AnalyticField):

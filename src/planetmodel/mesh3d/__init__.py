@@ -3,11 +3,21 @@
 A MeshSpec describes what is wanted, `build_layered_mesh` produces the
 reference mesh of it through gmsh and a MeshResult says what was
 written; `build_offset_mesh` makes the two-body benchmark geometries.
+The geometry may be spherical, meshed as concentric spheres (a ball, a
+shell, or their disc in two dimensions), or flat
+(`planetmodel.cartesian.Geometry`), meshed as the box over its lateral
+domain cut by the planes of its interfaces, or over a `Rectangle` as
+that box's section in the (x, z) plane, its base and sides labelled
+faces of their own; the spec, the sizing, the tagging, the orientation,
+the checks, the manifest and the export are the same code for both,
+which asks the geometry's layout where the shapes differ.
 Faults given to a MeshSpec as `EmbeddedFault`s are built into the mesh
 from the start, pulled back through the mapping and fragmented in, each
 an oriented interior surface with its curves labelled, the cells of its
 hanging wall that touch its slip carrying element attributes of their
-own (its collar, `manifest`).
+own (its collar, `manifest`); in a box a fault (in a Cartesian frame)
+may also leave through the base or a side, where its edge is a curve of
+its own, its face edge.
 `export_mfem_mesh` turns either into an MFEM delivery, where the
 geometry's mapping is applied, moving the nodes or written beside them
 as a field, and `export_mfem` adds the fields of a model to a layered

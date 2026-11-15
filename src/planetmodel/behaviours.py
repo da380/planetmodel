@@ -27,6 +27,14 @@ ConstantQ, SelfGravitating, Viscoelastic, Model)` is still one model
 type derived from `Model` alone.  The transformations `isotropic`,
 `elastic` and `with_gravity` return copies of the same class through
 `Model.replaced`.
+
+`Elastic`, `ConstantQ` and `Viscoelastic` read and build fields point by
+point, so they serve a flat model (`planetmodel.cartesian`) as they
+serve a spherical one, whose layer's depth stands where the radius
+does.  `SelfGravitating` computes gravity from the mass inside a
+radius, which is the sphere's alone: on a flat model its methods refuse
+by name, and a flat model's gravity is a prescribed field
+(`cartesian.Model.with_uniform_gravity`).
 """
 from __future__ import annotations
 
@@ -239,11 +247,11 @@ class Elastic:
         rheology names are refused, the frozen moduli having been derived
         from them.
         """
-        from .model import Model
+        from .model import ModelBase
         if name in _FROZEN_FROM or rheology.is_rheology_name(name):
             _refuse_frozen(self, f"its moduli were derived from {name!r}")
         _refuse_other_symmetry(self.layer(which), name)
-        out = Model.with_field(self, which, name, field, replace=replace)
+        out = ModelBase.with_field(self, which, name, field, replace=replace)
         i = self.layer(which).index
         if name == "rho" and any(n in out.layer(i) for n in VELOCITY_NAMES):
             keep = VELOCITY_NAMES
@@ -276,7 +284,7 @@ class Elastic:
         is refused, as is a frozen model.  Layers left whole are
         untouched.
         """
-        from .model import Model
+        from .model import ModelBase
         _refuse_frozen(self, "coarsening refits the elastic description")
         _, cmap = self._coarsening(keep=keep, drop=drop)
         layers = [dict(layer.fields) for layer in self.layers]
@@ -287,8 +295,8 @@ class Elastic:
                 layers[i] = {k: f for k, f in layers[i].items()
                              if k not in materials.ELASTIC_NAMES or k in family}
         stripped = self.replaced(layers=layers, check=False)
-        coarse, fit = Model.coarsened(stripped, keep=keep, drop=drop,
-                                      degree=degree, n=n)
+        coarse, fit = ModelBase.coarsened(stripped, keep=keep, drop=drop,
+                                          degree=degree, n=n)
         out = [dict(layer.fields) for layer in coarse.layers]
         for j, group in enumerate(fit.map.layers):
             if len(group) > 1:
@@ -369,7 +377,8 @@ class SelfGravitating:
     `with_pressure`;
     `with_stratification` attaches d rho / d Phi_0 = rho'(r) / g(r) to
     the fluid layers.  A density that depends on direction is refused,
-    and the geometry's mapping does not enter (see `mesh1d.gravity`)."""
+    and the geometry's mapping does not enter (see `mesh1d.gravity`).
+    A model off the sphere (a flat one) is refused by name."""
 
     gravity = gravity
     mass = mass

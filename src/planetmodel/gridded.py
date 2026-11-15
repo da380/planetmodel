@@ -38,6 +38,11 @@ skeleton, its deformation gradient the derivatives of the rules that
 read it, and every element boundary declared as a knot, since the
 radial rule's derivative may jump there.
 
+`GriddedBase` is the radial half, shared with the gridded fields of a
+box (`cartesian.GriddedField`): the elements, the radial rule, the
+values' checks, the derivatives and the means are its, the grid, the
+lateral rule over it and the frame of the components the leaf's.
+
 Everything is numbers and every stored array is read-only.
 """
 from __future__ import annotations
@@ -48,6 +53,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.interpolate import PPoly
 
 from .character import SCALAR, VECTOR, Character
 from .displacement import Relief
@@ -62,7 +68,7 @@ from .skeleton import Skeleton
 if TYPE_CHECKING:
     from .sampling import AngularGrid
 
-__all__ = ["GriddedField", "GriddedFunction", "GriddedDisplacement"]
+__all__ = ["GriddedBase", "GriddedField", "GriddedFunction", "GriddedDisplacement"]
 
 
 def _readonly(a: np.ndarray) -> np.ndarray:
@@ -77,7 +83,185 @@ def _grid_frames(grid: AngularGrid) -> np.ndarray:
     return spherical_frame(grid.colatitudes[:, None], grid.longitudes[None, :])
 
 
-class GriddedField(FieldBase):
+class GriddedBase(FieldBase):
+    """The radial half every gridded field shares, on the sphere or in a
+    box: the interval cut into elements at `breaks`, `ngll` GLL nodes
+    each, a radial rule of `mesh1d.RADIAL_METHODS` along the layered
+    coordinate, and at every node of an element the leaf's lateral rule
+    over its grid.
+
+    A leaf's constructor calls `_hold`, which checks and stores the
+    interval, the breaks and the values, and supplies `_interpolant(e)`,
+    the lateral rule over the nodes of element e built once: called at
+    the two lateral coordinates it gives `(ngll,) + stored shape + P`,
+    and its `gradient` the two lateral derivatives alike, and `mean()`
+    its mean over the lateral domain.  `derivatives` and the means are
+    the radial rule's weights against them.  The values the rule reads
+    are the leaf's: Cartesian components on the sphere, where the local
+    frame turns, and the local ones in a box, where it does not.
+    """
+
+    def _hold(self, interval: tuple[float, float], breaks: ArrayLike,
+              values: ArrayLike, lateral: tuple[int, ...], *,
+              axes: tuple[str, ...], character: Character, name: str | None,
+              radial: str, rtol: float) -> np.ndarray:
+        """Check and store the interval, the breaks, the radial rule and the
+        values, of shape (nelem, ngll) + `lateral` + stored shape, `axes`
+        naming the lateral axes in a refusal; the values as float64."""
+        if radial not in RADIAL_METHODS:
+            raise ValueError(f"radial must be one of {RADIAL_METHODS}, got {radial!r}")
+        self._interval = as_interval(interval)
+        self._character = character
+        self._name = name
+        self._rtol = float(rtol)
+        lo, hi = self._interval
+        b = np.array(breaks, dtype=float)
+        if b.ndim != 1 or b.size < 2 or not np.all(np.diff(b) > 0.0):
+            raise ValueError("breaks must be a strictly increasing 1-d array of at "
+                             f"least two values of the {self.coordinates.labels[0]}")
+        tol = self._rtol * (hi - lo)
+        if abs(b[0] - lo) > tol or abs(b[-1] - hi) > tol:
+            raise ValueError(f"breaks from {b[0]:g} to {b[-1]:g} do not span the "
+                             f"interval [{lo:g}, {hi:g}]")
+        if np.iscomplexobj(values):
+            raise TypeError("a gridded field holds real values")
+        v = np.asarray(values, dtype=float)
+        c = stored_shape(character)
+        lead = (b.size - 1,)
+        if v.ndim != 2 + len(lateral) + len(c) or v.shape[:1] != lead \
+                or v.shape[1] < 2 or v.shape[2:] != tuple(lateral) + c:
+            raise ValueError(
+                f"values must have shape (nelem, ngll, {', '.join(axes)}) + {c} = "
+                f"{lead + ('ngll',) + tuple(lateral) + c} with ngll >= 2, "
+                f"got {v.shape}")
+        if not np.all(np.isfinite(v)):
+            raise ValueError("a gridded field holds finite values")
+        self._breaks = _readonly(b)
+        self._data = _readonly(v)
+        self._radial = radial
+        self._mesh = Mesh1D(b, ngll=v.shape[1])
+        self._interpolants: dict[int, object] = {}
+        return v
+
+    def _interpolant(self, e: int) -> LateralInterpolant:
+        """The lateral rule over the nodes of element e, built once."""
+        raise NotImplementedError
+
+    @property
+    def breaks(self) -> np.ndarray:
+        """The element boundaries along the layered coordinate."""
+        return self._breaks
+
+    @property
+    def values(self) -> np.ndarray:
+        """The stored components at the nodes, (nelem, ngll) + the grid's
+        shape + stored shape, in the local frame."""
+        return self._data
+
+    @property
+    def radial(self) -> str:
+        """The radial rule, one of `mesh1d.RADIAL_METHODS`."""
+        return self._radial
+
+    @property
+    def lateral(self) -> str:
+        """The lateral rule, one of the leaf's lateral methods."""
+        return self._lateral
+
+    @property
+    def ngll(self) -> int:
+        """The GLL nodes per element."""
+        return self._data.shape[1]
+
+    @property
+    def radii(self) -> np.ndarray:
+        """The layered coordinate of every node, (nelem, ngll): its radius on
+        the sphere, its depth in a box."""
+        return self._mesh.r
+
+    def _values_at(self, r: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """The components the lateral rule reads, at flat points, (P,) +
+        stored shape."""
+        e, W = self._mesh.interpolation_weights(r, method=self._radial)
+        out = np.empty((r.size,) + self.stored_shape)
+        for k in np.unique(e):
+            m = e == k
+            lat = self._interpolant(int(k))(a[m], b[m])          # (ngll, *c, Pk)
+            out[m] = np.einsum("pi,i...p->p...", W[m], lat)
+        return out
+
+    def derivatives(self, r: ArrayLike, a: ArrayLike, b: ArrayLike
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The components the lateral rule reads (Cartesian on the sphere,
+        local in a box) at flat points, and their derivatives along the
+        layered coordinate and the two lateral ones, each (P,) + stored
+        shape: the radial rule's weights and their derivatives against the
+        lateral rule's values and gradient at the nodes of the point's
+        element.  Values beyond the breaks continue the end elements;
+        nothing is checked against the interval."""
+        r, a, b = (np.asarray(v, dtype=float).ravel()
+                   for v in np.broadcast_arrays(r, a, b))
+        e, W = self._mesh.interpolation_weights(r, method=self._radial)
+        _, dW = self._mesh.interpolation_weights(r, method=self._radial, nu=1)
+        out = [np.empty((r.size,) + self.stored_shape) for _ in range(4)]
+        for k in np.unique(e):
+            m = e == k
+            f = self._interpolant(int(k))
+            lat = f(a[m], b[m])                               # (ngll, *c, Pk)
+            ga, gb = f.gradient(a[m], b[m])
+            out[0][m] = np.einsum("pi,i...p->p...", W[m], lat)
+            out[1][m] = np.einsum("pi,i...p->p...", dW[m], lat)
+            out[2][m] = np.einsum("pi,i...p->p...", W[m], ga)
+            out[3][m] = np.einsum("pi,i...p->p...", W[m], gb)
+        return out[0], out[1], out[2], out[3]
+
+    def radial_pieces(self) -> tuple[np.ndarray, int]:
+        """The breakpoints and degree that hold the field exactly on its
+        interval: the breaks inside it and ngll - 1 under the polynomial
+        rule, the nodes inside it and one under the linear rule, with the
+        interval's ends."""
+        linear = self._radial == "linear"
+        x = np.unique(self._mesh.r) if linear else self._breaks
+        lo, hi = self._interval
+        tol = self._rtol * (hi - lo)
+        inside = x[(x > lo + tol) & (x < hi - tol)]
+        return np.concatenate([[lo], inside, [hi]]), 1 if linear else self.ngll - 1
+
+    def _lateral_mean(self, make: type[RadialField]) -> RadialField:
+        """The mean over the lateral domain as exact polynomial pieces, a
+        field of the class `make`: at every node the exact mean of the
+        lateral rule's interpolant, joined by the radial rule, one layer
+        function per stored component."""
+        nodal = np.stack([np.asarray(self._interpolant(e).mean())
+                          for e in range(self._breaks.size - 1)])
+        pp = self._mesh.to_ppoly(nodal, method=self._radial)
+        shape = self.stored_shape
+        if not shape:
+            function = PolynomialLayer(self._interval, pp)
+        else:
+            function = np.empty(shape, dtype=object)
+            for idx in np.ndindex(shape):
+                function[idx] = PolynomialLayer(
+                    self._interval, PPoly(pp.c[(...,) + idx], pp.x))
+        return make(self._interval, function, character=self._character,
+                    name=self._name)
+
+    def on_interval(self, lo: float, hi: float) -> "GriddedBase":
+        """The same elements on [lo, hi]: beyond the breaks the end
+        elements continue."""
+        out = copy.copy(self)
+        out._interval = as_interval((lo, hi))
+        out._interpolants = self._interpolants
+        return out
+
+    def renamed(self, name: str | None) -> "GriddedBase":
+        """The same field under `name`."""
+        out = copy.copy(self)
+        out._name = name
+        return out
+
+
+class GriddedField(GriddedBase):
     """A field held on an angular grid at the GLL nodes of radial elements.
 
     `breaks` are the element boundaries, strictly increasing and
@@ -106,37 +290,15 @@ class GriddedField(FieldBase):
         if lateral not in METHODS:
             raise ValueError(f"lateral must be one of {METHODS}, got {lateral!r}")
         check_rule(grid, lateral)
-        self._interval = as_interval(interval)
-        self._character = character
-        self._name = name
-        self._rtol = float(rtol)
-        lo, hi = self._interval
-        b = np.array(breaks, dtype=float)
-        if b.ndim != 1 or b.size < 2 or not np.all(np.diff(b) > 0.0):
-            raise ValueError("breaks must be a strictly increasing 1-d array of at "
-                             "least two radii")
-        tol = self._rtol * (hi - lo)
-        if abs(b[0] - lo) > tol or abs(b[-1] - hi) > tol:
-            raise ValueError(f"breaks from {b[0]:g} to {b[-1]:g} do not span the "
-                             f"interval [{lo:g}, {hi:g}]")
-        if np.iscomplexobj(values) or (poles is not None and np.iscomplexobj(poles)):
+        if poles is not None and np.iscomplexobj(poles):
             raise TypeError("a gridded field holds real values")
-        v = np.asarray(values, dtype=float)
-        c = stored_shape(character)
-        lead = (b.size - 1,)
-        if v.ndim != 4 + len(c) or v.shape[:1] != lead or v.shape[1] < 2 \
-                or v.shape[2:] != (grid.ntheta, grid.nphi) + c:
-            raise ValueError(
-                f"values must have shape (nelem, ngll, ntheta, nphi) + {c} = "
-                f"{lead + ('ngll', grid.ntheta, grid.nphi) + c} with ngll >= 2, "
-                f"got {v.shape}")
-        if not np.all(np.isfinite(v)):
-            raise ValueError("a gridded field holds finite values")
-        self._breaks = _readonly(b)
+        v = self._hold(interval, breaks, values, (grid.ntheta, grid.nphi),
+                       axes=("ntheta", "nphi"), character=character, name=name,
+                       radial=radial, rtol=rtol)
         self._grid = grid
-        self._data = _readonly(v)
-        self._radial, self._lateral = radial, lateral
-        self._mesh = Mesh1D(b, ngll=v.shape[1])
+        self._lateral = lateral
+        c = stored_shape(character)
+        lead = (self._breaks.size - 1,)
         # the components laid out for the lateral rules: Cartesian, with
         # the grid's two axes last
         cart = v if not character.rank else rotate_stored(v, _grid_frames(grid),
@@ -151,7 +313,6 @@ class GriddedField(FieldBase):
             poles = np.moveaxis(p, 2, -1)
         resolved = polar_values(self._cartesian, grid, poles=poles, rtol=self._rtol)
         self._poles = _readonly(np.moveaxis(resolved, -1, 2))
-        self._interpolants: dict[int, LateralInterpolant] = {}
 
     @classmethod
     def sampled(cls, field: Field, grid: AngularGrid, *,
@@ -177,46 +338,15 @@ class GriddedField(FieldBase):
                    lateral=lateral, poles=poles, rtol=getattr(field, "rtol", 1e-9))
 
     @property
-    def breaks(self) -> np.ndarray:
-        """The radii of the element boundaries."""
-        return self._breaks
-
-    @property
     def grid(self) -> AngularGrid:
         """The angular grid at every node."""
         return self._grid
-
-    @property
-    def values(self) -> np.ndarray:
-        """The stored components at the nodes, (nelem, ngll, ntheta, nphi) +
-        stored shape, in the spherical frame."""
-        return self._data
 
     @property
     def poles(self) -> np.ndarray:
         """The values at the north and south poles at every node,
         (nelem, ngll, 2) + stored shape, components in the Cartesian frame."""
         return self._poles
-
-    @property
-    def radial(self) -> str:
-        """The radial rule, one of `mesh1d.RADIAL_METHODS`."""
-        return self._radial
-
-    @property
-    def lateral(self) -> str:
-        """The lateral rule, one of `lateral.METHODS`."""
-        return self._lateral
-
-    @property
-    def ngll(self) -> int:
-        """The GLL nodes per element."""
-        return self._data.shape[1]
-
-    @property
-    def radii(self) -> np.ndarray:
-        """The radius of every node, (nelem, ngll)."""
-        return self._mesh.r
 
     def _interpolant(self, e: int) -> LateralInterpolant:
         """The lateral rule over the nodes of element e, built once."""
@@ -229,41 +359,13 @@ class GriddedField(FieldBase):
             self._interpolants[e] = f
         return f
 
-    def _values_at(self, r: np.ndarray, theta: np.ndarray,
-                   phi: np.ndarray) -> np.ndarray:
-        """The Cartesian components at flat points, (P,) + stored shape."""
-        e, W = self._mesh.interpolation_weights(r, method=self._radial)
-        out = np.empty((r.size,) + self.stored_shape)
-        for k in np.unique(e):
-            m = e == k
-            lat = self._interpolant(int(k))(theta[m], phi[m])   # (ngll, *c, Pk)
-            out[m] = np.einsum("pi,i...p->p...", W[m], lat)
-        return out
-
     def cartesian_derivatives(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike
                               ) -> tuple[np.ndarray, np.ndarray, np.ndarray,
                                          np.ndarray]:
         """The Cartesian components at flat points and their derivatives in
-        r, theta and phi, each (P,) + stored shape: the radial rule's
-        weights and their derivatives against the lateral rule's values
-        and gradient at the nodes of the point's element.  Radii beyond
-        the breaks continue the end elements; nothing is checked against
-        the interval."""
-        r, theta, phi = (np.asarray(a, dtype=float).ravel()
-                         for a in np.broadcast_arrays(r, theta, phi))
-        e, W = self._mesh.interpolation_weights(r, method=self._radial)
-        _, dW = self._mesh.interpolation_weights(r, method=self._radial, nu=1)
-        out = [np.empty((r.size,) + self.stored_shape) for _ in range(4)]
-        for k in np.unique(e):
-            m = e == k
-            f = self._interpolant(int(k))
-            lat = f(theta[m], phi[m])                         # (ngll, *c, Pk)
-            gt, gp = f.gradient(theta[m], phi[m])
-            out[0][m] = np.einsum("pi,i...p->p...", W[m], lat)
-            out[1][m] = np.einsum("pi,i...p->p...", dW[m], lat)
-            out[2][m] = np.einsum("pi,i...p->p...", W[m], gt)
-            out[3][m] = np.einsum("pi,i...p->p...", W[m], gp)
-        return out[0], out[1], out[2], out[3]
+        r, theta and phi, each (P,) + stored shape: `derivatives`, the
+        components the lateral rules read being Cartesian here."""
+        return self.derivatives(r, theta, phi)
 
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
@@ -275,18 +377,6 @@ class GriddedField(FieldBase):
             out = rotate_stored(out, np.swapaxes(R, -1, -2), self._character)
         return out
 
-    def radial_pieces(self) -> tuple[np.ndarray, int]:
-        """The breakpoints and degree that hold the field exactly on its
-        interval: the breaks inside it and ngll - 1 under the polynomial
-        rule, the nodes inside it and one under the linear rule, with the
-        interval's ends."""
-        linear = self._radial == "linear"
-        x = np.unique(self._mesh.r) if linear else self._breaks
-        lo, hi = self._interval
-        tol = self._rtol * (hi - lo)
-        inside = x[(x > lo + tol) & (x < hi - tol)]
-        return np.concatenate([[lo], inside, [hi]]), 1 if linear else self.ngll - 1
-
     def spherical_mean(self, *, grid: AngularGrid | None = None) -> RadialField:
         """The spherical mean as exact polynomial pieces: at every node the
         exact mean of the lateral rule's interpolant, joined by the radial
@@ -295,19 +385,7 @@ class GriddedField(FieldBase):
         if self._character.rank:
             raise ValueError(f"a spherical mean is taken of a field of rank 0, "
                              f"not {self._character}")
-        nodal = np.stack([self._interpolant(e).mean()
-                          for e in range(self._breaks.size - 1)])
-        pp = self._mesh.to_ppoly(nodal, method=self._radial)
-        return RadialField(self._interval, PolynomialLayer(self._interval, pp),
-                           character=self._character, name=self._name)
-
-    def on_interval(self, lo: float, hi: float) -> "GriddedField":
-        """The same elements on [lo, hi]: beyond the breaks the end
-        elements continue."""
-        out = copy.copy(self)
-        out._interval = as_interval((lo, hi))
-        out._interpolants = self._interpolants
-        return out
+        return self._lateral_mean(RadialField)
 
     def rescaled(self, *, k: float, v: float) -> "GriddedField":
         """v f(r / k, theta, phi): the breaks and interval scaled by k, the
@@ -321,12 +399,6 @@ class GriddedField(FieldBase):
                            lateral=self._lateral, poles=v * self._poles,
                            rtol=self._rtol)
         return out.on_interval(k * lo, k * hi)
-
-    def renamed(self, name: str | None) -> "GriddedField":
-        """The same field under `name`."""
-        out = copy.copy(self)
-        out._name = name
-        return out
 
     def __repr__(self) -> str:
         nm = f"{self._name!r}, " if self._name else ""

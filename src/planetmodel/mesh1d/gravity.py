@@ -12,7 +12,10 @@ refused by name, and the geometry's mapping does not enter, so a model
 placed in the physical world by a non-trivial mapping is answered with
 the gravity of its spherical reference.  Nothing here is a number with
 a unit: `G` is the model's, the radii are in the model's length, and a
-hollow model has no mass inside its inner boundary.
+hollow model has no mass inside its inner boundary.  Gravity from the
+mass inside a radius is defined on the sphere alone: a model of another
+system (a flat one, `planetmodel.cartesian`) is refused by name, a flat
+model's gravity being prescribed, not computed.
 
 The hydrostatic pressure of the same body is P(r) = int_r^a rho(s) g(s)
 ds, zero at its outer radius a and continuous across every boundary.
@@ -32,6 +35,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ..character import DENSITY
+from ..coordinates import SPHERICAL, require_coordinates
 from ..fields import Field, RadialField
 from ..layerfunction import NumericLayer, polynomial_layer
 
@@ -46,7 +50,9 @@ PRESSURE_NODES = 24
 
 
 def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
-    """The mass of every layer and the `rho s^2` field of each."""
+    """The mass of every layer and the `rho s^2` field of each; a model
+    off the sphere is refused."""
+    _require_sphere(model)
     fields, masses = [], []
     for layer in model.layers:
         if "rho" not in layer:
@@ -66,9 +72,16 @@ def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
     return fields, np.asarray(masses)
 
 
+def _require_sphere(model: Model) -> None:
+    """Refuse a model whose coordinates are not the sphere's, by name."""
+    require_coordinates(model, SPHERICAL, "gravity from the mass inside a radius")
+
+
 def _within(model: Model, r: np.ndarray) -> np.ndarray:
     """Radii held to the model to the geometry's tolerance and clipped
-    onto it; a radius beyond that, or NaN, is refused."""
+    onto it; a radius beyond that, or NaN, is refused, as is a model off
+    the sphere."""
+    _require_sphere(model)
     b = model.skeleton.boundaries
     tol = model.geometry.rtol * (b[-1] - b[0])
     if r.size and (np.isnan(r).any() or np.any(r < b[0] - tol)

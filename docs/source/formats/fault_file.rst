@@ -48,9 +48,12 @@ lon, sin lat), z along the polar axis and x through longitude zero;
 the ambient basis at a point is (east, north, up).  A ``cartesian``
 frame is local: a position is (x, y, z), x east, y north and z up, the
 ambient basis (x, y, z) everywhere, and the reference surface the plane
-z = ``reference_surface``.  A depth is measured below the reference
-surface, never below any topography on it; the file stores radii (or
-z), not depths.
+z = ``reference_surface``.  Its points are those of a flat-layered body
+(``planetmodel.cartesian``), whose free surface is z = 0 and whose depth
+is -z, so that a fault of a ``cartesian`` file is built into the mesh of
+a box as it stands, as a ``geographic`` one is into a sphere's.  A depth
+is measured below the reference surface, never below any topography on
+it; the file stores radii (or z), not depths.
 
 **The parameter square.**  Every patch maps the square of (u, v), each
 in [-1/2, 1/2], into space: u runs along strike and v down dip.  With

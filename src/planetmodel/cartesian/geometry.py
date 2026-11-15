@@ -23,18 +23,31 @@ over the body (`lattice`): orientation preserved, continuity across
 every interior boundary.  Over a `Rectangle` the body is invariant
 along y, and the mapping is held to it: m(X + s e_y) = m(X) + s e_y
 across the lattice, s the rectangle's length.  Any mapping is accepted;
-the identity is the default.  Nothing here knows about units: depths
-are numbers and every tolerance is `rtol` times the skeleton's span.
+the identity is the default, and `stretched` places the geometry under
+the vertical stretch of a displacement (`cartesian.VerticalStretch`),
+topography as a stack of reliefs (`cartesian.layer_linear`), heights
+positive up (`cartesian.displacement` states the sign).  A field of
+depth alone built for its
+layers is a `DepthField` (`radial_field_type`).  Nothing here knows
+about units: depths are numbers and every tolerance is `rtol` times the
+skeleton's span.
 """
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 
+from ..fields import RadialField
+from ..frames import SphericalFunction
 from ..geometry import GeometryBase, Names
 from ..mapping import Mapping
 from ..skeleton import Skeleton
 from .coordinates import FLAT
+from .displacement import VerticalDisplacement
 from .domains import Domain
+from .fields import DepthField
+from .mapping import VerticalStretch
 
 __all__ = ["Geometry"]
 
@@ -48,6 +61,7 @@ class Geometry(GeometryBase):
     """
 
     _coordinates = FLAT
+    radial_field_type: ClassVar[type[RadialField]] = DepthField
 
     def __init__(self, skeleton: Skeleton, domain: Domain, *,
                  mapping: Mapping | None = None, layer_names: Names = None,
@@ -110,6 +124,21 @@ class Geometry(GeometryBase):
                 f"{s:g} along y moves the image by {worst:.3g} more at "
                 f"({', '.join(FLAT.labels)}) = ({d:g}, {a:g}, {b:g})")
 
+    def stretched(self, w: VerticalDisplacement | SphericalFunction, *,
+                  name: str | None = None, check: bool = True) -> "Geometry":
+        """A copy whose mapping is the vertical stretch driven by `w`, the
+        upward displacement (heights, positive up).
+
+        `w` is any vertical displacement, a `cartesian.layer_linear` stack
+        of reliefs for topography; the stretch's `base` is this
+        geometry's base depth.  The copy is checked unless told
+        otherwise: a stretch folding the body, or over a `Rectangle`
+        varying along y, is refused by name.
+        """
+        return self.with_mapping(VerticalStretch(w, base=self._sk, name=name),
+                                 check=check)
+
     def __repr__(self) -> str:
         m = "identity" if self.is_identity else repr(self._m)
-        return f"cartesian.Geometry({self._sk!r}, {self._domain!r}, mapping={m})"
+        return (f"cartesian.Geometry({self._sk.describe(FLAT.labels[0])}, "
+                f"{self._domain!r}, mapping={m})")

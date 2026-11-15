@@ -427,7 +427,7 @@ def test_a_reader_of_either_schema_reads_its_own_and_refuses_the_rest(built, tmp
     again = sc.write(tmp_path / "again", card)
     assert again.read_text() == res.manifest_path.read_text()
     for schema, match in ((sc.SCHEMA, "faults are listed under schema"),
-                          ("planetmodel.mesh.manifest/7", "this planetmodel reads")):
+                          ("planetmodel.mesh.manifest/4", "this planetmodel reads")):
         path = tmp_path / f"{schema.rsplit('/')[-1]}.json"
         path.write_text(json.dumps(data | {"schema": schema}))
         with pytest.raises(ValueError, match=match):

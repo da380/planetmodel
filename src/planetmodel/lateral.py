@@ -75,7 +75,9 @@ mean of the interpolant itself, so that a mean is consistent with the
 rule that reads the values (for the local rules the coefficients
 against the integrals of the B-splines, sin(theta) dtheta and dphi; for
 the harmonic rule the degree-zero term); `interpolate` builds one and
-evaluates it.
+evaluates it.  `periodic_cubic_spline` is the spline in longitude, on
+any nodes of any period: the flat rules of `cartesian.lateral` take it
+along both of a box's directions.
 Everything is numbers.
 """
 from __future__ import annotations
@@ -97,7 +99,7 @@ if TYPE_CHECKING:
     from .sampling import AngularGrid
 
 __all__ = ["METHODS", "LateralInterpolant", "interpolate", "polar_values",
-           "check_rule"]
+           "check_rule", "periodic_cubic_spline"]
 
 #: The lateral rules, in the order of the module docstring.
 METHODS = ("linear", "cubic", "harmonic")
@@ -261,29 +263,48 @@ def _padded(v: np.ndarray, grid: AngularGrid, poles: np.ndarray
     return np.concatenate(theta_p), phi_p, np.concatenate(rows, axis=-2)
 
 
-@lru_cache(maxsize=8)
-def _periodic_cubic(grid: AngularGrid) -> tuple[np.ndarray, SuperLU]:
-    """The knots of the periodic cubic spline through a grid's longitudes
-    (the longitudes extended by whole turns) and the factorised
-    collocation matrix of its nphi free coefficients, coefficient j + nphi
-    being coefficient j: built once for each grid, and solved for every
-    column of values at once."""
-    phi = grid.longitudes
-    n = phi.size
+@lru_cache(maxsize=16)
+def _periodic_cubic(nodes: bytes, period: float) -> tuple[np.ndarray, SuperLU]:
+    """The knots of the periodic cubic spline through nodes (their float64
+    bytes; the nodes extended by whole periods) and the factorised
+    collocation matrix of its n free coefficients, coefficient j + n
+    being coefficient j: built once for each set of nodes, and solved for
+    every column of values at once."""
+    x = np.frombuffer(nodes, dtype=float)
+    n = x.size
     j = np.arange(-3, n + 4)
-    t = phi[j % n] + 2.0 * np.pi * (j // n)
-    D = BSpline.design_matrix(phi, t, 3).tocoo()
+    t = x[j % n] + period * (j // n)
+    D = BSpline.design_matrix(x, t, 3).tocoo()
     return t, splu(csc_array((D.data, (D.row, D.col % n)), shape=(n, n)))
+
+
+def periodic_cubic_spline(values: ArrayLike, nodes: ArrayLike, period: float
+                          ) -> tuple[np.ndarray, np.ndarray]:
+    """(knots, coefficients) of the periodic cubic spline through `values`
+    of shape (n, ...) at `nodes`, along axis 0.
+
+    The n nodes increase strictly within one `period`, n at least three;
+    the knots are the nodes extended by whole periods, and the n + 3
+    coefficients repeat with period n, so that the spline and its first
+    two derivatives are continuous across the seam.  It is read by
+    `scipy.interpolate.BSpline` (or `NdBSpline`) of degree three at a
+    point reduced into [nodes[0], nodes[0] + period).  The rule in
+    longitude of the bicubic lateral rule, and in both directions of the
+    flat bicubic rule (`cartesian.lateral`).
+    """
+    x = np.ascontiguousarray(nodes, dtype=float)
+    C = np.asarray(values, dtype=float)
+    t, lu = _periodic_cubic(x.tobytes(), float(period))
+    n = C.shape[0]
+    u = lu.solve(C.reshape(n, -1)).reshape(C.shape)
+    return t, u[np.arange(n + 3) % n]
 
 
 def _periodic_spline(C: np.ndarray, grid: AngularGrid
                      ) -> tuple[np.ndarray, np.ndarray]:
     """(knots, coefficients) of the periodic cubic spline through the
     values C of shape (nphi, ...) at the grid's longitudes, along axis 0."""
-    t, lu = _periodic_cubic(grid)
-    n = C.shape[0]
-    u = lu.solve(C.reshape(n, -1)).reshape(C.shape)
-    return t, u[np.arange(n + 3) % n]
+    return periodic_cubic_spline(C, grid.longitudes, 2.0 * np.pi)
 
 
 def _pole_slopes(theta: np.ndarray, phi: np.ndarray, V: np.ndarray

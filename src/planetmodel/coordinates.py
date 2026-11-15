@@ -36,7 +36,10 @@ does not state another.  The flat system, (depth, x, y), is
 
 Fields of two systems are never combined: `common_coordinates` names
 the systems of a mix and refuses it, and `coordinates_of` reads the
-system of a field, spherical for one that states none.
+system of a field, a geometry or a model, spherical for one that states
+none.  What is defined in one system alone (gravity from the mass inside
+a radius, a mean over the sphere) refuses an object of another by
+`require_coordinates`, naming what it is and both systems.
 """
 from __future__ import annotations
 
@@ -54,7 +57,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Coordinates", "SphericalCoordinates", "SPHERICAL", "CARTESIAN",
            "coordinates_of", "common_coordinates", "checked_coordinates",
-           "resolve_frame", "increases_outward", "layer_samples"]
+           "require_coordinates", "resolve_frame", "increases_outward",
+           "layer_samples"]
 
 #: The name of the Cartesian frame, the second of every system's `frames`.
 CARTESIAN = "cartesian"
@@ -210,6 +214,16 @@ def common_coordinates(objects: Iterable[object]) -> Coordinates:
                 f"fields in different coordinate systems are not combined: "
                 f"{first.name!r} and {other.name!r}")
     return first
+
+
+def require_coordinates(obj: object, system: Coordinates, what: str) -> None:
+    """Refuse `obj` (a field, a geometry or a model, read by
+    `coordinates_of`) unless it is in `system`, naming `what` is defined
+    in that system alone and the system `obj` is in."""
+    have = coordinates_of(obj)
+    if have != system:
+        raise ValueError(f"{what} is defined in the coordinates {system.name!r} "
+                         f"alone; this {type(obj).__name__} is in {have.name!r}")
 
 
 def checked_coordinates(coordinates: object) -> Coordinates:

@@ -71,6 +71,12 @@ the shipped kind it is.  The transforms take any start.
 At a pole node the frame (e_theta, e_phi) depends on the longitude, so
 a component of rank 1 or above is sampled there as the limit along its
 own longitude's meridian: the columns differ while the vector does not.
+
+**Shared with a box.**  `SampleBase` is the radial half every sample
+has, and `sample_fields` the evaluation every sampler makes, on the
+nodes of any lateral grid that states its `shape` and its `nodes`
+(`LateralGrid`); the flat sampler, `cartesian.sample`, is built on
+them.
 """
 from __future__ import annotations
 
@@ -79,6 +85,7 @@ from collections import abc
 from collections.abc import Iterable
 from dataclasses import KW_ONLY, dataclass
 from types import MappingProxyType
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -89,17 +96,35 @@ from .fields import stored_shape as _stored_shape
 from .frames import spherical_frame, wrapped
 from .mapping import Mapping
 from .mesh1d.mesh import RadialMesh
-from .model import Model
+from .model import Model, ModelBase
 from .units import Dimensions, Scales
 
 __all__ = ["AngularGrid", "gauss_legendre", "driscoll_healy", "equiangular",
-           "Sample", "sample", "KINDS", "MISSING"]
+           "Sample", "SampleBase", "LateralGrid", "sample", "sample_fields", "KINDS",
+           "MISSING"]
 
 #: The families an angular grid can come from.
 KINDS = ("gauss_legendre", "driscoll_healy", "equiangular", "custom")
 
 #: What `sample` does on a layer lacking a field.
 MISSING = ("refuse", "nan")
+
+
+@runtime_checkable
+class LateralGrid(Protocol):
+    """What a sampler asks of a lateral grid, an `AngularGrid` or a flat
+    `cartesian.Grid`: the trailing `shape` of values on it, and its
+    `nodes`, two arrays of the lateral coordinates broadcasting to it."""
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """The trailing shape of values on the grid."""
+        ...
+
+    @property
+    def nodes(self) -> tuple[np.ndarray, np.ndarray]:
+        """The two lateral coordinates of every node, broadcasting to `shape`."""
+        ...
 
 
 def _longitudes(nphi: int, phi0: float) -> np.ndarray:
@@ -206,6 +231,17 @@ class AngularGrid:
     def nphi(self) -> int:
         """The number of longitudes."""
         return self.longitudes.size
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """(ntheta, nphi): the trailing shape of values on the grid."""
+        return self.ntheta, self.nphi
+
+    @property
+    def nodes(self) -> tuple[np.ndarray, np.ndarray]:
+        """The lateral coordinates of every node, two arrays broadcasting to
+        `shape`: the colatitudes as a column and the longitudes as a row."""
+        return self.colatitudes[:, None], self.longitudes[None, :]
 
     @property
     def pole_nodes(self) -> tuple[bool, bool]:
@@ -365,8 +401,55 @@ def _driscoll_healy_weights(n: int) -> np.ndarray:
     return (4.0 / n) * np.sin(theta) * s
 
 
+class SampleBase:
+    """What every sample shares, on the sphere or in a box: the radial
+    half, read from the leaf's `radial` (a `RadialMesh`), `fields` and
+    `characters`.  A leaf holds its lateral grid as `grid`, whose
+    `shape` trails the node axis of every field that varies laterally.
+    """
+
+    radial: RadialMesh
+    fields: abc.Mapping[str, np.ndarray]
+    characters: abc.Mapping[str, Character]
+
+    @property
+    def nnode(self) -> int:
+        """The flat node count, nspec * ngll: element boundaries counted twice."""
+        return self.radial.nspec * self.radial.ngll
+
+    @property
+    def radius(self) -> np.ndarray:
+        """The layered coordinate of every flat node (the radius on the
+        sphere, the depth in a box): the per-element GLL nodes flattened."""
+        r = self.radial.r.ravel()
+        r.setflags(write=False)
+        return r
+
+    @property
+    def element_layer(self) -> np.ndarray:
+        """The skeleton layer of every element, shape (nspec,), read-only."""
+        out = self.radial.layer.view()
+        out.setflags(write=False)
+        return out
+
+    @property
+    def node_layer(self) -> np.ndarray:
+        """The skeleton layer of every flat node, shape (nnode,), read-only."""
+        out = np.repeat(self.radial.layer, self.radial.ngll)
+        out.setflags(write=False)
+        return out
+
+    def stored_shape(self, name: str) -> tuple[int, ...]:
+        """The trailing axes a field's array carries beyond the nodes."""
+        return _stored_shape(self.characters[name])
+
+    def is_radial(self, name: str) -> bool:
+        """Whether `name` was sampled on `(node,)` alone."""
+        return self.fields[name].shape == (self.nnode,) + self.stored_shape(name)
+
+
 @dataclass(frozen=True)
-class Sample:
+class Sample(SampleBase):
     """A model's fields and mapping evaluated on radial times angular nodes.
 
     `fields[name]` has shape `(nnode, ntheta, nphi) + c` for a field
@@ -398,38 +481,9 @@ class Sample:
         object.__setattr__(self, "layer_names", tuple(self.layer_names))
 
     @property
-    def nnode(self) -> int:
-        """The flat node count, nspec * ngll: element boundaries counted twice."""
-        return self.radial.nspec * self.radial.ngll
-
-    @property
-    def radius(self) -> np.ndarray:
-        """The radius of every flat node: the per-element GLL nodes flattened."""
-        r = self.radial.r.ravel()
-        r.setflags(write=False)
-        return r
-
-    @property
-    def element_layer(self) -> np.ndarray:
-        """The skeleton layer of every element, shape (nspec,), read-only."""
-        out = self.radial.layer.view()
-        out.setflags(write=False)
-        return out
-
-    @property
-    def node_layer(self) -> np.ndarray:
-        """The skeleton layer of every flat node, shape (nnode,), read-only."""
-        out = np.repeat(self.radial.layer, self.radial.ngll)
-        out.setflags(write=False)
-        return out
-
-    def stored_shape(self, name: str) -> tuple[int, ...]:
-        """The trailing axes a field's array carries beyond the nodes."""
-        return _stored_shape(self.characters[name])
-
-    def is_radial(self, name: str) -> bool:
-        """Whether `name` was sampled on `(node,)` alone."""
-        return self.fields[name].shape == (self.nnode,) + self.stored_shape(name)
+    def grid(self) -> AngularGrid:
+        """The lateral grid, as every sample names it: `angular`."""
+        return self.angular
 
     def __repr__(self) -> str:
         names = ", ".join(self.fields)
@@ -464,7 +518,7 @@ def _radial_mesh(model: Model, grid: AngularGrid, radial: RadialMesh | None,
     return RadialMesh(model.geometry, ngll=ngll, lmax=grid.lmax)
 
 
-def _names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
+def _names(model: ModelBase, fields: Iterable[str] | None) -> tuple[str, ...]:
     """The names to sample: every common name, or the sequence given."""
     if fields is None:
         return model.common_names()
@@ -479,7 +533,7 @@ def _names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
     return names
 
 
-def _layer_fields(model: Model, name: str, layers: Iterable[int],
+def _layer_fields(model: ModelBase, name: str, layers: Iterable[int],
                   missing: str) -> dict[int, Field | None]:
     """The field of `name` on each of `layers`, or None where allowed missing."""
     out = {}
@@ -510,37 +564,69 @@ def _expect(values: ArrayLike, shape: tuple[int, ...], name: str) -> np.ndarray:
 
 
 def _sample_field(name: str, per_layer: abc.Mapping[int, Field | None],
-                  r: np.ndarray, node_layer: np.ndarray, theta: np.ndarray,
-                  phi: np.ndarray) -> tuple[np.ndarray, Character]:
+                  r: np.ndarray, node_layer: np.ndarray,
+                  grid: LateralGrid) -> tuple[np.ndarray, Character]:
     """One field on the nodes, layer by layer, both sides of every jump.
 
     Direction-free when every layer's field is radial: then the stored
-    components are functions of the radius alone and one column of
-    values serves every direction.
+    components are functions of the layered coordinate alone and one
+    column of values serves every lateral node.
     """
     present = [f for f in per_layer.values() if f is not None]
     char = present[0].character
     c = _stored_shape(char)
     radial = all(getattr(f, "is_radial", False) for f in present)
-    nnode, ntheta, nphi = r.size, theta.size, phi.size
+    a, b = (np.asarray(v, dtype=float) for v in grid.nodes)
+    lateral = tuple(grid.shape)
+    nnode = r.size
     if radial:
         out = np.full((nnode,) + c, np.nan)
     else:
-        out = np.full((nnode, ntheta, nphi) + c, np.nan)
+        out = np.full((nnode,) + lateral + c, np.nan)
     for L, f in per_layer.items():
         if f is None:
             continue
         m = node_layer == L
         n = int(m.sum())
         if radial:
-            v = f.evaluate(r[m], theta[0], phi[0])
+            v = f.evaluate(r[m], a.flat[0], b.flat[0])
             out[m] = _expect(v, (n,) + c, name)
         else:
-            v = f.evaluate(r[m][:, None, None], theta[None, :, None],
-                           phi[None, None, :])
-            out[m] = _expect(v, (n, ntheta, nphi) + c, name)
+            v = f.evaluate(r[m].reshape((n,) + (1,) * len(lateral)), a[None], b[None])
+            out[m] = _expect(v, (n,) + lateral + c, name)
     out.setflags(write=False)
     return out, char
+
+
+def sample_fields(model: ModelBase, mesh: RadialMesh, grid: LateralGrid, *,
+                  fields: Iterable[str] | None = None, missing: str = "refuse"
+                  ) -> tuple[dict[str, np.ndarray], dict[str, Character],
+                             dict[str, Dimensions | None]]:
+    """A model's fields on the nodes of `mesh` times a lateral `grid`'s,
+    by the rules of the module docstring: (arrays, characters,
+    dimensions), each keyed by name.
+
+    `mesh` lies over the model's skeleton; `fields` and `missing` are
+    those of `sample`.  Each field is evaluated once per layer on the
+    nodes of that layer's elements and on `grid.nodes`, its array
+    `(nnode,) + grid.shape + c`, or `(nnode,) + c` when every layer's
+    field is radial.  The samplers of every coordinate system share it.
+    """
+    if missing not in MISSING:
+        raise ValueError(f"missing must be one of {MISSING}, got {missing!r}")
+    names = _names(model, fields)
+    r = mesh.r.ravel()
+    node_layer = np.repeat(mesh.layer, mesh.ngll)
+    layers = np.unique(mesh.layer)
+    arrays, chars, dims = {}, {}, {}
+    for name in names:
+        per_layer = _layer_fields(model, name, layers, missing)
+        if all(f is None for f in per_layer.values()):
+            raise KeyError(f"no layer the mesh covers holds a field {name!r}")
+        arrays[name], chars[name] = _sample_field(name, per_layer, r, node_layer, grid)
+        spec = model.spec(name)
+        dims[name] = None if spec is None else spec.dimensions
+    return arrays, chars, dims
 
 
 def _sample_displacement(mapping: Mapping, r: np.ndarray, theta: np.ndarray,
@@ -588,24 +674,12 @@ def sample(model: Model, grid: AngularGrid, *, fields: Iterable[str] | None = No
     if missing not in MISSING:
         raise ValueError(f"missing must be one of {MISSING}, got {missing!r}")
     mesh = _radial_mesh(model, grid, radial, ngll, drmax)
-    names = _names(model, fields)
-    r = mesh.r.ravel()
-    node_layer = np.repeat(mesh.layer, mesh.ngll)
-    layers = np.unique(mesh.layer)
-    theta, phi = grid.colatitudes, grid.longitudes
-
-    arrays, chars, dims = {}, {}, {}
-    for name in names:
-        per_layer = _layer_fields(model, name, layers, missing)
-        if all(f is None for f in per_layer.values()):
-            raise KeyError(f"no layer the mesh covers holds a field {name!r}")
-        arrays[name], chars[name] = _sample_field(name, per_layer, r, node_layer,
-                                                  theta, phi)
-        spec = model.spec(name)
-        dims[name] = None if spec is None else spec.dimensions
+    arrays, chars, dims = sample_fields(model, mesh, grid, fields=fields,
+                                        missing=missing)
     geometry = model.geometry
     disp = (None if geometry.is_identity
-            else _sample_displacement(geometry.mapping, r, theta, phi))
+            else _sample_displacement(geometry.mapping, mesh.r.ravel(),
+                                      grid.colatitudes, grid.longitudes))
     return Sample(radial=mesh, angular=grid, fields=arrays, displacement=disp,
                   characters=chars, dimensions=dims, scales=model.scales,
                   layer_names=tuple(layer.name for layer in model.layers))

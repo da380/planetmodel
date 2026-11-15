@@ -9,24 +9,42 @@ domain is the geometry's layers followed by the shells, numbered from
 the centre; `MeshSpec.domain` is that domain as a Geometry under the
 geometry's own mapping, and is what the builder meshes.
 
+A flat geometry (`planetmodel.cartesian.Geometry`) is meshed as the
+box over its lateral domain, cut by the planes of its interfaces, or,
+over a `Rectangle`, as its section in the (x, z) plane: three or two
+dimensions, which the geometry decides.  Its layers and interfaces are
+numbered from the surface down, as the geometry numbers them, and its
+base and sides are faces of their own (the manifest's `faces[]`).  A
+box approximates an unbounded body, so it takes no shells and no
+spherical outer boundary.  Faults in a box are built under any
+mapping that inverts itself (topography, a `cartesian.VerticalStretch`),
+pulled back through it as on the sphere; in a section they are not
+built.
+
 Sizing is a callable, not a class hierarchy: a rule takes the
-interfaces of the computational domain and its outer radius, in the
-geometry's own lengths, and returns one InterfaceSizing per interface
-index.  The shipped rules are frozen dataclasses whose instances
+interfaces of the computational domain and its last boundary (the
+outer radius of a ball, the depth of a box's base), in the geometry's
+own lengths, and returns one InterfaceSizing per interface index.  The
+shipped rules are frozen dataclasses whose instances
 are the callable, so they print, compare and serialise; anything else
-is a function.  A refinement is a second kind of callable, a size
+is a function.  `UniformInterfaces` and `PerInterface` size any
+geometry; `AngularResolution` and `CappedInterfaces` scale with radius,
+and refuse an interface at radius zero, such as a box's surface.  A
+refinement is a second kind of callable, a size
 field over the reference domain composed into the sizing by minimum,
 so it can only refine, never coarsen; NearPoints and near_curve are
 the shipped kinds, and anything with the Refinement protocol's two
-attributes serves.
+attributes serves.  Its points are in the mesh's coordinates: (x, z)
+for a section.
 
 Faults are built into the mesh from the start (`EmbeddedFault`): each
 is pulled back through the geometry's mapping, fragmented into the
-shells with them so that the mesh conforms to it, and labelled with a
-boundary attribute of its own after the interfaces' (the manifest's
-`faults[]`).  A fault is a surface of a 3D domain on a sphere, so a
-spec with faults is three-dimensional and its faults are in a
-geographic frame.
+shells (or the boxes of a box's layers) with them so that the mesh
+conforms to it, and labelled with a boundary attribute of its own after
+the interfaces' and a box's faces' (the manifest's `faults[]`).  A
+fault is a surface of a 3D domain, so a spec with faults is
+three-dimensional, and its faults are in the geometry's frame: a
+geographic one on a sphere, a Cartesian one in a box.
 
 Nothing here knows about units.  Every length is a number in the
 geometry's own lengths, and the builder hands those numbers to gmsh
@@ -46,8 +64,9 @@ from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
 from ..fault import Fault
-from ..geometry import Geometry, InterfaceInfo, LayerInfo
+from ..geometry import Geometry, GeometryBase, InterfaceInfo, LayerInfo
 from ..mapping import Mapping
+from ._layout import layout_of
 
 if TYPE_CHECKING:
     from ..fault import Preimage
@@ -312,6 +331,18 @@ def near_curve(vertices: ArrayLike, size: float, far_size: float,
     return NearPoints(np.concatenate(points), size, far_size, decay_width)
 
 
+def _require_radii(rule: object, interfaces: Sequence[InterfaceInfo]) -> None:
+    """Refuse an interface at radius zero or below for a rule that scales
+    with radius: a box's surface, at depth zero, has none."""
+    for face in interfaces:
+        if not face.radius > 0.0:
+            raise ValueError(
+                f"interface {face.index} lies at {face.radius:g}, where "
+                f"{type(rule).__name__}, which scales with radius, gives no size: "
+                "it sizes a spherical geometry; size a flat one with "
+                "UniformInterfaces or PerInterface")
+
+
 def optimise_methods(optimise: str | Sequence[str] | None) -> tuple[str, ...]:
     """The gmsh optimisation methods `optimise` names, as a tuple.
 
@@ -359,7 +390,9 @@ class AngularResolution:
 
     def __call__(self, interfaces: Sequence[InterfaceInfo],
                  outer_radius: float) -> dict[int, InterfaceSizing]:
-        """One sizing per interface: size h_ref r / r_ref capped at h_far."""
+        """One sizing per interface: size h_ref r / r_ref capped at h_far;
+        an interface at radius zero is refused."""
+        _require_radii(self, interfaces)
         r_ref = float(outer_radius) if self.r_ref is None else float(self.r_ref)
         out = {}
         for face in interfaces:
@@ -423,7 +456,9 @@ class CappedInterfaces:
 
     def __call__(self, interfaces: Sequence[InterfaceInfo],
                  outer_radius: float) -> dict[int, InterfaceSizing]:
-        """One sizing per interface, capped as the class describes."""
+        """One sizing per interface, capped as the class describes; an
+        interface at radius zero is refused."""
+        _require_radii(self, interfaces)
         faces = sorted(interfaces, key=lambda f: f.radius)
         radii = [f.radius for f in faces]
         out = {}
@@ -488,27 +523,40 @@ class EmbeddedFault:
     the mesh is the reference one, so each patch is pulled back through
     the geometry's mapping first (`fault.pull_back`) through `controls`
     nodes each way, or, where `controls` is None, through the fewest of
-    `fault.PULL_BACK_CONTROLS` that bring it within `rtol` of its size.
+    `fault.PULL_BACK_CONTROLS` that bring it within `rtol` of its size
+    (a patch crossing a knot of the mapping, an interface where a stack
+    of reliefs changes slope, has a creased preimage, which meets a
+    small `rtol` slowly: it is given a larger one, or its `controls`).
     An edge of a patch whose preimage lies nowhere more than `reach`
-    below the geometry's outer boundary is carried across it and
-    trimmed there, so that the fault meets the surface exactly; None
-    takes for `reach` the relief of the outer boundary over the edge
-    (the largest displacement the mapping gives the boundary's points
-    above it) plus the CAD kernel's tolerance, so that under the
-    identity only an edge at the surface or above it is carried across.
+    below the geometry's free surface (its outer sphere, or a box's top)
+    is carried across it and trimmed there, so that the fault meets the
+    surface exactly; None takes for `reach` the relief of the surface
+    over the edge (the largest displacement the mapping gives the
+    surface's points above it, along the layered coordinate) plus the
+    CAD kernel's tolerance, so that under the identity only an edge at
+    the surface or above it is carried across.  In a box, which stands
+    for an unbounded body, a fault may leave through the base or a side
+    too: an edge whose preimage lies at one of them, or beyond, or
+    within the distance the mapping moves that face along its own
+    coordinate (none at a side under a vertical stretch), is carried
+    across it, the part outside trimmed, and the edge left there is the
+    fault's face edge, not its tip.
     A fault crosses every interface it reaches or stops clear of it (a
-    tenth of the element size there): one that comes closer without
-    crossing, passes through the centre, leaves a hollow domain through
-    its inner boundary, lies wholly outside the geometry, cuts a layer
-    or an interface right through, or overlaps another fault on a
-    surface is refused by name.
+    tenth of the element size there), and every face of a box: one that
+    comes closer without crossing, passes through a sphere's centre,
+    leaves a hollow sphere through its inner boundary, lies wholly
+    outside the geometry, cuts a layer or an interface right through, or
+    overlaps another fault on a surface is refused by name.
     `sizing` refines the mesh towards the fault, `size` on it growing to
     `far_size` over `decay_width`; None leaves the sizing to the
     interfaces' rule, the fault's faces conforming to it at whatever
     size that gives.  `name` names the fault in the mesh and the
     manifest: by default `fault_<k>`, k counted from one in the spec's
     order.  Every patch must give its map as a spline (`spline`), and
-    the frame must be geographic: the layered mesh is a sphere.
+    the frame must be the geometry's, which the spec checks: a
+    `fault.GeographicFrame` on a sphere, a `fault.CartesianFrame` in a
+    box (`planetmodel.cartesian`), whose points (x, y, z), z up, are the
+    box's own.
     """
 
     #: The fault, in the geometry's lengths.
@@ -532,13 +580,6 @@ class EmbeddedFault:
         if not isinstance(self.fault, Fault):
             raise TypeError(f"fault must be a planetmodel.fault.Fault, got "
                             f"{type(self.fault).__name__}")
-        frame = self.fault.frame
-        if getattr(frame, "radius", None) is None:
-            raise ValueError(
-                f"the fault is in a {type(frame).__name__}, and the layered mesh is "
-                "a sphere: a fault in a Cartesian frame belongs in a regional box "
-                "mesh, which this builder does not make; give it in a "
-                "GeographicFrame")
         for k, patch in enumerate(self.fault.patches):
             if not callable(getattr(patch, "spline", None)):
                 raise TypeError(f"patch {k} ({type(patch).__name__}) gives no "
@@ -570,16 +611,22 @@ class MeshSpec:
     layers are numbered 1..N from the centre and its interfaces 1..M in
     the order of `geometry.interfaces`, then the shells' outer
     boundaries.  The faults' faces take boundary attributes M + 1..M + F
-    in the order of `faults`.
+    in the order of `faults`.  A flat geometry's layers and interfaces
+    are numbered from the surface down, and its faces (`manifest.FACES`)
+    take M + 1 onward, its faults the attributes after them; it takes no
+    shells, a 'free' outer boundary, and faults over a `Box` alone
+    (module docstring).
     """
 
-    #: The geometry to mesh: a skeleton, a mapping and names.
-    geometry: Geometry
+    #: The geometry to mesh: a skeleton, a mapping and names, spherical
+    #: (`Geometry`) or flat (`cartesian.Geometry`).
+    geometry: GeometryBase
     #: The rule giving every interface of the computational domain its sizing.
     sizing: SizingRule
     _: KW_ONLY
-    #: 3 for balls, 2 for discs.
-    dimension: int = 3
+    #: 3 for balls and boxes, 2 for discs and sections; None for the
+    #: geometry's own: 3, but 2 over a `Rectangle`.
+    dimension: int | None = None
     #: The element order, 1..3.
     order: int = 2
     #: Shells appended outside the geometry, innermost first.
@@ -609,13 +656,19 @@ class MeshSpec:
     meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.geometry, Geometry):
+        if not isinstance(self.geometry, GeometryBase):
             raise TypeError(
-                f"geometry must be a Geometry, got {type(self.geometry).__name__}")
+                "geometry must be a Geometry (spherical or cartesian), got "
+                f"{type(self.geometry).__name__}")
+        layout = layout_of(self.geometry)
         if not callable(self.sizing):
             raise TypeError("sizing must be a callable sizing rule")
-        if self.dimension not in (2, 3):
-            raise ValueError(f"dimension must be 2 or 3, got {self.dimension}")
+        if self.dimension is None:
+            object.__setattr__(self, "dimension", layout.dimensions[0])
+        if self.dimension not in layout.dimensions:
+            allowed = " or ".join(map(str, sorted(layout.dimensions)))
+            raise ValueError(f"dimension must be {allowed} for {layout.what}, got "
+                             f"{self.dimension}")
         if not 1 <= self.order <= 3:
             raise ValueError(f"element order must be 1..3, got {self.order}")
         if self.outer_boundary not in OUTER_BOUNDARIES:
@@ -628,6 +681,8 @@ class MeshSpec:
             if not isinstance(shell, Shell):
                 raise TypeError(
                     f"shells must be Shell instances, got {type(shell).__name__}")
+        object.__setattr__(self, "faults", tuple(self.faults))
+        layout.check(self)
         object.__setattr__(self, "refinements", tuple(self.refinements))
         for i, fine in enumerate(self.refinements):
             if not callable(fine):
@@ -663,7 +718,6 @@ class MeshSpec:
                     f"the boundary it is attached to at {inner:g}")
             inner = outer
         domain = self.domain    # names must be unique across geometry and shells
-        object.__setattr__(self, "faults", tuple(self.faults))
         for i, item in enumerate(self.faults):
             if not isinstance(item, EmbeddedFault):
                 raise TypeError(
@@ -681,6 +735,7 @@ class MeshSpec:
         if clash:
             raise ValueError(f"faults named {clash} would share a name with an "
                              "interface, and both label boundary elements")
+        layout.check_faults(self)
 
     @property
     def shell_radii(self) -> tuple[float, ...]:
@@ -708,17 +763,19 @@ class MeshSpec:
 
     @property
     def outer_radius(self) -> float:
-        """The outer radius of the computational domain."""
+        """The outer radius of the computational domain: its last boundary,
+        which for a box is the depth of its base."""
         radii = self.shell_radii
         return radii[-1] if radii else float(self.geometry.skeleton.boundaries[-1])
 
     @property
-    def domain(self) -> Geometry:
+    def domain(self) -> GeometryBase:
         """The computational domain: the geometry then the shells, unchecked.
 
         A Geometry under the geometry's own mapping, whose layers and
-        interfaces carry the numbering the mesh will.  Whether the mapping
-        is defined on the shells is the builder's check, not this one's.
+        interfaces carry the numbering the mesh will; a flat geometry,
+        which takes no shells, is its own.  Whether the mapping is
+        defined on the shells is the builder's check, not this one's.
         """
         g = self.geometry
         if not self.shells:
@@ -732,12 +789,14 @@ class MeshSpec:
 
     @property
     def layers(self) -> tuple[LayerInfo, ...]:
-        """The layers of the computational domain, centre outward."""
+        """The layers of the computational domain, in the skeleton's order:
+        centre outward, or from the surface down."""
         return self.domain.layers
 
     @property
     def interfaces(self) -> tuple[InterfaceInfo, ...]:
-        """The interfaces of the computational domain, centre outward."""
+        """The interfaces of the computational domain, in the skeleton's
+        order: centre outward, or from the surface down."""
         return self.domain.interfaces
 
 
@@ -754,17 +813,19 @@ class ValidationReport:
     min_sicn: float = 0.0
     #: Cells with negative signed volume or area.
     negative_cells: int = 0
-    #: Boundary faces whose normal points towards the centre they enclose.
+    #: Boundary faces whose normal points towards the centre they enclose,
+    #: or against the outward direction a plane of a box states.
     inward_faces: int = 0
     #: Faces of a fault whose normal does not run from its footwall into
     #: its hanging wall.
     misoriented_fault_faces: int = 0
     #: Faces of a fault that are not a face of exactly two cells.
     nonconforming_fault_faces: int = 0
-    #: The largest distance of a tagged interface's mean radius from the
-    #: radius asked for, in the mesh's lengths.
+    #: The largest distance of a tagged interface's mean radius (across a
+    #: box, its mean depth) from the one asked for, in the mesh's lengths.
     max_interface_radius_error: float = 0.0
-    #: The number of physical groups found, by "layers" and "interfaces".
+    #: The number of physical groups found, by "layers" and "interfaces",
+    #: and "faces" and "faults" where the mesh has them.
     group_counts: dict[str, int] = field(default_factory=dict)
     #: Every failed check, in words.
     failures: list[str] = field(default_factory=list)
@@ -818,7 +879,7 @@ class MeshResult:
     #: The JSON manifest beside it.
     manifest_path: Path
     #: The geometry the mesh was built from; None for an offset mesh.
-    geometry: Geometry | None
+    geometry: GeometryBase | None
     #: Element, node, layer and interface counts.
     counts: dict[str, int]
     #: The checks the mesh passed or failed.

@@ -457,7 +457,7 @@ def test_what_the_spec_refuses():
     local = Fault([Plane(CartesianFrame(), [0.0, 0.0, -1.0], strike=0.0, dip=45.0,
                          length=1.0, width=1.0, slip=ZERO)])
     with pytest.raises(ValueError, match="Cartesian frame belongs in a regional"):
-        EmbeddedFault(local)
+        MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(local)])
     with pytest.raises(TypeError, match="Fault"):
         EmbeddedFault(plane())
     with pytest.raises(ValueError, match="2D mesh takes none"):

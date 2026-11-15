@@ -4,7 +4,10 @@ A Skeleton holds boundary radii b0 < b1 < ... < bL defining L
 concentric layers and answers questions about intervals and membership.
 It carries no fields, no names and no physics, and knows nothing about
 units: radii are numbers.  Every tolerance is relative to the span
-bL - b0 and is passed by the caller as `rtol`.
+bL - b0 and is passed by the caller as `rtol`.  The boundaries are
+values of whatever layered coordinate a geometry gives them (radii on
+the sphere, depths in a box), so a skeleton's repr names none, and a
+geometry shows its skeleton by `describe` with its system's label.
 
 `locate(r)` reports boundary ambiguity through Location rather than
 resolving it: at an interior boundary both adjacent layers are
@@ -272,9 +275,15 @@ class Skeleton:
         """The hash of the boundary radii, consistent with equality."""
         return hash(self._b.tobytes())
 
-    def __repr__(self) -> str:
+    def describe(self, label: str) -> str:
+        """The repr with the boundaries named `label`, the layered
+        coordinate's name in a geometry's system: `Skeleton(3 layers,
+        depth in [0, 100000])`."""
         return (f"Skeleton({self.nlayers} layers, "
-                f"r in [{self._b[0]:g}, {self._b[-1]:g}])")
+                f"{label} in [{self._b[0]:g}, {self._b[-1]:g}])")
+
+    def __repr__(self) -> str:
+        return f"Skeleton({self.nlayers} layers, [{self._b[0]:g}, {self._b[-1]:g}])"
 
 
 @dataclass(frozen=True)

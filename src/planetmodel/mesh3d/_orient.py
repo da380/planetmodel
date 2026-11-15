@@ -10,7 +10,13 @@ the origin, so "outward" means "away from the origin" and is
 unambiguous; OCC orients a surface that bounds shells on both sides by
 its own convention, which can point inward, and consistency here is
 what lets a consumer treat interface i as the outer boundary of layer i
-without inspecting normals itself.
+without inspecting normals itself.  A plane of a box encloses nothing,
+so each states its own outward direction (`Directions`): up for the
+free surface and every interface, which point out of the layer below
+them as a sphere's do, down for the base, away from the body for a
+side.  So stated, a boundary is oriented in two dimensions too, a line
+element's normal being its direction turned clockwise, the body on its
+left, as MFEM's elements run round theirs.
 
 A fault's faces enclose nothing and take no outward rule: each is
 oriented with the fault's own normal, from its footwall into its
@@ -41,13 +47,17 @@ if TYPE_CHECKING:
     from ..fault import Patch
 
 __all__ = ["OrientationReport", "node_positions", "signed_measures",
-           "outward_dots", "fault_dots", "orient_cells", "orient_boundary",
-           "orient_faults", "orient_mesh", "raise_order", "element_quality",
-           "Centres", "FaultSurfaces"]
+           "outward_dots", "facing_dots", "fault_dots", "orient_cells",
+           "orient_boundary", "orient_faults", "orient_mesh", "raise_order",
+           "element_quality", "Centres", "Directions", "FaultSurfaces"]
 
 #: The point each surface encloses, by entity tag, where it is not the
 #: origin: an offset inclusion encloses its own centre.
 type Centres = Mapping[int, ArrayLike]
+
+#: The outward direction of each boundary entity that states its own, by
+#: entity tag, in the mesh's coordinates as (x, y, z): a plane of a box.
+type Directions = Mapping[int, ArrayLike]
 
 #: The surface each face of a fault was built from, by entity tag: the
 #: patch whose normal the face is oriented with.
@@ -166,6 +176,31 @@ def outward_dots(tag: int, pos: Mapping[int, np.ndarray], *,
     return np.concatenate(all_tags), np.concatenate(all_dots)
 
 
+def facing_dots(dim: int, tag: int, pos: Mapping[int, np.ndarray],
+                direction: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+    """(element tags, normal . direction) for a surface (`dim` 2) or a
+    curve of a two-dimensional mesh (`dim` 1).
+
+    A triangle's normal is (v1 - v0) x (v2 - v0); a line's is its
+    direction v1 - v0 turned clockwise in the mesh's plane, so that it
+    points away from a body on its left.  Positive means the normal
+    points along `direction`.
+    """
+    direction = np.asarray(direction, dtype=float)
+    all_tags, all_dots = [], []
+    for tags, pts in _corner_blocks(dim, tag, pos):
+        if dim == 2:
+            normal = np.cross(pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0])
+        else:
+            t = pts[:, 1] - pts[:, 0]
+            normal = np.stack([t[:, 1], -t[:, 0], np.zeros(len(t))], axis=1)
+        all_tags.append(tags)
+        all_dots.append(normal @ direction)
+    if not all_tags:
+        return np.empty(0, dtype=np.int64), np.empty(0)
+    return np.concatenate(all_tags), np.concatenate(all_dots)
+
+
 def fault_dots(tag: int, patch: Patch, pos: Mapping[int, np.ndarray]
                ) -> tuple[np.ndarray, np.ndarray]:
     """(element tags, normal . n) for the faces of a fault's surface, n
@@ -206,24 +241,35 @@ def orient_faults(faults: FaultSurfaces, *,
 
 def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None,
                     centres: Centres | None = None,
+                    directions: Directions | None = None,
                     skip: Collection[int] = ()) -> tuple[int, int]:
-    """Point every surface's normals away from the centre it encloses.
+    """Point every surface's normals outward: along its own direction
+    where `directions` states one, away from the centre it encloses
+    otherwise.
 
     `centres` maps a surface's entity tag to the point it encloses; the
     origin otherwise.  `skip` names surfaces that enclose nothing, a
-    fault's faces, which keep the orientation they have.  2D is skipped:
-    a curve's orientation carries no outward normal in the same sense,
-    and no consumer asks for one.
+    fault's faces, which keep the orientation they have.  In 2D a curve
+    with a stated direction is oriented (`facing_dots`) and any other
+    skipped: a circle's orientation carries no outward normal in the
+    same sense, and no consumer asks for one.
     """
-    if dimension != 3:
+    directions = directions or {}
+    if dimension != 3 and not directions:
         return 0, 0
     pos = node_positions() if pos is None else pos
     centres = centres or {}
     checked = flipped = 0
-    for _, tag in gmsh.model.getEntities(2):
+    for _, tag in gmsh.model.getEntities(dimension - 1):
         if tag in skip:
             continue
-        tags, dots = outward_dots(tag, pos, centre=centres.get(tag, (0.0, 0.0, 0.0)))
+        if tag in directions:
+            tags, dots = facing_dots(dimension - 1, tag, pos, directions[tag])
+        elif dimension == 3:
+            tags, dots = outward_dots(tag, pos,
+                                      centre=centres.get(tag, (0.0, 0.0, 0.0)))
+        else:
+            continue
         checked += tags.size
         bad = tags[dots < 0.0]
         if bad.size:
@@ -233,6 +279,7 @@ def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = No
 
 
 def orient_mesh(dimension: int, *, centres: Centres | None = None,
+                directions: Directions | None = None,
                 faults: FaultSurfaces | None = None) -> OrientationReport:
     """Repair cell and boundary orientation, and orient the faults' faces
     with their normals (`orient_faults`); call before raising the order."""
@@ -240,7 +287,9 @@ def orient_mesh(dimension: int, *, centres: Centres | None = None,
     faults = faults or {}
     cells_checked, cells_flipped = orient_cells(dimension, pos=pos)
     faces_checked, faces_flipped = orient_boundary(dimension, pos=pos,
-                                                   centres=centres, skip=faults)
+                                                   centres=centres,
+                                                   directions=directions,
+                                                   skip=faults)
     fault_checked, fault_flipped = orient_faults(faults, pos=pos)
     return OrientationReport(cells_checked=cells_checked,
                              cells_flipped=cells_flipped,

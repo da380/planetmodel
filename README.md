@@ -81,7 +81,7 @@ held to the same call.
 ## Installing
 
 ```
-pip install planetmodel                     # numpy, scipy and ducc0
+pip install planetmodel                     # numpy, scipy, ducc0 and finufft
 pip install 'planetmodel[meshing]'          # 2D and 3D meshes via gmsh
 pip install 'planetmodel[mfem]'             # export to MFEM (PyMFEM)
 pip install 'planetmodel[netcdf]'           # the model, surface and fault files (netCDF4)
@@ -89,11 +89,12 @@ pip install 'planetmodel[plot]'             # matplotlib, for the figures
 pip install 'planetmodel[notebook]'         # ipykernel, to run tutorials cell by cell
 ```
 
-Python 3.12 or later. ducc0 does the spherical-harmonic transforms;
-it ships wheels for Linux on x86_64, macOS on Apple silicon and
+Python 3.12 or later. ducc0 does the spherical-harmonic transforms and
+finufft the non-uniform Fourier transforms of `planetmodel.fourier`;
+each ships wheels for Linux on x86_64, macOS on Apple silicon and
 Windows, and elsewhere pip builds it from source, which needs a C++17
-compiler. `import planetmodel` loads numpy and scipy alone: ducc0 and
-every extra are imported where they are used.
+compiler. `import planetmodel` loads numpy and scipy alone: ducc0,
+finufft and every extra are imported where they are used.
 
 ## A first look
 

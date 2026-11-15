@@ -32,6 +32,8 @@ Modules reached by name, one level down:
                time, and their quadrature
   faultfile    the fault file: a fault in one netCDF file (netCDF4, optional)
   harmonics    real spherical harmonics, through ducc0
+  fourier      real Fourier series on a periodic box, a padded domain's
+               included: grids, and points through finufft
   slices       a field on a sphere, a section or a profile; spectra and
                correlations by degree
   plotting     profiles, sections, maps and spectra drawn (matplotlib and

@@ -24,9 +24,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from . import manifest
-from ._orient import (Centres, FaultSurfaces, element_quality, fault_dots,
-                      node_positions, outward_dots, signed_measures)
-from ._tagging import Tagging, mean_radius_of_entity
+from ._orient import (Centres, Directions, FaultSurfaces, element_quality,
+                      facing_dots, fault_dots, node_positions, outward_dots,
+                      signed_measures)
+from ._tagging import Tagging
 from .arrays import read_mesh
 from .spec import QUALITY_FLOOR, ValidationReport
 
@@ -37,13 +38,15 @@ __all__ = ["check_interface_radii", "nonconforming_faces", "validate_mesh",
 def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
                           tolerance: float | None = None
                           ) -> tuple[float, list[str]]:
-    """Measure each tagged interface against the radius asked for.
+    """Measure each tagged interface against the place asked for: its
+    radius, or across a box its depth (`Tagging.measure`).
 
     Returns (worst_error, failures).  The tolerance defaults to a
-    fraction of the thinnest span, the scale at which being wrong would
-    matter: an error smaller than that cannot have put an interface in
-    the wrong layer.  A non-finite expected radius marks a boundary
-    that is not concentric and has nothing to be checked against.
+    fraction of the thinnest span between the radii and the centre, the
+    scale at which being wrong would matter: an error smaller than that
+    cannot have put an interface in the wrong layer.  A non-finite
+    expected radius marks a boundary that is not concentric and has
+    nothing to be checked against.
 
     This is a property of the reference geometry, which the mesh is.
     """
@@ -51,18 +54,17 @@ def check_interface_radii(tagging: Tagging, expected: ArrayLike, *,
     if tolerance is None:
         spans = np.diff(np.concatenate(([0.0], expected[np.isfinite(expected)])))
         tolerance = 0.05 * float(spans.min()) if spans.size else float("inf")
-    d = tagging.dimension
     worst, failures = 0.0, []
     for i, face in enumerate(tagging.faces):
         if not np.isfinite(expected[i]):
             continue
-        got = mean_radius_of_entity(d - 1, face)
+        got = tagging.measure(face)
         err = abs(got - expected[i])
         worst = max(worst, err)
         if err > tolerance:
             failures.append(
-                f"interface {i + 1} has mean radius {got:.9g}, expected "
-                f"{expected[i]:.9g} (error {err:.3g} > {tolerance:.3g})")
+                f"interface {i + 1} has mean {tagging.coordinate} {got:.9g}, "
+                f"expected {expected[i]:.9g} (error {err:.3g} > {tolerance:.3g})")
     return worst, failures
 
 
@@ -111,41 +113,52 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
                   radius_tolerance: float | None = None,
                   quality_warn: float = QUALITY_FLOOR,
                   centres: Centres | None = None,
+                  directions: Directions | None = None,
                   faults: FaultSurfaces | None = None,
+                  face_names: Sequence[str] = (),
                   fault_names: Sequence[str] = ()) -> ValidationReport:
     """Check a finished mesh against what was asked for.
 
-    `expected_radii` are the interface radii the mesh was built at.
-    `centres` maps a surface's
+    `expected_radii` are the places of the interfaces the mesh was built
+    at: radii, or across a box depths.  `centres` maps a surface's
     entity tag to the point it encloses, for surfaces not centred on
-    the origin.  `faults` maps each face of a fault to the patch it was
-    built from, and `fault_names` names the faults, whose boundary
-    groups follow the interfaces'.
+    the origin, and `directions` a boundary entity's outward direction
+    where it states its own (a plane of a box, checked in 2D too).
+    `face_names` names the boundary groups that follow the interfaces'
+    (a box's faces); `faults` maps each face of a fault to the patch it
+    was built from, and `fault_names` names the faults, whose boundary
+    groups follow those.
     """
     d = tagging.dimension
     rep = ValidationReport(dimension=d)
     faults = faults or {}
+    directions = directions or {}
 
     expected = np.asarray(expected_radii, dtype=float)
 
     # -- physical groups match the tagging ---------------------------------
     for dim, what, wanted in ((d, "layers", len(tagging.cells)),
                               (d - 1, "interfaces",
-                               len(tagging.faces) + len(fault_names))):
+                               len(tagging.faces) + len(face_names)
+                               + len(fault_names))):
         got = [tag for _, tag in gmsh.model.getPhysicalGroups(dim)]
         rep.group_counts[what] = len(got)
         if sorted(got) != list(range(1, wanted + 1)):
             rep.failures.append(
                 f"{what}: physical groups are {sorted(got)}, expected "
-                f"1..{wanted} numbered from the centre outward"
+                f"1..{wanted} in the skeleton's order"
+                + (", the faces' after the interfaces'" if face_names else "")
                 + (", the faults' after the interfaces'" if fault_names else ""))
+    if face_names:
+        rep.group_counts["interfaces"] -= len(face_names)
+        rep.group_counts["faces"] = len(face_names)
     if fault_names:
         rep.group_counts["interfaces"] -= len(fault_names)
         rep.group_counts["faults"] = len(fault_names)
 
     m = len(tagging.faces)
     boundary = list(interface_names)[:m]
-    boundary += [None] * (m - len(boundary)) + list(fault_names)
+    boundary += [None] * (m - len(boundary)) + list(face_names) + list(fault_names)
     names = {"layers": layer_names, "interfaces": boundary}
     for dim, what in ((d, "layers"), (d - 1, "interfaces")):
         for i, want in enumerate(names[what]):
@@ -184,12 +197,21 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
         rep.failures.append(
             f"{rep.negative_cells} cell(s) are negatively oriented; MFEM would "
             "report them as wrong orientation and silently fix them")
-    if d == 3:
+    if d == 3 or directions:
         centres = centres or {}
-        rep.inward_faces = sum(
-            int((outward_dots(tag, pos, centre=centres.get(tag, (0.0, 0.0, 0.0)))[1]
-                 < 0.0).sum())
-            for _, tag in gmsh.model.getEntities(2) if tag not in faults)
+
+        def inward(tag: int) -> int:
+            if tag in directions:
+                dots = facing_dots(d - 1, tag, pos, directions[tag])[1]
+            elif d == 3:
+                dots = outward_dots(tag, pos,
+                                    centre=centres.get(tag, (0.0, 0.0, 0.0)))[1]
+            else:
+                return 0
+            return int((dots < 0.0).sum())
+
+        rep.inward_faces = sum(inward(tag) for _, tag in gmsh.model.getEntities(d - 1)
+                               if tag not in faults)
         if rep.inward_faces:
             rep.failures.append(
                 f"{rep.inward_faces} boundary face(s) point inward")

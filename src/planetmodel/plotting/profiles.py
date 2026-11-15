@@ -10,11 +10,14 @@ profile as one unbroken curve; a faint horizontal guide at every layer
 boundary sits beneath the curves.  Which way the coordinate runs is
 asked of the fields' coordinate system (`coordinates.increases_outward`).
 `profile` draws either a sequence of radial fields, one per layer in
-order, or a `slices.ProfileSlice` (a profile at a point, or the
-spherical mean), its layers as they were sliced; `radial_profile` draws
-a named field of a model, spherical or flat, skipping the layers that
-lack it.  Each returns the matplotlib lines it drew and leaves the
-labelling to the caller.
+order, or a profile slice (a profile at a point, or the mean: the
+sphere's `slices.ProfileSlice` or a box's `cartesian.slices.ProfileSlice`,
+which way it runs asked of the slice's `coordinates`), its layers as
+they were sliced, and where the slice carries the spread of a mean
+(`bands`), the band of each layer shaded beneath its curve in its
+colour; `radial_profile` draws a named field of a model, spherical or
+flat, skipping the layers that lack it.  Each returns the matplotlib
+lines it drew and leaves the labelling to the caller.
 """
 from __future__ import annotations
 
@@ -25,11 +28,15 @@ import numpy as np
 
 from ..coordinates import coordinates_of, increases_outward
 from ..fields import Field
-from ..slices import ProfileSlice
 from .style import BOUNDARY_STYLE
 
 if TYPE_CHECKING:
+    from ..cartesian.slices import ProfileSlice as FlatProfileSlice
     from ..model import ModelBase
+    from ..slices import ProfileSlice
+
+    #: What `profile` draws: radial fields by layer, or a profile slice.
+    type Profiled = Sequence[Field | None] | ProfileSlice | FlatProfileSlice
 
 __all__ = ["profile", "radial_profile"]
 
@@ -37,11 +44,17 @@ __all__ = ["profile", "radial_profile"]
 type Run = tuple[np.ndarray, np.ndarray] | None
 
 
-def _runs_of(fields: Sequence[Field | None] | ProfileSlice, n: int) -> list[Run]:
+def _layers(fields: Profiled) -> Sequence[Any] | None:
+    """A profile slice's layers, or None for a sequence of fields."""
+    return getattr(fields, "layers", None)
+
+
+def _runs_of(fields: Profiled, n: int) -> list[Run]:
     """The runs of radial fields evaluated at `n` points per layer, or of a
     profile slice's layers."""
-    if isinstance(fields, ProfileSlice):
-        return [(lay.radius, lay.values) for lay in fields.layers]
+    layers = _layers(fields)
+    if layers is not None:
+        return [(lay.radius, lay.values) for lay in layers]
     runs: list[Run] = []
     for field in fields:
         if field is None:
@@ -59,12 +72,11 @@ def _runs_of(fields: Sequence[Field | None] | ProfileSlice, n: int) -> list[Run]
     return runs
 
 
-def _downward(fields: Sequence[Field | None] | ProfileSlice) -> bool:
+def _downward(fields: Profiled) -> bool:
     """Whether the fields' layered coordinate increases into the body (a
-    depth), read from the first field's coordinates; a profile slice is
-    spherical."""
-    if isinstance(fields, ProfileSlice):
-        return False
+    depth), read from the slice's coordinates or the first field's."""
+    if _layers(fields) is not None:
+        return not increases_outward(fields.coordinates)
     first = next((f for f in fields if f is not None), None)
     return first is not None and not increases_outward(coordinates_of(first))
 
@@ -75,7 +87,7 @@ def _point_down(ax: Any) -> None:
         ax.invert_yaxis()
 
 
-def profile(ax: Any, fields: Sequence[Field | None] | ProfileSlice, *,
+def profile(ax: Any, fields: Profiled, *,
             scale: float = 1.0, value_scale: float = 1.0, n: int = 200,
             label: str | None = None, joiners: bool = True, boundaries: bool = True,
             **style: Any) -> list[Any]:
@@ -84,9 +96,10 @@ def profile(ax: Any, fields: Sequence[Field | None] | ProfileSlice, *,
 
     `fields` are radial fields of rank 0 (of the layered coordinate
     alone), one per layer in the skeleton's order, or None for a layer to
-    leave blank, each drawn at `n` points; or a `ProfileSlice`, drawn at
-    its points.  Where the fields' coordinate is a depth the vertical
-    axis is inverted, unless it already is.  Coordinates are multiplied by
+    leave blank, each drawn at `n` points; or a profile slice, of either
+    system, drawn at its points, its spread shaded where it has one.
+    Where the fields' coordinate is a depth the vertical axis is
+    inverted, unless it already is.  Coordinates are multiplied by
     `scale` (1e-3 for kilometres from metres) and values by `value_scale`
     before drawing; `label` goes on the first segment; every segment
     takes the same colour, from `style` or the axes' cycle.  Where two
@@ -108,7 +121,8 @@ def profile(ax: Any, fields: Sequence[Field | None] | ProfileSlice, *,
     lines = []
     color = style.pop("color", style.pop("c", None))
     previous: tuple[float, float] | None = None
-    for run in runs:
+    bands = getattr(fields, "bands", None) or (None,) * len(runs)
+    for run, band in zip(runs, bands):
         if run is None:
             previous = None
             continue
@@ -117,6 +131,10 @@ def profile(ax: Any, fields: Sequence[Field | None] | ProfileSlice, *,
         line, = ax.plot(v * value_scale, r * scale, color=color,
                         label=label if not lines else None, **style)
         color = line.get_color()
+        if band is not None:
+            ax.fill_betweenx(r * scale, np.asarray(band[0]) * value_scale,
+                             np.asarray(band[1]) * value_scale, color=color,
+                             alpha=0.25, linewidth=0.0, zorder=line.get_zorder() - 0.1)
         meets = previous is not None and abs(lo - previous[0]) <= 1e-9 * (hi - lo)
         if joiners and meets:
             jump = ax.plot([previous[1] * value_scale, v[0] * value_scale],

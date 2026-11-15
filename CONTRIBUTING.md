@@ -42,7 +42,7 @@ poetry run pytest -m network                      # the registry check: fetches 
 
 The default run is `-m "not gmsh and not mfem and not slow and not
 network"`, set in `pyproject.toml`: it needs the dependencies (numpy,
-scipy and ducc0), and uses the `plot`, `netcdf` and `maps` extras where
+scipy, ducc0 and finufft), and uses the `plot`, `netcdf` and `maps` extras where
 installed (the tests that need them skip otherwise). The `gmsh` and
 `mfem` tests need the `meshing` and `mfem` extras and are CI's `meshing`
 job, on Linux; `full-tests` runs everything off the network on demand
@@ -51,7 +51,7 @@ running before a release. The `network` tests are the `Registry check`
 workflow, monthly and on demand; nothing else touches the network.
 
 CI installs the lock. Two jobs move the dependencies off it: CI's
-`lowest-pins` steps numpy, scipy and ducc0 down to the floors in
+`lowest-pins` steps numpy, scipy, ducc0 and finufft down to the floors in
 `pyproject.toml`, and the `Newest dependencies` workflow raises every
 dependency to the newest the pins admit, on pull requests to `main`, on
 `main` and weekly, so that an upstream release that breaks the library

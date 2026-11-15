@@ -6,8 +6,9 @@ from the consumer's side.  It is written by ``planetmodel.mesh3d``; the
 single definition of its shape is ``planetmodel/mesh3d/manifest.py``,
 and ``validate_structure`` there checks a file against it; ``read``
 there reads one, with no gmsh installed.  In C++,
-planetmodel's own library (:doc:`../cpp`) reads it, with the same
-checks, and states the three rules of a fault's faces (Faults, below).
+planetmodel's own library (:doc:`../cpp`) reads schemas 5 and 6, with
+the same checks, and states the three rules of a fault's faces (Faults,
+below); it refuses schema 7, the flat mesh's, by its schema string.
 
 A mesh file carries numbered attributes and nothing else.  Which number
 is which layer, which boundary is which interface, where each sits,
@@ -20,9 +21,12 @@ mesh was sized under by identity alone (the sizes, and a point cloud's
 count and digest, never the points), so a consumer can tell whether a
 mesh on disk was built towards the features it now wants.
 
-**Schema string**: ``planetmodel.mesh.manifest/5`` for a mesh without
-faults, ``planetmodel.mesh.manifest/6`` for a mesh with them.  Consumers
-check it; it is bumped only for an incompatible change.  Keys may be
+**Schema string**: ``planetmodel.mesh.manifest/5`` for a mesh of a
+spherical geometry without faults, ``planetmodel.mesh.manifest/6`` for
+one with them, and ``planetmodel.mesh.manifest/7`` for a mesh of a
+flat-layered geometry, a box or a section, with faults or without
+(Flat meshes, below).
+Consumers check it; it is bumped only for an incompatible change.  Keys may be
 added within a schema: a reader ignores a key it does not know, and a
 key added within the schema is optional to it (``refinements[]`` reads
 back as an empty list, ``scales.temperature`` as a kelvin, ``model`` as
@@ -32,7 +36,23 @@ schema 5 would ignore the faults and meet cells of no layer, so it
 refuses the file instead.  Schema 6 is schema 5 with ``faults[]``,
 ``layers[].attributes``, and every cell's attribute one of its layer's
 list; a mesh without faults is written as schema 5, byte for byte the
-manifest it always had, and a schema-5 manifest lists no faults.
+manifest it always had, and a schema-5 manifest lists no faults.  A
+flat mesh is schema 7 because its layers run in depth from the surface
+down where a spherical mesh's run in radius from the centre: a reader
+of schema 5 would take the top for the centre.  Schema 7 has
+``coordinates`` and ``faces[]`` and the layers and interfaces by depth;
+schemas 5 and 6 have neither key.  A flat mesh with faults is schema 7
+too, its manifest holding the records of schema 6 (``faults[]``,
+``layers[].attributes``) and a fault curve of its own, ``face_edge``,
+where a fault leaves the box through its base or a side: a reader of
+schema 6 would take that edge for a tip and pin it.  **A flat mesh
+without faults** has neither ``faults[]`` nor ``layers[].attributes``:
+the keys are absent, as in schema 5, schema 6 having no manifest
+without faults (one listing none is refused).  The two keys go
+together: a schema-7 manifest listing faults whose layers lack
+``attributes``, or whose layers list ``attributes`` with no faults, is
+refused.  An empty ``faults[]`` reads as an absent one, under schema 5
+or 7.
 
 **Numbers.**  Every length is in the geometry's own numbers, the ones
 the mesh file holds.  The mesher neither scales nor normalises, so a
@@ -47,17 +67,21 @@ names it (``fields[].layers``, ``faults[].layers``, a model file's
 layer ``n`` being the layer of attribute ``n + 1``).  Interfaces carry
 ``attribute`` 1..M in the same order: the geometry's interfaces from
 the centre, then the shells' outer boundaries.  Faults, where there are
-any, carry M + 1..M + F in the order the mesh spec gave them.  In the
+any, carry M + 1..M + F in the order the mesh spec gave them (in a flat
+mesh after its faces, below).  In the
 mesh file, attribute ``n`` of a boundary element is interface ``n``, or
-fault ``n - M`` beyond M.  Under schema 5 attribute ``n`` of a cell is
-layer ``n``; under schema 6 a cell carries one of its layer's
+fault ``n - M`` beyond M.  In a mesh without faults attribute ``n`` of
+a cell is layer ``n``; in one with faults (schema 6, or 7 with faults)
+a cell carries one of its layer's
 ``attributes``, its own or a collar's, N + 1 onward (Faults, below), so
 a marker for a layer's cells, or for the layers a field is defined on,
 is made from those lists.
 ``between_layers`` gives 0-based layer indices, with -1 for the
 outside; a full mesh has one interface per layer and a hollow mesh
 (inner radius above zero) one more, its inner boundary being interface
-1 with ``between_layers = [-1, 0]``.
+1 with ``between_layers = [-1, 0]``.  A flat mesh numbers its layers and
+interfaces from the surface down and its faces after the interfaces
+(Flat meshes, below).
 
 The blocks
 ----------
@@ -78,14 +102,24 @@ The blocks
        the field files' dof numbering was written under; empty for a
        ``.msh``), ``displacement`` (the name of the displacement field
        among ``fields``, or null)
+   * - ``coordinates``
+     - schema 7 alone: the physical axes of the mesh's coordinates, in
+       order, ``["x", "y", "z"]`` for a box, ``["x", "z"]`` for a
+       section
    * - ``layers[]``
-     - ``attribute``, ``name``, ``r_inner``, ``r_outer``, ``in_geometry``
-       (false for a shell added by the mesh spec), ``fluid``, and under
-       schema 6 ``attributes`` (the element attributes its cells carry,
-       its own first and then its collars')
+     - ``attribute``, ``name``, ``r_inner``, ``r_outer`` (under schema 7
+       ``depth_top``, ``depth_bottom``), ``in_geometry``
+       (false for a shell added by the mesh spec), ``fluid``, and where
+       the mesh has faults (schema 6, or 7 with faults) ``attributes``
+       (the element attributes its cells carry, its own first and then
+       its collars')
    * - ``interfaces[]``
-     - ``attribute``, ``name``, ``radius``, ``between_layers``, ``kind``,
-       ``values``
+     - ``attribute``, ``name``, ``radius`` (under schema 7 ``depth``),
+       ``between_layers``, ``kind``, ``values``
+   * - ``faces[]``
+     - schema 7 alone: one record per face of the body that is no
+       interface, its base and sides: ``attribute``, ``name``, ``axis``,
+       ``value``, ``outward`` (see Flat meshes below)
    * - ``refinements[]``
      - one record per extra size field the mesh was sized under: ``name``
        (its class, or a function's name), ``size`` and ``far_size`` (the
@@ -93,10 +127,11 @@ The blocks
        ``points`` (a cloud's count) and ``digest`` (the identity of its
        coordinates), the last three null for a bare callable
    * - ``faults[]``
-     - one record per fault built into the mesh, schema 6 alone: ``name``,
-       ``attribute``, ``layers``, ``hanging_wall``, ``tip``,
-       ``free_edge``, ``junction``, ``meets``, ``ends_on``, ``controls``,
-       ``offset``, ``sizing`` (see Faults below)
+     - one record per fault built into the mesh, where it has faults
+       alone (schema 6, or 7 with faults): ``name``, ``attribute``,
+       ``layers``, ``hanging_wall``, ``tip``, ``free_edge``,
+       ``junction``, ``meets``, ``ends_on``, ``controls``, ``offset``,
+       ``sizing``, and under schema 7 ``face_edge`` (see Faults below)
    * - ``fields[]``
      - one record per file beside the mesh: ``name``, ``file``,
        ``fe_space`` (MFEM's collection name, e.g. ``H1_3D_P2`` or
@@ -121,6 +156,140 @@ The blocks
 Names default to ``layer_<attribute>`` and ``interface_<attribute>``
 when the geometry gave none; they are advisory, the attributes are the
 contract.
+
+Flat meshes
+-----------
+
+A flat mesh (schema 7) is the mesh of a geometry of
+``planetmodel.cartesian``: a box, or the section of a body invariant
+along y, layered in depth below its free surface.  A finite box stands
+for an unbounded body, taken large enough that its sides and base do
+not matter, so they carry no physics: they are labelled, for a solver
+to put its own conditions on.
+
+- **Coordinates.**  Points are right-handed Cartesian ``(x, y, z)`` with
+  z up and the free surface at ``z = 0``; the layered coordinate is the
+  depth ``-z``.  ``coordinates`` names the physical axes of the mesh's
+  own coordinates: ``["x", "y", "z"]`` for a box, ``["x", "z"]`` for a
+  section, whose mesh is two-dimensional with z its second coordinate
+  (MFEM reads it as a mesh of space dimension 2).  A field's components
+  are those of ``(x, y, z)`` in a section too, three for a vector; the
+  displacement, a vector of the mesh's own space, has the mesh's two,
+  ``(u_x, u_z)``.
+- **Layers** carry ``attribute`` 1..N from the surface down, each between
+  ``depth_top`` and ``depth_bottom``, contiguous, the first at depth 0
+  (or below, for a box whose top is not the free surface).
+  ``in_geometry`` is true for every one: a box takes no shells, and is
+  padded below its base by its model.
+- **Interfaces** are the tops of the layers, one per layer: interface
+  ``k`` (from 1) at ``depth`` the top of layer ``k``, with
+  ``between_layers = [k - 1, k - 2]``, the deeper layer first; the first
+  is the free surface, ``[0, -1]``.  Its normals point up, out of the
+  layer below it, as a sphere's interfaces point out of theirs.
+- **Faces** are the boundaries that are no interface: the base and the
+  sides.  Their boundary attributes follow the interfaces', in this
+  order, a section having no y faces:
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 15 15 15 55
+
+     * - ``name``
+       - ``axis``
+       - ``outward``
+       - plane, ``value``
+     * - ``base``
+       - ``z``
+       - -1
+       - ``z = -depth_bottom`` of the last layer
+     * - ``x_min``
+       - ``x``
+       - -1
+       - the lower end of the box in x
+     * - ``x_max``
+       - ``x``
+       - 1
+       - the upper end in x
+     * - ``y_min``
+       - ``y``
+       - -1
+       - the lower end in y (a box alone)
+     * - ``y_max``
+       - ``y``
+       - 1
+       - the upper end in y (a box alone)
+
+  A face is the plane ``axis = value`` with the body on the side
+  opposite ``outward``, the sign of its outward normal along the axis,
+  which every one of its boundary elements faces.  Like the depths of
+  the layers and interfaces, it is the reference mesh's: a mapping
+  moves it with the nodes (topography, a vertical stretch, keeps the
+  sides on their planes and moves the base only where it is given a
+  relief of its own).  A side is one
+  physical group in the mesh file, its elements beside every layer.
+  The names are the faces' physical groups in the MSH file, and no
+  interface may take one of them.
+- What a spherical mesh reads by radius a flat one reads by depth: a
+  cell lies in the layer whose depths hold its corners, an interface's
+  ``values`` are taken at its depth, and ``radial_degree`` is the degree
+  in depth.
+- **Faults**.  A box takes faults given in a ``cartesian`` frame (the
+  fault file's, z up), under any mapping that inverts itself, through
+  which each is pulled back as on the sphere (``controls`` and
+  ``offset``, below); a section takes none; its manifest is schema 7 with or without them (above).  Their boundary attributes follow the faces': fault ``k``
+  is ``M + F_b + k``, after the ``M`` interfaces and the ``F_b`` faces.
+  Everything said of faults below holds, the box's top being the
+  surface its free edge lies on.  A fault may end inside the box, cross
+  interfaces, reach the free surface, and leave the box through its base
+  or a side: the box stands for an unbounded body, so a fault cut off
+  there goes on beyond it, and the edge it leaves on the face is its
+  FACE EDGE, a curve of its own (``face_edge``), neither its tip nor its
+  free edge.  Its sides are free there, as at the surface, and the mesh
+  pins nothing: a consumer chooses the condition (pinned, as if the
+  fault ended at the box; free, as if it went on; anything else).  A
+  fault given with an edge on a face, or within the CAD kernel's
+  tolerance of it, is carried across the face and trimmed there, as a
+  fault reaching the surface is.  A fault may cut a face of the box into
+  pieces, but no layer or interface, the top included: one cutting the
+  free surface from side to side is refused.  Fault ``k``'s curve groups
+  are numbered ``4k - 3``, ``4k - 2``, ``4k - 1`` and ``4k``: its tip,
+  free edge, junction and face edge.
+
+.. code-block:: json
+
+   {
+     "mesh": {"file": "box.mesh", "format": "mfem", "nodes": "reference",
+              "read_options": {"generate_edges": 1, "refine": 0,
+                               "fix_orientation": false},
+              "displacement": null},
+     "coordinates": ["x", "y", "z"],
+     "layers": [
+       {"attribute": 1, "name": "crust", "depth_top": 0.0, "depth_bottom": 0.3,
+        "in_geometry": true, "fluid": null},
+       {"attribute": 2, "name": "mantle", "depth_top": 0.3, "depth_bottom": 1.0,
+        "in_geometry": true, "fluid": null}
+     ],
+     "interfaces": [
+       {"attribute": 1, "name": "surface", "depth": 0.0, "between_layers": [0, -1],
+        "kind": null, "values": null},
+       {"attribute": 2, "name": "moho", "depth": 0.3, "between_layers": [1, 0],
+        "kind": null, "values": null}
+     ],
+     "faces": [
+       {"attribute": 3, "name": "base", "axis": "z", "value": -1.0, "outward": -1},
+       {"attribute": 4, "name": "x_min", "axis": "x", "value": 0.0, "outward": -1},
+       {"attribute": 5, "name": "x_max", "axis": "x", "value": 2.0, "outward": 1},
+       {"attribute": 6, "name": "y_min", "axis": "y", "value": 0.0, "outward": -1},
+       {"attribute": 7, "name": "y_max", "axis": "y", "value": 1.0, "outward": 1}
+     ],
+     "refinements": [],
+     "fields": [],
+     "scales": null,
+     "constants": {},
+     "model": null,
+     "meta": {},
+     "schema": "planetmodel.mesh.manifest/7"
+   }
 
 What the model says
 -------------------
@@ -148,8 +317,9 @@ without a model, carries null throughout.
   value, and null as a whole where no name has any.  Exact for a radial
   model, and what the fluid-solid terms of a weak form want on the
   solid's boundary elements.
-- ``fields[].radial_degree``: the polynomial degree in r that
-  reproduces a scalar field within each layer holding it, so a consumer
+- ``fields[].radial_degree``: the polynomial degree in r (in depth, in a
+  flat mesh) that reproduces a scalar field within each layer holding
+  it, so a consumer
   may choose a lower L2 order than the mesh's (a constant is exact at
   order 0 whatever the element).  Null for a field of rank above 0 (its
   Cartesian components vary with direction), and for a field that no
@@ -169,8 +339,8 @@ space from before it opens the file, and what the values in it are:
 - ``rank``, ``weight``, ``voigt``: the field's character, its law under
   a mapping.  ``vdim`` is the number of stored components: 1 for a
   scalar, 3 for a vector, 6 for a Voigt rank-2 and 36 for a Voigt
-  rank-4 field.  Components are Cartesian, in the order of the
-  coordinates, with Voigt order ``(11, 22, 33, 23, 13, 12)`` and no
+  rank-4 field.  Components are Cartesian, in the order ``(x, y, z)``,
+  with Voigt order ``(11, 22, 33, 23, 13, 12)`` and no
   engineering factors.
 - ``unit``: a udunits-style string under the manifest's scales
   (``kg m-3``), ``1`` for a non-dimensional model, ``unknown`` for a
@@ -188,15 +358,15 @@ point, whichever delivery the mesh is written in.
 The displacement and the two deliveries
 ---------------------------------------
 
-The mesher writes the reference mesh, concentric spheres, and the
-mapping is applied at the MFEM export.  ``mesh.nodes`` says which of
-the two deliveries a file is:
+The mesher writes the reference mesh, concentric spheres or a box's
+planes, and the mapping is applied at the MFEM export.  ``mesh.nodes``
+says which of the two deliveries a file is:
 
 - **physical** (``"nodes": "physical"``): the displacement ``m(X) - X``
   was added to the node coordinates before the mesh was written, and
   the exporter refused a mapping that folds any element.  No
   displacement field is recorded.
-- **referential** (``"nodes": "reference"``): the mesh is spherical and
+- **referential** (``"nodes": "reference"``): the mesh is the reference one and
   ``m(X) - X`` is written beside it as a vector GridFunction in the
   mesh's own nodal space, named by ``mesh.displacement`` and recorded
   among ``fields``; the consumer forms the physical mesh in one call.
@@ -247,12 +417,15 @@ its faces lies on the fault, to ``offset``.
   the vertices' coordinates and the corners as indices.
 - **Curves.**  ``tip`` (where the fault ends inside the body, its two
   sides joined), ``free_edge`` (where it meets the model's outer
-  surface, its sides free) and ``junction`` (where it meets another
-  fault, whose names ``meets`` lists) are dimension-1 physical groups
-  of the MSH file, fault k's numbered ``3k - 2``, ``3k - 1`` and
-  ``3k``, each null where the fault has none; a junction curve is in
-  the junction group of both faults.  An MFEM mesh keeps no curves; the
-  same edges are found from its boundary elements by this rule:
+  surface, its sides free), ``junction`` (where it meets another
+  fault, whose names ``meets`` lists) and, in a flat mesh,
+  ``face_edge`` (where it leaves the box through its base or a side,
+  its sides free) are dimension-1 physical groups of the MSH file, fault
+  k's numbered ``3k - 2``, ``3k - 1`` and ``3k`` (in a flat mesh
+  ``4k - 3`` to ``4k``, the face edge last), each null where the fault
+  has none; a junction curve is in the junction group of both faults.
+  An MFEM mesh keeps no curves; the same edges are found from its
+  boundary elements by this rule:
 
     **The curves from the faces.**  An edge is a pair of corners.  The
     edges of a fault's faces that are also edges of another fault's
@@ -261,12 +434,16 @@ its faces lies on the fault, to ``offset``.
     its faces uses alone is in its free edge where it is also an edge
     of the geometry's outer surface (the boundary elements of the
     interface whose ``between_layers`` has the geometry's outermost
-    layer below), and in its tip otherwise.  An edge two of its faces
+    layer below; in a flat mesh its top, ``[0, -1]``), in its face edge
+    where it is an edge of a face of a box (the boundary elements of
+    ``faces[]``), and in its tip otherwise.  An edge two of its faces
     use lies inside it.
 
   The rule is ``planetmodel.mesh3d.manifest.fault_curves`` in the
-  Python and ``planetmodel::FaultCurves`` in C++; the edges it gives
-  are those of the MSH file's curve groups, edge for edge.
+  Python (the box's faces given by ``faces=``) and
+  ``planetmodel::FaultCurves`` in C++ (of the spherical schemas it
+  reads, without a face edge); the edges it gives are those of the MSH
+  file's curve groups, edge for edge.
 - ``ends_on``: the names of the faults it ends on, of those it
   ``meets``.  A fault ENDS on another where their junction lies on its
   own boundary: each junction edge is used by one of its faces alone
@@ -312,8 +489,9 @@ slip, a field of the displacement space carried by its slip dofs, and
 ``chi_k`` the indicator of the cells of fault k's hanging wall that
 touch its slip.  The vertices and edges of a fault's faces that are not
 on its pinned edges (its tip, and its junction where it ends) carry its
-slip; its faces' other dofs ride on those.  The mesh says which cells
-are in which wall, once, at meshing time, by this rule:
+slip; its faces' other dofs ride on those, its free edge and its face
+edge carrying slip.  The mesh says which cells are in which wall, once,
+at meshing time, by this rule:
 
   **The walls.**  Take the cells of the geometry's layers holding a
   slip-carrying vertex or edge of the fault, and join two of them across
@@ -372,13 +550,16 @@ mesh); a code finds them in parallel by counting:
    Nedelec space's edge dofs carry signs), ``ParallelAssemble`` to sum,
    ``Distribute`` to hand the sum back to every rank holding the edge.
 2. Count the same way the uses of each edge by the boundary elements of
-   the geometry's surface (``MeshManifest.surface_attribute``).
+   the geometry's surface (``MeshManifest.surface_attribute``), and in a
+   flat mesh by those of the box's faces (``faces[]``).
 3. For fault k, an edge it counts twice lies inside it.  An edge it
    counts once lies on its boundary: on the surface it is its free edge,
-   the trace, and carries slip; elsewhere it is PINNED, its buried tip,
-   or, where another fault counts it too, the junction where it ends on
-   that fault.  An edge it counts twice that another fault counts too is
-   where that one ends on it, or where the two cross: not pinned for k.
+   the trace, and carries slip; on a face of a box it is its face edge,
+   and carries slip unless the consumer pins it there; elsewhere it is
+   PINNED, its buried tip, or, where another fault counts it too, the
+   junction where it ends on that fault.  An edge it counts twice that
+   another fault counts too is where that one ends on it, or where the
+   two cross: not pinned for k.
 4. Fault k's pinned dofs are the dofs of its pinned edges, their
    vertices' included; mark them on the ranks holding each edge and
    assemble the marks over the displacement space once more, so that a
@@ -393,7 +574,11 @@ With these, ``sum_k chi_k s_k`` jumps across each face of fault k by
 exactly ``s_k``, hanging wall less footwall, and is continuous across
 every other face, crossing faults and a splay ending on its main fault
 included, in spaces of order 1 and 2 and after uniform refinement; the
-library's tests build it so from an MFEM delivery alone.
+library's tests build it so from an MFEM delivery alone.  A face edge
+pinned by the consumer changes nothing of it: the collar was classified
+with that edge carrying slip, and a cell of it touching the fault only
+there carries zero slip, which the sum takes as it takes any such
+cell.
 
 Reading an MFEM delivery
 ------------------------

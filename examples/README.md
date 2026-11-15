@@ -2,8 +2,8 @@
 
 Two kinds of material, after MFEM's: **examples**, small scripts that
 each show one idea in under a hundred lines or so, grouped by area
-(`conversion/`, `faults/`, `meshing/`, more areas to come as the
-tutorials are split), and
+(`cartesian/`, `conversion/`, `faults/`, `meshing/`, more areas to come
+as the tutorials are split), and
 **mini-apps** (`miniapps/`), medium-sized programs that use several
 parts of the library together on a real problem, each in a directory
 with its README. Each starts with a header naming what it needs:
@@ -20,6 +20,7 @@ each one's markers, so the test suite runs every example it can.
 
 | example | what it shows |
 |---|---|
+| `cartesian/01_a_flat_model.py` | a flat model (`cartesian.CrustOverMantle` in a 400 by 300 km box) with a Fourier perturbation of vs and a range with its Moho root as a vertical stretch, sliced and drawn depth downward: a plane at 60 km and the topography, a section flat and as the body is, the horizontal mean with its range, the spectrum by horizontal wavenumber with the wavelength on top, the box seen from a corner (`plot`) |
 | `conversion/01_velocity_to_temperature.py` | a shear-speed anomaly on PREM as a temperature anomaly, by a sensitivity and through density as sl3d does, with sl3d's parameter profiles (`plot`) |
 | `conversion/02_temperature_to_viscosity.py` | the exponential law's viscosity, sl3d's eps against Milne et al.'s, and Latychev et al.'s renormalisation (`plot`) |
 | `conversion/03_sl3d_chain.py` | sl3d's chain on S20RTS, maps at three depths, and what the model cites (`maps`, network) |

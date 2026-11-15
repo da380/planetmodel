@@ -46,7 +46,7 @@ from .layerfunction import PolynomialLayer, as_interval
 if TYPE_CHECKING:
     from .sampling import AngularGrid
 
-__all__ = ["HarmonicField", "HarmonicFunction"]
+__all__ = ["HarmonicField", "HarmonicFunction", "ppoly_of", "rescaled_ppoly"]
 
 
 def _harmonic_entries(lmax: int) -> np.ndarray:
@@ -58,14 +58,29 @@ def _harmonic_entries(lmax: int) -> np.ndarray:
     return mask
 
 
-def _ppoly_of(spline: BSpline) -> PPoly:
+def ppoly_of(spline: BSpline) -> PPoly:
     """A B-spline as a piecewise polynomial, any trailing shape kept: on
     each piece the Taylor coefficients at its left end, from the spline's
-    derivatives there."""
+    derivatives there.  The coefficients of an expansion given as a
+    B-spline of the layered coordinate are held so, here and in a box
+    (`cartesian.FourierField`)."""
     k = spline.k
     x = np.unique(spline.t[k:-k])
     c = np.stack([spline(x[:-1], nu=d) / factorial(d) for d in range(k, -1, -1)])
     return PPoly(c, x)
+
+
+def rescaled_ppoly(pp: PPoly, *, k: float, v: float) -> PPoly:
+    """v p(x / k) of a piecewise polynomial of any trailing shape: the
+    breakpoints scaled by k, each piece's coefficient of power j by
+    v / k^j; k must be positive."""
+    k, v = float(k), float(v)
+    if k <= 0.0:
+        raise ValueError(f"the coordinate factor must be positive, got {k}")
+    c = pp.c
+    powers = (c.shape[0] - 1) - np.arange(c.shape[0])
+    factor = (v / k ** powers).reshape((-1,) + (1,) * (c.ndim - 1))
+    return PPoly(c * factor, pp.x * k)
 
 
 def _check_layout(c: np.ndarray, owner: str) -> int:
@@ -104,7 +119,7 @@ class HarmonicField(FieldBase):
         self._name = name
         self._rtol = float(rtol)
         if isinstance(coefficients, BSpline):
-            coefficients = _ppoly_of(coefficients)
+            coefficients = ppoly_of(coefficients)
         if isinstance(coefficients, PPoly):
             c = np.asarray(coefficients.c)
             if np.iscomplexobj(c):
@@ -205,13 +220,8 @@ class HarmonicField(FieldBase):
         """v f(r / k, theta, phi): the breakpoints and interval scaled by k,
         each piece's coefficients by v / k^p for its power p."""
         k, v = float(k), float(v)
-        if k <= 0.0:
-            raise ValueError(f"the coordinate factor must be positive, got {k}")
-        c = self._pp.c
-        powers = (c.shape[0] - 1) - np.arange(c.shape[0])
-        factor = (v / k ** powers).reshape((-1,) + (1,) * (c.ndim - 1))
         lo, hi = self._interval
-        return HarmonicField((k * lo, k * hi), PPoly(c * factor, self._pp.x * k),
+        return HarmonicField((k * lo, k * hi), rescaled_ppoly(self._pp, k=k, v=v),
                              character=self._character, name=self._name,
                              rtol=self._rtol)
 

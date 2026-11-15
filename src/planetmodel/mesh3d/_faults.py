@@ -1,5 +1,6 @@
 """Faults built into the layered mesh: pulled back, made CAD, fragmented
-in with the shells, and labelled by local sides.
+in with the shells or the boxes of the layers, and labelled by local
+sides.
 
 A fault is defined where it physically is and the mesh is the reference
 one, so each patch enters as its preimage under the geometry's mapping
@@ -7,43 +8,63 @@ one, so each patch enters as its preimage under the geometry's mapping
 fault when the export moves the nodes.  Each preimage becomes an OCC
 surface through its spline (`TensorSpline`): a plane where the spline is
 the bilinear one through four coplanar corners, so that its crossings
-with the spheres are exact circles, and otherwise the B-spline surface
-the spline is, knots and coefficients as they are.  Either is the
-preimage exactly.
+with the spheres are exact circles (with a box's planes, straight
+lines), and otherwise the B-spline surface the spline is, knots and
+coefficients as they are.  Either is the preimage exactly.
 
-An edge of a patch whose preimage lies nowhere more than `reach` below
-the geometry's outer boundary is carried across it: the spline is
+What depends on the body's shape is asked of its layout (`_layout`):
+the parts of its boundary a fault may leave it through (`Exit`), the
+free surface (the outer sphere, a box's top) and, of a box, which
+stands for an unbounded body, its base and sides too; where else no
+fault may reach (a sphere's centre, a hollow one's hole); and its CAD.
+Where a point lies against an exit is read through the geometry's own
+coordinates: its radius, or its depth or x or y in a box.
+
+An edge of a patch whose preimage lies nowhere more than `reach` inside
+the free surface, or nowhere inside a face of a box by more than the
+relief of that face over the edge (how far the mapping moves the face
+there along its own coordinate: none at a side under a vertical
+stretch), is carried across it: the spline is
 continued beyond that edge (`TensorSpline.extended`) until the new edge
 clears the boundary everywhere by a hundredth of the patch's extent
 that way, and the fragment trims it there, so the fault meets the
-surface exactly wherever the relief puts the reference position of its
-edge.  `reach` defaults to the relief of the outer boundary over the
-edge, the largest displacement the mapping gives its points there, plus
-the CAD kernel's tolerance: under the identity only an edge at the
-surface or above it is carried across.
+boundary exactly wherever the relief puts the reference position of its
+edge.  `reach` defaults to the relief of the surface over the edge, the
+largest displacement the mapping gives its points there along the
+layered coordinate, plus the CAD kernel's tolerance: under the identity
+only an edge at the boundary or beyond it is carried across.  An edge
+is carried across one exit at most.  The part carried is the preimage
+continued, its end pieces' polynomials carried on: an extrapolation,
+which strays from the fault continued as the relief over the edge
+grows towards the patch's extent across it, and an edge that does not
+clear the boundary within half that extent is refused.  A fault meant
+to meet a surface the relief raises well above its edge is given
+reaching above it, and the fragment trims it on the surface exactly.
 
 Before any CAD, every preimage is sampled densely and refused by name
-where it passes through the centre, reaches below a hollow domain's
-inner boundary (a fault leaves the domain through the outer surface
-alone), lies wholly outside the geometry, has a local extremum of its
-radius, over it or along one of its edges, within a tenth of the local
-element size of an interface, whatever it does elsewhere, or, carried
-across the outer boundary, reaches no deeper below it than that: the
-fragment would turn each into slivers, a tangency, or a loop too small
-to mesh.  A fault therefore never ends exactly on an interface: it
-crosses it or stops clear of it, and a fault meant to end on one (a
-crustal fault bottoming at the Moho) is given ending a little short of
-it or continuing a little past it.
+where it reaches where no fault may (through a sphere's centre, below a
+hollow domain's inner boundary), lies wholly outside the geometry, has
+a local extremum of its layered coordinate, over it or along one of its
+edges, within a tenth of the local element size of an interface,
+whatever it does elsewhere, or likewise of its distance from a face of
+a box, or, carried across an exit or lying beyond it, reaches no deeper
+inside than that: the fragment would turn each into slivers, a
+tangency, or a loop too small to mesh.  A fault therefore never ends
+exactly on an interface or a face: it crosses it or stops clear of it,
+and a fault meant to end on one (a crustal fault bottoming at the Moho)
+is given ending a little short of it or continuing a little past it.
 
 The fragment trims the faults at the geometry's outer boundary
-(`build_concentric`), and each piece left is found in the layer whose
-solid embeds it; a piece made by two surfaces (overlapping faults or
-patches) is refused.  The curves of a fault are read from the CAD: a
-curve bounding one of its faces once is an edge of it, one bounding two
-of its faces, or embedded in one, lies inside it (a seam where it
-crosses a sphere, or where another fault ends on it); any of these it
-shares with another fault is a junction; an edge on the geometry's
-outer boundary is a free edge; every other edge is its buried tip.
+(`build_concentric`) or at the box (`build_box`), and each piece left
+is found in the layer whose solid embeds it; a piece made by two
+surfaces (overlapping faults or patches) is refused.  The curves of a
+fault are read from the CAD: a curve bounding one of its faces once is
+an edge of it, one bounding two of its faces, or embedded in one, lies
+inside it (a seam where it crosses a sphere or a plane, or where
+another fault ends on it); any of these it shares with another fault is
+a junction; an edge on the free surface is a free edge, one on a face
+of a box, its base or a side, a face edge (`manifest.FLAT_FAULT_CURVES`);
+every other edge is its buried tip.
 
 Once the mesh is oriented and curved, each fault's walls are classified
 on it by the manifest's rule (`manifest.walls_of_faults`, on the
@@ -55,32 +76,33 @@ and MFEM's reading of it carry it as the cells' element attribute.
 """
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from collections.abc import Mapping as MappingOf
-from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING
 
 import gmsh
 import numpy as np
 
 from ..fault import Preimage, TensorSpline, pull_back
-from ..geometry import InterfaceInfo
 from ..mapping import Mapping
 from . import manifest
 from ._geometry import ConcentricGeometry, default_atol
+from ._layout import Exit, Layout
 from ._tagging import Tagging
 from .spec import EmbeddedFault, InterfaceSizing, MeshSpec, NearPoints
 
 if TYPE_CHECKING:
     from ..fault import Patch
+    from ._box import BoxGeometry
 
 __all__ = ["PreparedFault", "FaultTagging", "prepare_faults", "add_surfaces",
            "settle_faults", "apply_fault_groups", "fault_refinements",
            "fault_entries", "curve_names", "FaultGroups", "CLEARANCE", "GAP",
            "CollarTagging", "assign_collars", "collar_name"]
 
-#: How far a carried edge must clear the outer boundary, as a fraction of
-#: the patch's extent across that edge.
+#: How far a carried edge must clear the boundary it is carried across, as
+#: a fraction of the patch's extent across that edge.
 CLEARANCE = 0.01
 
 #: The nearest a fault may come to an interface it does not cross, as a
@@ -99,22 +121,23 @@ _PATCH_SAMPLES = 33
 class PreparedFault:
     """One fault ready for the CAD: its name and spec, its patches'
     preimages, and the splines built from them in the mesh's coordinates,
-    carried across the outer boundary where `carried` says so."""
+    each carried across the exits `carried` names (by their names)."""
 
     name: str
     item: EmbeddedFault
     preimages: tuple[Preimage, ...]
     splines: tuple[TensorSpline, ...]
-    carried: tuple[bool, ...]
+    carried: tuple[frozenset[str], ...]
 
 
 @dataclass(frozen=True)
 class FaultTagging:
     """What the fragment made of the faults, fault by fault in the spec's
     order: their faces, the layers (attributes) those lie in, their tip,
-    free-edge and junction curves, and the faults each meets; for every
-    face, the preimage it is a piece of; and the geometry's outer
-    boundary, the surface a free edge lies on."""
+    free-edge, junction and face-edge curves, and the faults each meets;
+    for every face, the preimage it is a piece of; the free surface, the
+    entity a free edge lies on; and the entities of a box's base and
+    sides, where a face edge lies."""
 
     names: tuple[str, ...]
     faces: tuple[tuple[int, ...], ...]
@@ -125,6 +148,18 @@ class FaultTagging:
     meets: tuple[tuple[str, ...], ...]
     surfaces: MappingOf[int, Patch]
     surface: int
+    _: KW_ONLY
+    #: Each fault's curves on a box's base and sides.
+    face_edges: tuple[tuple[int, ...], ...] = ()
+    #: The entities of a box's base and sides; none on a sphere.
+    boundary: tuple[int, ...] = ()
+
+    def curves(self, k: int) -> dict[str, tuple[int, ...]]:
+        """Fault k's curves (from zero) by kind, `manifest.FLAT_FAULT_CURVES`'
+        names: a fault with no face edge on a sphere."""
+        return {"tip": self.tips[k], "free_edge": self.free_edges[k],
+                "junction": self.junctions[k],
+                "face_edge": self.face_edges[k] if self.face_edges else ()}
 
 
 @dataclass(frozen=True)
@@ -157,51 +192,58 @@ def _carry(spline: TensorSpline, side: str, t: float) -> TensorSpline:
     return spline.extended(**widths)
 
 
-def _relief(mapping: Mapping, points: np.ndarray, radius: float) -> float:
-    """The largest displacement the mapping gives the outer boundary's
-    points over `points`, projected radially onto it."""
-    X = radius * points / np.linalg.norm(points, axis=-1, keepdims=True)
-    return float(np.max(np.linalg.norm(np.asarray(mapping(X), dtype=float) - X,
-                                       axis=-1)))
+def _relief(mapping: Mapping, points: np.ndarray, exit: Exit) -> float:
+    """How far the mapping moves the exit's points over `points`, moved
+    onto it along its coordinate, along that coordinate: the largest
+    change of the exit's coordinate (a radius, a depth, the x or y of a
+    side) between those points and their images, the part of the
+    displacement that carries the exit towards or away from the body.
+    A displacement along the exit (a vertical stretch at a side of a
+    box) moves none of it."""
+    X = exit.onto(points)
+    moved = exit.level(np.asarray(mapping(X), dtype=float))
+    return float(np.max(np.abs(moved - exit.value)))
 
 
-def _carried_across(spline: TensorSpline, *, radius: float, reach: float | None,
-                    mapping: Mapping, identity: bool, atol: float, what: str
-                    ) -> tuple[TensorSpline, bool]:
-    """The spline with every edge that reaches the outer boundary carried
-    across it (module docstring), and whether any was."""
-    carried = False
+def _carried_across(spline: TensorSpline, *, exits: Sequence[Exit],
+                    reach: float | None, mapping: Mapping, identity: bool,
+                    atol: float, what: str) -> tuple[TensorSpline, frozenset[str]]:
+    """The spline with every edge that reaches an exit carried across it
+    (module docstring), and the names of the exits it was carried across."""
+    carried: set[str] = set()
     for side in ("u0", "u1", "v0", "v1"):
         u, v = _edge(spline, side, _EDGE_SAMPLES)
         X = spline(u, v)
-        r = np.linalg.norm(X, axis=-1)
-        limit = (reach if reach is not None
-                 else (0.0 if identity else _relief(mapping, X, radius)) + atol)
-        if float(np.max(radius - r)) > limit:
-            continue
-        # the extent across the edge, along the middle line of the patch
-        (a, b), (c, d) = spline.bounds
-        s = np.linspace(0.0, 1.0, _EDGE_SAMPLES)
-        line = (spline(0.5 * (a + b) + 0.0 * s, c + (d - c) * s) if side[0] == "v"
-                else spline(a + (b - a) * s, 0.5 * (c + d) + 0.0 * s))
-        extent = float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=-1)))
-        span = (d - c) if side[0] == "v" else (b - a)
-        want = radius + CLEARANCE * extent
-        t = 0.02 * span
-        while True:
-            trial = _carry(spline, side, t)
-            u, v = _edge(trial, side, _EDGE_SAMPLES)
-            if float(np.min(np.linalg.norm(trial(u, v), axis=-1))) >= want:
-                break
-            t *= 1.5
-            if t > _LONGEST_CARRY * span:
-                raise ValueError(
-                    f"{what} meets the outer boundary (r = {radius:g}) at too "
-                    "shallow an angle to be carried across it cleanly: continued "
-                    f"by half its extent, its edge still does not clear it; end "
-                    "it farther below the surface, or give a smaller reach")
-        spline, carried = trial, True
-    return spline, carried
+        for exit in exits:
+            limit = (reach if reach is not None and exit.free
+                     else (0.0 if identity else _relief(mapping, X, exit)) + atol)
+            if float(np.max(exit.inside(X))) > limit:
+                continue
+            # the extent across the edge, along the middle line of the patch
+            (a, b), (c, d) = spline.bounds
+            s = np.linspace(0.0, 1.0, _EDGE_SAMPLES)
+            line = (spline(0.5 * (a + b) + 0.0 * s, c + (d - c) * s)
+                    if side[0] == "v"
+                    else spline(a + (b - a) * s, 0.5 * (c + d) + 0.0 * s))
+            extent = float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=-1)))
+            span = (d - c) if side[0] == "v" else (b - a)
+            t = 0.02 * span
+            while True:
+                trial = _carry(spline, side, t)
+                u, v = _edge(trial, side, _EDGE_SAMPLES)
+                if np.all(exit.beyond(trial(u, v), CLEARANCE * extent)):
+                    break
+                t *= 1.5
+                if t > _LONGEST_CARRY * span:
+                    raise ValueError(
+                        f"{what} meets the {exit.where()} at too shallow an angle "
+                        "to be carried across it cleanly: continued by half its "
+                        "extent, its edge still does not clear it; end it farther "
+                        "inside the body, or give a smaller reach")
+            spline = trial
+            carried.add(exit.name)
+            break
+    return spline, frozenset(carried)
 
 
 def _extrema(d: np.ndarray) -> np.ndarray:
@@ -232,92 +274,134 @@ def _near_misses(d: np.ndarray, limit: float) -> np.ndarray:
 
 
 def _check_sample(spline: TensorSpline, spec: MeshSpec,
-                  sizes: MappingOf[int, InterfaceSizing], *, carried: bool,
+                  sizes: MappingOf[int, InterfaceSizing], *, layout: Layout,
+                  exits: Sequence[Exit], carried: Collection[str],
                   fine: float | None, what: str) -> None:
     """Refuse what the fragment could not cut cleanly (module docstring),
-    on a dense sample of the spline."""
+    on a dense sample of the spline: by the layered coordinate against
+    every interface, and by its distance from every face of a box."""
     n_u, n_v = (max(_PATCH_SAMPLES, 4 * n) for n in spline.coefficients.shape[:2])
     (a, b), (c, d) = spline.bounds
     U, V = np.meshgrid(np.linspace(a, b, n_u), np.linspace(c, d, n_v),
                        indexing="ij")
-    r = np.linalg.norm(spline(U, V), axis=-1)
-    lo, hi = float(r.min()), float(r.max())
-    boundaries = spec.geometry.skeleton.boundaries
-    inner, outer = float(boundaries[0]), float(boundaries[-1])
-    atol = default_atol(spec.outer_radius)
+    X = spline(U, V)
+    g = spec.geometry
+    coords = g.coordinates
+    r = np.asarray(coords.split(X)[0], dtype=float)
+    label = coords.labels[0]
+    layout.check_reach(spec, r, atol=default_atol(layout.scale(spec)), what=what)
 
-    def limit(face: InterfaceInfo) -> float:
-        size = sizes[face.index].size if face.index in sizes else np.inf
+    def limit(size: float) -> float:
         return GAP * min(size, np.inf if fine is None else fine)
 
-    surface = spec.geometry.interfaces[-1]
-    if lo <= atol:
-        raise ValueError(f"{what} passes through the centre, where the spherical "
-                         "frame has no direction: a fault of a layered mesh "
-                         "keeps clear of it")
-    if inner > 0.0 and lo < inner:
-        raise ValueError(f"{what} reaches r = {lo:.6g}, below the inner boundary "
-                         f"of the hollow domain at r = {inner:g}: a fault leaves "
-                         "the domain through its outer surface alone")
-    if lo >= outer + limit(surface):
-        raise ValueError(f"{what} lies wholly outside the geometry, at radii "
-                         f"{lo:.6g} to {hi:.6g} beyond its surface at r = "
-                         f"{outer:g}; a fault's positions are taken in the "
-                         "geometry's own lengths")
-    for face in spec.geometry.interfaces:
-        rho, gap_limit = float(face.radius), limit(face)
-        if rho == outer and (carried or lo >= outer):
-            if lo > outer - gap_limit:
-                raise ValueError(
-                    f"{what} reaches no deeper than {outer - lo:.3g} below the "
-                    f"outer boundary (r = {outer:g}), closer than {GAP:g} of the "
-                    f"element size there ({gap_limit:.3g}): it touches the "
-                    "surface rather than entering the body, which the fragment "
-                    "cannot cut cleanly")
-            continue
-        near = _near_misses(r - rho, gap_limit)
-        if np.any(near):
-            at = np.flatnonzero(near.ravel())[np.argmin(np.abs(r - rho)[near])]
-            gap = float(np.abs(r - rho).ravel()[at])
-            name = face.name or f"interface_{face.index + 1}"
-            if spec.geometry.is_identity:
-                which = (f"{what} comes within {gap:.3g} of interface {name!r} (r = "
-                         f"{rho:g})")
-            else:
-                # the same two points mapped: the point of the preimage and
-                # the interface's point on the same radius
-                X = spline(U.ravel()[at], V.ravel()[at])
-                pair = np.asarray(spec.geometry.mapping(
-                    np.stack([X, rho * X / np.linalg.norm(X)])), dtype=float)
-                apart = abs(float(np.diff(np.linalg.norm(pair, axis=-1))[0]))
-                which = (f"{what} has a preimage under the geometry's mapping, the "
-                         f"surface built into the reference mesh, that comes within "
-                         f"{gap:.3g} of interface {name!r} at the reference radius "
-                         f"{rho:g} (once mapped, {apart:.3g} from it along the "
-                         "radius, the mapping moving the interface too)")
+    # a face of a box is sized by no interface: the coarsest size there is
+    coarsest = max(s.far_size for s in sizes.values())
+    gaps = {e.name: limit(sizes[e.interface].size if e.interface in sizes else np.inf)
+            if e.free else limit(coarsest) for e in exits}
+    beyond = {e.name: e.beyond(X, gaps[e.name]) for e in exits}
+    if np.all(np.logical_or.reduce(list(beyond.values()))):
+        lo, hi = float(r.min()), float(r.max())
+        raise ValueError(f"{what} lies wholly outside the geometry, at {label} "
+                         f"{lo:.6g} to {hi:.6g}, beyond its "
+                         f"{' or '.join(e.where() for e in exits)}; a fault's "
+                         "positions are taken in the geometry's own lengths")
+
+    # a near miss counts where the box keeps it: not beyond a face of it
+    # (beyond its top too, for a face), the fragment trimming it there
+    def kept(e: Exit | None) -> np.ndarray:
+        keep = np.ones(r.shape, dtype=bool)
+        for other in exits:
+            if other is not e and (not other.free or (e is not None and not e.free)):
+                keep &= ~beyond[other.name]
+        return keep
+
+    def refuse(e: Exit) -> None:
+        # carried across an exit, or wholly beyond it: it must enter the body
+        gap = gaps[e.name]
+        level = e.level(X)
+        if np.all(e.outward * level > e.outward * (e.value - e.outward * gap)):
             raise ValueError(
-                f"{which} and turns there without crossing it cleanly, closer "
-                f"than {GAP:g} of the element size there ({gap_limit:.3g}): the "
-                "fragment would leave slivers or a tangency.  A fault does not "
-                "end on, touch or run along an interface: stop it short of the "
-                f"interface by more than {gap_limit:.3g}, or continue it past "
-                "the interface by as much (a few elements either way keeps the "
-                "elements there well shaped)"
-                + ("; or give a reach to carry it across the surface"
-                   if rho == outer else ""))
+                f"{what} reaches no deeper than {float(np.max(e.inside(X))):.3g} "
+                f"inside the {e.where()}, closer than {GAP:g} of the element size "
+                f"there ({gap:.3g}): it touches the "
+                f"{'surface' if e.free else 'face'} rather than entering the "
+                "body, which the fragment cannot cut cleanly")
+
+    def clean(d: np.ndarray, gap_limit: float, name: str, where: str,
+              on: Exit | None, level: float) -> None:
+        near = _near_misses(d, gap_limit) & kept(on)
+        if not np.any(near):
+            return
+        at = np.flatnonzero(near.ravel())[np.argmin(np.abs(d)[near])]
+        gap = float(np.abs(d).ravel()[at])
+        if g.is_identity:
+            which = f"{what} comes within {gap:.3g} of {name} ({where})"
+        else:
+            # the same two points mapped: the point of the preimage and the
+            # boundary's point on the same line of its coordinate
+            axis = 0 if on is None else on.axis
+            P = spline(U.ravel()[at], V.ravel()[at])
+            parts = list(coords.split(P)[:3])
+            parts[axis] = np.asarray(level)
+            pair = np.asarray(g.mapping(np.stack([P, coords.points(*parts)])),
+                              dtype=float)
+            apart = abs(float(np.diff(np.asarray(coords.split(pair)[axis]))[0]))
+            along = coords.labels[axis]
+            which = (f"{what} has a preimage under the geometry's mapping, the "
+                     f"surface built into the reference mesh, that comes within "
+                     f"{gap:.3g} of {name} at the reference {along} {level:g} "
+                     f"(once mapped, {apart:.3g} from it along the {along}, the "
+                     "mapping moving it too)")
+        thing = "interface" if on is None or on.free else "face"
+        raise ValueError(
+            f"{which} and turns there without crossing it cleanly, closer "
+            f"than {GAP:g} of the element size there ({gap_limit:.3g}): the "
+            f"fragment would leave slivers or a tangency.  A fault does not "
+            f"end on, touch or run along {'an' if thing == 'interface' else 'a'} "
+            f"{thing}: stop it short of the {thing} by more than "
+            f"{gap_limit:.3g}, or continue it past the {thing} by as much (a few "
+            "elements either way keeps the elements there well shaped)"
+            + ("; or give a reach to carry it across the surface"
+               if on is not None and on.free else ""))
+
+    by_interface = {e.interface: e for e in exits if e.free}
+    for face in g.interfaces:
+        rho = float(face.radius)
+        name = face.name or f"interface_{face.index + 1}"
+        e = by_interface.get(face.index)
+        if e is not None:
+            depth = e.inside(X)
+            if e.name in carried or np.all(depth <= 0.0):
+                refuse(e)
+                continue
+            clean(-depth, gaps[e.name], f"interface {name!r}", f"{label} = {rho:g}",
+                  e, rho)
+            continue
+        size = sizes[face.index].size if face.index in sizes else np.inf
+        clean(r - rho, limit(size), f"interface {name!r}", f"{label} = {rho:g}",
+              None, rho)
+    for e in exits:
+        if e.free:
+            continue
+        depth = e.inside(X)
+        if e.name in carried or np.all(depth <= 0.0):
+            refuse(e)
+            continue
+        clean(-depth, gaps[e.name], f"face {e.name!r}", f"{e.label} = {e.value:g}",
+              e, e.value)
 
 
-def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing]
-                   ) -> tuple[PreparedFault, ...]:
+def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing], *,
+                   layout: Layout) -> tuple[PreparedFault, ...]:
     """Pull every patch of every fault back through the geometry's
-    mapping, carry the edges that reach the outer boundary across it,
-    and refuse what the fragment could not cut cleanly (module
+    mapping, carry the edges that reach an exit of the body (`layout`'s)
+    across it, and refuse what the fragment could not cut cleanly (module
     docstring); nothing touches gmsh."""
     geometry = spec.geometry
     mapping = geometry.mapping
     identity = geometry.is_identity
-    outer = float(geometry.skeleton.boundaries[-1])
-    atol = default_atol(spec.outer_radius)
+    exits = layout.exits(spec) if spec.faults else ()
+    atol = default_atol(layout.scale(spec))
     prepared = []
     for name, item in zip(spec.fault_names, spec.faults):
         fine = None if item.sizing is None else item.sizing.size
@@ -326,9 +410,10 @@ def prepare_faults(spec: MeshSpec, sizes: MappingOf[int, InterfaceSizing]
             what = f"fault {name!r}, patch {j},"
             pre = pull_back(patch, mapping, controls=item.controls, rtol=item.rtol)
             spline, was = _carried_across(
-                pre.patch.spline(), radius=outer, reach=item.reach,
+                pre.patch.spline(), exits=exits, reach=item.reach,
                 mapping=mapping, identity=identity, atol=atol, what=what)
-            _check_sample(spline, spec, sizes, carried=was, fine=fine, what=what)
+            _check_sample(spline, spec, sizes, layout=layout, exits=exits,
+                          carried=was, fine=fine, what=what)
             preimages.append(pre)
             splines.append(spline)
             carried.append(was)
@@ -415,12 +500,24 @@ def _owners(prepared: Sequence[PreparedFault]) -> list[tuple[int, int]]:
             for j in range(len(fault.splines))]
 
 
-def settle_faults(cad: ConcentricGeometry, tagging: Tagging,
-                  prepared: Sequence[PreparedFault], *, spec: MeshSpec
-                  ) -> FaultTagging:
+def _curves_on(entities: Sequence[int]) -> set[int]:
+    """The curves embedded in, or bounding, the given surfaces."""
+    out: set[int] = set()
+    for entity in entities:
+        out |= {t for d, t in gmsh.model.mesh.getEmbedded(2, entity) if d == 1}
+        out |= {abs(c) for _, c in gmsh.model.getBoundary(
+            [(2, entity)], oriented=False, recursive=False)}
+    return out
+
+
+def settle_faults(cad: ConcentricGeometry | BoxGeometry, tagging: Tagging,
+                  prepared: Sequence[PreparedFault], *, spec: MeshSpec,
+                  exits: Sequence[Exit]) -> FaultTagging:
     """Keep the pieces of the faults inside the geometry's layers, remove
     the rest, refuse overlaps, and read every fault's curves (module
-    docstring)."""
+    docstring): its free edge on the free surface, the first of `exits`,
+    and its face edge on the others, the faces of a box (the tagging's
+    groups of their names)."""
     owners = _owners(prepared)
     names = [f.name for f in prepared]
     if cad.in_hole:
@@ -469,15 +566,14 @@ def settle_faults(cad: ConcentricGeometry, tagging: Tagging,
         edges.append({c for c, n in count.items() if n == 1})
         inner.append({c for c, n in count.items() if n > 1} | within)
 
-    outer = float(spec.geometry.skeleton.boundaries[-1])
-    k_out = next(i for i, f in enumerate(spec.domain.interfaces)
-                 if f.radius == outer)
-    sphere = tagging.faces[k_out]
-    on_surface = ({t for d, t in gmsh.model.mesh.getEmbedded(2, sphere) if d == 1}
-                  | {abs(c) for _, c in gmsh.model.getBoundary(
-                      [(2, sphere)], oriented=False, recursive=False)})
+    sphere = tagging.faces[next(e.interface for e in exits if e.free)]
+    on_surface = _curves_on([sphere])
+    named = {e.name for e in exits if not e.free}
+    boundary = tuple(t for name, group in tagging.groups if name in named
+                     for t in group)
+    on_faces = _curves_on(boundary)
 
-    tips, frees, junctions, meets = [], [], [], []
+    tips, frees, junctions, cuts, meets = [], [], [], [], []
     for k in range(len(prepared)):
         own = edges[k] | inner[k]
         shared, others = set(), []
@@ -486,9 +582,11 @@ def settle_faults(cad: ConcentricGeometry, tagging: Tagging,
                 shared |= own & (edges[m] | inner[m])
                 others.append(names[m])
         free = (edges[k] & on_surface) - shared
-        tips.append(tuple(sorted(edges[k] - shared - free)))
+        cut = (edges[k] & on_faces) - shared - free
+        tips.append(tuple(sorted(edges[k] - shared - free - cut)))
         frees.append(tuple(sorted(free)))
         junctions.append(tuple(sorted(shared)))
+        cuts.append(tuple(sorted(cut)))
         meets.append(tuple(others))
 
     surfaces = {tag: prepared[made[tag][0]].preimages[made[tag][1]].patch
@@ -498,15 +596,20 @@ def settle_faults(cad: ConcentricGeometry, tagging: Tagging,
     return FaultTagging(names=tuple(names), faces=tuple(map(tuple, faces)),
                         layers=layers, tips=tuple(tips), free_edges=tuple(frees),
                         junctions=tuple(junctions), meets=tuple(meets),
-                        surfaces=surfaces, surface=sphere)
+                        surfaces=surfaces, surface=sphere,
+                        face_edges=tuple(cuts) if boundary else (),
+                        boundary=boundary)
 
 
-def apply_fault_groups(faults: FaultTagging, *, first: int
+def apply_fault_groups(faults: FaultTagging, *, first: int,
+                       curves: Sequence[str] = manifest.FAULT_CURVES
                        ) -> dict[str, dict[str, int | None]]:
     """The faults' physical groups: fault k's faces as boundary group
-    `first` + k - 1 under its name, and its tip, free-edge and junction
-    curves as the dimension-1 groups `manifest.fault_curve_groups(k)`,
-    named `<name>_tip`, `<name>_free_edge` and `<name>_junction`, where it
+    `first` + k - 1 under its name, and its curves of each kind of
+    `curves` (the layout's: its tip, free edge and junction, and in a box
+    its face edge) as the dimension-1 groups
+    `manifest.fault_curve_groups(k, curves=curves)`, named `<name>_tip`,
+    `<name>_free_edge`, `<name>_junction` and `<name>_face_edge`, where it
     has any.  Returns, by name, the attribute and the curve groups made."""
     out = {}
     for k, name in enumerate(faults.names, start=1):
@@ -514,14 +617,11 @@ def apply_fault_groups(faults: FaultTagging, *, first: int
         gmsh.model.addPhysicalGroup(2, list(faults.faces[k - 1]), attribute)
         gmsh.model.setPhysicalName(2, attribute, name)
         record: dict[str, int | None] = {"attribute": attribute}
-        for key, curves, group in zip(
-                ("tip", "free_edge", "junction"),
-                (faults.tips[k - 1], faults.free_edges[k - 1],
-                 faults.junctions[k - 1]),
-                manifest.fault_curve_groups(k)):
+        found = faults.curves(k - 1)
+        for key, group in zip(curves, manifest.fault_curve_groups(k, curves=curves)):
             record[key] = None
-            if curves:
-                gmsh.model.addPhysicalGroup(1, list(curves), group)
+            if found[key]:
+                gmsh.model.addPhysicalGroup(1, list(found[key]), group)
                 gmsh.model.setPhysicalName(1, group, f"{name}_{key}")
                 record[key] = group
         out[name] = record
@@ -554,7 +654,8 @@ def fault_entries(faults: FaultTagging, groups: FaultGroups,
             offset=float(max(p.offset for p in fault.preimages)),
             sizing=None if sizing is None else {
                 "size": float(sizing.size), "far_size": float(sizing.far_size),
-                "decay_width": float(sizing.decay_width)}))
+                "decay_width": float(sizing.decay_width)},
+            face_edge=g.get("face_edge")))
     return entries
 
 
@@ -562,9 +663,9 @@ def curve_names(faults: FaultTagging, groups: FaultGroups) -> dict[int, str]:
     """The dimension-1 physical groups made, by number, with their names."""
     out = {}
     for name in faults.names:
-        for key in ("tip", "free_edge", "junction"):
-            if groups[name][key] is not None:
-                out[int(groups[name][key])] = f"{name}_{key}"
+        for key, group in groups[name].items():
+            if key != "attribute" and group is not None:
+                out[int(group)] = f"{name}_{key}"
     return out
 
 
@@ -609,7 +710,8 @@ def assign_collars(tagging: Tagging, faulted: FaultTagging, *,
     layers = np.concatenate([np.full(len(b[3]), b[0]) for b in blocks])
     inside = layers <= body
     faces = [corners(2, group) for group in faulted.faces]
-    curves = manifest.fault_curves(faces, corners(2, [faulted.surface]))
+    curves = manifest.fault_curves(faces, corners(2, [faulted.surface]),
+                                   faces=corners(2, faulted.boundary))
     walls = np.zeros((len(faces), len(cells)), dtype=np.int8)
     for k, (f, c, name) in enumerate(zip(faces, curves, faulted.names)):
         walls[k, inside] = manifest.fault_walls(points, cells[inside], f, c.pinned,

@@ -21,7 +21,11 @@ through longitude zero; the ambient basis at a point is (east, north,
 up) = (e_phi, -e_theta, e_r), a point on the polar axis taking the
 frame `frames.spherical_coordinates` gives it.  `CartesianFrame` is
 local: a position is (x, y, z) with x east, y north and z up, and the
-ambient basis is (x, y, z) everywhere.  A frame's reference surface,
+ambient basis is (x, y, z) everywhere; its points are those of the
+flat-layered bodies of `planetmodel.cartesian`, its depths read
+through their system (`cartesian.FLAT`), so that a fault in it is
+built into a box's mesh as it stands (`mesh3d.EmbeddedFault`), as one
+in a geographic frame is into a sphere's.  A frame's reference surface,
 the sphere or the plane z = `surface`, is what a depth is measured
 from (`below`); a depth is below that surface, not below any
 topography on it.
@@ -188,7 +192,8 @@ fault's edge across a boundary that is to trim it.
 then moved by a mapping m (`planetmodel.mapping`), so a fault, defined
 where it physically is, enters the mesh as its preimage: `pull_back`
 inverts the mapping at the patch's points on a grid of control nodes (a
-root-find along the radius for a radial mapping) and passes the bicubic
+root-find along the radius for a radial mapping, down the column for a
+flat vertical stretch) and passes the bicubic
 structured patch through the results, which m takes back onto the patch
 exactly at the nodes and to the interpolation error between them,
 measured and returned as the preimage's `offset`.  Under the identity
@@ -445,12 +450,20 @@ class GeographicFrame:
 class CartesianFrame:
     """Positions as (x, y, z), x east, y north and z up, the ambient basis
     (x, y, z) everywhere; the reference surface is the plane z =
-    `surface`."""
+    `surface`.
+
+    The points are those of `planetmodel.cartesian`, whose flat system
+    `cartesian.FLAT` places a depth d at z = -d below its free surface
+    z = 0: a depth below this frame's reference surface is read through
+    it (`below`), so that with `surface` 0 the two depths are one, and a
+    fault in this frame is built into a box of a flat geometry as it
+    stands."""
 
     #: The frame's name, as a fault file states it.
     kind: ClassVar[str] = "cartesian"
 
     _: KW_ONLY
+    #: The height z of the reference plane depths are measured from.
     surface: float = 0.0
 
     def __post_init__(self) -> None:
@@ -470,10 +483,14 @@ class CartesianFrame:
         return np.broadcast_to(np.eye(3), c.shape[:-1] + (3, 3)).copy()
 
     def below(self, a: ArrayLike, b: ArrayLike, depth: ArrayLike) -> np.ndarray:
-        """(x a, y b, surface - depth)."""
+        """(x a, y b, surface - depth): the point of `cartesian.FLAT` at the
+        depth `depth - surface` below its free surface."""
+        from .cartesian.coordinates import FLAT
         a, b, depth = np.broadcast_arrays(*(np.asarray(x, dtype=float)
                                             for x in (a, b, depth)))
-        return np.stack([a, b, self.surface - depth], axis=-1)
+        X = FLAT.points(depth - self.surface, a, b)
+        X[..., 2] += 0.0        # z on the reference plane is +0.0, not -0.0
+        return X
 
 
 # -- values on a grid over the square ---------------------------------------------
@@ -2137,8 +2154,14 @@ def pull_back(patch: Patch, mapping: Mapping, *,
     Without `controls` the grids of `PULL_BACK_CONTROLS` are tried in
     turn until the offset is at most `rtol` times the patch's size (the
     longer diagonal between its corners); none meeting it is refused.
-    Under the identity (`is_identity`) the patch is its own preimage,
-    exactly.  A mapping that does not invert itself is refused.
+    A patch crossing a knot of the mapping, where its gradient jumps (an
+    interface of a stack of reliefs whose slope changes there), has a
+    preimage creased along the crossing, which the bicubic follows only
+    to first or second order in the spacing: it meets a small `rtol`
+    with many control nodes or none of these, and is given a larger
+    `rtol` or its `controls`.  Under the identity (`is_identity`) the
+    patch is its own preimage, exactly.  A mapping that does not invert
+    itself is refused.
     """
     if not isinstance(patch, Patch):
         raise TypeError(f"expected a Patch, got {type(patch).__name__}")

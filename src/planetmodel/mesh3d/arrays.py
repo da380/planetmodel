@@ -20,14 +20,14 @@ delivery (`.mesh`) is read by MFEM, whose `Mesh` gives the same arrays
 A cell is an element of the mesh's own dimension in a physical group,
 its attribute the group's number (its layer's own attribute, or in a
 mesh with faults one of its collars', the manifest's `layer_of` saying
-whose); a boundary element one of the dimension below (an interface's
-or a fault's face); a curve group one of dimension one in a 3D mesh (a
-fault's tip, free edge or junction).  An element in several groups of
-its dimension appears once for each.
+whose); a boundary element one of the dimension below (an interface's,
+a box's face's or a fault's face); a curve group one of dimension one
+in a 3D mesh (a fault's tip, free edge, junction or face edge).  An
+element in several groups of its dimension appears once for each.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -96,16 +96,20 @@ class MeshArrays:
 
     def layers_by_position(self, manifest: _manifest.MeshManifest) -> np.ndarray:
         """Each cell's layer by where its corners lie among the manifest's
-        layers, as the layer's own attribute, (c,): the layer whose radii
-        hold every corner, to a millionth of the outer radius, and the
-        lower of two where the corners all lie on the sphere between
-        them (a cell with its corners on a sphere lies inside it).  The
-        positions are taken as the reference ones they are in the
-        mesher's file.  Refused where a cell's corners span two layers."""
-        bounds = np.array([manifest.layers[0]["r_inner"]]
-                          + [e["r_outer"] for e in manifest.layers])
-        r = np.linalg.norm(self.points[self.cells[:, :self.dimension + 1]], axis=-1)
-        tol = 1e-6 * bounds[-1]
+        layers, as the layer's own attribute, (c,): the layer whose radii,
+        or in a flat mesh depths, hold every corner (`MeshManifest.
+        layered_coordinate` of the points the mesh's coordinates stand
+        for), to a millionth of the mesh's `scale`, and the first of two
+        where the corners all lie on the surface between them (a cell
+        with its corners on a sphere lies inside it).  The positions are
+        taken as the reference ones they are in the mesher's file.
+        Refused where a cell's corners span two layers."""
+        bounds = manifest.boundaries
+        d = self.dimension
+        X = np.zeros(self.points.shape[:-1] + (3,))
+        X[..., list(manifest.mesh_axes(d))] = self.points[..., :d]
+        r = manifest.layered_coordinate(X[self.cells[:, :d + 1]])
+        tol = 1e-6 * manifest.scale
         fits = ((r.min(axis=1)[:, None] >= bounds[None, :-1] - tol)
                 & (r.max(axis=1)[:, None] <= bounds[None, 1:] + tol))
         if not np.all(fits.any(axis=1)):
@@ -117,7 +121,8 @@ class MeshArrays:
         """Every fault's walls on these arrays (`manifest.walls_of_faults`),
         the faults the manifest's in its order, (F, c): +1 in a fault's
         hanging wall, -1 in its footwall, 0 in neither, a shell's cells
-        in neither."""
+        in neither; a box's faces (`MeshManifest.face_attributes`) are
+        where a fault's face edge lies."""
         body = np.isin(self.layers(manifest),
                        [e["attribute"] for e in manifest.layers if e["in_geometry"]])
         out = np.zeros((len(manifest.faults), len(self.cells)), dtype=np.int8)
@@ -125,8 +130,16 @@ class MeshArrays:
             self.points, self.cells[body, :4],
             [self.faces_with(e["attribute"])[:, :3] for e in manifest.faults],
             self.faces_with(manifest.surface_attribute)[:, :3],
+            faces=self.boundary_of(manifest.face_attributes),
             names=[e["name"] for e in manifest.faults])
         return out
+
+    def boundary_of(self, attributes: Sequence[int]) -> np.ndarray:
+        """The corners of the boundary elements of any of the given
+        attributes, (b, dimension), in file order."""
+        rows = self.faces[np.isin(self.face_attributes, list(attributes))]
+        return rows[:, :self.dimension] if len(rows) else np.empty(
+            (0, self.dimension), dtype=np.int64)
 
     @cached_property
     def _sides(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

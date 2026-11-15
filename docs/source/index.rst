@@ -32,8 +32,9 @@ Installation
 
    pip install planetmodel
 
-The base install depends on numpy, scipy and ducc0, which does the
-spherical-harmonic transforms.  Meshing, MFEM export, the model file,
+The base install depends on numpy, scipy, ducc0, which does the
+spherical-harmonic transforms, and finufft, which does the non-uniform
+Fourier transforms.  Meshing, MFEM export, the model file,
 plotting and maps are extras:
 
 .. code-block:: bash

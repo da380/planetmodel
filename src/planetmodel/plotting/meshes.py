@@ -30,6 +30,14 @@ tetrahedra as polygons, each the colour given its simplex, their edges
 the element edges in the section; the pieces of triangles as line
 segments.  matplotlib is imported where a section is drawn.
 
+A mesh that lies in a plane is its own section: `in_plane` takes its
+triangles whole, as polygons, and its line elements whole, as
+segments, into the same `PlaneCut`, so that `mesh_section` draws a
+two-dimensional mesh (a disc, or a box's section in the (x, z) plane)
+and the curves of its interfaces and faces as it draws a cut of a
+three-dimensional one, and the faces of a surface of a volume mesh (a
+box's top) seen square on.
+
 A cutaway in three dimensions is drawn from the same pieces, put back
 in space (`PlaneCut.in_space`), and the faces of the mesh kept beside
 them; `clip_polygons` keeps the part of each polygon on one side of a
@@ -46,7 +54,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
-__all__ = ["FLAT", "PlaneCut", "plane_cut", "mesh_section", "clip_polygons"]
+__all__ = ["FLAT", "PlaneCut", "plane_cut", "in_plane", "mesh_section",
+           "clip_polygons"]
 
 #: The area, as a fraction of the square of its diameter, at or under which
 #: a piece cut from a tetrahedron is no polygon but a cell touching the
@@ -63,7 +72,8 @@ class PlaneCut:
     #: The orthonormal pair (a, b) spanning the plane, (2, 3).
     axes: np.ndarray
     #: The pieces in the plane's coordinates (s, t): (p, 4, 2) polygons
-    #: cut from tetrahedra, (p, 2, 2) segments cut from triangles.
+    #: cut from tetrahedra, (p, 2, 2) segments cut from triangles; or, of
+    #: a mesh in the plane (`in_plane`), its triangles and line elements.
     pieces: np.ndarray
     #: The simplex each piece was cut from, as a row of those given, (p,).
     index: np.ndarray
@@ -173,6 +183,47 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
         pieces = np.take_along_axis(st, order[..., None], axis=1)
         flat = np.all(pieces[:, 0] == pieces[:, 1], axis=1)
     return PlaneCut(origin=o, axes=ab, pieces=pieces[~flat], index=rows[~flat])
+
+
+def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
+             axes: ArrayLike, *, rtol: float = 1e-9) -> PlaneCut:
+    """The simplices of a mesh lying in the plane through `origin` spanned
+    by `axes`, each kept whole as a piece of a `PlaneCut` (module
+    docstring): a triangle as a polygon, its last vertex repeated, a line
+    element as a segment.
+
+    `points` are the vertices, (n, 3); `simplices` the corners of each
+    element as indices into them, (m, 3) triangles or (m, 2) line
+    elements (a curved element's corners: its first columns as a mesh
+    holds them); `origin` and `axes` as for `plane_cut`.  Refused where a
+    corner lies off the plane by more than `rtol` times the largest
+    distance between the corners given.
+    """
+    x = np.asarray(points, dtype=float)
+    s = np.asarray(simplices)
+    o = np.asarray(origin, dtype=float)
+    if x.ndim != 2 or x.shape[1] != 3:
+        raise ValueError(f"points have shape (n, 3), got {x.shape}")
+    if s.ndim != 2 or s.shape[1] not in (2, 3) or not (
+            np.issubdtype(s.dtype, np.integer) or s.size == 0):
+        raise ValueError(f"simplices are rows of 2 or 3 corner indices, got "
+                         f"{s.shape} of {s.dtype}")
+    s = s.astype(np.int64)
+    if s.size and (s.min() < 0 or s.max() >= len(x)):
+        raise ValueError(f"simplices index vertices outside 0..{len(x) - 1}")
+    if o.shape != (3,) or not np.all(np.isfinite(o)):
+        raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
+    ab = _plane_axes(axes)
+    corners = x[s]
+    off = np.abs((corners - o) @ np.cross(ab[0], ab[1]))
+    size = float(np.ptp(corners.reshape(-1, 3), axis=0).max()) if s.size else 0.0
+    if s.size and off.max() > rtol * size:
+        raise ValueError(f"a corner lies {off.max():.3g} off the plane: the "
+                         "simplices are not in it")
+    st = (corners - o) @ ab.T
+    if s.shape[1] == 3:
+        st = np.concatenate([st, st[:, 2:]], axis=1)
+    return PlaneCut(origin=o, axes=ab, pieces=st, index=np.arange(len(s)))
 
 
 def mesh_section(ax: Any, cut: PlaneCut, *, colours: Any = None,

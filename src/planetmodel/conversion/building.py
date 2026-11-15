@@ -56,6 +56,16 @@ It carries the citations of the parameter sets that made it.
 
 Each model written cites the works of the anomaly and the law after its
 own.
+
+The laws act point by point, so a flat model (`planetmodel.cartesian`)
+takes them as a spherical one does, the layered coordinate handed to a
+law's profiles being its depth in metres: a set whose profiles are of
+the Earth's radius (sl3d's, Ivins & Sammis's) means nothing there, and
+`sl3d_viscosity`, sl3d's chain on the Earth, refuses a flat model by
+name.  So does what reads a mean over the sphere (the reference of a
+fully 3D speed, `renormalise=`) and what computes the reference body's
+pressure from its gravity (`table_anomaly` on a layer holding no
+`pressure` field).
 """
 from __future__ import annotations
 
@@ -67,6 +77,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..character import SCALAR
+from ..coordinates import SPHERICAL, coordinates_of, require_coordinates
 from ..fields import ComposedField, Field, RadialField
 from ..layerfunction import NumericLayer, polynomial_layer
 from ..means import spherical_mean
@@ -119,8 +130,10 @@ class Anomaly:
 
 
 def _radius(f: Field) -> RadialField:
-    """r itself on a field's interval, in the model's length."""
-    return RadialField(f.interval, polynomial_layer(f.interval, [0.0, 1.0]))
+    """The layered coordinate itself on a field's interval and in its
+    system (the radius, or a depth), in the model's length."""
+    return RadialField(f.interval, polynomial_layer(f.interval, [0.0, 1.0]),
+                       coordinates=coordinates_of(f))
 
 
 def _composed(fn: Callable[..., np.ndarray], sources: list[Field], *,
@@ -361,7 +374,10 @@ def attached(model: Model, anomaly: Anomaly, name: str, spec: FieldSpec) -> Mode
 def sl3d_viscosity(model: Model, *, layers: Iterable[int | str] | None = None,
                    name: str = "viscosity") -> Model:
     """The model with the viscosity of sl3d's chain on the layers whose shear
-    speed varies (or `layers`), by the rule of the module docstring."""
+    speed varies (or `layers`), by the rule of the module docstring; a
+    model off the sphere is refused, the chain's profiles being of the
+    Earth's radius."""
+    require_coordinates(model, SPHERICAL, "sl3d's chain")
     dt = temperature_anomaly(velocity_anomaly(model, layers=layers),
                              scaling=SL3D_DENSITY_SCALING,
                              expansivity=SL3D_EXPANSIVITY)
@@ -382,13 +398,14 @@ def with_power_law(model: Model, *, exponent: ProfileLike,
     profiles = dict(zip(POWER_LAW_NAMES, (as_profile(exponent),
                                           as_profile(transition_stress))))
     length = model.scales.length
+    make = model.geometry.radial_field_type
     out = model
     for i in which:
         lo, hi = model.layer(i).interval
         for name, profile in profiles.items():
             k = model.scales.factor(model.spec(name).dimensions)
             fn = NumericLayer((lo, hi), lambda r, p=profile, k=k: p(r * length) / k)
-            out = out.with_field(i, name, RadialField(
+            out = out.with_field(i, name, make(
                 (lo, hi), fn, character=model.spec(name).character, name=name),
                 replace=True)
     return out
