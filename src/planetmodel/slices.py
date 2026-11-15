@@ -31,9 +31,17 @@ radius) each point is pulled back through the mapping's inverse and the
 field evaluated there, which is offered where the mapping inverts
 itself and refused by name where it does not; a physical section or
 profile also needs the mapping to keep each ray, as a radial stretch
-does, so that each layer's part of a ray is one run of radii.  Points
-are given as the library gives them, colatitude and longitude in
-radians; `frames.from_geographic` converts latitudes and longitudes.
+does, so that each layer's part of a ray is one run of radii.  That run
+lies between where the mapping puts the layer's two boundaries on the
+ray, so that which layer a point is in is decided in the physical body,
+and by default the section covers the body as the mapping shapes it: on
+each ray from the mapped inner boundary to the mapped surface, above the
+reference outer radius where the surface is raised and below it where
+it is lowered, nothing outside the body sampled.  `radii` bound the
+runs, and on a ray where a layer has nothing within them its values are
+NaN.  Points are given as the library gives them, colatitude and
+longitude in radians; `frames.from_geographic` converts latitudes and
+longitudes.
 
 **Spectra.**  `spectrum` analyses a sphere slice into the library's
 real orthonormal harmonics (`planetmodel.harmonics`: the integral of
@@ -108,7 +116,9 @@ box); `layers_of` the layer holding each value of the layered
 coordinate, the side of an interface taken as the body is (below is
 toward the centre on the sphere and deeper in a box); `to_reference`
 and `to_physical` the passage through the mapping; `evaluate_layers`
-the values at points each in its layer; `layer_quadrature` the
+the values at points each in its layer; `runs` each layer's part of a
+section or a profile along its lines, rays or verticals, at reference
+or physical points (`Lines`); `layer_quadrature` the
 quadrature of a layer's field along its layered coordinate;
 `SliceLayer`, `Shown` and `normalised` the parts of a slice.  Every
 slice states its `coordinates`, so that a picture asks it which way
@@ -144,7 +154,7 @@ __all__ = ["AT", "SIDES", "DEPARTURES", "WEIGHTS", "NO_POWER", "Fields", "Relati
            "evaluate",
            "spectrum", "spectrum_of", "correlation", "Values", "MeanOf", "evaluator",
            "field_of", "layers_of", "to_reference", "to_physical", "evaluate_layers",
-           "layer_quadrature"]
+           "Lines", "runs", "layer_quadrature"]
 
 #: Where a slice's points are: in the reference body, or the physical one.
 AT = ("reference", "physical")
@@ -177,6 +187,12 @@ type Values = Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 #: The mean of a layer's field, a field of the layered coordinate alone,
 #: from (field, layer): the averaging a departure from the mean asks of.
 type MeanOf = Callable[[Field, int], Field]
+
+#: The points on the lines of a section or a profile, rays from the centre
+#: on the sphere and verticals in a box: from values (k, m) of the layered
+#: coordinate, or (k, 1) for one value on every line, the points (k, m, 3),
+#: column j on line j.
+type Lines = Callable[[np.ndarray], np.ndarray]
 
 #: One field's numbers at points, from (r, theta, phi).
 type _PointValues = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
@@ -819,6 +835,73 @@ def evaluate_layers(values: Values, layers: np.ndarray, X: np.ndarray,
     return out
 
 
+def runs(model: ModelBase, values: Values, path: np.ndarray, lines: Lines,
+         bounds: tuple[float, float] | None, n: int, at: str, *,
+         keeps: Callable[[ModelBase, np.ndarray], None]) -> tuple[SliceLayer, ...]:
+    """Each layer's part of a section or a profile, `n` points on each of
+    its lines, the ends included: the rule of the module docstring in
+    either system.
+
+    `path` (m, 3) holds a point of each line, whose lateral coordinates
+    the line keeps, and `lines` the points along them; `bounds` (lo, hi)
+    bounds the layered coordinate.  At reference points a layer runs
+    over its reference interval within `bounds`, the reference body's
+    span by default, the same on every line, and is left out where it
+    has nothing within them.  At physical points it runs on each line
+    between where the mapping puts its two boundaries there, within
+    `bounds`, which by default are none: the slice covers the body as the
+    mapping shapes it, a raised surface and a lowered one alike, a
+    point's layer is decided in the physical body and nothing outside it
+    is sampled.  On a line where a layer has nothing within `bounds` its
+    run is one point repeated, NaN, and a layer with nothing on any line
+    is left out.  `keeps` refuses a mapping that moves the lines' points
+    off them.
+    """
+    if int(n) < 2:
+        raise ValueError(f"n must be at least 2, got {n}")
+    edges = model.skeleton.boundaries
+    if at == "physical" and model.geometry.is_identity:
+        at = "reference"
+    if bounds is not None:
+        lo, hi = (float(v) for v in bounds)
+        if not lo < hi:
+            raise ValueError(f"bounds must be (lo, hi) with lo < hi, got {bounds}")
+    else:
+        # the whole body: its reference span, or wherever the mapping puts it
+        lo, hi = ((float(edges[0]), float(edges[-1])) if at == "reference"
+                  else (-np.inf, np.inf))
+    coordinates = model.coordinates
+    _, a, b, _ = coordinates.split(path)
+    out = []
+    for layer in range(model.nlayers):
+        b0, b1 = float(edges[layer]), float(edges[layer + 1])
+        if at == "reference":
+            c0, c1 = max(lo, b0), min(hi, b1)
+            if not c0 < c1:
+                continue
+            c = np.linspace(c0, c1, int(n))[:, None] * np.ones((1, path.shape[0]))
+            X = lines(c)
+            v = values(layer, c, np.broadcast_to(a, c.shape),
+                       np.broadcast_to(b, c.shape))
+            out.append(SliceLayer(layer, c, v, X, to_physical(model, X)))
+            continue
+        ends = lines(np.array([[b0], [b1]]))
+        keeps(model, ends)
+        mapped = coordinates.split(to_physical(model, ends))[0]
+        c0, c1 = np.maximum(mapped[0], lo), np.minimum(mapped[1], hi)
+        if not np.any(c0 < c1):
+            continue
+        frac = np.linspace(0.0, 1.0, int(n))[:, None]
+        c = c0[None, :] + frac * np.maximum(c1 - c0, 0.0)[None, :]
+        x = lines(c)
+        X = to_reference(model, x)
+        s, sa, sb, _ = coordinates.split(X)
+        v = values(layer, np.clip(s, b0, b1), sa, sb)
+        v = np.where((c1 > c0)[None, :], v, np.nan)
+        out.append(SliceLayer(layer, c, v, X, x))
+    return tuple(out)
+
+
 # -- the slices ---------------------------------------------------------------------
 
 def sphere(model: Model, fields: Fields, *, radius: float | None = None,
@@ -933,44 +1016,12 @@ def _keeps_rays(model: Model, X: np.ndarray) -> None:
 def _runs(model: Model, values: Values, path: np.ndarray,
           radii: tuple[float, float] | None, n: int, at: str
           ) -> tuple[SliceLayer, ...]:
-    """Each layer's points and values along the rays of `path` (m, 3)."""
-    if int(n) < 2:
-        raise ValueError(f"n must be at least 2, got {n}")
-    b = model.skeleton.boundaries
-    if at == "physical" and model.geometry.is_identity:
-        at = "reference"
-    lo, hi = (float(b[0]), float(b[-1])) if radii is None else map(float, radii)
-    if not lo < hi:
+    """Each layer's points and values along the rays through the unit
+    vectors `path` (m, 3): `runs` on the sphere."""
+    if radii is not None and not float(radii[0]) < float(radii[1]):
         raise ValueError(f"radii must be (lo, hi) with lo < hi, got {radii}")
-    t, p = spherical_coordinates(path)[1:3]
-    out = []
-    for layer in range(model.nlayers):
-        b0, b1 = float(b[layer]), float(b[layer + 1])
-        if at == "reference":
-            r0, r1 = max(lo, b0), min(hi, b1)
-            if not r0 < r1:
-                continue
-            r = np.linspace(r0, r1, int(n))[:, None] * np.ones((1, path.shape[0]))
-            X = r[..., None] * path[None, :, :]
-            v = values(layer, r, np.broadcast_to(t, r.shape),
-                       np.broadcast_to(p, r.shape))
-            out.append(SliceLayer(layer, r, v, X, to_physical(model, X)))
-            continue
-        ends = np.stack([b0 * path, b1 * path])
-        _keeps_rays(model, ends)
-        bounds = np.linalg.norm(to_physical(model, ends), axis=-1)
-        r0, r1 = np.maximum(bounds[0], lo), np.minimum(bounds[1], hi)
-        if not np.any(r0 < r1):
-            continue
-        frac = np.linspace(0.0, 1.0, int(n))[:, None]
-        rho = r0[None, :] + frac * np.maximum(r1 - r0, 0.0)[None, :]
-        x = rho[..., None] * path[None, :, :]
-        X = to_reference(model, x)
-        s, tt, pp, _ = spherical_coordinates(X)
-        v = values(layer, np.clip(s, b0, b1), tt, pp)
-        v = np.where((r1 > r0)[None, :], v, np.nan)
-        out.append(SliceLayer(layer, rho, v, X, x))
-    return tuple(out)
+    return runs(model, values, path, lambda r: r[..., None] * path[None, :, :], radii,
+                n, at, keeps=_keeps_rays)
 
 
 def section(model: Model, fields: Fields, start: tuple[float, float], *,
@@ -986,9 +1037,11 @@ def section(model: Model, fields: Fields, start: tuple[float, float], *,
     The arc runs from `start` (theta, phi) along the minor arc to `end`,
     or from `start` at `azimuth` (from north toward east, in radians) for
     `length` radians, up to a whole circle, the one or the other given;
-    `radii` (lo, hi) bounds it, the whole body by default; `n` points per
-    layer, its ends included, and `m` along the arc; `at`, the component,
-    frame and departure as the module docstring says.
+    `radii` (lo, hi) bounds it, the whole body by default, at physical
+    points as the mapping shapes it, from its mapped inner boundary to its
+    mapped surface on each ray; `n` points per layer, its ends included,
+    and `m` along the arc; `at`, the component, frame and departure as the
+    module docstring says.
     """
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
@@ -1006,7 +1059,8 @@ def profile(model: Model, fields: Fields, theta: float, phi: float, *, n: int = 
             mean_grid: AngularGrid | None = None) -> ProfileSlice:
     """A field along the radius at (theta, phi), by the rules of the
     module docstring: `n` points per layer, its ends included, within
-    `radii` (lo, hi), the whole body by default."""
+    `radii` (lo, hi), the whole body by default, at physical points from
+    its mapped inner boundary to its mapped surface."""
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
                                relative_to=relative_to, departure=departure,

@@ -961,9 +961,52 @@ def _slice_values(model: ModelBase, name: str, shown: Any, layer: int,
     return v.reshape(v.shape[:len(points[0].shape)] + (-1,))[..., shown.component]
 
 
+def _check_physical_runs(slice_: Any, model: ModelBase,
+                         bounds: tuple[float, float] | None, rtol: float) -> None:
+    """The runs of a section or a profile at physical points, against the
+    mapping of the model's boundaries onto each of its lines."""
+    from .slices import to_physical
+
+    if not slice_.layers:
+        return
+    coords = model.geometry.coordinates
+    edges = model.skeleton.boundaries
+    lo, hi = ((-np.inf, np.inf) if bounds is None
+              else (float(bounds[0]), float(bounds[1])))
+    # a line's lateral coordinates, read from the point of the last layer's
+    # last row on it, away from the sphere's centre
+    last = np.asarray(slice_.layers[-1].physical)
+    _, a, b, _ = coords.split(last.reshape(last.shape[0], -1, 3)[-1])
+    ends = np.stack([coords.split(to_physical(model, coords.points(e, a, b)))[0]
+                     for e in edges])
+    tol = rtol * 1e3 * max(float(np.max(np.abs(ends))), model.skeleton.span)
+    held = {lay.index: lay for lay in slice_.layers}
+    for k in range(model.nlayers):
+        c0, c1 = np.maximum(ends[k], lo), np.minimum(ends[k + 1], hi)
+        reach = c1 - c0 > tol
+        lay = held.get(k)
+        if lay is None:
+            assert not np.any(reach), (
+                f"layer {k} lies within the slice's bounds on a line, but the slice "
+                "leaves it out")
+            continue
+        radius = np.asarray(lay.radius)
+        radius = radius.reshape(radius.shape[0], -1)
+        values = np.asarray(lay.values).reshape(radius.shape)
+        assert (np.allclose(radius[0, reach], c0[reach], rtol=0.0, atol=tol)
+                and np.allclose(radius[-1, reach], c1[reach], rtol=0.0, atol=tol)), (
+            f"layer {k}'s run at physical points is not the part, within the "
+            "slice's bounds, of each line between where the mapping puts the "
+            "layer's boundaries on it")
+        assert np.all(np.isnan(values[:, c1 - c0 < -tol])), (
+            f"layer {k} carries values on a line it has no part of within the "
+            "slice's bounds")
+
+
 def check_slice(slice_: Any, model: ModelBase, *,
                 rng: np.random.Generator | None = None, n: int = 32,
-                rtol: float = 1e-12) -> None:
+                rtol: float = 1e-12, bounds: tuple[float, float] | None = None
+                ) -> None:
     """Hold a slice, spherical or flat, to its protocol and to the model it
     was taken from.
 
@@ -982,10 +1025,19 @@ def check_slice(slice_: Any, model: ModelBase, *,
     statistic or normalisation), `n` random finite values of each part
     are the model's field at the reference points evaluated afresh, a
     part without layers read from the layer `slices.layers_of` gives its
-    reference points on the slice's `side`.  `slices.normalised` of a
-    slice with a value other than zero has largest absolute value one.
-    Tolerances are `rtol` of the largest value, or of the largest
-    coordinate for points.
+    reference points on the slice's `side`.  Runs: at physical points
+    each layer of a section or a profile runs on each of its lines (a
+    ray, a vertical) between where the mapping puts the layer's two
+    boundaries on that line, within `bounds`, the (lo, hi) of the layered
+    coordinate the slice was given (its `radii` or `depths`), None for the
+    whole body, which the slice then covers as the mapping shapes it; it
+    is NaN on a line it has no part of within them, and a layer with a
+    part of some line within them is present; the lines are read from
+    the last row of the slice's last layer, and the mapped boundaries
+    are the mapping of the model's boundary points on each.
+    `slices.normalised` of a slice with a value
+    other than zero has largest absolute value one.  Tolerances are
+    `rtol` of the largest value, or of the largest coordinate for points.
     """
     from .slices import AT, Shown, SliceLayer, layers_of, normalised, to_physical
 
@@ -1061,6 +1113,8 @@ def check_slice(slice_: Any, model: ModelBase, *,
             assert np.allclose(got, want, rtol=0.0, atol=rtol * scale), (
                 f"the slice's values on layer {int(L)} differ from the model's field "
                 "evaluated at its reference points")
+    if layered is not None and located and slice_.at == "physical":
+        _check_physical_runs(slice_, model, bounds, rtol)
     every = np.concatenate([v[np.isfinite(v)].ravel() for _, v, _, _ in parts])
     if every.size and np.max(np.abs(every)) > 0.0:
         unit = normalised(slice_)

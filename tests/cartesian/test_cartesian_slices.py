@@ -515,3 +515,16 @@ def test_every_flat_slice_meets_the_slice_contract(two, raised):
         check_slice(slices.section(model, "vs", (0.0, 0.0), end=(2.0, 0.0),
                                    relative_to="mean", mean_grid=GRID, n=3, m=4), model)
     check_spectrum(slices.spectrum(two, "vs", depth=0.7, grid=GRID))
+
+
+def test_the_slice_contract_holds_a_physical_section_to_the_mapped_body(raised):
+    m, _ = raised
+    # cut at the reference surface, the topography above it left out:
+    # refused as the whole body, held to the bounds it was given
+    for cut in (slices.section(m, "vs", (0.1, -0.5), end=(1.9, 0.7), n=4, m=7,
+                               at="physical", depths=(0.0, 1.0)),
+                slices.profile(m, "vs", 0.3, 0.2, n=4, at="physical",
+                               depths=(0.0, 1.0))):
+        with pytest.raises(AssertionError, match="where the mapping puts"):
+            check_slice(cut, m)
+        check_slice(cut, m, bounds=(0.0, 1.0))

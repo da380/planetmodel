@@ -22,7 +22,9 @@ component in a frame (here `"local"`, (e_up, e_x, e_y), or
 layer's part of a section or a profile (`SliceLayer`, whose `radius`
 holds the layered coordinate, here the depth); the side of an interface
 (`slices.layers_of`); the passage between reference and physical points
-(`slices.to_reference`, `slices.to_physical`); and `slices.normalised`,
+(`slices.to_reference`, `slices.to_physical`); each layer's part of a
+section or a profile (`slices.runs`, down verticals here and along rays
+on the sphere); and `slices.normalised`,
 which takes these slices as it takes the sphere's.  A departure from
 the mean is from the field's horizontal mean at each point's reference
 depth (`cartesian.horizontal_mean`), its own where it has one and by
@@ -53,8 +55,10 @@ vertical) each point is pulled back through the mapping's inverse, and
 a point above the physical surface or below the base is NaN.  A
 physical section or profile needs the mapping to keep each vertical (x
 and y), as a vertical stretch does, so that each layer's part of a
-vertical is one run of depths; under topography its first row is the
-physical surface.
+vertical is one run of depths, between where the mapping puts the
+layer's boundaries on it, as on the sphere; under topography its first
+row is the physical surface, raised or lowered, nothing above it
+sampled.
 
 **Interfaces.**  A section or a profile keeps both sides of an
 interface, each layer's numbers including its own ends.  A plane is
@@ -110,7 +114,7 @@ from ..coordinates import Coordinates
 from ..fields import Field
 from ..slices import (AT, NO_POWER, SIDES, Fields, MeanOf, RelativeTo, Shown,
                       SliceLayer, Values, evaluate_layers, evaluator, field_of,
-                      layer_quadrature, layers_of, to_physical, to_reference)
+                      layer_quadrature, layers_of, runs, to_physical, to_reference)
 from ..units import Dimensions
 from .coordinates import FLAT
 from .domains import Box
@@ -500,49 +504,13 @@ def _keeps_verticals(model: Model, X: np.ndarray) -> None:
 def _runs(model: Model, values: Values, path: np.ndarray,
           depths: tuple[float, float] | None, n: int, at: str
           ) -> tuple[SliceLayer, ...]:
-    """Each layer's points and values down the verticals of `path` (m, 3)."""
-    if int(n) < 2:
-        raise ValueError(f"n must be at least 2, got {n}")
-    b = model.skeleton.boundaries
-    if at == "physical" and model.geometry.is_identity:
-        at = "reference"
-    if depths is not None:
-        lo, hi = (float(v) for v in depths)
-        if not lo < hi:
-            raise ValueError(f"depths must be (lo, hi) with lo < hi, got {depths}")
-    else:
-        # the whole body: its reference span, or wherever the mapping puts it
-        lo, hi = ((float(b[0]), float(b[-1])) if at == "reference"
-                  else (-np.inf, np.inf))
+    """Each layer's points and values down the verticals through `path`
+    (m, 3): `slices.runs` in a box."""
+    if depths is not None and not float(depths[0]) < float(depths[1]):
+        raise ValueError(f"depths must be (lo, hi) with lo < hi, got {depths}")
     x, y = path[None, :, 0], path[None, :, 1]
-    out = []
-    for layer in range(model.nlayers):
-        b0, b1 = float(b[layer]), float(b[layer + 1])
-        if at == "reference":
-            d0, d1 = max(lo, b0), min(hi, b1)
-            if not d0 < d1:
-                continue
-            d = np.linspace(d0, d1, int(n))[:, None] * np.ones((1, path.shape[0]))
-            X = FLAT.points(d, x, y)
-            v = values(layer, d, np.broadcast_to(x, d.shape),
-                       np.broadcast_to(y, d.shape))
-            out.append(SliceLayer(layer, d, v, X, to_physical(model, X)))
-            continue
-        ends = FLAT.points(np.array([[b0], [b1]]), x, y)
-        _keeps_verticals(model, ends)
-        bounds = -to_physical(model, ends)[..., 2]
-        d0, d1 = np.maximum(bounds[0], lo), np.minimum(bounds[1], hi)
-        if not np.any(d0 < d1):
-            continue
-        frac = np.linspace(0.0, 1.0, int(n))[:, None]
-        depth = d0[None, :] + frac * np.maximum(d1 - d0, 0.0)[None, :]
-        xp = FLAT.points(depth, x, y)
-        X = to_reference(model, xp)
-        s = -X[..., 2]
-        v = values(layer, np.clip(s, b0, b1), X[..., 0], X[..., 1])
-        v = np.where((d1 > d0)[None, :], v, np.nan)
-        out.append(SliceLayer(layer, depth, v, X, xp))
-    return tuple(out)
+    return runs(model, values, path, lambda d: FLAT.points(d, x, y), depths, n, at,
+                keeps=_keeps_verticals)
 
 
 def section(model: Model, fields: Fields, start: tuple[float, float], *,

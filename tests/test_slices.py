@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from planetmodel import (DENSITY, VECTOR, AnalyticField, LayeredIsotropicElastic,
-                         Scales, flattening, gauss_legendre, perturbed)
+                         Scales, flattening, gauss_legendre, layer_linear, perturbed)
 from planetmodel import slices
 from planetmodel.frames import cartesian_points, spherical_coordinates
 from planetmodel.mapping import MappingBase
@@ -228,6 +228,95 @@ def test_slices_at_physical_points_lie_where_they_were_asked_for(two):
     prof = slices.profile(flat, "rho", 0.3, 1.0, at="physical", n=4)
     assert np.isclose(prof.layers[0].radius[-1],
                       np.linalg.norm(mapping(cartesian_points(0.5, 0.3, 1.0))))
+
+
+def _shaped(model):
+    """`model` with its surface raised in the north and lowered in the south,
+    by up to 0.05, and the interface at 0.5 the other way about."""
+    def top(t, p):
+        return 0.05 * np.cos(t)
+
+    def middle(t, p):
+        return -0.03 * np.cos(t)
+    return model.stretched(layer_linear(model.skeleton, [None, middle, top]))
+
+
+#: A meridian of `_shaped` from near the north pole to near the south one.
+ARC = dict(start=(0.1, 0.0), end=(np.pi - 0.1, 0.0))
+
+
+def test_a_physical_section_covers_the_body_as_the_mapping_shapes_it(two):
+    shaped = _shaped(two)
+    mapping = shaped.geometry.mapping
+    sec = slices.section(shaped, "rho", ARC["start"], end=ARC["end"], n=6, m=9,
+                         at="physical")
+    surface = np.linalg.norm(mapping(sec.path), axis=-1)
+    assert np.any(surface > 1.04) and np.any(surface < 0.96)
+    inner, outer = sec.layers
+    # the last row is the mapped surface at every node, raised or lowered
+    assert np.allclose(outer.radius[-1], surface, rtol=0.0, atol=1e-14)
+    # nothing above the body: every point within the surface on its ray,
+    # and every value its layer's
+    for lay in sec.layers:
+        assert np.all(np.linalg.norm(lay.physical, axis=-1) <= surface + 1e-14)
+        assert np.allclose(mapping(lay.reference), lay.physical, rtol=0.0, atol=1e-11)
+    assert np.allclose(inner.values, 10.0) and np.allclose(outer.values, 4.0)
+    # the layer of a point is decided in the physical body: the interface
+    # where the mapping puts it, below 0.5 in the north and above it in the
+    # south, the outer layer's density on its upper side and the inner's below
+    interface = np.linalg.norm(mapping(0.5 * sec.path), axis=-1)
+    assert np.any(interface < 0.49) and np.any(interface > 0.51)
+    assert np.allclose(inner.radius[-1], interface, rtol=0.0, atol=1e-14)
+    assert np.allclose(outer.radius[0], interface, rtol=0.0, atol=1e-14)
+    # a profile where the surface is raised reaches it too
+    prof = slices.profile(shaped, "vs", 0.1, 0.0, n=4, at="physical")
+    assert np.isclose(prof.layers[-1].radius[-1],
+                      np.linalg.norm(mapping(cartesian_points(1.0, 0.1, 0.0))),
+                      rtol=0.0, atol=1e-14)
+    assert prof.layers[-1].radius[-1] > 1.04
+    # the default is the body unbounded: radii beyond it bound nothing
+    beyond = slices.section(shaped, "rho", ARC["start"], end=ARC["end"], n=6, m=9,
+                            at="physical", radii=(0.0, 2.0))
+    for a, b in zip(sec.layers, beyond.layers):
+        for name in ("radius", "values", "reference", "physical"):
+            assert np.array_equal(getattr(a, name), getattr(b, name))
+
+
+def test_radii_bound_a_section_and_reference_points_are_the_reference_body(two):
+    shaped = _shaped(two)
+    whole = slices.section(shaped, "vs", ARC["start"], end=ARC["end"], n=5, m=7,
+                           at="physical")
+    # at physical points radii cut the runs and change nothing else
+    part = slices.section(shaped, "vs", ARC["start"], end=ARC["end"], n=5, m=7,
+                          at="physical", radii=(0.3, 0.8))
+    inner, outer = part.layers
+    assert np.all(inner.radius[0] == 0.3) and np.all(outer.radius[-1] == 0.8)
+    assert np.array_equal(inner.radius[-1], whole.layers[0].radius[-1])
+    assert np.array_equal(outer.radius[0], whole.layers[1].radius[0])
+    assert np.array_equal(outer.values[0], whole.layers[1].values[0])
+    # where the surface is lowered beneath the radii the outer layer has
+    # nothing of the ray within them, and is NaN there
+    high = slices.section(shaped, "vs", ARC["start"], end=ARC["end"], n=5, m=7,
+                          at="physical", radii=(0.97, 1.2))
+    surface = np.linalg.norm(shaped.geometry.mapping(high.path), axis=-1)
+    (top,) = high.layers
+    assert np.all(np.isnan(top.values[:, surface < 0.97]))
+    assert np.all(np.isfinite(top.values[:, surface > 0.97]))
+    assert np.allclose(top.radius[-1, surface > 0.97], surface[surface > 0.97])
+    # at reference points the default is the reference body, each layer's
+    # rows its own interval on every ray and its values the field there
+    ref = slices.section(shaped, "vs", ARC["start"], end=ARC["end"], n=5, m=7)
+    same = slices.section(shaped, "vs", ARC["start"], end=ARC["end"], n=5, m=7,
+                          radii=(0.0, 1.0))
+    for a, b in zip(ref.layers, same.layers):
+        for name in ("radius", "values", "reference", "physical"):
+            assert np.array_equal(getattr(a, name), getattr(b, name))
+    r = np.linspace(0.5, 1.0, 5)[:, None] * np.ones((1, 7))
+    t, p = np.broadcast_arrays(*spherical_coordinates(ref.path)[1:3], r)[:2]
+    lay = ref.layers[1]
+    assert np.array_equal(lay.radius, r)
+    assert np.array_equal(lay.reference, r[..., None] * ref.path[None, :, :])
+    assert np.array_equal(lay.values, shaped.layer(1)["vs"].evaluate(r, t, p))
 
 
 class _Twist(MappingBase):
