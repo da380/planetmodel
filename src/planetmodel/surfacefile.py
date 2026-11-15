@@ -6,7 +6,14 @@ surface kernels of a measurement — in the writer's own units with its
 scales recorded, CF-styled so that xarray, Panoply and ncview open it
 as it stands.  The Python here is the definition of the format and the
 reference the C++ reader is held to;
-`docs/source/formats/surface_file.rst` describes it for consumers.
+`docs/source/formats/surface_file.rst` describes it for consumers.  This
+docstring describes the spherical file; fields on a horizontal plane of
+a flat body are a file of schema `SCHEMA_FLAT`, which
+`cartesian.surfacefile` describes where it differs.  What the surface
+decides of the file is a `SurfaceLayout` (`SphericalSurfaceLayout`, and
+the flat `cartesian.surfacefile.FlatSurfaceLayout`), asked by the writer
+(`write_with`) and the readers (`read_with`), which hold the rest in
+common.
 
 **Global attributes**: `schema` (`SCHEMA`, checked by every reader),
 `Conventions`, `source` (the writing code and version) and `created`
@@ -47,9 +54,11 @@ complex fields are refused.
 
 `write_surface` writes a file from `SurfaceVariable`s and
 `read_surface_file` gives one back as a `SurfaceFile` of numbers and
-metadata, nothing interpolated or converted; `validate_structure`
-checks a file's structure alone.  `read_surface` gives a
-`SurfaceHistory`, the file as a function of time: each field's values
+metadata, nothing interpolated or converted, refusing a flat file by its
+schema; `validate_structure` checks a file of either kind's structure
+alone, and `schema_of` reads its schema.  `read_surface` gives a file of
+either kind as a function of time (`HistoryBase`), a spherical one as a
+`SurfaceHistory`: each field's values
 at a date by the field's own time rule — a `node` field interpolated
 between its nodes (`linear`), read from the latest node not after the
 date (`previous`), or served at its stored nodes alone (`none`); an
@@ -82,12 +91,12 @@ from __future__ import annotations
 
 import numbers
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -104,14 +113,25 @@ from .units import BASE, TIME, Dimensions, Scales, scaled_unit
 if TYPE_CHECKING:
     from .gridded import GriddedFunction
 
-__all__ = ["SCHEMA", "TIME_SUPPORTS", "TIME_METHODS", "EXTRAPOLATIONS", "TIME_RTOL",
-           "TimeRows", "SurfaceVariable", "SurfaceFile", "SurfaceHistory",
-           "write_surface", "read_surface_file", "read_surface",
-           "validate_structure", "time_axis", "check_time_rule",
-           "leading_shape", "time_rows"]
+__all__ = ["SCHEMA", "SCHEMA_FLAT", "TIME_SUPPORTS", "TIME_METHODS", "EXTRAPOLATIONS",
+           "TIME_RTOL", "TimeRows", "SurfaceVariable", "SurfaceFile", "SurfaceLayout",
+           "SphericalSurfaceLayout", "HistoryBase", "SurfaceHistory",
+           "write_surface", "write_with", "read_surface_file", "read_with",
+           "read_surface", "validate_structure", "schema_of", "malformed", "time_axis",
+           "check_time_rule", "leading_shape", "time_rows"]
 
 #: The schema string every reader checks; bumped only for an incompatible change.
 SCHEMA = "planetmodel.surface/1"
+
+#: The schema of a flat surface file, fields on a horizontal plane of a
+#: body of `planetmodel.cartesian` (`cartesian.surfacefile` describes it),
+#: which a reader of `SCHEMA` refuses by its schema.
+SCHEMA_FLAT = "planetmodel.surface/2"
+
+#: The reader of each kind of file, named where a reader of the other kind
+#: refuses one.
+_READERS = {SCHEMA: "planetmodel.surfacefile.read_surface_file",
+            SCHEMA_FLAT: "planetmodel.cartesian.surfacefile.read_surface_file"}
 
 #: How a field sits in time: its dimensions follow (module docstring).
 TIME_SUPPORTS = ("static", "node", "interval", "instant")
@@ -171,6 +191,186 @@ class SurfaceFile:
     citation: tuple[str, ...] = ()
 
 
+class SurfaceLayout(Protocol):
+    """What a surface file's surface decides, asked by the writer and the
+    readers of this module, which hold the rest of the format in common
+    (the time axes and rules, the fields and their attributes, the units):
+    `SphericalSurfaceLayout`, of `SCHEMA`, and the flat
+    `cartesian.surfacefile.FlatSurfaceLayout`, of `SCHEMA_FLAT`.  A layout
+    names its schema, the grid it takes and its rules, where the surface
+    is (`place`: a radius, a depth), and how the grid is stated and read
+    back; it builds the file and the history the numbers are read as.
+    `context` is what `validate_grid` reads of the root for the rest of
+    the reading."""
+
+    #: The schema the layout writes and reads.
+    schema: str
+    #: Names the format keeps for itself, which no field may take.
+    reserved: tuple[str, ...]
+    #: The lateral rules a field may state.
+    methods: tuple[str, ...]
+    #: The attribute stating where the surface is, where the writer states it.
+    place: str
+
+    def check_grid(self, grid: object) -> None:
+        """Refuse, by name, a grid the layout does not take."""
+        ...
+
+    def check_place(self, value: object) -> None:
+        """Refuse, by name, a place that is not one."""
+        ...
+
+    def check_poles(self, grid: Any, name: str) -> None:
+        """Refuse, by name, polar values given for the field `name` on a
+        grid that takes none."""
+        ...
+
+    def lateral_dims(self, grid: Any) -> tuple[str, ...]:
+        """The grid's dimensions, in a variable's order."""
+        ...
+
+    def lateral_shape(self, grid: Any) -> tuple[int, ...]:
+        """The grid's shape, in a variable's order."""
+        ...
+
+    def write_grid(self, root: Any, grid: Any, scales: Scales) -> None:
+        """The grid's statements, dimensions and coordinate variables."""
+        ...
+
+    def validate_place(self, ds: Any, path: object) -> None:
+        """The checks on the statement of the surface's place."""
+        ...
+
+    def validate_grid(self, ds: Any, path: object) -> Any:
+        """The checks on the grid's statements, giving the context of the
+        rest of the reading."""
+        ...
+
+    def axes(self, context: Any) -> tuple[str, ...]:
+        """The grid's dimensions in the file read."""
+        ...
+
+    def read_grid(self, ds: Any, context: Any) -> Any:
+        """The grid the root holds."""
+        ...
+
+    def file(self, schema: str, grid: Any, variables: Mapping[str, FileVariable],
+             place: float | None, **metadata: Any) -> Any:
+        """The file's numbers and metadata, `metadata` the shared ones of
+        `SurfaceFile` by name."""
+        ...
+
+    def history(self, file: Any) -> HistoryBase:
+        """The file as a function of time."""
+        ...
+
+
+class SphericalSurfaceLayout:
+    """The spherical surface file's `SurfaceLayout`: the module docstring's
+    angular grid, its polar values and the surface's radius."""
+
+    schema = SCHEMA
+    reserved = _RESERVED
+    methods = tuple(LATERAL_METHODS)
+    place = "radius"
+
+    def check_grid(self, grid: object) -> None:
+        """An `AngularGrid`."""
+        if not isinstance(grid, AngularGrid):
+            raise TypeError(f"expected an AngularGrid, got {type(grid).__name__}")
+
+    def check_place(self, value: object) -> None:
+        """A positive finite radius."""
+        if not (isinstance(value, numbers.Real) and np.isfinite(value)
+                and value > 0.0):
+            raise ValueError(f"radius must be positive and finite, got {value!r}")
+
+    def check_poles(self, grid: AngularGrid, name: str) -> None:
+        """Refused where the grid holds both poles already."""
+        if all(grid.pole_nodes):
+            raise ValueError(f"{name!r} gives polar values, and the grid "
+                             "holds both poles already")
+
+    def lateral_dims(self, grid: AngularGrid) -> tuple[str, ...]:
+        """(latitude, longitude)."""
+        return ("latitude", "longitude")
+
+    def lateral_shape(self, grid: AngularGrid) -> tuple[int, ...]:
+        """(ntheta, nphi)."""
+        return (grid.ntheta, grid.nphi)
+
+    def write_grid(self, root: Any, grid: AngularGrid, scales: Scales) -> None:
+        """`latitude` and `longitude`, the grid's kind and band, and its
+        colatitude weights where it has them."""
+        root.createDimension("latitude", grid.ntheta)
+        root.createDimension("longitude", grid.nphi)
+        root.setncattr("grid_kind", grid.kind)
+        if grid.lmax is not None:
+            root.setncattr("grid_lmax", np.int32(grid.lmax))
+        lat, lon = grid_degrees(grid)
+        var = root.createVariable("latitude", "f8", ("latitude",))
+        var[...] = lat
+        var.units, var.standard_name = "degrees_north", "latitude"
+        var.long_name = "latitude"
+        var = root.createVariable("longitude", "f8", ("longitude",))
+        var[...] = lon
+        var.units, var.standard_name = "degrees_east", "longitude"
+        var.long_name = "longitude"
+        if grid.weights is not None:
+            put_variable(root, "colatitude_weights", ("latitude",), grid.weights,
+                         {"long_name": "colatitude quadrature weights against "
+                                       "sin(theta) dtheta", "units": "1"})
+
+    def validate_place(self, ds: Any, path: object) -> None:
+        """`radius`, where stated, a positive number."""
+        if "radius" in ds.ncattrs():
+            radius = ds.getncattr("radius")
+            if (isinstance(radius, str) or np.size(radius) != 1
+                    or not np.isfinite(float(radius)) or not float(radius) > 0.0):
+                _fail(path, f"radius is {radius!r}, not a positive number")
+
+    def validate_grid(self, ds: Any, path: object) -> None:
+        """`grid_kind` one of `sampling.KINDS`, and the coordinates."""
+        attrs = ds.ncattrs()
+        if "grid_kind" not in attrs or ds.getncattr("grid_kind") not in GRID_KINDS:
+            _fail(path, f"grid_kind is missing or not a kind of grid, one of "
+                        f"{GRID_KINDS}")
+        for name in ("latitude", "longitude"):
+            if name not in ds.variables or tuple(
+                    ds.variables[name].dimensions) != (name,):
+                _fail(path, f"no coordinate variable {name!r}")
+
+    def axes(self, context: Any) -> tuple[str, ...]:
+        """(latitude, longitude)."""
+        return ("latitude", "longitude")
+
+    def read_grid(self, ds: Any, context: Any) -> AngularGrid:
+        """`modelfile.grid_of_group`."""
+        return grid_of_group(ds)
+
+    def file(self, schema: str, grid: AngularGrid,
+             variables: Mapping[str, FileVariable], place: float | None,
+             **metadata: Any) -> SurfaceFile:
+        """A `SurfaceFile`, `place` its radius."""
+        return SurfaceFile(schema, grid, variables, radius=place, **metadata)
+
+    def history(self, file: SurfaceFile) -> SurfaceHistory:
+        """A `SurfaceHistory`."""
+        return SurfaceHistory(file)
+
+
+#: The spherical layout, the one of every file of `SCHEMA`.
+_SPHERICAL = SphericalSurfaceLayout()
+
+
+def _layouts() -> Iterator[SurfaceLayout]:
+    """Every layout, the spherical one first and the flat one imported
+    where it is first asked for."""
+    yield _SPHERICAL
+    from .cartesian.surfacefile import LAYOUT
+    yield LAYOUT
+
+
 def _real_values(values: ArrayLike, shape: tuple[int, ...], name: str,
                  what: str) -> np.ndarray:
     """A field's numbers, real and of `shape`; NaN is allowed."""
@@ -213,19 +413,19 @@ def check_time_rule(support: str, rule: str, *, name: str) -> None:
                          "between times; its time_interpolation is 'none'")
 
 
-def _checked(name: str, field: SurfaceVariable) -> None:
+def _checked(name: str, field: SurfaceVariable, layout: SurfaceLayout) -> None:
     """The per-field statements `write_surface` refuses early."""
     if not isinstance(name, str) or not name:
         raise TypeError(f"a field's name is a string, got {name!r}")
-    if name in _RESERVED or name.endswith("_poles"):
+    if name in layout.reserved or name.endswith("_poles"):
         raise ValueError(f"{name!r} is a name the surface file keeps for itself")
     if not isinstance(field, SurfaceVariable):
         raise TypeError(f"{name!r} is not a SurfaceVariable")
     check_time_rule(field.support, field.time_interpolation, name=name)
-    if field.lateral_interpolation not in LATERAL_METHODS:
+    if field.lateral_interpolation not in layout.methods:
         raise ValueError(f"{name!r}: lateral_interpolation "
                          f"{field.lateral_interpolation!r} is not one of "
-                         f"{tuple(LATERAL_METHODS)}")
+                         f"{layout.methods}")
     if field.dimensions is not None and not isinstance(field.dimensions,
                                                        Dimensions):
         raise TypeError(f"{name!r}: dimensions are a units.Dimensions")
@@ -264,11 +464,25 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     one; `radius` is the surface's radius and every number is in
     `scales`' units; `meta` becomes `meta_<key>` attributes.  The file
     is written whole or not at all, with the permissions a plain
-    `open(path, "w")` would give it (`files.written_whole`).
+    `open(path, "w")` would give it (`files.written_whole`).  A flat
+    surface file is written by `cartesian.surfacefile.write_surface`.
     """
+    return write_with(path, grid, _SPHERICAL, fields=fields, source=source,
+                      time=time, instant=instant, place=radius, scales=scales,
+                      title=title, meta=meta, citation=citation)
+
+
+def write_with(path: str | os.PathLike[str], grid: Any, layout: SurfaceLayout, *,
+               fields: Mapping[str, SurfaceVariable], source: str,
+               time: ArrayLike | None = None, instant: ArrayLike | None = None,
+               place: float | None = None, scales: Scales = Scales.SI,
+               title: str | None = None, meta: Mapping[str, Any] | None = None,
+               citation: Sequence[str] = ()) -> Path:
+    """Write `fields` on `grid` to a surface file of `layout` at `path`,
+    returned: `write_surface`'s, the surface's `place` the layout's (a
+    sphere's radius, a plane's depth)."""
     nc = netcdf_module()
-    if not isinstance(grid, AngularGrid):
-        raise TypeError(f"expected an AngularGrid, got {type(grid).__name__}")
+    layout.check_grid(grid)
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source names the writing code and version")
     if not isinstance(scales, Scales):
@@ -276,26 +490,22 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     if isinstance(fields, str) or not isinstance(fields, Mapping) or not fields:
         raise TypeError("fields maps names to SurfaceVariables, at least one")
     t, s = time_axis(time, "time"), time_axis(instant, "instant")
-    if radius is not None and not (isinstance(radius, numbers.Real)
-                                   and np.isfinite(radius) and radius > 0.0):
-        raise ValueError(f"radius must be positive and finite, got {radius!r}")
+    if place is not None:
+        layout.check_place(place)
     meta = dict(meta or {})
     for key, value in meta.items():
         if isinstance(value, bool) or not isinstance(value, (str, numbers.Real)):
             raise TypeError(f"meta[{key!r}] is {value!r}; a netCDF attribute is "
                             "a string or a number")
-    has_poles = all(grid.pole_nodes)
     prepared: dict[str, tuple[SurfaceVariable, np.ndarray, np.ndarray | None]] = {}
     for name, field in fields.items():
-        _checked(name, field)
+        _checked(name, field, layout)
         leading = leading_shape(field.support, time=t, instant=s, name=name)
-        values = _real_values(field.values, leading + (grid.ntheta, grid.nphi),
+        values = _real_values(field.values, leading + layout.lateral_shape(grid),
                               name, "its values")
         poles = None
         if field.poles is not None:
-            if has_poles:
-                raise ValueError(f"{name!r} gives polar values, and the grid "
-                                 "holds both poles already")
+            layout.check_poles(grid, name)
             poles = _real_values(field.poles, leading + (2,), name, "its poles")
         prepared[name] = (field, values, poles)
     needs_interval = any(f.support == "interval" for f, _, _ in prepared.values())
@@ -303,24 +513,24 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
     path = Path(path)
     with written_whole(path) as partial:
         _write_file(nc, partial, grid, prepared, source, t, s,
-                    needs_interval, needs_pole, radius, scales, title, meta,
-                    tuple(citation))
+                    needs_interval, needs_pole, place, scales, title, meta,
+                    tuple(citation), layout)
     return path
 
 
-def _write_file(nc: Any, path: Path, grid: AngularGrid,
+def _write_file(nc: Any, path: Path, grid: Any,
                 prepared: Mapping[str, tuple[SurfaceVariable, np.ndarray,
                                              np.ndarray | None]],
                 source: str, time: np.ndarray | None,
                 instant: np.ndarray | None, needs_interval: bool,
-                needs_pole: bool, radius: float | None, scales: Scales,
+                needs_pole: bool, place: float | None, scales: Scales,
                 title: str | None, meta: Mapping[str, Any],
-                citation: tuple[str, ...]) -> None:
-    """The file of `write_surface`, at a path of its own until it is whole."""
+                citation: tuple[str, ...], layout: SurfaceLayout) -> None:
+    """The file of `write_with`, at a path of its own until it is whole."""
     time_unit = scaled_unit(TIME, scales)
     time_dims = np.asarray([getattr(TIME, b) for b in BASE], dtype=np.int32)
     with nc.Dataset(path, "w", format="NETCDF4") as root:
-        root.setncattr("schema", SCHEMA)
+        root.setncattr("schema", layout.schema)
         root.setncattr("Conventions", CONVENTIONS)
         if title:
             root.setncattr("title", title)
@@ -329,30 +539,13 @@ def _write_file(nc: Any, path: Path, grid: AngularGrid,
                        datetime.now(timezone.utc).isoformat(timespec="seconds"))
         for base in ("length", "mass", "time", "temperature"):
             root.setncattr(f"scale_{base}", float(getattr(scales, base)))
-        if radius is not None:
-            root.setncattr("radius", float(radius))
+        if place is not None:
+            root.setncattr(layout.place, float(place))
         if citation:
             root.setncattr("citation", "\n".join(citation))
         for key, value in meta.items():
             root.setncattr(f"meta_{key}", value)
-        root.createDimension("latitude", grid.ntheta)
-        root.createDimension("longitude", grid.nphi)
-        root.setncattr("grid_kind", grid.kind)
-        if grid.lmax is not None:
-            root.setncattr("grid_lmax", np.int32(grid.lmax))
-        lat, lon = grid_degrees(grid)
-        var = root.createVariable("latitude", "f8", ("latitude",))
-        var[...] = lat
-        var.units, var.standard_name = "degrees_north", "latitude"
-        var.long_name = "latitude"
-        var = root.createVariable("longitude", "f8", ("longitude",))
-        var[...] = lon
-        var.units, var.standard_name = "degrees_east", "longitude"
-        var.long_name = "longitude"
-        if grid.weights is not None:
-            put_variable(root, "colatitude_weights", ("latitude",), grid.weights,
-                         {"long_name": "colatitude quadrature weights against "
-                                       "sin(theta) dtheta", "units": "1"})
+        layout.write_grid(root, grid, scales)
         if time is not None:
             root.createDimension("time", time.size)
             put_variable(root, "time", ("time",), time,
@@ -369,7 +562,7 @@ def _write_file(nc: Any, path: Path, grid: AngularGrid,
             root.createDimension("pole", 2)
             root.setncattr("poles", "north south")
         for name, (field, values, poles) in prepared.items():
-            dims = _LEADING[field.support] + ("latitude", "longitude")
+            dims = _LEADING[field.support] + layout.lateral_dims(grid)
             attrs: dict[str, Any] = {
                 "long_name": field.meaning or name,
                 "units": scaled_unit(field.dimensions, scales),
@@ -390,30 +583,64 @@ def _write_file(nc: Any, path: Path, grid: AngularGrid,
 
 # -- reading --------------------------------------------------------------------
 
-def _fail(path: object, msg: str) -> NoReturn:
+def malformed(path: object, msg: str) -> NoReturn:
+    """Refuse a malformed surface file, naming it and the first thing wrong."""
     raise ValueError(f"malformed surface file {path}: {msg}")
+
+
+_fail = malformed
 
 
 def validate_structure(source: str | os.PathLike[str] | Any) -> None:
     """Check that a file, by path or as an open netCDF4 Dataset, has the
-    structure the module docstring defines, raising ValueError naming
-    the first thing wrong."""
+    structure its schema defines (the module docstring's for a spherical
+    surface, `cartesian.surfacefile`'s for a flat one), raising ValueError
+    naming the first thing wrong."""
     if isinstance(source, (str, os.PathLike)):
         nc = netcdf_module()
         with nc.Dataset(source, "r") as ds:
-            _validate(ds, source)
+            _validate(ds, source, _layouts())
     else:
-        _validate(source, getattr(source, "filepath", lambda: "<dataset>")())
+        _validate(source, getattr(source, "filepath", lambda: "<dataset>")(),
+                  _layouts())
 
 
-def _validate(ds: Any, path: object) -> None:
-    """The checks of `validate_structure` on an open dataset."""
-    attrs = set(ds.ncattrs())
-    if "schema" not in attrs:
+def schema_of(path: str | os.PathLike[str]) -> str:
+    """The schema a surface file declares, its global attribute `schema`,
+    read without the rest of the file; ValueError where it declares none."""
+    nc = netcdf_module()
+    with nc.Dataset(path, "r") as ds:
+        if "schema" not in ds.ncattrs():
+            _fail(path, "no schema attribute: not a planetmodel surface file")
+        return str(ds.getncattr("schema"))
+
+
+def _layout_of_file(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
+                    ) -> SurfaceLayout:
+    """The layout among `layouts` of the file's schema, or the error naming
+    the schemas they read and, for a file of another kind, its reader."""
+    if "schema" not in ds.ncattrs():
         _fail(path, "no schema attribute: not a planetmodel surface file")
-    if ds.getncattr("schema") != SCHEMA:
-        _fail(path, f"schema is {ds.getncattr('schema')!r}, this reader reads "
-                    f"{SCHEMA!r}")
+    schema = ds.getncattr("schema")
+    seen = []
+    for layout in layouts:
+        if schema == layout.schema:
+            return layout
+        seen.append(repr(layout.schema))
+    other = (f"; a file of {schema!r} is read by {_READERS[schema]}"
+             if isinstance(schema, str) and schema in _READERS else "")
+    _fail(path, f"schema is {schema!r}, this reader reads "
+                f"{', '.join(seen[:-1]) + ' and ' if len(seen) > 1 else ''}"
+                f"{seen[-1]}{other}")
+
+
+def _validate(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
+              ) -> tuple[SurfaceLayout, Any]:
+    """The checks of `validate_structure` on an open dataset, by the layout
+    among `layouts` whose schema it states; that layout, and the context
+    of its reading."""
+    layout = _layout_of_file(ds, path, layouts)
+    attrs = set(ds.ncattrs())
     for key in ("source", "created"):
         if key not in attrs or not str(ds.getncattr(key)).strip():
             _fail(path, f"{key} is missing or empty")
@@ -421,18 +648,8 @@ def _validate(ds: Any, path: object) -> None:
         key = f"scale_{base}"
         if key not in attrs or not float(ds.getncattr(key)) > 0.0:
             _fail(path, f"{key} is missing or not positive")
-    if "radius" in attrs:
-        radius = ds.getncattr("radius")
-        if (isinstance(radius, str) or np.size(radius) != 1
-                or not np.isfinite(float(radius)) or not float(radius) > 0.0):
-            _fail(path, f"radius is {radius!r}, not a positive number")
-    if "grid_kind" not in attrs or ds.getncattr("grid_kind") not in GRID_KINDS:
-        _fail(path, f"grid_kind is missing or not a kind of grid, one of "
-                    f"{GRID_KINDS}")
-    for name in ("latitude", "longitude"):
-        if name not in ds.variables or tuple(
-                ds.variables[name].dimensions) != (name,):
-            _fail(path, f"no coordinate variable {name!r}")
+    layout.validate_place(ds, path)
+    context = layout.validate_grid(ds, path)
     ntime = None
     for name in ("time", "instant"):
         if name not in ds.variables:
@@ -449,11 +666,11 @@ def _validate(ds: Any, path: object) -> None:
             _fail(path, "the interval dimension is not one shorter than time")
     has_pole_dim = "pole" in ds.dimensions
     for name, var in ds.variables.items():
-        if name in _RESERVED:
+        if name in layout.reserved:
             continue
         if name.endswith("_poles"):
             base_name = name[:-len("_poles")]
-            if base_name not in ds.variables or base_name in _RESERVED:
+            if base_name not in ds.variables or base_name in layout.reserved:
                 _fail(path, f"{name} accompanies no field {base_name!r}")
             if not has_pole_dim or var.dimensions[-1] != "pole":
                 _fail(path, f"{name} does not end on the pole dimension")
@@ -463,24 +680,34 @@ def _validate(ds: Any, path: object) -> None:
                 "time_support") not in TIME_SUPPORTS:
             _fail(path, f"{name} states no time support, one of {TIME_SUPPORTS}")
         support = str(var.getncattr("time_support"))
-        want = _LEADING[support] + ("latitude", "longitude")
+        want = _LEADING[support] + layout.axes(context)
         if tuple(var.dimensions) != want:
             _fail(path, f"{name} is {support!r} and does not run over {want}")
         if "lateral_interpolation" not in a or var.getncattr(
-                "lateral_interpolation") not in LATERAL_METHODS:
+                "lateral_interpolation") not in layout.methods:
             _fail(path, f"{name} states no known lateral rule")
         rule = var.getncattr("time_interpolation") if "time_interpolation" in a \
             else None
         if rule not in TIME_METHODS or (support != "node" and rule != "none"):
             _fail(path, f"{name} is {support!r} and states the time rule "
                         f"{rule!r}")
+    return layout, context
 
 
 def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
-    """A surface file's numbers and metadata, its structure validated first."""
+    """A spherical surface file's numbers and metadata, its structure
+    validated first; a flat file is refused by its schema, naming its
+    reader (`cartesian.surfacefile.read_surface_file`)."""
+    return read_with(path, (_SPHERICAL,))
+
+
+def read_with(path: str | os.PathLike[str], layouts: Iterable[SurfaceLayout]) -> Any:
+    """A surface file's numbers and metadata, read by the layout among
+    `layouts` whose schema the file states, its structure validated
+    first: the layout's file (`SurfaceFile` on the sphere)."""
     nc = netcdf_module()
     with nc.Dataset(path, "r") as ds:
-        _validate(ds, path)
+        layout, context = _validate(ds, path, layouts)
         attrs = {k: ds.getncattr(k) for k in ds.ncattrs()}
         scales = Scales(**{b: float(attrs[f"scale_{b}"])
                            for b in ("length", "mass", "time", "temperature")})
@@ -493,13 +720,13 @@ def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
         variables = {name: FileVariable(variable_values(var),
                                         variable_attributes(var))
                      for name, var in ds.variables.items()
-                     if name not in _RESERVED}
-        grid = grid_of_group(ds)
-    radius = attrs.get("radius")
+                     if name not in layout.reserved}
+        grid = layout.read_grid(ds, context)
+    place = attrs.get(layout.place)
     title = attrs.get("title")
-    return SurfaceFile(str(attrs["schema"]), grid, MappingProxyType(variables),
+    return layout.file(str(attrs["schema"]), grid, MappingProxyType(variables),
+                       None if place is None else float(place),
                        scales=scales, time=time, instant=instant,
-                       radius=None if radius is None else float(radius),
                        source=str(attrs["source"]),
                        created=str(attrs["created"]),
                        title=None if title is None else str(title),
@@ -615,22 +842,23 @@ def time_rows(support: str, rule: str, date: float | None, *,
     return ((k, 1.0 - w), (k + 1, w))
 
 
-class SurfaceHistory:
+class HistoryBase:
     """A surface file as a function of time (module docstring): each
-    field's values at a date, by the field's own time rule, and as a
-    `GriddedFunction` by its lateral one."""
+    field's values at a date, by the field's own time rule.  A leaf gives
+    a field at a date as a gridded function of its grid: `SurfaceHistory`
+    on the sphere, `cartesian.surfacefile.SurfaceHistory` on a plane."""
 
-    def __init__(self, file: SurfaceFile) -> None:
+    def __init__(self, file: Any) -> None:
         self._file = file
 
     @property
-    def file(self) -> SurfaceFile:
+    def file(self) -> Any:
         """The file's numbers and metadata, as read."""
         return self._file
 
     @property
-    def grid(self) -> AngularGrid:
-        """The angular grid every field is on."""
+    def grid(self) -> Any:
+        """The grid every field is on."""
         return self._file.grid
 
     @property
@@ -674,6 +902,41 @@ class SurfaceHistory:
         (k0, w0), (k1, w1) = rows
         return w0 * values[k0] + w1 * values[k1]
 
+    def _variable(self, name: str) -> FileVariable:
+        """The variable of a field, polar values and reserved names refused."""
+        if name.endswith("_poles") or name not in self._file.variables:
+            raise KeyError(f"the file holds no field {name!r}")
+        return self._file.variables[name]
+
+    def _rows(self, name: str, date: float | None, extrapolation: str,
+              time_rtol: float) -> TimeRows | None:
+        """The leading rows a date reads, with their weights (`time_rows`);
+        None for a static field, whose values are the answer whole."""
+        variable = self._variable(name)
+        return time_rows(self.support(name),
+                         str(variable.attributes["time_interpolation"]), date,
+                         time=self._file.time, instant=self._file.instant,
+                         extrapolation=extrapolation, name=name,
+                         time_rtol=time_rtol)
+
+
+class SurfaceHistory(HistoryBase):
+    """A spherical surface file as a function of time (`HistoryBase`), a
+    field at a date a `GriddedFunction` by its lateral rule."""
+
+    def __init__(self, file: SurfaceFile) -> None:
+        super().__init__(file)
+
+    @property
+    def file(self) -> SurfaceFile:
+        """The file's numbers and metadata, as read."""
+        return self._file
+
+    @property
+    def grid(self) -> AngularGrid:
+        """The angular grid every field is on."""
+        return self._file.grid
+
     def function(self, name: str, *, date: float | None = None,
                  extrapolation: str = "refuse", rtol: float = 1e-9,
                  time_rtol: float = TIME_RTOL) -> GriddedFunction:
@@ -700,25 +963,14 @@ class SurfaceHistory:
                                lateral="cubic" if lateral == "harmonic" else lateral,
                                poles=poles, rtol=rtol)
 
-    def _variable(self, name: str) -> FileVariable:
-        """The variable of a field, polar values and reserved names refused."""
-        if name.endswith("_poles") or name not in self._file.variables:
-            raise KeyError(f"the file holds no field {name!r}")
-        return self._file.variables[name]
 
-    def _rows(self, name: str, date: float | None, extrapolation: str,
-              time_rtol: float) -> TimeRows | None:
-        """The leading rows a date reads, with their weights (`time_rows`);
-        None for a static field, whose values are the answer whole."""
-        variable = self._variable(name)
-        return time_rows(self.support(name),
-                         str(variable.attributes["time_interpolation"]), date,
-                         time=self._file.time, instant=self._file.instant,
-                         extrapolation=extrapolation, name=name,
-                         time_rtol=time_rtol)
-
-
-def read_surface(path: str | os.PathLike[str]) -> SurfaceHistory:
+def read_surface(path: str | os.PathLike[str]) -> HistoryBase:
     """A surface file as a function of time, its structure validated
-    first."""
-    return SurfaceHistory(read_surface_file(path))
+    first: a `SurfaceHistory` of a spherical file, or a
+    `cartesian.surfacefile.SurfaceHistory` of a flat one, by what its
+    schema states."""
+    file = read_with(path, _layouts())
+    for layout in _layouts():
+        if file.schema == layout.schema:
+            return layout.history(file)
+    raise ValueError(f"no layout reads schema {file.schema!r}")

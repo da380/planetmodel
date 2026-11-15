@@ -17,6 +17,7 @@ from numpy.typing import ArrayLike
 
 if TYPE_CHECKING:
     from .cartesian.displacement import VerticalDisplacement
+    from .cartesian.grid import Grid
     from .datasets import Dataset, RegionalGrid, Strata, Surface
     from .displacement import RadialDisplacement
     from .fault import Fault, Location, Patch
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
     from .layerfunction import LayerFunction
     from .mapping import Mapping
     from .mesh3d.spec import Refinement
-    from .model import Model, ModelBase
+    from .model import ModelBase
     from .modelfile import Surfaces
     from .randomfield.basis import SpectralBasis, SphericalBasis
     from .sampling import AngularGrid, SampleBase
@@ -1358,7 +1359,35 @@ def check_spherical_basis(basis: SphericalBasis, *,
         "analyse reads entries that belong to no harmonic")
 
 
-def check_model_file(path: str | os.PathLike[str], model: Model, *,
+def _check_file_root(data: Any, model: ModelBase) -> None:
+    """A model file's skeleton, names, scales, citation, stamps and
+    tolerance against the model it was written from."""
+    from datetime import datetime
+    assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
+                       rtol=1e-15), "the file's skeleton is not the model's"
+    assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
+        "the file's layer names are not the model's")
+    assert data.interface_names == tuple(f.name for f in model.geometry.interfaces), (
+        "the file's interface names are not the model's")
+    assert data.scales == model.scales, (
+        f"the file is in {data.scales!r}, the model in {model.scales!r}")
+    assert data.citation == model.citation, "the file does not cite what the model does"
+    assert data.source.strip(), "the file names no source"
+    datetime.fromisoformat(data.created)
+    assert data.rtol == model.geometry.rtol, (
+        f"the file states rtol {data.rtol!r}, the model's geometry has "
+        f"{model.geometry.rtol!r}")
+
+
+def _stored_against(values: np.ndarray, want: ArrayLike, what: str, *,
+                    rtol: float) -> None:
+    """A file's values against what they hold, to `rtol` of their largest."""
+    scale = max(float(np.nanmax(np.abs(values))) if values.size else 0.0, 1e-300)
+    assert np.allclose(values, want, rtol=0.0, atol=rtol * scale), (
+        f"{what}: the file's values are not the model's at its nodes")
+
+
+def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
                      surfaces: Surfaces | None = None,
                      rng: np.random.Generator | None = None, n: int = 48,
                      rtol: float = 1e-12) -> None:
@@ -1384,13 +1413,32 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     interfaces, NaN on the others, their values at its nodes and poles,
     and that `read_surfaces` gives functions taking the stored values at
     the nodes, for a local rule.  Tolerances are `rtol` of a variable's
-    largest value.  netCDF4 is imported here.
+    largest value.
+
+    A flat file (`modelfile.SCHEMA_FLAT`, a model of
+    `planetmodel.cartesian`) is held the same way at its own nodes, in
+    depth and on its parts' horizontal grids, by `_check_flat_model_file`:
+    its schema; its domain, the model's to the bit; every variable's
+    values at its nodes, the model's there in the local frame, and the
+    model read back taking them, by the Fourier rule to the accuracy of
+    `fourier.POINT_EPSILON` (a series' nodes are written by the fast
+    transform, and the model's field is read by the synthesis at points)
+    and by the local rules to `rtol`; the
+    geometry group's heights, the stretch's at each boundary, and the
+    displacement variable's w, the stretch's at its nodes, both read back
+    at them; and the surfaces group as on the sphere, without poles.
+    netCDF4 is imported here.
     """
     from .frames import cartesian_points, spherical_frame
-    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_WITH_LOG_RULES, read_model,
-                            read_model_file, read_surfaces, validate_structure)
+    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_FLAT, SCHEMA_WITH_LOG_RULES,
+                            read_model, read_model_file, read_surfaces, schema_of,
+                            validate_structure)
 
     rng = np.random.default_rng(0) if rng is None else rng
+    if schema_of(path) == SCHEMA_FLAT:
+        _check_flat_model_file(path, model, surfaces=surfaces, rng=rng, n=n,
+                               rtol=rtol)
+        return
     validate_structure(path)
     data = read_model_file(path)
     logged = any(var.attributes.get("radial_interpolation") in LOG_RULES
@@ -1398,27 +1446,11 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     assert data.schema == (SCHEMA_WITH_LOG_RULES if logged else SCHEMA), (
         f"the file's schema is {data.schema!r}, and "
         f"{'a' if logged else 'no'} variable states a rule in the logarithm")
-    assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
-                       rtol=1e-15), "the file's skeleton is not the model's"
-    assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
-        "the file's layer names are not the model's")
-    assert data.interface_names == tuple(f.name for f in model.geometry.interfaces), (
-        "the file's interface names are not the model's")
-    assert data.scales == model.scales, (
-        f"the file is in {data.scales!r}, the model in {model.scales!r}")
-    assert data.citation == model.citation, "the file does not cite what the model does"
-    assert data.source.strip(), "the file names no source"
-    from datetime import datetime
-    datetime.fromisoformat(data.created)
-    assert data.rtol == model.geometry.rtol, (
-        f"the file states rtol {data.rtol!r}, the model's geometry has "
-        f"{model.geometry.rtol!r}")
+    _check_file_root(data, model)
     back = read_model(path)
 
     def stored_against(values: np.ndarray, want: np.ndarray, what: str) -> None:
-        scale = max(float(np.nanmax(np.abs(values))) if values.size else 0.0, 1e-300)
-        assert np.allclose(values, want, rtol=0.0, atol=rtol * scale), (
-            f"{what}: the file's values are not the model's at its nodes")
+        _stored_against(values, want, what, rtol=rtol)
 
     for k, part in enumerate(data.parts):
         mesh, grid = part.mesh, part.grid
@@ -1553,6 +1585,155 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
                 key = data.interface_names[k]
                 fn = read[name][k if key is None else key]
                 stored_against(values, fn(theta, phi), f"{where} read back")
+
+
+def _check_flat_model_file(path: str | os.PathLike[str], model: ModelBase, *,
+                           surfaces: Surfaces | None, rng: np.random.Generator,
+                           n: int, rtol: float) -> None:
+    """`check_model_file` of a flat file: its docstring's checks at the
+    file's nodes in depth and on its horizontal grids."""
+    from .cartesian.modelfile import read_model_file
+    from .fourier import POINT_EPSILON
+    from .modelfile import SCHEMA_FLAT, read_model, read_surfaces, validate_structure
+
+    validate_structure(path)
+    data = read_model_file(path)
+    assert data.schema == SCHEMA_FLAT, f"the file's schema is {data.schema!r}"
+    _check_file_root(data, model)
+    domain = model.geometry.domain
+    assert data.domain == domain, (
+        f"the file's domain is {data.domain!r}, the model's {domain!r}")
+    back = read_model(path)
+    assert back.geometry.domain == domain, "the model read back is over another domain"
+
+    def tolerance(attributes: Mapping[str, Any]) -> float:
+        # a variable stating the Fourier rule holds a series, its nodes
+        # written by the fast transform and read by the synthesis at points
+        fourier = attributes.get("lateral_interpolation") == "fourier"
+        return max(rtol, 100.0 * POINT_EPSILON) if fourier else rtol
+
+    def nodes_of(grid: Any) -> tuple[np.ndarray, np.ndarray]:
+        x, y = np.broadcast_arrays(*grid.nodes)
+        return x.ravel(), y.ravel()
+
+    for k, part in enumerate(data.parts):
+        mesh, grid = part.mesh, part.grid
+        assert grid.domain == domain, f"part_{k} lies over another domain"
+        depth_all = mesh.r.ravel()
+        node_layer = np.repeat(mesh.layer, mesh.ngll)
+        X, Y = nodes_of(grid)
+        for name, var in part.variables.items():
+            if name.endswith("_perturbation") or name == "displacement":
+                continue
+            holders = [int(i) for i in np.atleast_1d(var.attributes["layers"])]
+            for i in part.layers:
+                on = node_layer == i
+                if i not in holders:
+                    assert np.all(np.isnan(var.values[on])), (
+                        f"part_{k}/{name} is not NaN on layer {i}, which lacks it")
+                    continue
+                field = model.layer(i)[name]
+                c = field.character
+                stated = (int(var.attributes["rank"]), int(var.attributes["weight"]),
+                          bool(var.attributes["voigt"]))
+                assert stated == (c.rank, c.weight, bool(c.voigt)), (
+                    f"part_{k}/{name} states the character {stated}, the model's "
+                    f"field on layer {i} is {c}")
+                pert_name = var.attributes.get("perturbation")
+                reference = getattr(field, "reference", None)
+                split = bool(pert_name) and reference is not None
+                source = reference if split else field
+                idx = rng.choice(np.flatnonzero(on), size=min(n, int(on.sum())),
+                                 replace=False)
+                d = depth_all[idx]
+                pairs = [(name, var, source, back.layer(i)[name])]
+                if split:
+                    pairs.append((pert_name, part.variables[pert_name],
+                                  field.perturbation, back.layer(i)[name].perturbation))
+                for label, held, want, got in pairs:
+                    if label == name and split:
+                        got = getattr(got, "reference", got)
+                    shape = want.stored_shape
+                    where = f"part_{k}/{label} on layer {i}"
+                    if held.values.ndim == 1 + len(shape):
+                        _stored_against(held.values[idx], want.evaluate(d, 0.0, 0.0),
+                                        where, rtol=rtol)
+                        _stored_against(held.values[idx], got.evaluate(d, 0.0, 0.0),
+                                        f"{where} read back", rtol=rtol)
+                        continue
+                    values = held.values.reshape((held.values.shape[0], X.size)
+                                                 + shape)
+                    j = rng.integers(X.size, size=idx.size)
+                    _stored_against(values[idx, j], want.evaluate(d, X[j], Y[j]),
+                                    where, rtol=tolerance(held.attributes))
+                    _stored_against(values[idx, j], got.evaluate(d, X[j], Y[j]),
+                                    f"{where} read back",
+                                    rtol=tolerance(held.attributes))
+                    listed = i in {int(m) for m in np.atleast_1d(
+                        held.attributes.get("radial_layers", []))}
+                    radial = bool(getattr(want, "is_radial", False))
+                    assert listed == radial, (
+                        f"{where} is {'' if listed else 'not '}in radial_layers, but "
+                        f"the model's field there is {'' if radial else 'not '}of "
+                        "depth alone")
+        disp = part.variables.get("displacement")
+        if disp is not None:
+            idx = rng.integers(depth_all.size, size=n)
+            j = rng.integers(X.size, size=n)
+            d = depth_all[idx]
+            values = disp.values.reshape(depth_all.size, X.size)[idx, j]
+            _stored_against(values, model.geometry.mapping.w(d, X[j], Y[j]),
+                            f"part_{k}/displacement", rtol=rtol)
+            _stored_against(values, back.geometry.mapping.w(d, X[j], Y[j]),
+                            f"part_{k}/displacement read back",
+                            rtol=tolerance(disp.attributes))
+    if data.geometry is not None:
+        g = data.geometry
+        w = model.geometry.mapping.w
+        assert np.array_equal(g.radii, np.asarray(w.boundaries, dtype=float)), (
+            "the geometry group's depths are not the stretch's boundaries")
+        X, Y = nodes_of(g.grid)
+        attrs = {"lateral_interpolation": g.lateral}
+        for j, depth in enumerate(g.radii):
+            values = g.values[j].ravel()
+            at = np.full(X.shape, depth)
+            where = f"geometry/boundary_displacement[{j}]"
+            _stored_against(values, w(at, X, Y), where, rtol=tolerance(attrs))
+            _stored_against(values, back.geometry.mapping.w(at, X, Y),
+                            f"{where} read back", rtol=tolerance(attrs))
+    if surfaces is None:
+        return
+    held = data.surfaces
+    assert held is not None, "the file has no surfaces group"
+    given = {name: {model.geometry.interface(w).index: fn for w, fn in on.items()}
+             for name, on in surfaces.items()}
+    names = set(held.variables)
+    assert names == set(given), (
+        f"the surfaces group holds {sorted(names)}, written with {sorted(given)}")
+    faces = sorted({k for on in given.values() for k in on})
+    assert list(held.interfaces) == faces, (
+        f"the surfaces are interfaces {list(held.interfaces)}, the functions are on "
+        f"{faces}")
+    read = read_surfaces(path)
+    x, y = held.grid.nodes
+    for name, on in given.items():
+        var = held.variables[name]
+        listed = {int(k) for k in np.atleast_1d(var.attributes["interfaces"])}
+        assert listed == set(on), (
+            f"surfaces/{name} names interfaces {sorted(listed)}, held on {sorted(on)}")
+        for row, k in enumerate(held.interfaces):
+            where = f"surfaces/{name} on interface {k}"
+            if k not in on:
+                assert np.all(np.isnan(var.values[row])), (
+                    f"{where} is not NaN, and the interface lacks it")
+                continue
+            values = var.values[row]
+            want = np.broadcast_to(np.asarray(on[k](x, y), dtype=float), values.shape)
+            _stored_against(values, want, where, rtol=tolerance(var.attributes))
+            key = data.interface_names[k]
+            fn = read[name][k if key is None else key]
+            _stored_against(values, fn(x, y), f"{where} read back",
+                            rtol=tolerance(var.attributes))
 
 
 def check_dataset(dataset: Dataset, *,
@@ -1754,11 +1935,12 @@ def check_regional(regional: RegionalGrid, *, rng: np.random.Generator | None = 
     assert held, f"{regional!r}: nothing at its centre half way down"
 
 
-def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
+def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid | Grid, *,
                        fields: Mapping[str, SurfaceVariable],
                        time: ArrayLike | None = None,
                        instant: ArrayLike | None = None,
                        radius: float | None = None,
+                       depth: float | None = None,
                        scales: Scales | None = None,
                        meta: Mapping[str, Any] | None = None,
                        citation: Iterable[str] = ()) -> None:
@@ -1771,27 +1953,48 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
     file holds exactly the given fields (their polar values apart), each
     of its stated support, rules and dimensions, its values the given
     ones with NaN preserved; and that a field's polar values are held
-    exactly when they were given.  netCDF4 is imported here.
+    exactly when they were given.  A flat file
+    (`surfacefile.SCHEMA_FLAT`) is held to its `cartesian.Grid`: its grid
+    the given one (the domain's bounds and padding to the bit, and the
+    shape), its `depth` as given and no radius, and no polar values.
+    netCDF4 is imported here.
     """
     from datetime import datetime
 
-    from .surfacefile import SCHEMA, read_surface_file, validate_structure
+    from .surfacefile import (SCHEMA, SCHEMA_FLAT, read_surface_file, schema_of,
+                              validate_structure)
     from .units import BASE, Scales
 
     validate_structure(path)
-    data = read_surface_file(path)
-    assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
-    assert data.grid.kind == grid.kind and data.grid.lmax == grid.lmax, (
-        "the file's grid is not of the given kind and band")
-    assert np.allclose(data.grid.colatitudes, grid.colatitudes, rtol=0,
-                       atol=1e-12), "the file's colatitudes are not the grid's"
-    assert np.allclose(data.grid.longitudes, grid.longitudes, rtol=0,
-                       atol=1e-12), "the file's longitudes are not the grid's"
-    assert (grid.weights is None) == (data.grid.weights is None), (
-        "the file does not hold the grid's weights")
-    if grid.weights is not None:
-        assert np.allclose(data.grid.weights, grid.weights, rtol=1e-15), (
-            "the file's weights are not the grid's")
+    if schema_of(path) == SCHEMA_FLAT:
+        from .cartesian.surfacefile import read_surface_file as read_flat
+        data = read_flat(path)
+        assert data.grid == grid, f"the file's grid is {data.grid!r}, not {grid!r}"
+        assert radius is None, "a flat surface lies at a depth, not a radius"
+        assert data.depth == (None if depth is None else float(depth)), (
+            f"the file's depth is {data.depth!r}, not {depth!r}")
+        lateral = tuple(grid.shape)
+    else:
+        data = read_surface_file(path)
+        assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
+        assert depth is None, "a spherical surface lies at a radius, not a depth"
+        assert data.grid.kind == grid.kind and data.grid.lmax == grid.lmax, (
+            "the file's grid is not of the given kind and band")
+        assert np.allclose(data.grid.colatitudes, grid.colatitudes, rtol=0,
+                           atol=1e-12), "the file's colatitudes are not the grid's"
+        assert np.allclose(data.grid.longitudes, grid.longitudes, rtol=0,
+                           atol=1e-12), "the file's longitudes are not the grid's"
+        assert (grid.weights is None) == (data.grid.weights is None), (
+            "the file does not hold the grid's weights")
+        if grid.weights is not None:
+            assert np.allclose(data.grid.weights, grid.weights, rtol=1e-15), (
+                "the file's weights are not the grid's")
+        if radius is None:
+            assert data.radius is None, "the file states a radius it was not given"
+        else:
+            assert data.radius == float(radius), (
+                f"the file's radius is {data.radius!r}, not {radius!r}")
+        lateral = (grid.ntheta, grid.nphi)
     for name, want in (("time", time), ("instant", instant)):
         stored = getattr(data, name)
         assert (want is None) == (stored is None), (
@@ -1799,11 +2002,6 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
         if want is not None:
             assert np.array_equal(stored, np.asarray(want, dtype=float)), (
                 f"the file's {name} values are not as given")
-    if radius is None:
-        assert data.radius is None, "the file states a radius it was not given"
-    else:
-        assert data.radius == float(radius), (
-            f"the file's radius is {data.radius!r}, not {radius!r}")
     assert data.scales == (Scales.SI if scales is None else scales), (
         f"the file is in {data.scales!r}")
     assert data.source.strip(), "the file names no source"
@@ -1839,7 +2037,7 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
                    "interval": (None if sizes["node"] is None
                                 else sizes["node"] - 1,),
                    "instant": (sizes["instant"],)}[field.support]
-        shape = tuple(leading) + (grid.ntheta, grid.nphi)
+        shape = tuple(leading) + lateral
         want = np.broadcast_to(np.asarray(field.values, dtype=float), shape)
         assert np.array_equal(var.values, want, equal_nan=True), (
             f"{name}: the file's values are not as given")

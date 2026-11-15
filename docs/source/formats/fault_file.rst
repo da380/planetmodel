@@ -51,9 +51,10 @@ ambient basis (x, y, z) everywhere, and the reference surface the plane
 z = ``reference_surface``.  Its points are those of a flat-layered body
 (``planetmodel.cartesian``), whose free surface is z = 0 and whose depth
 is -z, so that a fault of a ``cartesian`` file is built into the mesh of
-a box as it stands, as a ``geographic`` one is into a sphere's.  A depth
-is measured below the reference surface, never below any topography on
-it; the file stores radii (or z), not depths.
+a box as it stands, as a ``geographic`` one is into a sphere's, and lies
+in the body of a flat model file (:doc:`model_file`, its flat models).
+A depth is measured below the reference surface, never below any
+topography on it; the file stores radii (or z), not depths.
 
 **The parameter square.**  Every patch maps the square of (u, v), each
 in [-1/2, 1/2], into space: u runs along strike and v down dip.  With

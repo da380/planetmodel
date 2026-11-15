@@ -18,10 +18,13 @@ It reads and writes the Python's files:
   the mapping. Writing builds a file from a code's own fields: the code
   gives each layer's values as a function or as values at the points the
   library lists, and the library forms the file and checks it as the
-  readers will.
+  readers will.  A flat model's file (``planetmodel.model/3``) is not
+  read in C++.
 * **Surface files** (:doc:`formats/surface_file`). Reading gives the
   fields on the surface, static or in time, each served at any date by
-  its own time rule; writing builds a file from a code's own fields.
+  its own time rule; writing builds a file from a code's own fields.  A
+  flat surface's file (``planetmodel.surface/2``) is refused by its
+  schema.
 * **Fault files** (:doc:`formats/fault_file`). Reading makes the Python
   reader's checks and gives the fault, which evaluates as the Python's
   does, to rounding: positions, normals, the fault basis and the area

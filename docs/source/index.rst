@@ -59,9 +59,11 @@ The files the library writes for codes in other languages, described
 for their readers:
 
 * :doc:`formats/model_file`: a model in one netCDF file, its fields on
-  angular grids at radial nodes, and its mapping.
-* :doc:`formats/surface_file`: fields on one spherical surface, static
-  or in time, in one netCDF file.
+  angular grids at radial nodes, and its mapping; a flat model's on
+  horizontal grids at depth nodes.
+* :doc:`formats/surface_file`: fields on one spherical surface, or on a
+  horizontal plane of a flat body, static or in time, in one netCDF
+  file.
 * :doc:`formats/fault_file`: a fault, its patches of surface and the slip
   on them, static or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what

@@ -90,6 +90,13 @@ horizontal wavenumber and the box seen from a corner, flat or as the
 mapping shapes the body, which `planetmodel.plotting` draws depth
 downward.
 
+A flat model is written to a model file and read back by
+`planetmodel.modelfile` (`write_model`, `read_model`), which take the
+flat schema for it, `planetmodel.model/3`, described where it differs
+from the spherical file in `cartesian.modelfile`; fields on a horizontal
+plane are a flat surface file, `planetmodel.surface/2`
+(`cartesian.surfacefile`).  Both modules are reached by name.
+
 A flat model is read from and written to a deck of depths, its first
 column the depth from the surface down (`cartesian.deck`): the formats
 of the radius-first decks stated for `DEPTH`, one definition each, read

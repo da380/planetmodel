@@ -13,7 +13,10 @@ ncview open it as it stands.  The Python module is the definition of
 the format, and ``validate_structure`` there checks a file against it.
 In C++, planetmodel's own library (:doc:`../cpp`) reads the file, its
 fields evaluated by the rules below, and writes one from a code's own
-fields, checked as the readers check it.
+fields, checked as the readers check it.  A flat model
+(``planetmodel.cartesian``, a box or a section layered in depth) is
+written to a file of its own schema, described under `Flat models`_
+below, the rest of this page holding for it as stated there.
 
 **Schema string**: the global attribute ``schema``.  A file in which no
 variable states a radial rule in the logarithm (``log-polynomial``,
@@ -22,7 +25,12 @@ does is ``planetmodel.model/2``, so that a reader that knows ``/1``
 alone refuses it by its schema before it reads a value by a rule it
 does not know.  Readers check it, and a reader of both refuses a ``/1``
 file stating a rule in the logarithm and a ``/2`` file stating none; a
-number is added only for an incompatible change.
+number is added only for an incompatible change.  A flat model's file is
+``planetmodel.model/3``, which a reader of the spherical schemas refuses
+by its schema; ``read_model`` reads all three, giving a ``Model`` or a
+``cartesian.Model`` by what the file states, ``read_model_file`` the
+numbers of a spherical file and ``cartesian.modelfile.read_model_file``
+those of a flat one, each refusing the other kind by name.
 
 **Units.**  A file holds the model in the model's own units and says
 what they are: one stored unit of length, mass, time and temperature is
@@ -352,6 +360,178 @@ variable under any of the four radial rules, with its derivatives, and
 ``RadialInterpolant`` reads nodal values by them; ``WriteModelFile``
 writes a variable added with ``Rules{.radial =
 RadialRule::LogPolynomial}``, and the file's schema follows.
+
+Flat models
+-----------
+
+A model of ``planetmodel.cartesian`` is a body layered in depth below
+one free surface, over a lateral domain: a box, or the section of a
+body invariant along y.  Points are ``(x, y, z)`` with ``z`` up and the
+free surface ``z = 0`` in the reference body; the layered coordinate is
+the depth, positive downward.  ``write_model`` writes it as it writes a
+spherical model, and ``read_model`` reads it back as a
+``cartesian.Model``.  Its file is of schema ``planetmodel.model/3``,
+whether or not a variable states a rule in the logarithm, and holds
+everything this page describes (the units and scales, the constants,
+citation and meta, parts of contiguous layers at the GLL nodes of their
+elements, fields of every rank with their characters and rules,
+references with perturbations, the radial rules, those in the logarithm
+among them, the exact layout, the groups ``geometry`` and ``surfaces``)
+except where the geometry differs:
+
+**The root** states the system and the domain beside the shared
+attributes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - attribute
+     - meaning
+   * - ``coordinate_system``
+     - ``flat``
+   * - ``local_frame``
+     - ``up x y``: the components of every field are in the local frame
+       ``(e_up, e_x, e_y)``, the same at every point; the first is the
+       upward one, and the frame is right-handed
+   * - ``domain``
+     - ``box``, or ``section`` for the section of a body invariant along y
+   * - ``domain_bounds``
+     - ``x0, x1, y0, y1`` of a box, ``x0, x1`` of a section: the domain
+       proper
+   * - ``domain_padding``
+     - ``px, py`` of a box, ``px`` of a section: the periodic margin on
+       each side of each axis.  The domain's extent, ``[x0 - px, x1 +
+       px]`` (and so in y), is the period of every Fourier series on it
+
+The skeleton is in depth from the free surface down:
+``layer_bounds(layer, bound)`` holds each layer's top and bottom depths,
+and ``interface_depth(interface)`` replaces ``interface_radius``.
+Interface 0 is the free surface (or the top of a body whose skeleton
+starts below it) and interface ``k`` the top of layer ``k``; the base of
+the box, the skeleton's last depth, is a face and no interface.  Parts
+run from the surface down, ``part_0`` holding the top layer.
+
+**A part** holds ``depth(node)`` in place of ``radius(node)`` (CF
+``standard_name = "depth"``, ``positive = "down"``) and the horizontal
+grid as the CF coordinate variables ``x(x)`` and, over a box, ``y(y)``,
+in the model's unit of length: the nodes ``x_i = x0 - px + i Lx / nx``,
+``i = 0 .. nx - 1``, of the extent of length ``Lx``, the last one step
+short of the far end, which the period closes on the first (and so in
+y).  A field is ``name(node)`` of depth alone, or ``name(node, x, y)``
+(``name(node, x)`` over a section, the same at every y), with the
+trailing axes of its components as above, in the local frame; its
+``coordinates`` attribute is ``depth``.  No flat grid has poles, a kind,
+a band or weights: ``latitude``, ``longitude``, ``colatitude_weights``,
+``grid_kind``, ``grid_lmax``, ``pole``, ``poles``, ``radius``,
+``interface_radius`` and every ``*_poles`` are a spherical file's, and
+a reader of a flat file refuses one that has any of them.
+
+**Lateral rules.**  A variable that varies laterally states one of the
+flat rules, each periodic along every axis of the grid closed by its
+period, a point read at its coordinates reduced into the period from
+the first node:
+
+- ``linear``: the bilinear interpolant through the nodes and the wrap
+  node one period on (linear along a section's one axis);
+- ``cubic``: the tensor product of the periodic cubic splines through
+  the nodes, continuous with two derivatives across the seam;
+- ``fourier``: analysis of the values on the grid into its real
+  orthonormal Fourier basis and synthesis at the point, exact for a
+  field the grid's shape holds (wavenumbers ``|k_i| <= n_i / 2``, the
+  Nyquist cosine of an even axis once).
+
+A Fourier series (a ``cartesian.FourierField``, or a Fourier function on
+an interface or as a relief) is held as a harmonic field is on the
+sphere: its values at the grid's nodes, stating ``fourier`` where the
+grid holds every one of its modes (it lies over the same domain and its
+shape contains the series'), so that the analysis of the stored values
+gives back the coefficients, and the default ``linear`` on a grid that
+does not.  In depth the element edges are put at the breakpoints of its
+coefficients' piecewise polynomial, so a series written and read back is
+the same function, to the accuracy of the synthesis at points.  A field
+with no description in depth is sampled on elements no wider than the
+grid's finest node spacing.
+
+**The mapping** is the vertical stretch, every point moved along the
+vertical by its upward displacement ``w`` (a height, positive up), in one
+of two forms, never both; the identity is neither.
+
+- **Boundary reliefs**, the group ``geometry``: ``boundary_depth(boundary)``
+  (the reference depths of the surfaces, the free surface first and the
+  base last) and ``boundary_displacement(boundary, x, y)``, each
+  surface's height above its reference place, with the attributes
+  ``positive = "up"``, ``lateral_interpolation`` and ``between =
+  "linear"`` (between two surfaces the height is the linear
+  interpolation in depth of theirs), on the group's own grid over the
+  domain.  A surface that keeps its place holds zeros.
+- **A displacement field**, ``displacement(node, x, y)`` in every part:
+  ``w`` at the node, ``positive = "up"``, read by its stated rules.  Every
+  part is then on one grid.
+
+A mapping of any other kind has no form in a flat file and is refused by
+the writer.
+
+**Fields on interfaces** are functions of ``(x, y)``, the group
+``surfaces`` as above on a grid of its own over the domain, without
+poles.
+
+A two-layer model in a box padded along x, its shear speed perturbed in
+the mantle by a Fourier series and its free surface raised by a relief
+(abbreviated from ``ncdump -h``):
+
+.. code-block:: text
+
+   netcdf flat {
+   dimensions: layer = 2 ; interface = 2 ; bound = 2 ;
+   variables:
+       double layer_bounds(layer, bound) ;
+           :long_name = "depths of the layer's top and bottom below the free surface" ;
+       string layer_name(layer) ;
+       double interface_depth(interface) ;
+       string interface_name(interface) ;
+       int layer_part(layer) ;
+   // global attributes:
+       :schema = "planetmodel.model/3" ; :Conventions = "CF-1.8" ;
+       :scale_length = 1. ; ... ; :constant_G = 6.6743e-11 ; ...
+       :coordinate_system = "flat" ; :local_frame = "up x y" ;
+       :domain = "box" ; :domain_bounds = 0., 400000., 0., 300000. ;
+       :domain_padding = 50000., 0. ;
+
+   group: part_0 {
+     dimensions: node = 4 ; element = 2 ; bound = 2 ; x = 10 ; y = 6 ;
+     variables:
+       double depth(node) ;
+           :units = "m" ; :standard_name = "depth" ; :positive = "down" ;
+       int element_layer(element) ;
+       double element_bounds(element, bound) ;
+       double x(x) ;   :units = "m" ; :axis = "X" ;
+       double y(y) ;   :units = "m" ; :axis = "Y" ;
+       double vs(node) ;
+           :rank = 0 ; :layers = 0, 1 ; :radial_interpolation = "polynomial" ;
+           :perturbation = "vs_perturbation" ; :perturbation_kind = "relative" ;
+           :coordinates = "depth" ; ...
+       double vs_perturbation(node, x, y) ;
+           :layers = 1 ; :radial_interpolation = "polynomial" ;
+           :lateral_interpolation = "fourier" ; :coordinates = "depth" ; ...
+     // group attributes:
+       :ngll = 2 ; :layers = 0, 1 ;
+     }
+
+   group: geometry {
+     dimensions: boundary = 3 ; x = 20 ; y = 12 ;
+     variables:
+       double boundary_depth(boundary) ;
+       double x(x) ;
+       double y(y) ;
+       double boundary_displacement(boundary, x, y) ;
+           :units = "m" ; :positive = "up" ;
+           :lateral_interpolation = "cubic" ; :between = "linear" ;
+     }
+   }
+
+The fault file needs no flat schema of its own: its ``cartesian`` frame
+(:doc:`fault_file`) is the flat model's points, ``z`` up.
 
 An example
 ----------

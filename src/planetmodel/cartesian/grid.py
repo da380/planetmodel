@@ -168,6 +168,16 @@ class Grid:
                              f"trailing shape; got {v.shape}")
         return np.mean(v, axis=tuple(range(-d, 0)))
 
+    def holds(self, other: "Grid") -> bool:
+        """Whether this grid lies over the domain of `other` and holds every
+        mode of its packing, so that a series on `other` moves onto it by
+        `Transform.transfer` and analysis on its nodes recovers that
+        series exactly."""
+        if other.domain != self._domain or other.dimension != self.dimension:
+            return False
+        here, _, _ = other.transform.packing.matching(self._transform.packing)
+        return here.size == other.transform.size
+
     def scaled(self, k: float) -> "Grid":
         """The grid of the same shape over the domain scaled by k > 0."""
         return Grid(self._domain.scaled(k), self._shape)

@@ -75,15 +75,6 @@ def _grid(grid: Grid) -> Grid:
     return grid
 
 
-def _holds_every_mode(source: Grid, target: Grid) -> bool:
-    """Whether `target` lies over the domain of `source` and holds every one
-    of its modes, so that a series moves onto it by `Transform.transfer`."""
-    if target.domain != source.domain or target.dimension != source.dimension:
-        return False
-    here, _, _ = source.transform.packing.matching(target.transform.packing)
-    return here.size == source.transform.size
-
-
 class FourierField(FieldBase):
     """sum_j c_j(depth) phi_j(x, y) on one interval of depth; see the module
     docstring.
@@ -205,7 +196,7 @@ class FourierField(FieldBase):
         every mode of the series, by synthesis at its nodes otherwise."""
         grid = _grid(grid)
         d, _, _ = self._points(np.asarray(depth, dtype=float).ravel(), 0.0, 0.0)
-        if _holds_every_mode(self._grid, grid):
+        if grid.holds(self._grid):
             c = self._series(np.moveaxis(self.coefficients_at(d), -1, 0))
             moved = self._grid.transform.transfer(c, grid.transform)
             values = grid.transform.synthesise_grid(moved)      # (nd, *c, *shape)
@@ -282,6 +273,10 @@ class FourierFunction:
     Values are real.
     """
 
+    #: The rule a Fourier function states for itself: the series between
+    #: nodes, exact on a grid that holds its modes (`Grid.holds`).
+    lateral = "fourier"
+
     def __init__(self, grid: Grid, coefficients: ArrayLike) -> None:
         self._grid = _grid(grid)
         if np.iscomplexobj(coefficients):
@@ -325,7 +320,7 @@ class FourierFunction:
         transform where it lies over this function's domain and holds every
         mode, by synthesis at its nodes otherwise."""
         grid = _grid(grid)
-        if _holds_every_mode(self._grid, grid):
+        if grid.holds(self._grid):
             moved = self._grid.transform.transfer(self._c, grid.transform)
             return grid.transform.synthesise_grid(moved)
         x, y = grid.nodes
