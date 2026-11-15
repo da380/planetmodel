@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .character import SCALAR
+from .coordinates import common_coordinates
 from .fields import ComposedField, Field, FieldBase, RadialField
 from .layerfunction import same_interval
 from .model import Layer, Model
@@ -57,9 +58,9 @@ class PerturbedField(FieldBase):
     """A radial reference of rank 0 combined with a perturbation by `kind`.
 
     `kind` is one of `KINDS`; `name` is the reference's unless given.
-    Both fields must lie on the same interval, and the perturbation must
-    have the reference's character when absolute and be `SCALAR`
-    otherwise.
+    Both fields must lie on the same interval and in one coordinate
+    system, which is the field's, and the perturbation must have the
+    reference's character when absolute and be `SCALAR` otherwise.
     """
 
     def __init__(self, reference: Field, perturbation: Field, *, kind: str,
@@ -87,6 +88,7 @@ class PerturbedField(FieldBase):
             raise ValueError(
                 f"the perturbation lies on {perturbation.interval}, the reference "
                 f"on {reference.interval}; restate it with on_interval")
+        self._coordinates = common_coordinates((reference, perturbation))
         self._reference, self._perturbation, self._kind = reference, perturbation, kind
         self._interval = tuple(float(x) for x in reference.interval)
         self._character = reference.character

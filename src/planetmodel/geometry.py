@@ -24,6 +24,10 @@ skeleton boundary k + 1, and `between = (k, k + 1)` with -1 standing for
 the outside.  For a hollow geometry the inner boundary is interface 0
 with `between = (-1, 0)`, so interface k is skeleton boundary k.
 
+The lattice and the points of those checks are asked of the geometry's
+`coordinates`, `SPHERICAL`, whose lattice is the sample the mapping's
+`is_valid(sample=...)` takes.
+
 Nothing here knows about units: radii are numbers and every tolerance
 is `rtol` times the skeleton's span.
 """
@@ -35,10 +39,10 @@ from dataclasses import KW_ONLY, dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .coordinates import SPHERICAL, Coordinates
 from .displacement import RadialDisplacement, SphericalFunction
-from .frames import cartesian_points
 from .mapping import (IdentityMapping, Mapping, RadialStretch, SphericalSample,
-                      ValidityReport, scaled_mapping, validity, validity_lattice)
+                      ValidityReport, scaled_mapping, validity)
 from .skeleton import CoarseningMap, Skeleton
 
 __all__ = ["Geometry", "LayerInfo", "InterfaceInfo", "Names", "Renames"]
@@ -98,6 +102,8 @@ class Geometry:
     to satisfy them.
     """
 
+    _coordinates: Coordinates = SPHERICAL
+
     def __init__(self, skeleton: Skeleton, *, mapping: Mapping | None = None,
                  layer_names: Names = None, interface_names: Names = None,
                  rtol: float = 1e-9, check: bool = True) -> None:
@@ -126,19 +132,20 @@ class Geometry:
                 f"{type(m).__name__} is not a Mapping: it needs __call__, "
                 "deformation_gradient and jacobian on (..., 3) points")
         tol = self._rtol * self._sk.span
-        report = validity(m, sample=validity_lattice(self._sk))
+        report = validity(m, sample=self.coordinates.lattice(self._sk))
         if not report:
             raise ValueError(f"the mapping does not preserve orientation: {report!r}")
         self._check_continuity(tol)
 
     def _check_continuity(self, tol: float) -> None:
         """m agrees across every interior boundary to tol, on a set of directions."""
-        _, theta, phi = validity_lattice(self._sk)
+        coords = self.coordinates
+        _, theta, phi = coords.lattice(self._sk)
         theta = theta.reshape(-1)[:, None]
         phi = phi.reshape(-1)[None, :]
         for r in self._sk.inner_boundaries:
-            below = cartesian_points(r - tol, theta, phi)
-            above = cartesian_points(r + tol, theta, phi)
+            below = coords.points(r - tol, theta, phi)
+            above = coords.points(r + tol, theta, phi)
             gap = np.linalg.norm(np.asarray(self._m(above), dtype=float)
                                  - np.asarray(self._m(below), dtype=float), axis=-1)
             # the images of two points 2 tol apart differ by 2 tol times the
@@ -159,6 +166,12 @@ class Geometry:
     def skeleton(self) -> Skeleton:
         """The boundary radii the geometry is built over."""
         return self._sk
+
+    @property
+    def coordinates(self) -> Coordinates:
+        """The coordinate system of the skeleton, the checks and the
+        fields hung on the geometry: `SPHERICAL`."""
+        return self._coordinates
 
     @property
     def mapping(self) -> Mapping:
@@ -238,8 +251,9 @@ class Geometry:
                             if b[0] - tol <= float(k) <= b[-1] + tol))
 
     def validity(self, *, sample: SphericalSample | None = None) -> ValidityReport:
-        """The mapping's validity report on `sample`, or on the lattice."""
-        lattice = validity_lattice(self._sk) if sample is None else sample
+        """The mapping's validity report on `sample`, or on the lattice of
+        the geometry's coordinates."""
+        lattice = self.coordinates.lattice(self._sk) if sample is None else sample
         return validity(self._m, sample=lattice)
 
     # -- copies -------------------------------------------------------------

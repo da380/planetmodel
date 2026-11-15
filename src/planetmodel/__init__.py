@@ -9,6 +9,8 @@ solver.  Every internal is numbers: the model alone carries units.
 
 Modules reached by name, one level down:
 
+  coordinates  coordinate systems: points, local frame and lattice of a
+               field's coordinates; SPHERICAL, the one shipped
   frames       the local spherical frame, tensors moved between frames, Voigt
   materials    velocity and moduli conversions, the elastic field, what a
                layer's fields imply (fluidity, moduli)

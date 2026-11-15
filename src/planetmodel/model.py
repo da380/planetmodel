@@ -53,6 +53,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
+from .coordinates import coordinates_of
 from .displacement import RadialDisplacement, SphericalFunction
 from .fields import Field, RadialField
 from .geometry import Geometry, LayerInfo, Names, Renames
@@ -240,7 +241,8 @@ class Model:
     # -- validation ---------------------------------------------------------
 
     def validate(self) -> None:
-        """Every field a Field on its layer's interval, with its spec's character."""
+        """Every field a Field on its layer's interval, in the geometry's
+        coordinates, with its spec's character."""
         for spec in self._specs.values():
             if not isinstance(spec, FieldSpec):
                 raise TypeError(f"{spec!r} is not a FieldSpec")
@@ -258,6 +260,12 @@ class Model:
                     raise ValueError(
                         f"{name!r} on layer {layer._label()} lives on "
                         f"{field.interval}, not the layer's {layer.interval}")
+                system = coordinates_of(field)
+                if system != self._geometry.coordinates:
+                    raise ValueError(
+                        f"{name!r} on layer {layer._label()} is in the coordinates "
+                        f"{system.name!r}, the geometry in "
+                        f"{self._geometry.coordinates.name!r}")
                 spec = self.spec(name)
                 if spec is not None and field.character != spec.character:
                     raise ValueError(
@@ -573,7 +581,8 @@ class Model:
                 data = self._across(group, name)
                 fitted = polynomial_fit(interval, data, degree=degree, n=n)
                 fields[name] = RadialField(interval, fitted,
-                                           character=character, name=name)
+                                           character=character, name=name,
+                                           coordinates=geometry.coordinates)
                 residuals[(j, name)] = _misfit(data, fitted, interval, n)
             layers.append(fields)
         coarse = self.replaced(geometry=geometry, layers=layers)

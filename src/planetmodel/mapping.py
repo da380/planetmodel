@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .coordinates import SPHERICAL
 from .displacement import (CallableDisplacement, RadialDisplacement, SphericalFunction,
                            ZeroDisplacement, as_displacement)
 from .frames import cartesian_points, spherical_coordinates
@@ -158,17 +159,10 @@ def validity_lattice(skeleton: Skeleton, *, n_r: int = 8, n_theta: int = 25,
     sampled where the skeleton holds it; theta covers [0, pi] including
     both poles and phi covers [-pi, pi).  Returns broadcastable arrays of
     shapes (n, 1, 1), (1, n_theta, 1) and (1, 1, n_phi), n being
-    nlayers*n_r, one more for the centre.
+    nlayers*n_r, one more for the centre.  It is `SPHERICAL.lattice`
+    under the names of the spherical coordinates.
     """
-    b = np.asarray(skeleton.boundaries, dtype=float)
-    rs = [np.zeros(1)] if b[0] == 0.0 else []
-    for lo, hi in zip(b[:-1], b[1:]):
-        inset = 1e-6 * (hi - lo)
-        rs.append(np.linspace(lo + inset, hi - inset, n_r))
-    r = np.concatenate(rs)
-    theta = np.linspace(0.0, np.pi, n_theta)
-    phi = np.linspace(-np.pi, np.pi, n_phi, endpoint=False)
-    return (r[:, None, None], theta[None, :, None], phi[None, None, :])
+    return SPHERICAL.lattice(skeleton, n_c=n_r, n_a=n_theta, n_b=n_phi)
 
 
 def outer_radius_of(domain: float | Skeleton | Geometry) -> float:

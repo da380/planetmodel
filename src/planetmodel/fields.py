@@ -19,6 +19,14 @@ phi)`, is `evaluate` in the spherical frame, and a radial field of rank
 interval by more than `rtol` of its width is refused: stepping beyond a
 layer on purpose is `on_interval`.
 
+The coordinates and the frames are those of the field's `coordinates`
+(`planetmodel.coordinates`), `SPHERICAL` unless a constructor is given
+another system: the points, the local frame R, the frame names (the
+local frame first, the default of `frame`) and the coordinates of a
+rescaled point are asked of it.  The algebra keeps the system of its
+operands, a number standing for a constant in that system, and refuses
+to combine fields of two systems.
+
 Three kinds are shipped.  `RadialField` holds one layer function per
 stored component and is exact when they are polynomial; it declares
 their pieces (`radial_pieces`), and for a positive field of rank 0 whose
@@ -45,8 +53,9 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import SCALAR, Character
-from .frames import (SphericalFunction, bond_matrix, rotate_slots,
-                     spherical_coordinates, spherical_frame, tensor_to_voigt)
+from .coordinates import (CARTESIAN, SPHERICAL, Coordinates, checked_coordinates,
+                          common_coordinates, resolve_frame)
+from .frames import SphericalFunction, bond_matrix, rotate_slots, tensor_to_voigt
 from .layerfunction import (LayerFunction, LayerFunctionLike, as_interval,
                             as_layer_function, as_scalar, as_values, constant_layer,
                             same_interval)
@@ -59,8 +68,9 @@ __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "stored_shape", "to_stored", "rotate_stored", "radial_pieces_of",
            "log_radial_pieces_of"]
 
-#: The frames a field can present its components in.
-FRAMES = ("spherical", "cartesian")
+#: The frames a field in spherical coordinates can present its components
+#: in: `SPHERICAL.frames`.
+FRAMES = SPHERICAL.frames
 
 
 def check_frame(frame: str) -> None:
@@ -78,16 +88,21 @@ def stored_shape(character: Character) -> tuple[int, ...]:
 
 @runtime_checkable
 class Field(Protocol):
-    """What every field has: three attributes and `evaluate`."""
+    """What every field has: three attributes and `evaluate`.
+
+    A field may also state its coordinate system as `coordinates`; one
+    that does not is spherical (`coordinates.coordinates_of`).
+    """
 
     interval: tuple[float, float]
     character: Character
     name: str | None
 
     def evaluate(self, r: ArrayLike, theta: ArrayLike, phi: ArrayLike, *,
-                 frame: str = "spherical") -> np.ndarray:
-        """The components at the broadcast coordinates, in `frame`:
-        the broadcast shape followed by the character's stored shape."""
+                 frame: str | None = None) -> np.ndarray:
+        """The components at the broadcast coordinates, in `frame`, one of
+        the coordinate system's frames and its local one by default: the
+        broadcast shape followed by the character's stored shape."""
         ...
 
 
@@ -128,9 +143,9 @@ def rotate_stored(values: np.ndarray, R: np.ndarray, character: Character
                   ) -> np.ndarray:
     """Stored components rotated by R, R of shape (..., 3, 3) broadcasting
     against the points: the Bond matrix on a Voigt form, a factor of R on
-    every slot otherwise, and nothing for rank 0.  With R the spherical
-    frame this takes spherical components to Cartesian ones, and with
-    its transpose back."""
+    every slot otherwise, and nothing for rank 0.  With R the local frame
+    this takes local components to Cartesian ones, and with its
+    transpose back."""
     rank = character.rank
     if rank == 0:
         return values
@@ -146,14 +161,21 @@ class FieldBase:
     """The shared behaviour of the shipped fields.
 
     A subclass sets `_interval`, `_character`, `_name` and `_rtol`, and
-    implements `_values(r, theta, phi)` returning the stored components
-    in the spherical frame, plus `on_interval`, `rescaled` and
-    `renamed`.  This class checks the coordinates, presents the values
-    in the frame asked for, and supplies the algebra.
+    `_coordinates` where its system is not the class's (`SPHERICAL` by
+    default), and implements `_values(r, theta, phi)` returning the
+    stored components in the local frame, plus `on_interval`, `rescaled`
+    and `renamed`.  This class checks the coordinates, presents the
+    values in the frame asked for, and supplies the algebra.
     """
 
     is_radial = False
     __array_ufunc__ = None
+    _coordinates: Coordinates = SPHERICAL
+
+    @property
+    def coordinates(self) -> Coordinates:
+        """The coordinate system the field is stated in."""
+        return self._coordinates
 
     @property
     def interval(self) -> tuple[float, float]:
@@ -216,23 +238,24 @@ class FieldBase:
 
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
-        """The stored components in the spherical frame at checked points."""
+        """The stored components in the local frame at checked points."""
         raise NotImplementedError
 
     def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
-                 *, frame: str = "spherical") -> np.ndarray:
+                 *, frame: str | None = None) -> np.ndarray:
         """The components at (r, theta, phi) in `frame`, float64 or
-        complex128."""
-        check_frame(frame)
+        complex128; `frame` is one of the coordinates' frames, the local
+        one by default."""
+        frame = resolve_frame(self.coordinates, frame)
         r, theta, phi = self._points(r, theta, phi)
         values = as_values(self._values(r, theta, phi))
-        if frame == "cartesian" and self._character.rank:
-            values = rotate_stored(values, spherical_frame(theta, phi),
+        if frame == CARTESIAN and self._character.rank:
+            values = rotate_stored(values, self.coordinates.frame(theta, phi),
                                    self._character)
         return values
 
     def __call__(self, *coordinates: ArrayLike) -> np.ndarray:
-        """`evaluate` in the spherical frame: f(r, theta, phi), or f(r) for a
+        """`evaluate` in the local frame: f(r, theta, phi), or f(r) for a
         radial field of rank 0."""
         if len(coordinates) == 1:
             return self.evaluate(coordinates[0], None, None)
@@ -241,9 +264,9 @@ class FieldBase:
                             f"alone, not {len(coordinates)} arguments")
         return self.evaluate(*coordinates)
 
-    def evaluate_at(self, X: ArrayLike, *, frame: str = "cartesian") -> np.ndarray:
+    def evaluate_at(self, X: ArrayLike, *, frame: str = CARTESIAN) -> np.ndarray:
         """The components at Cartesian points X of shape (..., 3), in `frame`."""
-        r, theta, phi, _ = spherical_coordinates(X)
+        r, theta, phi, _ = self.coordinates.split(X)
         return self.evaluate(r, theta, phi, frame=frame)
 
     # -- the algebra --------------------------------------------------------
@@ -256,11 +279,13 @@ class FieldBase:
 
     def _term(self, other: object) -> Field | None:
         """`other` as a field to add or subtract: itself, or a number as
-        the rank-0 weight-0 constant on this interval; None otherwise."""
+        the rank-0 weight-0 constant on this interval, in this field's
+        coordinates; None otherwise."""
         if isinstance(other, Field):
             return other
         if _is_number(other):
-            return constant_field(self._interval, as_scalar(other))
+            return constant_field(self._interval, as_scalar(other),
+                                  coordinates=self.coordinates)
         return None
 
     def __add__(self, other: Field | float | complex) -> Field:
@@ -323,7 +348,8 @@ class FieldBase:
             raise ValueError("a field is raised to a non-negative integer")
         if isinstance(self, RadialField):
             return RadialField(self._interval, self.function ** int(n),
-                               character=self._character, rtol=self._rtol)
+                               character=self._character, rtol=self._rtol,
+                               coordinates=self.coordinates)
         return ComposedField(lambda x: x ** int(n), (self,), character=self._character)
 
 
@@ -342,18 +368,20 @@ def _elementwise(fn: Callable[..., object], *arrays: np.ndarray) -> np.ndarray:
 def _combine(fields: tuple[Field, Field], op: Callable[..., ArrayLike],
              character: Character) -> Field:
     if all(isinstance(f, RadialField) for f in fields):
+        coordinates = common_coordinates(fields)
         a, b = fields
         fb = b._fs if b.interval == a.interval else _elementwise(
             lambda f: f.on_interval(*a.interval), b._fs)
         return RadialField(a.interval, _elementwise(op, a._fs, fb),
-                           character=character, rtol=a.rtol)
+                           character=character, rtol=a.rtol, coordinates=coordinates)
     return ComposedField(op, fields, character=character)
 
 
 def _scale(field: Field, c: float | complex) -> Field:
     if isinstance(field, RadialField):
         return RadialField(field.interval, _elementwise(lambda f: f * c, field._fs),
-                           character=field.character, rtol=field.rtol)
+                           character=field.character, rtol=field.rtol,
+                           coordinates=field.coordinates)
     return ComposedField(lambda x: c * x, (field,), character=field.character)
 
 
@@ -363,8 +391,9 @@ class RadialField(FieldBase):
     `function` is a layer function, a `PPoly`, a number or a callable of
     r for a rank-0 field; for a higher rank it is a nested sequence of
     those in the stored shape (Voigt for ranks 2 and 4), giving the
-    components in the spherical frame.  `functions` is that array of
-    layer functions; `function` the single one of a rank-0 field.
+    components in the local frame.  `functions` is that array of layer
+    functions; `function` the single one of a rank-0 field.
+    `coordinates` is the system, the class's own (`SPHERICAL`) when None.
     """
 
     is_radial = True
@@ -372,7 +401,9 @@ class RadialField(FieldBase):
     def __init__(self, interval: tuple[float, float],
                  function: LayerFunctionLike | Sequence | np.ndarray, *,
                  character: Character = SCALAR, name: str | None = None,
-                 rtol: float = 1e-9) -> None:
+                 rtol: float = 1e-9, coordinates: Coordinates | None = None) -> None:
+        if coordinates is not None:
+            self._coordinates = checked_coordinates(coordinates)
         self._interval = as_interval(interval)
         self._character = character
         self._name = name
@@ -447,7 +478,8 @@ class RadialField(FieldBase):
             fs[idx] = fn(self._fs[idx])
         return RadialField(self._interval if interval is None else interval, fs,
                            character=self._character if character is None
-                           else character, name=name, rtol=self._rtol)
+                           else character, name=name, rtol=self._rtol,
+                           coordinates=self.coordinates)
 
     def derivative(self, *, nu: int = 1) -> "RadialField":
         """The nu-th radial derivative of every component; the character is kept."""
@@ -511,20 +543,24 @@ class AnalyticField(FieldBase):
     The formula receives broadcast coordinate arrays and returns the
     components at each point, full or Voigt for ranks 2 and 4 (a
     constant tensor is broadcast); the result is presented Voigt.  A
-    formula may return complex values.
+    formula may return complex values.  `frame` is one of the frames of
+    `coordinates`, the local one when None; `coordinates` is the system,
+    the class's own (`SPHERICAL`) when None.
     """
 
     def __init__(self, interval: tuple[float, float], fn: SphericalFunction, *,
                  character: Character = SCALAR, name: str | None = None,
-                 frame: str = "spherical", rtol: float = 1e-9) -> None:
+                 frame: str | None = None, rtol: float = 1e-9,
+                 coordinates: Coordinates | None = None) -> None:
         if not callable(fn):
             raise TypeError(f"expected a callable, got {type(fn).__name__}")
-        check_frame(frame)
+        if coordinates is not None:
+            self._coordinates = checked_coordinates(coordinates)
+        self._frame = resolve_frame(self.coordinates, frame)
         self._interval = as_interval(interval)
         self._fn = fn
         self._character = character
         self._name = name
-        self._frame = frame
         self._rtol = float(rtol)
 
     @property
@@ -541,30 +577,34 @@ class AnalyticField(FieldBase):
                 phi: np.ndarray | None) -> np.ndarray:
         raw = np.asarray(self._fn(r, theta, phi))
         vals = to_stored(raw, r.shape, self._character, self)
-        if self._frame == "cartesian" and self._character.rank:
-            R = spherical_frame(theta, phi)
+        if self._frame == CARTESIAN and self._character.rank:
+            R = self.coordinates.frame(theta, phi)
             vals = rotate_stored(vals, np.swapaxes(R, -1, -2), self._character)
         return vals
 
     def on_interval(self, lo: float, hi: float) -> "AnalyticField":
         """The formula on [lo, hi]: it extends wherever it is asked."""
         return AnalyticField((lo, hi), self._fn, character=self._character,
-                             name=self._name, frame=self._frame, rtol=self._rtol)
+                             name=self._name, frame=self._frame, rtol=self._rtol,
+                             coordinates=self.coordinates)
 
     def rescaled(self, *, k: float, v: float) -> "AnalyticField":
-        """v fn(r / k, theta, phi) on the interval scaled by k."""
+        """v fn at the point X / k, on the interval scaled by k: on the
+        sphere v fn(r / k, theta, phi)."""
         k, v = float(k), float(v)
-        fn = self._fn
+        fn, scaled = self._fn, self.coordinates.scaled
         lo, hi = self._interval
         return AnalyticField(
-            (k * lo, k * hi), lambda r, t, p: v * np.asarray(fn(r / k, t, p)),
+            (k * lo, k * hi),
+            lambda r, t, p: v * np.asarray(fn(*scaled(r, t, p, 1.0 / k))),
             character=self._character, name=self._name, frame=self._frame,
-            rtol=self._rtol)
+            rtol=self._rtol, coordinates=self.coordinates)
 
     def renamed(self, name: str | None) -> "AnalyticField":
         """The same field under `name`."""
         return AnalyticField(self._interval, self._fn, character=self._character,
-                             name=name, frame=self._frame, rtol=self._rtol)
+                             name=name, frame=self._frame, rtol=self._rtol,
+                             coordinates=self.coordinates)
 
     def __repr__(self) -> str:
         nm = f"{self._name!r}, " if self._name else ""
@@ -603,9 +643,11 @@ def to_stored(raw: np.ndarray, point_shape: tuple[int, ...],
 class ComposedField(FieldBase):
     """`fn(*values)` pointwise on fields of one interval.
 
-    The sources' stored components in the spherical frame are passed to
+    The sources' stored components in the local frame are passed to
     `fn`, which returns the stored components of `character`; it is
-    never sampled or refitted.  Radial when every source is.
+    never sampled or refitted.  Radial when every source is.  The
+    sources share one coordinate system, which is the field's; a mix is
+    refused.
     """
 
     def __init__(self, fn: Callable[..., ArrayLike], sources: Iterable[Field], *,
@@ -625,6 +667,7 @@ class ComposedField(FieldBase):
                 raise ValueError(
                     f"sources on different intervals: {first.interval} and "
                     f"{s.interval}")
+        self._coordinates = common_coordinates(sources)
         self._fn = fn
         self._sources = sources
         self._interval = as_interval(first.interval)
@@ -675,10 +718,11 @@ class ComposedField(FieldBase):
 
 
 def constant_field(interval: tuple[float, float], value: ArrayLike, *,
-                   character: Character = SCALAR,
-                   name: str | None = None) -> RadialField:
-    """The constant `value` (a number, or an array of the stored shape) as an
-    exact radial field."""
+                   character: Character = SCALAR, name: str | None = None,
+                   coordinates: Coordinates | None = None) -> RadialField:
+    """The constant `value` (a number, or an array of the stored shape, in
+    the local frame) as an exact radial field in `coordinates`,
+    `SPHERICAL` when None."""
     lo, hi = as_interval(interval)
     v = as_values(value)
     shape = stored_shape(character)
@@ -686,8 +730,9 @@ def constant_field(interval: tuple[float, float], value: ArrayLike, *,
         raise ValueError(f"a {character} constant has shape {shape}, got {v.shape}")
     if shape == ():
         return RadialField((lo, hi), constant_layer((lo, hi), as_scalar(v)),
-                           character=character, name=name)
+                           character=character, name=name, coordinates=coordinates)
     fs = np.empty(shape, dtype=object)
     for idx in np.ndindex(shape):
         fs[idx] = constant_layer((lo, hi), as_scalar(v[idx]))
-    return RadialField((lo, hi), fs, character=character, name=name)
+    return RadialField((lo, hi), fs, character=character, name=name,
+                       coordinates=coordinates)

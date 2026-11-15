@@ -250,13 +250,13 @@ def check_geometry(geometry: Geometry) -> None:
     checks on), that names are unique, that the interfaces sit on the
     skeleton's boundaries with consistent `between`, that `scaled(k)`
     round-trips, and that the mapping passes `check_mapping` on the
-    validity lattice's angles, at radii inside every span between the
-    boundaries and the declared knots.
+    lateral coordinates of the lattice of the geometry's `coordinates`,
+    at radii inside every span between the boundaries and the declared
+    knots.
     """
-    from .frames import cartesian_points
     from .geometry import Geometry
-    from .mapping import validity_lattice
 
+    coords = geometry.coordinates
     sk = geometry.skeleton
     Geometry(sk, mapping=geometry.mapping,
              layer_names=[lay.name for lay in geometry.layers],
@@ -283,13 +283,13 @@ def check_geometry(geometry: Geometry) -> None:
         "scaled(k).scaled(1/k) does not restore the skeleton")
     # points well inside every span between the boundaries and the
     # declared knots, where the mapping's gradient may jump
-    _, theta, phi = validity_lattice(sk, n_theta=5, n_phi=4)
+    _, theta, phi = coords.lattice(sk, n_a=5, n_b=4)
     tol = geometry.rtol * sk.span
     cuts = np.unique(np.concatenate([b, np.asarray(geometry.knots(), dtype=float)]))
     cuts = cuts[np.concatenate([[True], np.diff(cuts) > tol])]
     r = np.concatenate([lo + (hi - lo) * np.array([0.25, 0.5, 0.75])
                         for lo, hi in zip(cuts[:-1], cuts[1:])])[:, None, None]
-    X = cartesian_points(r, theta, phi)
+    X = coords.points(r, theta, phi)
     assert np.allclose(twice.mapping(X), geometry.mapping(X), rtol=1e-10,
                        atol=1e-10 * max(1.0, float(sk.span))), (
         "scaled(k).scaled(1/k) does not restore the mapping")
@@ -371,21 +371,24 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
                 n: int = 64) -> None:
     """Hold a Field to its protocol.
 
-    Checks the three attributes; that a call with the radius alone is
-    accepted exactly when the field is radial and of rank 0; float64 (or
-    complex128) values of the broadcast shape plus the stored shape,
-    agreeing with `dtype`; both ends of the
-    interval; refusal outside it and of an unknown frame; the two
-    frames related by the rotation the character implies (a factor of
-    R on every slot, expanded from Voigt where the field is Voigt);
-    `evaluate_at` against `evaluate`; `on_interval` on the overlap;
-    the `rescaled` round trip; and, where the field declares the pieces
-    of its logarithm (`log_radial_pieces`), that it is of rank 0 and
-    positive, the breakpoints spanning the interval in increasing order.
+    Checks the three attributes, and the coordinate system the field
+    states (`SPHERICAL` where it states none), whose probes, points,
+    frames and scaling every check below goes through; that a call with
+    the radius alone is accepted exactly when the field is radial and of
+    rank 0; float64 (or complex128) values of the broadcast shape plus
+    the stored shape, agreeing with `dtype`; both ends of the interval;
+    refusal outside it and of an unknown frame; the local and Cartesian
+    frames related by the rotation the character implies (a factor of R
+    on every slot, expanded from Voigt where the field is Voigt);
+    `evaluate_at` against `evaluate`; `on_interval` on the overlap; the
+    `rescaled` round trip, the rescaled field read at the point k X; and,
+    where the field declares the pieces of its logarithm
+    (`log_radial_pieces`), that it is of rank 0 and positive, the
+    breakpoints spanning the interval in increasing order.
     """
+    from .coordinates import CARTESIAN, SPHERICAL, Coordinates
     from .fields import stored_shape
-    from .frames import cartesian_points, rotate_slots, spherical_frame
-    from .frames import tensor_to_voigt, voigt_to_tensor
+    from .frames import rotate_slots, tensor_to_voigt, voigt_to_tensor
 
     rng = np.random.default_rng(0) if rng is None else rng
     lo, hi = (float(x) for x in field.interval)
@@ -393,13 +396,16 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     width = hi - lo
     char = field.character
     assert hasattr(field, "name"), "no name attribute"
+    coords = getattr(field, "coordinates", SPHERICAL)
+    assert isinstance(coords, Coordinates), (
+        f"the coordinates {coords!r} are not a Coordinates")
+    local = coords.frames[0]
     shape = stored_shape(char)
     radial_scalar = bool(getattr(field, "is_radial", False)) and char.rank == 0
 
     r = lo + width * rng.uniform(0.0, 1.0, n)
     r[0], r[-1] = lo, hi
-    theta = rng.uniform(0.05, np.pi - 0.05, n)
-    phi = rng.uniform(-np.pi, np.pi, n)
+    theta, phi = coords.probe(rng, n)
 
     values = field.evaluate(r, theta, phi)
     assert isinstance(values, np.ndarray) and values.dtype in (np.float64,
@@ -446,27 +452,27 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     else:
         raise AssertionError("an unknown frame was accepted")
 
-    cart = field.evaluate(r, theta, phi, frame="cartesian")
+    cart = field.evaluate(r, theta, phi, frame=CARTESIAN)
     assert cart.shape == values.shape, "the Cartesian frame changes the shape"
     if char.rank:
-        R = spherical_frame(theta, phi)
+        R = coords.frame(theta, phi)
         full = (voigt_to_tensor(values, rank=char.rank) if char.voigt_shape
                 else values)
         want = rotate_slots(full, R, char.rank)
         if char.voigt_shape:
             want = tensor_to_voigt(want, rank=char.rank)
         assert np.allclose(cart, want, rtol=1e-10, atol=1e-10 * scale), (
-            "the Cartesian components are not the rotated spherical ones")
+            f"the Cartesian components are not the rotated {local} ones")
     else:
         assert np.allclose(cart, values), "a rank-0 field changes with the frame"
 
-    X = cartesian_points(r, theta, phi)
+    X = coords.points(r, theta, phi)
     at = field.evaluate_at(X)
     assert np.allclose(at, cart, rtol=1e-10, atol=1e-10 * scale), (
         "evaluate_at disagrees with evaluate in the Cartesian frame")
-    at_s = field.evaluate_at(X, frame="spherical")
+    at_s = field.evaluate_at(X, frame=local)
     assert np.allclose(at_s, values, rtol=1e-10, atol=1e-10 * scale), (
-        "evaluate_at in the spherical frame disagrees with evaluate")
+        f"evaluate_at in the {local} frame disagrees with evaluate")
 
     wider = field.on_interval(lo - 0.25 * width, hi + 0.25 * width)
     assert np.allclose(wider.interval, (lo - 0.25 * width, hi + 0.25 * width)), (
@@ -481,7 +487,7 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     assert np.allclose(g.interval, (k * lo, k * hi), rtol=1e-12), (
         "rescaled does not scale the interval")
     assert g.character == char, "rescaled changes the character"
-    assert np.allclose(g.evaluate(k * r, theta, phi), v * values,
+    assert np.allclose(g.evaluate(*coords.scaled(r, theta, phi, k)), v * values,
                        rtol=1e-10, atol=1e-10 * scale), "rescaled is not v f(r / k)"
     back = g.rescaled(k=1.0 / k, v=1.0 / v)
     assert np.allclose(back.evaluate(r, theta, phi), values,
@@ -543,12 +549,14 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
 
     Checks that `replaced` with checks on accepts it and keeps its class,
     fields and citation, which `cite` gives a work a line; that every
-    layer's fields pass `check_field`, sit on the layer's interval, and
-    have their spec's character; that `layer(name)` and `layer(i)`
-    agree; that every constant is its SI value over the scales' factor;
-    that conversion to other scales and back restores every field to
-    1e-12; and that every surgery keeps the class and validates again.
+    layer's fields pass `check_field`, sit on the layer's interval, are
+    in the geometry's coordinates and have their spec's character; that
+    `layer(name)` and `layer(i)` agree; that every constant is its SI
+    value over the scales' factor; that conversion to other scales and
+    back restores every field to 1e-12 at points the coordinates probe;
+    and that every surgery keeps the class and validates again.
     """
+    from .coordinates import coordinates_of
     from .model import Model
     from .units import Scales
 
@@ -578,6 +586,8 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
             assert np.allclose(field.interval, layer.interval, rtol=0.0,
                                atol=rtol * width), (
                 f"{name!r} on layer {i} is on {field.interval}")
+            assert coordinates_of(field) == model.geometry.coordinates, (
+                f"{name!r} on layer {i} is not in the geometry's coordinates")
             spec = model.spec(name)
             if spec is not None:
                 assert field.character == spec.character, (
@@ -603,7 +613,7 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
         for layer, layer2 in zip(model.layers, back.layers):
             lo, hi = layer.interval
             r = lo + (hi - lo) * rng.uniform(0.0, 1.0, 8)
-            theta, phi = rng.uniform(0.1, 3.0, 8), rng.uniform(-3.0, 3.0, 8)
+            theta, phi = model.geometry.coordinates.probe(rng, 8)
             for name, f in layer.fields.items():
                 a, b = f.evaluate(r, theta, phi), layer2[name].evaluate(r, theta, phi)
                 scale = max(float(np.max(np.abs(a))), 1e-300)

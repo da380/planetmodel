@@ -27,11 +27,14 @@ level, since the rule is linear.
 they hold a source and a mapping and do the work in `evaluate`.  Both
 are asked at reference coordinates and neither inverts the mapping.  A
 pushed-forward field returns the physical tensor at m(X), in Cartesian
-components or in the spherical frame at m(X), the frame a physical
+components or in the local frame at m(X), the frame a physical
 quantity is named in.  A pulled-back field takes a callable of the
-physical point's spherical coordinates returning components in the
-frame there, evaluates it at m(X), and gives the referential tensor at
-X in the frame at X, so it is a field like any other.
+physical point's coordinates returning components in the local frame
+there, evaluates it at m(X), and gives the referential tensor at X in
+the frame at X, so it is a field like any other.  The coordinates, the
+points and the frames are those of the field's `coordinates`: the
+source's for a pushed-forward field, the one given (`SPHERICAL` by
+default) for a pulled-back one.
 """
 from __future__ import annotations
 
@@ -39,10 +42,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
-from .fields import Field, FieldBase, check_frame, to_stored
-from .frames import (SphericalFunction, cartesian_points, rotate_slots,
-                     spherical_coordinates, spherical_frame, tensor_to_voigt,
-                     voigt_to_tensor)
+from .coordinates import (Coordinates, checked_coordinates, coordinates_of,
+                          resolve_frame)
+from .fields import Field, FieldBase, to_stored
+from .frames import SphericalFunction, rotate_slots, tensor_to_voigt, voigt_to_tensor
 from .mapping import Mapping, scaled_mapping
 
 __all__ = ["push_forward", "pull_back", "full_components",
@@ -141,30 +144,22 @@ def _reduce(values: np.ndarray, character: Character) -> np.ndarray:
     return values
 
 
-def _frame_at(x: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-    """The spherical frame at the physical points x; on the polar axis,
-    where x fixes no longitude, the reference point's longitude, and at
-    the centre the reference point's angles."""
-    _, tx, px, _ = spherical_coordinates(x)
-    on_axis = np.hypot(x[..., 0], x[..., 1]) == 0.0
-    px = np.where(on_axis, phi, px)
-    tx = np.where(np.linalg.norm(x, axis=-1) == 0.0, theta, tx)
-    return spherical_frame(tx, px)
-
-
 class PushedForwardField(FieldBase):
     """The image of a referential field under a mapping, asked at reference points.
 
     `evaluate(r, theta, phi)` takes reference coordinates and returns
     the tensor the field has at the physical point m(X): the source's
     Cartesian components are pushed forward with F(X) and J(X), then
-    given in Cartesian components or in the spherical frame at m(X),
-    Voigt-reduced when the character has a Voigt shape.  Interval and
-    character are the source's; the name defaults to `<source>_phys`
-    where the source is named.  All three coordinates are required, F
-    depending on direction even where the source does not, so the field
-    is never radial.  `rescaled` rescales the source and conjugates the
-    mapping by the same length scale.
+    given in Cartesian components or in the local frame at m(X),
+    Voigt-reduced when the character has a Voigt shape.  Where m(X)
+    leaves the lateral coordinates of that frame undefined (on the
+    sphere, the polar axis and the centre), the reference point's are
+    taken.  Interval, character and coordinates are the source's; the
+    name defaults to `<source>_phys` where the source is named.  All
+    three coordinates are required, F depending on direction even where
+    the source does not, so the field is never radial.  `rescaled`
+    rescales the source and conjugates the mapping by the same length
+    scale.
     """
 
     is_radial = False
@@ -173,6 +168,7 @@ class PushedForwardField(FieldBase):
                  name: str | None = None) -> None:
         self._source = field
         self._mapping = mapping
+        self._coordinates = coordinates_of(field)
         self._interval = tuple(float(x) for x in field.interval)
         self._character = field.character
         self._rtol = float(getattr(field, "rtol", 1e-9))
@@ -193,7 +189,7 @@ class PushedForwardField(FieldBase):
                   ) -> tuple[np.ndarray, np.ndarray]:
         """(full Cartesian components at m(X), the points m(X)) for reference
         coordinates already broadcast and checked."""
-        X = cartesian_points(r, theta, phi)
+        X = self.coordinates.points(r, theta, phi)
         vals = full_components(self._source, r, theta, phi, frame="cartesian")
         F = np.asarray(self._mapping.deformation_gradient(X), dtype=float)
         J = np.asarray(self._mapping.jacobian(X), dtype=float)
@@ -203,20 +199,21 @@ class PushedForwardField(FieldBase):
                 phi: np.ndarray | None) -> np.ndarray:
         out, x = self._physical(r, theta, phi)
         if self._character.rank:
-            out = rotate_slots(out, np.swapaxes(_frame_at(x, theta, phi), -1, -2),
-                               self._character.rank)
+            R = self.coordinates.split(x, near=(theta, phi))[3]
+            out = rotate_slots(out, np.swapaxes(R, -1, -2), self._character.rank)
         return _reduce(out, self._character)
 
     def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
-                 *, frame: str = "spherical") -> np.ndarray:
+                 *, frame: str | None = None) -> np.ndarray:
         """The physical tensor at m(X) for the reference point X = (r, theta, phi).
 
         In Cartesian components for `frame="cartesian"`, in the local
-        spherical frame at m(X) for `frame="spherical"`.
+        frame at m(X) for the local frame's name ("spherical" on the
+        sphere), the default.
         """
-        check_frame(frame)
+        frame = resolve_frame(self.coordinates, frame)
         r, theta, phi = self._points(r, theta, phi)
-        if frame == "spherical":
+        if frame == self.coordinates.frames[0]:
             return self._values(r, theta, phi)
         out, _ = self._physical(r, theta, phi)
         return _reduce(out, self._character)
@@ -247,24 +244,28 @@ class PulledBackField(FieldBase):
     """A field known on the physical body, stated referentially.
 
     `physical(r, theta, phi)` is a callable of the physical point's
-    spherical coordinates returning components in the spherical frame
-    there, full or Voigt for ranks 2 and 4 (a constant tensor is
-    broadcast).  At a reference point X the field evaluates `physical`
-    at m(X), rotates to Cartesian components with the frame at m(X),
-    pulls back with F(X) and J(X), and presents the referential tensor
-    in the frame at X.  No inverse mapping is involved.  All three
-    coordinates are required and the field is never radial.  A formula
-    returning complex values is refused.  `rescaled` conjugates the
-    mapping by k and reads `physical` at r / k, times v.
+    coordinates returning components in the local frame there, full or
+    Voigt for ranks 2 and 4 (a constant tensor is broadcast).  At a
+    reference point X the field evaluates `physical` at m(X), rotates to
+    Cartesian components with the frame at m(X), pulls back with F(X)
+    and J(X), and presents the referential tensor in the frame at X.  No
+    inverse mapping is involved.  All three coordinates are required and
+    the field is never radial.  A formula returning complex values is
+    refused.  `rescaled` conjugates the mapping by k and reads
+    `physical` at the point x / k (on the sphere at r / k), times v.
+    `coordinates` is the system, the class's own (`SPHERICAL`) when None.
     """
 
     is_radial = False
 
     def __init__(self, interval: tuple[float, float], physical: SphericalFunction,
                  mapping: Mapping, *, character: Character,
-                 name: str | None = None, rtol: float = 1e-9) -> None:
+                 name: str | None = None, rtol: float = 1e-9,
+                 coordinates: Coordinates | None = None) -> None:
         if not callable(physical):
             raise TypeError(f"expected a callable, got {type(physical).__name__}")
+        if coordinates is not None:
+            self._coordinates = checked_coordinates(coordinates)
         lo, hi = (float(x) for x in interval)
         if not hi > lo:
             raise ValueError(f"an interval must increase, got ({lo:g}, {hi:g})")
@@ -277,7 +278,7 @@ class PulledBackField(FieldBase):
 
     @property
     def physical(self) -> SphericalFunction:
-        """The formula of the physical point's spherical coordinates."""
+        """The formula of the physical point's coordinates."""
         return self._physical
 
     @property
@@ -288,8 +289,8 @@ class PulledBackField(FieldBase):
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
         rank = self._character.rank
-        X = cartesian_points(r, theta, phi)
-        rp, tp, pp, Rp = spherical_coordinates(self._mapping(X))
+        X = self.coordinates.points(r, theta, phi)
+        rp, tp, pp, Rp = self.coordinates.split(self._mapping(X))
         raw = np.asarray(self._physical(rp, tp, pp))
         if np.iscomplexobj(raw):
             raise TypeError(f"{self!r} returned complex values; a field is real")
@@ -301,7 +302,7 @@ class PulledBackField(FieldBase):
         J = np.asarray(self._mapping.jacobian(X), dtype=float)
         ref = pull_back(vals, F, J, self._character)
         if rank:
-            R = spherical_frame(theta, phi)
+            R = self.coordinates.frame(theta, phi)
             ref = rotate_slots(ref, np.swapaxes(R, -1, -2), rank)
         return _reduce(ref, self._character)
 
@@ -309,23 +310,25 @@ class PulledBackField(FieldBase):
         """The same physical formula and mapping on [lo, hi]."""
         return PulledBackField((lo, hi), self._physical, self._mapping,
                                character=self._character, name=self._name,
-                               rtol=self._rtol)
+                               rtol=self._rtol, coordinates=self.coordinates)
 
     def rescaled(self, *, k: float, v: float) -> "PulledBackField":
-        """v physical(r / k, theta, phi) under the mapping conjugated by k."""
+        """v physical at the point x / k (on the sphere v physical(r / k,
+        theta, phi)) under the mapping conjugated by k."""
         k, v = float(k), float(v)
-        fn = self._physical
+        fn, scaled = self._physical, self.coordinates.scaled
         lo, hi = self._interval
         return PulledBackField(
-            (k * lo, k * hi), lambda r, t, p: v * np.asarray(fn(r / k, t, p)),
+            (k * lo, k * hi),
+            lambda r, t, p: v * np.asarray(fn(*scaled(r, t, p, 1.0 / k))),
             scaled_mapping(self._mapping, k), character=self._character,
-            name=self._name, rtol=self._rtol)
+            name=self._name, rtol=self._rtol, coordinates=self.coordinates)
 
     def renamed(self, name: str | None) -> "PulledBackField":
         """The same field under `name`."""
         return PulledBackField(self._interval, self._physical, self._mapping,
                                character=self._character, name=name,
-                               rtol=self._rtol)
+                               rtol=self._rtol, coordinates=self.coordinates)
 
     def __repr__(self) -> str:
         nm = f"{self._name!r}, " if self._name else ""
