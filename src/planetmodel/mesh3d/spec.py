@@ -523,15 +523,20 @@ class EmbeddedFault:
     the mesh is the reference one, so each patch is pulled back through
     the geometry's mapping first (`fault.pull_back`) through `controls`
     nodes each way, or, where `controls` is None, through the fewest of
-    `fault.PULL_BACK_CONTROLS` that bring it within `rtol` of its size
-    (a patch crossing a knot of the mapping, an interface where a stack
-    of reliefs changes slope, has a creased preimage, which meets a
-    small `rtol` slowly: it is given a larger one, or its `controls`).
+    `fault.PULL_BACK_CONTROLS` that bring it within `rtol` of its size.
+    A patch crossing a knot of the mapping (an interface where a stack
+    of reliefs changes slope), whose preimage is creased along the
+    crossing, is cut there into pieces (`fault.Region`), each within one
+    layer and pulled back as a patch is, all through one grid, their
+    join made one curve inside the fault: one fault in the mesh, its
+    records and its curves as any (a crossing that does not run along
+    the patch's strike, from end to end, is refused).
     An edge of a patch whose preimage lies nowhere more than `reach`
     below the geometry's free surface (its outer sphere, or a box's top)
     is carried across it and trimmed there, so that the fault meets the
-    surface exactly; None takes for `reach` the relief of the surface
-    over the edge (the largest displacement the mapping gives the
+    surface exactly, the part carried the preimage of the patch's own
+    continuation past the edge; None takes for `reach` the relief of the
+    surface over the edge (the largest displacement the mapping gives the
     surface's points above it, along the layered coordinate) plus the
     CAD kernel's tolerance, so that under the identity only an edge at
     the surface or above it is carried across.  In a box, which stands
@@ -566,8 +571,8 @@ class EmbeddedFault:
     name: str | None = None
     #: The refinement towards the fault, or None for none.
     sizing: InterfaceSizing | None = None
-    #: The pull-back's control nodes each way on every patch; None to
-    #: choose them by `rtol`.
+    #: The pull-back's control nodes each way on every patch, or on every
+    #: piece of one cut at a knot; None to choose them by `rtol`.
     controls: int | None = None
     #: The pull-back's offset, as a fraction of each patch's size, met
     #: when `controls` is None.
@@ -891,7 +896,10 @@ class MeshResult:
     spec: MeshSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
-    #: Each fault's name -> its patches' preimages, the surfaces built in.
+    #: Each fault's name -> the preimages of the surfaces built in: one a
+    #: patch, or one a piece of a patch where it was cut at a knot of the
+    #: mapping or continued past an edge (`fault.Region`), in the order
+    #: of the patches.
     preimages: dict[str, tuple[Preimage, ...]] = field(default_factory=dict)
 
     def summary(self) -> str:

@@ -1,12 +1,18 @@
-"""A patch's spline form, its continuation, and its preimage under a mapping.
+"""A patch's spline form, its continuation, its regions, and its preimage
+under a mapping.
 
 The oracles: the spline against the patch's own map, for a plane and a
-structured patch of either rule; the continued spline against the
-original inside the square and against scipy's polynomial continuation
-of its end pieces outside; the preimage against the mapping itself,
+structured patch of either rule, and its derivatives against
+differences of it; the continued spline against the original inside the
+square and against scipy's polynomial continuation of its end pieces
+outside; a region against the patch protocol (`testing.check_patch`),
+against the patch over the whole square and against the spline
+continued beyond it; the preimage against the mapping itself,
 forward(inverse(x)) = x at the control nodes, and its offset falling at
 the fourth order of the control spacing between them, the rate of a
-bicubic interpolant.
+bicubic interpolant; and across a knot of a stack of reliefs, the
+regions either side of the crossing, found from the image of the knot's
+interface, against the rtol a creased preimage misses.
 """
 import numpy as np
 import pytest
@@ -14,8 +20,8 @@ from scipy.interpolate import NdBSpline
 
 from planetmodel import CallableDisplacement, RadialStretch
 from planetmodel.fault import (PULL_BACK_CONTROLS, GeographicFrame, GreatCircle,
-                               Plane, Slip, SmallCircle, StructuredPatch,
-                               TensorSpline, pull_back)
+                               Plane, Region, Slip, SmallCircle, StructuredPatch,
+                               TensorSpline, inverse_of, pull_back)
 from planetmodel.mapping import IdentityMapping, MappingBase, ScaledMapping
 
 UNIT = GeographicFrame(1.0)
@@ -200,3 +206,142 @@ def test_a_rectangular_control_grid():
                                   slip=ZERO)
     pre = pull_back(patch, bump(), controls=(9, 5))
     assert pre.controls == (9, 5) and pre.patch.positions.shape == (9, 5, 3)
+
+
+# -------------------------------------------------------------- derivatives
+
+@pytest.mark.parametrize("make", [plane, curved])
+def test_the_spline_s_derivatives_are_its_map_s(make):
+    """Against central differences of the map, inside the bounds and
+    beyond them, where the end pieces carry on."""
+    spline = make().spline()
+    u, v = RNG.uniform(-0.7, 0.7, (2, 40))
+    h = 1e-5
+    du = (spline(u + h, v) - spline(u - h, v)) / (2 * h)
+    dv = (spline(u, v + h) - spline(u, v - h)) / (2 * h)
+    # measured: 1.7e-10 at most (the curved patch's mixed derivative 2.3e-10)
+    assert np.allclose(spline(u, v, nu=(1, 0)), du, rtol=0, atol=1e-8)
+    assert np.allclose(spline(u, v, nu=(0, 1)), dv, rtol=0, atol=1e-8)
+    duv = (spline(u, v + h, nu=(1, 0)) - spline(u, v - h, nu=(1, 0))) / (2 * h)
+    assert np.allclose(spline(u, v, nu=(1, 1)), duv, rtol=0, atol=1e-7)
+
+
+# -------------------------------------------------------------- regions
+
+def test_a_region_is_a_patch():
+    """Held to the protocol: within the square, beyond it, and between
+    curves of u."""
+    from planetmodel import testing
+    u = np.linspace(-0.6, 0.55, 9)
+    for patch in (plane(), curved()):
+        for kw in ({}, {"u": (-0.6, 0.55), "lower": -0.7, "upper": 0.1 + 0.2 * u ** 2},
+                   {"lower": 0.1 * np.sin(np.linspace(-0.5, 0.5, 12)), "upper": 0.6}):
+            region = Region(patch, **kw)
+            testing.check_patch(region)
+            assert region.frame == patch.frame and region.patch is patch
+            assert np.all(region.slip.values == 0.0)
+
+
+def test_the_whole_square_is_the_patch_and_beyond_it_the_patch_continued():
+    patch = curved()
+    whole = Region(patch)
+    assert np.array_equal(whole.cartesian(U_, V_), patch.cartesian(U_, V_))
+    assert np.array_equal(whole.normal(U_, V_), patch.normal(U_, V_))
+    wide = Region(patch, u=(-0.6, 0.55), lower=-0.8)
+    U, V = wide.parameters(U_, V_)
+    assert np.allclose(U, -0.6 + (U_ + 0.5) * 1.15, rtol=0, atol=1e-15)
+    assert np.allclose(V, -0.8 + (V_ + 0.5) * 1.3, rtol=0, atol=1e-15)
+    # measured: 1.6e-15, the spline's own continuation
+    continued = patch.spline().extended(u=(0.1, 0.05), v=(0.3, 0.0))
+    assert np.allclose(wide.cartesian(U_, V_), continued(U, V), rtol=0, atol=1e-13)
+    # a plane continues as its plane
+    p = plane()
+    beyond = Region(p, lower=-1.0, upper=-0.5)
+    x = beyond.cartesian(U_, V_)
+    assert np.abs((x - p.cartesian(0.0, 0.0)) @ p.normal(0.0, 0.0)).max() < 1e-15
+
+
+def test_a_region_between_curves_runs_from_one_to_the_other():
+    patch = plane()
+    nodes = np.linspace(-0.5, 0.5, 9)
+    g = 0.1 * np.cos(np.pi * nodes)
+    below, above = Region(patch, upper=g), Region(patch, lower=g)
+    s = np.linspace(-0.5, 0.5, 33)
+    # the edge each shares with the other is one curve of the patch
+    assert np.allclose(below.cartesian(s, 0.5 + 0 * s),
+                       above.cartesian(s, -0.5 + 0 * s), rtol=0, atol=1e-15)
+    _, v = above.parameters(nodes, -0.5 + 0 * nodes)
+    assert np.allclose(v, g, rtol=0, atol=1e-15)
+    assert np.allclose(above.lower(nodes), g, rtol=0, atol=1e-15)
+    assert np.all(above.upper(nodes) == 0.5)
+
+
+def test_what_a_region_refuses():
+    with pytest.raises(ValueError, match="b > a"):
+        Region(plane(), u=(0.2, 0.2))
+    with pytest.raises(ValueError, match="above its lower"):
+        Region(plane(), lower=0.1, upper=0.1 * np.ones(5))
+    with pytest.raises(ValueError, match="at least 4"):
+        Region(plane(), upper=[0.1, 0.2, 0.3])
+    with pytest.raises(TypeError, match="no spline"):
+        Region(Region(plane()))
+    with pytest.raises(TypeError, match="Patch"):
+        Region("plane")
+
+
+def test_inverse_of_refuses_a_mapping_that_does_not_invert_itself():
+    m = bump()
+    assert inverse_of(m, plane().cartesian(0.0, 0.0)[None]) == m.inverse
+    with pytest.raises(ValueError, match="does not invert itself"):
+        inverse_of(MappingBase(), np.zeros((1, 3)))
+
+
+def test_the_regions_either_side_of_a_crease_pull_back_to_rtol():
+    """A plane across the Moho of a box under a stack of reliefs, whose
+    stretch's slope jumps there: its preimage, creased along the
+    crossing, is 3.5e-5 off with 129 by 129 control nodes; the regions
+    on either side of the crossing, found here as the roots of the
+    plane's height against the Moho's relief (its image), each pull
+    back to 1e-6 of their size, and their shared edge pulls back onto
+    the Moho's reference depth."""
+    from scipy.optimize import brentq
+
+    from planetmodel import Skeleton, cartesian
+    from planetmodel.fault import CartesianFrame
+
+    def ridge(x, y):
+        return (0.08 * np.exp(-((x - 0.6) / 0.15) ** 2)
+                * (1.0 + 0.25 * np.cos(np.pi * y))
+                - 0.02 * np.exp(-((x - 0.3) / 0.1) ** 2))
+
+    def root(x, y):
+        return -0.04 * np.exp(-((x - 0.6) / 0.2) ** 2)
+
+    g = cartesian.Geometry(Skeleton([0.0, 0.4, 1.0]),
+                           cartesian.Box([(0.0, 1.0), (-0.5, 0.5)]))
+    m = g.stretched(cartesian.layer_linear(g.skeleton, [ridge, root, None])).mapping
+    patch = Plane.at_depth(CartesianFrame(), 0.6, 0.1, 0.4, strike=0.0, dip=40.0,
+                           length=0.5, width=0.4, slip=ZERO)
+    size = np.hypot(0.5, 0.4)
+    assert pull_back(patch, m, controls=129).offset > 1e-5 * size
+
+    def above_moho(u, v):
+        x, y, z = patch.cartesian(u, v)
+        return z - (-0.4 + root(x, y))
+
+    nodes = np.linspace(-0.5, 0.5, 129)
+    crossing = np.array([brentq(lambda v: above_moho(u, v), -0.5, 0.5, xtol=1e-15)
+                         for u in nodes])
+    pieces = (Region(patch, upper=crossing), Region(patch, lower=crossing))
+    for piece in pieces:
+        pre = pull_back(piece, m, rtol=1e-6)
+        corners = piece.cartesian([-0.5, 0.5], [-0.5, 0.5])
+        # measured: 1.7e-7 off through 17 by 17 nodes, and 1.5e-7 through 9
+        assert pre.offset <= 1e-6 * np.linalg.norm(corners[1] - corners[0])
+        assert pre.controls[0] <= 17
+    upper = pull_back(pieces[0], m, controls=17).patch
+    s = np.linspace(-0.5, 0.5, 17)
+    edge = upper.cartesian(s, 0.5 + 0 * s)
+    # at the control nodes the join is the preimage of the crossing:
+    # measured 1.1e-16 off the Moho's reference depth
+    assert np.abs(edge[:, 2] + 0.4).max() < 1e-12

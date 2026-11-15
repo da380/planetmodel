@@ -2148,12 +2148,6 @@ def check_fault_file(path: str | os.PathLike[str], fault: Fault, *,
 #: node gmsh places on a trimmed edge may lie off the surface it trims.
 _CAD_RTOL = 1e-7
 
-#: How far the part of a fault carried across the surface may stray from
-#: the fault's own surface continued, as a fraction of how far beyond the
-#: edge it lies: measured 2e-5 for a plane and 8.3e-4 for a curved patch
-#: under a relief of 0.05, carried by up to 0.07 on a unit ball.
-_CARRIED_SLOPE = 2e-3
-
 
 def _patch_size(patch: Patch) -> float:
     """The longer diagonal between a patch's corners."""
@@ -2241,12 +2235,11 @@ def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray
             m = beyond & (found.patch == k)
             patch = fault.patches[int(k)]
             stray = _off_continued(patch, x[nodes[m]], found.u[m], found.v[m])
-            allowed = (distance + _CARRIED_SLOPE * off[m]
-                       + _CAD_RTOL * _patch_size(patch))
+            allowed = distance + _CAD_RTOL * _patch_size(patch)
             assert np.all(stray <= allowed), (
                 f"{name}: a node of the part carried across the surface lies "
                 f"{float(np.max(stray)):.3g} off the fault continued beyond its "
-                f"edge, more than {float(allowed[np.argmax(stray)]):.3g}")
+                f"edge, more than {allowed:.3g}")
     # every node of its tip on an edge of the square, held or not
     on_tip = np.isin(nodes, tip) & ~beyond
     if np.any(on_tip):
@@ -2284,9 +2277,9 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
     for a fault with a free edge (or in a box a face edge), beyond the
     edge that lies along (`Location` names it), where it was carried
     across the surface (or a face of the box), and there within
-    `distance`, plus a five-hundredth of how far beyond it lies, plus
-    the CAD kernel's tolerance (a ten-millionth of the patch's size), of
-    the patch's own surface continued beyond that edge; every node of
+    `distance`, plus the CAD kernel's tolerance (a ten-millionth of the
+    patch's size), of the patch's own surface continued beyond that
+    edge, the part carried being the preimage of that continuation; every node of
     its tip lies on an edge of its patch, within `distance` and that
     tolerance; its curve groups (`MeshManifest.fault_curves`: in a box
     its face edge too, on the base and sides) hold the edges of its

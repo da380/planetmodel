@@ -128,11 +128,13 @@ it is not.  Fault k's curve groups are numbered 3k - 2, 3k - 1 and 3k,
 in a flat mesh 4k - 3 to 4k (`fault_curve_groups`, in the order of
 `FAULT_CURVES` or `FLAT_FAULT_CURVES`), whether or not they exist.
 `controls` are the control nodes [n_u,
-n_v] of each patch's pull-back through the mapping, null under the
-identity, where the fault is built in as given; `offset` the largest
-distance found between the fault and its pull-back mapped forward,
-zero under the identity; `sizing` the refinement towards it, {size,
-far_size, decay_width}, or null.
+n_v] of each patch's pull-back through the mapping (of every piece of
+a patch built in pieces where it crosses an interface at which the
+mapping's derivative jumps), null under the identity, where the fault
+is built in as given; `offset` the largest distance found between the
+fault and its pull-back mapped forward, zero under the identity;
+`sizing` the refinement towards it, {size, far_size, decay_width}, or
+null.
 
 A fault's slip lives on its faces' vertices and edges but those of its
 pinned edges (its tip, and its junction where it ends on another
@@ -521,10 +523,11 @@ class FaultEntry:
     along its junction
     curves and `ends_on` those of them it ends on, its slip pinned along
     the junction there.  `controls` holds each
-    patch's pull-back grid [n_u, n_v], null where the mapping is the
-    identity; `offset` is the largest distance found between the fault
-    and its pull-back mapped forward, in the mesh's lengths; `sizing`
-    the refinement towards it, {size, far_size, decay_width}, or null.
+    patch's pull-back grid [n_u, n_v], that of each piece of a patch
+    built in pieces, null where the mapping is the identity; `offset`
+    is the largest distance found between the fault and its pull-back
+    mapped forward, in the mesh's lengths; `sizing` the refinement
+    towards it, {size, far_size, decay_width}, or null.
     """
 
     #: The fault's name; `fault_<k>` where none was given.

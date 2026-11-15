@@ -181,23 +181,96 @@ def test_with_the_default_controls_the_offset_meets_rtol(tmp_path):
     assert gate(res, Fault([fault])) < 1e-6
 
 
-def test_a_fault_across_a_knot_of_the_stretch_needs_a_looser_rtol(tmp_path):
+def across_the_moho():
+    """A plane across the Moho under the range, its slip varying over it:
+    strike-slip 0.5 + u and dip-slip 1 + 2 v, bilinear."""
+    values = np.zeros((2, 2, 3))
+    values[..., 0] = [[0.0, 0.0], [1.0, 1.0]]
+    values[..., 1] = [[0.0, 2.0], [0.0, 2.0]]
+    return Plane.at_depth(LOCAL, 0.6, 0.1, 0.4, strike=0.0, dip=40.0, length=0.5,
+                          width=0.4, slip=Slip(values, rule="linear"))
+
+
+def by_side(res, record):
+    """The fault's nodes on the faces in each layer, and the nodes the
+    two layers' faces share: where its pieces join."""
+    card = sc.read(res.manifest_path)
+    mesh = read_mesh(res.msh_path)
+    tri = mesh.faces_with(record["attribute"])
+    layer = mesh.layers(card)[mesh.face_cells(tri[:, :3])[:, 0]]
+    sides = [np.unique(tri[layer == k]) for k in record["layers"]]
+    return mesh, sides, np.intersect1d(*sides)
+
+
+def test_a_fault_across_a_knot_of_the_stretch_is_built_in_pieces(tmp_path):
     """Across the Moho, where the stack's slope jumps (a knot), the
-    preimage of a plane is creased along the crossing, which a bicubic
-    follows only to low order: no grid of the default ones meets the
-    default rtol, and the build is refused by name; at rtol 1e-3 it is
-    built, its nodes on the fault to its offset."""
-    fault = plane(0.6, 0.1, 0.4, dip=40.0, length=0.5, width=0.4)
-    with pytest.raises(ValueError, match="off the patch with 129 by 129 control nodes, "
-                                         "short of rtol = 1e-06 of its size"):
-        build(tmp_path / "default", {"f": fault})
-    res = build(tmp_path / "loose", {"f": EmbeddedFault(Fault([fault]), name="f",
-                                                        rtol=1e-3)})
-    (record,) = held(res, {"f": fault}).faults
-    assert record["layers"] == [1, 2] and record["controls"] == [[17, 17]]
-    # measured: an offset of 5.3e-4, the nodes up to 4.7e-3 of an element off
-    assert record["offset"] <= 1e-3 * np.hypot(0.5, 0.4)
-    assert gate(res, Fault([fault])) < 0.01
+    preimage of a plane is creased along the crossing: it is built in two
+    pieces, one in each layer, cut along the crossing and joined there, at
+    the default rtol, through one grid.  The mesh's fault is one fault:
+    one attribute, a collar in each layer as any fault crossing an
+    interface has, its tip the plane's edge alone, the join inside it and
+    in no curve group.  Mapped, its nodes lie on the plane on both sides,
+    the join's on the Moho's relief; the slip a consumer reads at them is
+    the plane's at the node's own place."""
+    patch = across_the_moho()
+    fault = Fault([patch])
+    res = build(tmp_path / "pieces", {"f": EmbeddedFault(fault, name="f")})
+    assert len(res.preimages["f"]) == 2
+    card = held(res, {"f": patch})
+    (record,) = card.faults
+    # built whole, it was refused at this rtol: 3.5e-5 off with 129 by 129
+    # control nodes; in pieces: 1.7e-7 and 9.8e-9 off with 17 by 17
+    assert record["controls"] == [[17, 17]]
+    assert record["offset"] <= 1e-6 * np.hypot(0.5, 0.4)
+    assert record["layers"] == [1, 2] and record["hanging_wall"] == [3, 4]
+    assert [e["attributes"] for e in card.layers] == [[1, 3], [2, 4]]
+    assert record["junction"] is None and record["free_edge"] is None
+    mesh, sides, join = by_side(res, record)
+    tip = np.unique(mesh.curves[record["tip"]])
+    for nodes in sides:
+        found = fault.locate(res.mapping(mesh.points[nodes]))
+        # measured: 2.5e-8 above the Moho, 5.4e-10 below it
+        assert np.abs(found.distance).max() <= 2.0 * record["offset"]
+    # the join meets the tip at its two ends alone: no edge of the tip
+    # runs along it
+    assert join.size > 5 and np.count_nonzero(np.isin(join, tip)) == 2
+    assert not np.any(np.all(np.isin(mesh.curves[record["tip"]][:, :2], join),
+                             axis=1))
+    x = res.mapping(mesh.points[join])
+    # measured: 4.8e-14 off the Moho's relief
+    assert np.abs(x[:, 2] - (root(x[:, 0], x[:, 1]) - 0.4)).max() < 1e-9
+    found = fault.locate(x)
+    assert np.all(found.inside) and np.abs(found.v).max() < 0.4
+    # the tip is the plane's edge: every node on the boundary of the square
+    on = fault.locate(res.mapping(mesh.points[tip]))
+    assert np.allclose(np.maximum(np.abs(on.u), np.abs(on.v)), 0.5, atol=1e-6)
+    # the slip at each node, either side and on the join, is the plane's
+    # there, its (u, v) by projection onto the plane, a node of the tip a
+    # hair beyond the edge reading the edge
+    origin, (xu, xv) = patch.cartesian(0.0, 0.0), patch.tangents(0.0, 0.0)
+    for nodes in (*sides, join):
+        x = res.mapping(mesh.points[nodes])
+        u, v = np.clip([(x - origin) @ xu / (xu @ xu),
+                        (x - origin) @ xv / (xv @ xv)], -0.5, 0.5)
+        want = np.stack([0.5 + u, 1.0 + 2.0 * v, 0.0 * u], axis=-1)
+        got = fault.slip_at(x, max_distance=1e-6, basis="fault")
+        assert np.allclose(got, want, rtol=0, atol=1e-9)
+
+
+def test_a_crossing_of_a_knot_that_does_not_run_along_the_strike_is_refused(
+        tmp_path):
+    """A plane striking along x whose down-dip edge runs across the Moho's
+    root, above it over the root and below it at either end: its crossing
+    of the Moho leaves through that edge, and is not split."""
+    fault = plane(0.6, 0.0, 0.42 - 0.1 * np.sin(np.deg2rad(40.0)), strike=90.0,
+                  dip=40.0, length=0.6, width=0.2)
+    bottom = fault.cartesian(np.linspace(-0.5, 0.5, 5), 0.5)
+    moho = root(bottom[:, 0], bottom[:, 1]) - 0.4
+    assert bottom[2, 2] > moho[2] and bottom[0, 2] < moho[0]
+    with pytest.raises(ValueError, match="does not run along its strike from one "
+                                         "end of the patch to the other"):
+        build(tmp_path / "corner", {"f": fault})
+    assert not list(tmp_path.iterdir())
 
 
 # ------------------------------------------------------------ the free surface
@@ -207,10 +280,8 @@ def test_an_edge_at_the_reference_surface_under_a_mountain_is_carried_onto_it(
     """The fault's up-dip edge at z = 0 lies 0.05 below the range: its
     preimage's edge is carried across the reference top and trimmed there,
     so its trace, mapped, lies on the topography, above the fault's own
-    edge, the faces continuing the fault up to it.  (The part carried is
-    the preimage continued, an extrapolation: a fault meant to meet a
-    surface raised far above its edge is given reaching above it, as
-    below.)"""
+    edge, the faces continuing the fault up to it: the part carried is
+    the preimage of the plane continued past its edge."""
     width, dip = 0.25, 50.0
     fault = plane(0.56, 0.0, 0.5 * width * np.sin(np.deg2rad(dip)))
     res = build(tmp_path / "trace", {"f": fault})
@@ -245,6 +316,35 @@ def test_a_fault_cut_by_the_topography_has_its_trace_on_it(tmp_path):
     assert np.all(found.inside) and np.abs(found.distance).max() < 1e-6
     # measured: 7.4e-7 of an element over all its nodes
     assert gate(res, Fault([fault])) < 1e-5
+
+
+def test_an_edge_under_the_crest_is_carried_as_the_plane_continued(tmp_path):
+    """The fault's up-dip edge at z = 0 under the range's crest, which
+    stands 0.083 above it: the edge is carried across the reference top,
+    the part carried the preimage of the plane continued past its edge,
+    so that, mapped, it lies on that plane as the rest of the fault lies
+    on the fault, its trace on the topography."""
+    width, dip = 0.25, 50.0
+    fault = plane(0.615, 0.0, 0.5 * width * np.sin(np.deg2rad(dip)))
+    edge = fault.cartesian(np.linspace(-0.5, 0.5, 9), -0.5)
+    assert ridge(edge[:, 0], edge[:, 1]).max() > 0.08
+    res = build(tmp_path / "crest", {"f": fault})
+    (record,) = held(res, {"f": fault}).faults
+    assert record["free_edge"] is not None and record["face_edge"] is None
+    mesh = read_mesh(res.msh_path)
+    x = res.mapping(mesh.points[np.unique(mesh.faces_with(record["attribute"]))])
+    found = Fault([fault]).locate(x, strict=False)
+    beyond = ~found.inside
+    # carried up to 0.074 beyond the edge, measured along the plane
+    assert np.abs(found.distance[beyond]).max() > 0.07
+    # every node on the plane continued, the carried ones too: measured
+    # 2.3e-7 (with the preimage itself extrapolated past the edge they lay
+    # up to 3.8e-4 off it, beyond the contract's 1.5e-4)
+    normal = fault.normal(0.0, 0.0)
+    assert np.abs((x - fault.cartesian(0.0, 0.0)) @ normal).max() \
+        <= 2.0 * record["offset"]
+    trace = res.mapping(mesh.points[np.unique(mesh.curves[record["free_edge"]])])
+    assert np.abs(trace[:, 2] - ridge(trace[:, 0], trace[:, 1])).max() < 1e-9
 
 
 # ------------------------------------------------------------ the sides

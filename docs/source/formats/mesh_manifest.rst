@@ -461,7 +461,10 @@ its faces lies on the fault, to ``offset``.
   carried across the model's outer surface and trimmed there, so that
   in the mesh it meets the surface exactly, under topography too: its
   free edge is on the outer surface, and its faces near that edge
-  continue the fault smoothly up to it.  A fault never ends exactly on
+  continue the fault smoothly up to it, the part beyond the fault's own
+  edge being the fault continued (a plane as its plane, a curved patch
+  by the end pieces of its interpolation), on it once mapped to
+  ``offset`` as the rest is.  A fault never ends exactly on
   an interface: it crosses it or stops clear of it, by more than a
   tenth of the element size there, and the builder refuses one that
   comes closer.  A fault meant to end on an interface (a crustal fault
@@ -471,7 +474,15 @@ its faces lies on the fault, to ``offset``.
 - ``controls``: for each patch of the fault, the control grid
   ``[n_u, n_v]`` its preimage under the mapping was built through; null
   where the mapping is the identity, and the fault was built in as
-  given.
+  given.  Where a patch crosses an interface at which the mapping's
+  derivative jumps (an interface inside the body under a stack of
+  reliefs, each layer stretched linearly between its own two), its
+  preimage is creased there, and it was built in pieces,
+  one on each side, each pulled back through this grid and joined along
+  the crossing: the join is a curve inside the fault, in no curve
+  group, and the fault, its faces and its record are as any fault
+  crossing an interface.  A consumer reads the slip at a node on either
+  side from the fault itself, located where the node lies once mapped.
 - ``offset``: the largest distance found between the fault and its
   preimage mapped forward, sampled at and between the control nodes,
   in the mesh's lengths: the scale of how far a node of its faces lies
