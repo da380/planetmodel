@@ -20,11 +20,11 @@ if TYPE_CHECKING:
     from .displacement import RadialDisplacement
     from .fault import Fault, Location, Patch
     from .fields import Field
-    from .geometry import Geometry
+    from .geometry import GeometryBase
     from .layerfunction import LayerFunction
     from .mapping import Mapping
     from .mesh3d.spec import Refinement
-    from .model import Model
+    from .model import Model, ModelBase
     from .modelfile import Surfaces
     from .randomfield.basis import SpectralBasis, SphericalBasis
     from .sampling import AngularGrid, Sample
@@ -243,37 +243,49 @@ def check_mapping(m: Mapping, points: ArrayLike, *, rtol: float = 1e-6,
                            rtol=1e-9, atol=1e-9), "scaled(k) does not keep J"
 
 
-def check_geometry(geometry: Geometry) -> None:
-    """Hold a Geometry to its invariants and its numbering.
+def check_geometry(geometry: GeometryBase) -> None:
+    """Hold a geometry to its invariants and its numbering.
 
-    Checks that the invariants hold (by reconstructing the geometry with
-    checks on), that names are unique, that the interfaces sit on the
-    skeleton's boundaries with consistent `between`, that `scaled(k)`
-    round-trips, and that the mapping passes `check_mapping` on the
-    lateral coordinates of the lattice of the geometry's `coordinates`,
-    at radii inside every span between the boundaries and the declared
-    knots.
+    Checks that the invariants hold (by rebuilding the geometry with
+    checks on), that names are unique, and the numbering of the
+    interfaces: indexed in the skeleton's order, each on a boundary,
+    every interior boundary one of them and the outermost boundary (the
+    end the local frame's first vector points towards) one too, and
+    `between` the layers either side, the one below being on the side
+    away from that vector; whether the other end is an interface is the
+    geometry's own rule (a hollow ball's inner boundary is, a box's base
+    is not).  Then that
+    `scaled(k)` round-trips, and that the mapping passes `check_mapping`
+    on the lateral coordinates of the geometry's `lattice`, at values of
+    the layered coordinate inside every span between the boundaries and
+    the declared knots.
     """
-    from .geometry import Geometry
+    from .coordinates import increases_outward
 
     coords = geometry.coordinates
     sk = geometry.skeleton
-    Geometry(sk, mapping=geometry.mapping,
-             layer_names=[lay.name for lay in geometry.layers],
-             interface_names=[f.name for f in geometry.interfaces],
-             rtol=geometry.rtol, check=True)
+    again = geometry.with_mapping(geometry.mapping, check=True)
+    assert type(again) is type(geometry), "with_mapping does not keep the class"
 
     faces = geometry.interfaces
     b = sk.boundaries
-    first = 0 if sk.is_hollow else 1
-    assert len(faces) == b.size - first, "wrong number of interfaces"
+    L = sk.nlayers
+    up = increases_outward(coords)
+    on = []
     for k, f in enumerate(faces):
         assert f.index == k
-        assert f.radius == float(b[first + k]), "interface off a boundary"
-        below, above = f.between
-        assert below == first + k - 1, "between[0] inconsistent"
-        assert above == (first + k if first + k < sk.nlayers else -1), (
-            "between[1] inconsistent")
+        hits = np.flatnonzero(b == f.radius)
+        assert hits.size == 1, "interface off a boundary"
+        j = int(hits[0])
+        on.append(j)
+        lower = j - 1 if j > 0 else -1          # the layer of smaller coordinate
+        upper = j if j < L else -1              # the layer of larger coordinate
+        want = (lower, upper) if up else (upper, lower)
+        assert f.between == want, (
+            f"interface {k} has between {f.between}, expected {want}")
+    assert on == sorted(set(on)), "interfaces not in the skeleton's order"
+    assert set(range(1, L)) <= set(on), "an interior boundary is no interface"
+    assert (L if up else 0) in on, "the outermost boundary is no interface"
     for i, lay in enumerate(geometry.layers):
         assert lay.index == i and lay.interval == sk.interval(i)
 
@@ -283,7 +295,7 @@ def check_geometry(geometry: Geometry) -> None:
         "scaled(k).scaled(1/k) does not restore the skeleton")
     # points well inside every span between the boundaries and the
     # declared knots, where the mapping's gradient may jump
-    _, theta, phi = coords.lattice(sk, n_a=5, n_b=4)
+    _, theta, phi = geometry.lattice(n_a=5, n_b=4)
     tol = geometry.rtol * sk.span
     cuts = np.unique(np.concatenate([b, np.asarray(geometry.knots(), dtype=float)]))
     cuts = cuts[np.concatenate([[True], np.diff(cuts) > tol])]
@@ -428,15 +440,15 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     if radial_scalar:
         alone = field(r)
         assert np.allclose(alone, values, rtol=1e-12, atol=1e-12 * scale), (
-            "the radius alone gives different values")
+            f"the {coords.labels[0]} alone gives different values")
     else:
         try:
             field(r)
         except ValueError:
             pass
         else:
-            raise AssertionError("the radius alone was accepted by a field that "
-                                 "is not radial and of rank 0")
+            raise AssertionError(f"the {coords.labels[0]} alone was accepted by a "
+                                 "field that is not radial and of rank 0")
 
     for bad in (lo - 1e-3 * width, hi + 1e-3 * width):
         try:
@@ -444,7 +456,8 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
         except ValueError:
             pass
         else:
-            raise AssertionError(f"radius {bad:g} outside the interval was accepted")
+            raise AssertionError(
+                f"{coords.labels[0]} {bad:g} outside the interval was accepted")
     try:
         field.evaluate(r, theta, phi, frame="nowhere")
     except ValueError:
@@ -544,24 +557,28 @@ def check_refinement(refinement: Refinement, points: ArrayLike) -> None:
             "a batch disagrees with its points taken one at a time")
 
 
-def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None:
-    """Hold a Model to its invariants.
+def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> None:
+    """Hold a model, spherical or flat, to its invariants.
 
     Checks that `replaced` with checks on accepts it and keeps its class,
-    fields and citation, which `cite` gives a work a line; that every
-    layer's fields pass `check_field`, sit on the layer's interval, are
-    in the geometry's coordinates and have their spec's character; that
+    fields and citation, which `cite` gives a work a line; that its
+    geometry is of its leaf's `geometry_type`; that every layer's fields
+    pass `check_field`, sit on the layer's interval, are in the
+    geometry's coordinates and have their spec's character; that
     `layer(name)` and `layer(i)` agree; that every constant is its SI
     value over the scales' factor; that conversion to other scales and
     back restores every field to 1e-12 at points the coordinates probe;
-    and that every surgery keeps the class and validates again.
+    and that every surgery, the extension by "extrapolate" and by "hold"
+    among them, keeps the class and validates again.
     """
     from .coordinates import coordinates_of
-    from .model import Model
+    from .model import ModelBase
     from .units import Scales
 
     rng = np.random.default_rng(0) if rng is None else rng
-    assert isinstance(model, Model), f"{type(model).__name__} is not a Model"
+    assert isinstance(model, ModelBase), f"{type(model).__name__} is not a model"
+    assert isinstance(model.geometry, model.geometry_type), (
+        f"the geometry is not a {model.geometry_type.__name__}")
     cls = type(model)
     again = model.replaced(check=True)
     assert type(again) is cls, "replaced does not keep the class"
@@ -626,11 +643,13 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
     mid = 0.5 * (lo + hi)
     inner = b[(b > lo) & (b < hi)]
     cut = float(inner[0]) if inner.size else mid
+    beyond = hi + 0.1 * (hi - lo)
     for verb, made in (("refined", lambda: model.refined([mid])),
                        ("truncated", lambda: model.truncated(cut)),
                        ("hollowed", lambda: model.hollowed(cut)),
                        ("extended", lambda: model.extended([hi * 1.1],
                                                            fields="extrapolate")),
+                       ("extended", lambda: model.extended([beyond], fields="hold")),
                        ("renamed", lambda: model.renamed())):
         if verb in ("refined",) and np.min(np.abs(b - mid)) <= rtol * (hi - lo):
             continue

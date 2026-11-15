@@ -1,11 +1,13 @@
 """A model: a geometry with a bag of fields on every layer.
 
-A `Model` holds a `Geometry`, one
+A model holds a geometry, one
 mapping of name to field per layer, the `Scales` its numbers are in,
 and the specs and constants that say what the names mean.  Everything
 a field is asked goes through its layer: `model.layer(i)["rho"]`, or
 `model.layer("mantle")["rho"]`.  A discontinuity is two layers asked
-separately.
+separately.  `ModelBase` is all of that; a leaf names the geometry it
+is built on: `Model` a spherical `Geometry`, `planetmodel.cartesian.Model`
+a flat one.  Every field is in the geometry's coordinates.
 
 What a name means comes from the vocabulary, or from `specs=` for a
 name outside it; a field attached under a name with a spec must have
@@ -22,8 +24,10 @@ read in the model's units, `G` included.
 
 Surgery goes through the geometry's own and carries the fields: a
 split layer's fields are re-stated on each part, a cut layer's on its
-remainder, and appended shells hold the fields they are given.  Every
-change is a copy, and every change that can break the model's
+remainder, and appended shells hold the fields they are given, the last
+layer's by its own rule, or the last layer's held at their values on
+the last boundary (`fields.held`), which pads a box below its base.
+Every change is a copy, and every change that can break the model's
 invariants (its fields, its layering) validates the copy again.
 
 A model cites the works it rests on (`citation`, one work a string;
@@ -32,7 +36,8 @@ its source asks to be cited.  Every copy keeps them, and a model built
 from others adds theirs (`with_citation`), so that a model of PREM with
 S40RTS on it, written to a file and read back, still says what to cite.
 
-A model type is a class derived from `Model` alone, plus the stateless
+A model type is a class derived from one leaf alone (`Model` on the
+sphere), plus the stateless
 behaviour mixins of `planetmodel.behaviours` that wrap the free
 functions as methods; there is no hierarchy of model types.  Every copy
 goes through `replaced`, a shallow copy with the changed parts swapped
@@ -48,15 +53,16 @@ from collections import abc
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
-from .coordinates import coordinates_of
+from .coordinates import coordinates_of, increases_outward
 from .displacement import RadialDisplacement, SphericalFunction
-from .fields import Field, RadialField
-from .geometry import Geometry, LayerInfo, Names, Renames
+from .fields import Field, RadialField, held
+from .geometry import Geometry, GeometryBase, LayerInfo, Names, Renames
 from .layerfunction import LayerFunction, polynomial_fit, same_interval
 from .mapping import Mapping
 from .materials import is_fluid
@@ -64,7 +70,10 @@ from .skeleton import CoarseningMap, Skeleton
 from .units import EARTH_MEAN_DENSITY, LENGTH, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec, family_spec
 
-__all__ = ["Layer", "Model", "CoarseningFit", "cited"]
+__all__ = ["Layer", "ModelBase", "Model", "CoarseningFit", "cited"]
+
+#: What `extended` restates the last layer's fields by on the new layers.
+_EXTENSIONS = ("extrapolate", "hold")
 
 
 def cited(works: Iterable[str], more: Iterable[str]) -> tuple[str, ...]:
@@ -100,12 +109,14 @@ class Layer:
 
     @property
     def index(self) -> int:
-        """The layer's position, 0 at the centre."""
+        """The layer's position in the skeleton's order: 0 at the centre of
+        a ball, at the top of a box."""
         return self._info.index
 
     @property
     def interval(self) -> tuple[float, float]:
-        """The (lo, hi) span of radius the layer occupies."""
+        """The (lo, hi) span of the layered coordinate the layer occupies:
+        of radius on the sphere, of depth in a box."""
         return self._info.interval
 
     @property
@@ -199,7 +210,12 @@ def _misfit(data: Callable[[np.ndarray], np.ndarray], fitted: LayerFunction,
     return err / scale if scale > 0.0 else err
 
 
-class Model:
+def _qualified(cls: type) -> str:
+    """A class by its module and name, which tells two leaves apart."""
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+class ModelBase:
     """A geometry with fields on every layer; see the module docstring.
 
     `layers` is one mapping of name to field per geometry layer, empty
@@ -209,17 +225,21 @@ class Model:
     called, in its repr and in the files that write it; it survives
     every copy.  `citation` holds the works the model rests on, as the
     module docstring says.  `check=False` skips validation for fields
-    already known to fit.
+    already known to fit.  A leaf names the class of geometry it is
+    built on as `geometry_type`; any other is refused.
     """
 
-    def __init__(self, geometry: Geometry, layers: Iterable[abc.Mapping[str, Field]],
-                 *, scales: Scales = Scales.SI,
+    #: The class of geometry this leaf is built on.
+    geometry_type: ClassVar[type[GeometryBase]] = GeometryBase
+
+    def __init__(self, geometry: GeometryBase,
+                 layers: Iterable[abc.Mapping[str, Field]], *,
+                 scales: Scales = Scales.SI,
                  specs: abc.Mapping[str, FieldSpec] | None = None,
                  constants: abc.Mapping[str, Constant] | None = None,
                  name: str | None = None, citation: Iterable[str] = (),
                  check: bool = True) -> None:
-        if not isinstance(geometry, Geometry):
-            raise TypeError(f"expected a Geometry, got {type(geometry).__name__}")
+        self._require_geometry(geometry)
         layers = [dict(m) for m in layers]
         if len(layers) != geometry.nlayers:
             raise ValueError(
@@ -239,6 +259,12 @@ class Model:
             self.validate()
 
     # -- validation ---------------------------------------------------------
+
+    def _require_geometry(self, geometry: object) -> None:
+        """Refuse a geometry that is not of the leaf's class, naming both."""
+        if not isinstance(geometry, self.geometry_type):
+            raise TypeError(f"expected a {_qualified(self.geometry_type)}, got "
+                            f"{_qualified(type(geometry))}")
 
     def validate(self) -> None:
         """Every field a Field on its layer's interval, in the geometry's
@@ -275,13 +301,13 @@ class Model:
     # -- what it is ---------------------------------------------------------
 
     @property
-    def geometry(self) -> Geometry:
+    def geometry(self) -> GeometryBase:
         """The geometry the fields hang on."""
         return self._geometry
 
     @property
     def skeleton(self) -> Skeleton:
-        """The geometry's boundary radii."""
+        """The geometry's boundaries: radii on the sphere, depths in a box."""
         return self._geometry.skeleton
 
     @property
@@ -304,7 +330,7 @@ class Model:
         Empty for a model that records none."""
         return "\n".join(self._citation)
 
-    def with_citation(self, *works: str) -> "Model":
+    def with_citation(self, *works: str) -> "ModelBase":
         """A copy citing `works` too, after its own, each work once."""
         out = self.replaced(check=False)
         out._citation = cited(self._citation, works)
@@ -317,7 +343,8 @@ class Model:
 
     @property
     def layers(self) -> tuple[Layer, ...]:
-        """The layers, centre outward, each a bag of fields."""
+        """The layers in the skeleton's order, each a bag of fields: centre
+        outward on the sphere, from the surface down in a box."""
         return self._layers
 
     @property
@@ -374,13 +401,13 @@ class Model:
 
     # -- copies -------------------------------------------------------------
 
-    def replaced(self, *, geometry: Geometry | None = None,
+    def replaced(self, *, geometry: GeometryBase | None = None,
                  layers: Sequence[abc.Mapping[str, Field]] | None = None,
                  scales: Scales | None = None,
                  specs: abc.Mapping[str, FieldSpec] | None = None,
                  constants: abc.Mapping[str, Constant] | None = None,
                  name: str | None = None, citation: Iterable[str] | None = None,
-                 check: bool = True) -> "Model":
+                 check: bool = True) -> "ModelBase":
         """A shallow copy with the given parts replaced, validated unless
         `check=False`: the one path every copy of a model takes.
 
@@ -393,8 +420,7 @@ class Model:
         """
         out = copy.copy(self)
         if geometry is not None:
-            if not isinstance(geometry, Geometry):
-                raise TypeError(f"expected a Geometry, got {type(geometry).__name__}")
+            self._require_geometry(geometry)
             out._geometry = geometry
         if geometry is not None or layers is not None:
             fields = ([layer.fields for layer in self._layers] if layers is None
@@ -421,14 +447,14 @@ class Model:
             out.validate()
         return out
 
-    def named(self, name: str | None) -> "Model":
+    def named(self, name: str | None) -> "ModelBase":
         """A copy called `name`; None unnames it."""
         out = self.replaced(check=False)
         out._name = None if name is None else str(name)
         return out
 
     def with_field(self, which: int | str, name: str, field: Field, *,
-                   replace: bool = False) -> "Model":
+                   replace: bool = False) -> "ModelBase":
         """A copy with `field` attached to one layer under `name`."""
         i = self._geometry.layer(which).index
         layers = [dict(layer.fields) for layer in self._layers]
@@ -440,7 +466,7 @@ class Model:
         return self.replaced(layers=layers)
 
     def without_field(self, name: str, *,
-                      layers: Iterable[int | str] | None = None) -> "Model":
+                      layers: Iterable[int | str] | None = None) -> "ModelBase":
         """A copy without `name` on every layer, or on the layers given."""
         which = (range(self.nlayers) if layers is None
                  else [self._geometry.layer(w).index for w in layers])
@@ -449,7 +475,7 @@ class Model:
             out[i].pop(name, None)
         return self.replaced(layers=out, check=False)
 
-    def with_geometry(self, geometry: Geometry) -> "Model":
+    def with_geometry(self, geometry: GeometryBase) -> "ModelBase":
         """A copy on another geometry over the same skeleton."""
         a, b = self.skeleton.boundaries, geometry.skeleton.boundaries
         if a.size != b.size or not np.allclose(a, b, rtol=self._geometry.rtol,
@@ -458,28 +484,22 @@ class Model:
                              "surgery methods to change the layering")
         return self.replaced(geometry=geometry)
 
-    def renamed(self, *, layers: Renames = None, interfaces: Renames = None) -> "Model":
-        """The model with layers or interfaces renamed; see `Geometry.renamed`."""
+    def renamed(self, *, layers: Renames = None,
+                interfaces: Renames = None) -> "ModelBase":
+        """The model with layers or interfaces renamed; see
+        `GeometryBase.renamed`."""
         return self.replaced(geometry=self._geometry.renamed(layers=layers,
                                                           interfaces=interfaces),
                           check=False)
 
-    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "Model":
+    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "ModelBase":
         """The model placed by `mapping`, over the same skeleton."""
         return self.replaced(geometry=self._geometry.with_mapping(mapping, check=check),
                           check=False)
 
-    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
-                  name: str | None = None, check: bool = True) -> "Model":
-        """The model under the radial stretch driven by `h`; see
-        `Geometry.stretched`."""
-        return self.replaced(geometry=self._geometry.stretched(h, name=name,
-                                                            check=check),
-                          check=False)
-
     # -- surgery ------------------------------------------------------------
 
-    def _carried(self, geometry: Geometry, *,
+    def _carried(self, geometry: GeometryBase, *,
                  shells: Sequence[abc.Mapping[str, Field]] | None = None
                  ) -> list[dict[str, Field]]:
         """The fields of every layer of `geometry`, taken from this model.
@@ -503,29 +523,36 @@ class Model:
                 out.append(dict(shells.pop(0)) if shells else {})
         return out
 
-    def refined(self, radii: ArrayLike, *, names: Names = None) -> "Model":
+    def refined(self, radii: ArrayLike, *, names: Names = None) -> "ModelBase":
         """Interior boundaries inserted; a split layer's fields on each part."""
         g = self._geometry.refined(radii, names=names)
         return self.replaced(geometry=g, layers=self._carried(g))
 
-    def truncated(self, radius: float, *, name: str | None = None) -> "Model":
-        """The model cut at `radius`; the cut layer's fields on its remainder."""
+    def truncated(self, radius: float, *, name: str | None = None) -> "ModelBase":
+        """The model cut at `radius`, the part beyond it dropped (outside a
+        ball, below a box); the cut layer's fields on its remainder."""
         g = self._geometry.truncated(radius, name=name)
         return self.replaced(geometry=g, layers=self._carried(g))
 
-    def hollowed(self, radius: float, *, name: str | None = None) -> "Model":
-        """The model cut from below at `radius`."""
+    def hollowed(self, radius: float, *, name: str | None = None) -> "ModelBase":
+        """The model cut at `radius`, the part before it dropped (the
+        centre of a ball, the top of a box); the cut layer's fields on its
+        remainder."""
         g = self._geometry.hollowed(radius, name=name)
         return self.replaced(geometry=g, layers=self._carried(g))
 
     def extended(self, radii: ArrayLike, *,
                  fields: str | Sequence[abc.Mapping[str, Field]] | None = None,
-                 names: Names = None, interface_names: Names = None) -> "Model":
-        """Shells appended outside, holding the fields given.
+                 names: Names = None, interface_names: Names = None) -> "ModelBase":
+        """Layers appended beyond the last boundary (outside a ball, below a
+        box), holding the fields given.
 
-        `fields` is None for empty shells, "extrapolate" to re-state the
-        outermost layer's fields on each shell by their own rule, or one
-        mapping of name to field per shell.
+        `fields` is None for empty layers; "extrapolate" to re-state the
+        last layer's fields on each new layer by their own rule; "hold" to
+        hold them at their values on the last boundary, constant along the
+        layered coordinate (`fields.held`, exact for a radial field), which
+        pads a box below its base with the lowest properties; or one
+        mapping of name to field per new layer.
         """
         g = self._geometry.extended(radii, names=names,
                                     interface_names=interface_names)
@@ -533,12 +560,18 @@ class Model:
         if fields is None:
             shells = [{} for _ in range(n_new)]
         elif isinstance(fields, str):
-            if fields != "extrapolate":
-                raise ValueError(f"fields must be None, 'extrapolate' or "
+            if fields not in _EXTENSIONS:
+                raise ValueError(f"fields must be None, one of {_EXTENSIONS} or "
                                  f"mappings, got {fields!r}")
-            outer = self._layers[-1].fields
-            shells = [{name: f.on_interval(*g.skeleton.interval(self.nlayers + j))
-                       for name, f in outer.items()} for j in range(n_new)]
+            last = self._layers[-1].fields
+            at = float(self.skeleton.boundaries[-1])
+            intervals = [g.skeleton.interval(self.nlayers + j) for j in range(n_new)]
+            if fields == "extrapolate":
+                shells = [{name: f.on_interval(*iv) for name, f in last.items()}
+                          for iv in intervals]
+            else:
+                shells = [{name: held(f, at, iv) for name, f in last.items()}
+                          for iv in intervals]
         else:
             shells = [dict(m) for m in fields]
             if len(shells) != n_new:
@@ -548,19 +581,21 @@ class Model:
 
     def coarsened(self, *, keep: Iterable[int | str] | None = None,
                   drop: Iterable[int | str] | None = None, degree: int = 3,
-                  n: int = 64) -> tuple["Model", CoarseningFit]:
+                  n: int = 64) -> tuple["ModelBase", CoarseningFit]:
         """Interior interfaces removed, each merged layer's fields refit.
 
         Exactly one of `keep` and `drop` selects interior interfaces by
-        name or index; the outermost interface, and the inner boundary
-        of a hollow model, are not selectable.  A layer left whole
+        name or index; the outermost interface (the surface of a ball or
+        of a box), and the inner boundary of a hollow ball, are not
+        selectable.  A layer left whole
         keeps its field objects.  A merged layer holds, for every name
         all its fine layers carry, the least-squares polynomial of
         `degree` through `n` Chebyshev samples of the fine model, and
         the returned CoarseningFit reports each fit's relative misfit
         for the caller to judge.  Merging a fluid layer with a solid
         one, a name only some of the merged layers hold, and a field
-        that is not a scalar of the radius alone are refused by name.
+        that is not a scalar of the layered coordinate alone are refused
+        by name.
         The identity mapping is required, as for every surgery; the
         fits are independent, so derived fields (an attached gravity, a
         modulus beside its velocities) are more consistently derived
@@ -590,25 +625,27 @@ class Model:
 
     def _coarsening(self, *, keep: Iterable[int | str] | None,
                     drop: Iterable[int | str] | None
-                    ) -> tuple[Geometry, CoarseningMap]:
+                    ) -> tuple[GeometryBase, CoarseningMap]:
         """`keep`/`drop` as interface names or indices, resolved onto
         the geometry's interior boundaries and coarsened."""
         if (keep is None) == (drop is None):
             raise ValueError("give exactly one of keep and drop")
-        faces = self._geometry.interfaces
-        first = 1 if self.skeleton.is_hollow else 0
+        b = self.skeleton.boundaries
+        L = self.nlayers
+        outer = L if increases_outward(self._geometry.coordinates) else 0
 
         def interior(w: int | str) -> int:
             face = self._geometry.interface(w)
-            if face.index == len(faces) - 1:
+            j = int(np.flatnonzero(b == face.radius)[0])
+            if j == outer:
                 raise ValueError(
                     f"interface {face.name or face.index!r} is the outermost "
                     "boundary and cannot be selected for coarsening")
-            if first and face.index == 0:
+            if not 0 < j < L:
                 raise ValueError(
                     f"interface {face.name or face.index!r} is the inner "
                     "boundary of a hollow model and cannot be selected")
-            return face.index - first
+            return j - 1
 
         which = [interior(w) for w in (drop if keep is None else keep)]
         if keep is None:
@@ -645,15 +682,16 @@ class Model:
 
     def _one_character(self, group: Sequence[int], name: str) -> Character:
         """The one character `name` has across `group`, each layer's
-        field a scalar of the radius alone; anything else is refused."""
+        field a scalar of the layered coordinate alone; anything else is
+        refused."""
         characters = set()
         for i in group:
             f = self._layers[i][name]
             if f.character.rank != 0 or not getattr(f, "is_radial", False):
                 raise ValueError(
                     f"{name!r} on layer {self._layers[i]._label()} is not a "
-                    "scalar of the radius alone, so it cannot be refit "
-                    "radially; drop it first, or keep the interface")
+                    f"scalar of the {self._geometry.coordinates.labels[0]} alone, "
+                    "so it cannot be refit; drop it first, or keep the interface")
             characters.add(f.character)
         if len(characters) != 1:
             raise ValueError(
@@ -683,7 +721,7 @@ class Model:
 
     # -- units --------------------------------------------------------------
 
-    def converted(self, scales: Scales) -> "Model":
+    def converted(self, scales: Scales) -> "ModelBase":
         """The model in other scales: every length and every field by name."""
         if not isinstance(scales, Scales):
             raise TypeError(f"expected Scales, got {type(scales).__name__}")
@@ -706,10 +744,12 @@ class Model:
                           scales=new)
 
     def nondimensionalised(self, *, density: float = EARTH_MEAN_DENSITY,
-                           length: float | None = None) -> "Model":
+                           length: float | None = None) -> "ModelBase":
         """The model in geophysical scales, with G equal to one.
 
-        `length` is the outer radius by default; the model must be in SI.
+        `length` is the skeleton's last boundary by default, the outer
+        radius of a ball or the depth of a box's base; the model must be
+        in SI.
         """
         if not self._scales.is_si:
             raise ValueError("nondimensionalised expects a model in SI; "
@@ -718,7 +758,7 @@ class Model:
             length = float(self.skeleton.boundaries[-1])
         return self.converted(Scales.geophysical(length, density=density))
 
-    def in_si(self) -> "Model":
+    def in_si(self) -> "ModelBase":
         """The model converted to SI scales."""
         return self.converted(Scales.SI)
 
@@ -727,3 +767,21 @@ class Model:
         called = f"{self._name!r}, " if self._name is not None else ""
         return (f"{type(self).__name__}({called}{self.nlayers} layers, "
                 f"fields [{names}], scales={self._scales!r})")
+
+
+class Model(ModelBase):
+    """A spherically layered model: a `ModelBase` on a spherical
+    `Geometry`, placed by any mapping or by the radial stretch
+    (`stretched`); see the module docstring.  Every model type of the
+    sphere (`PREM`, the deck models, a user's own) derives from it.
+    """
+
+    geometry_type: ClassVar[type[GeometryBase]] = Geometry
+
+    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
+                  name: str | None = None, check: bool = True) -> "Model":
+        """The model under the radial stretch driven by `h`; see
+        `Geometry.stretched`."""
+        return self.replaced(geometry=self._geometry.stretched(h, name=name,
+                                                            check=check),
+                             check=False)

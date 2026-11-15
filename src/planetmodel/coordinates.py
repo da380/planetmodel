@@ -16,18 +16,23 @@ and a field's interval are values of, and (a, b) the lateral ones.  A
 
 and `frames`, the names of the frames a field presents its components
 in: its local frame first, whose basis is the columns of R, then
-`CARTESIAN`.  Local components become Cartesian by a factor of R on
-every slot.  The frame depends on the lateral coordinates alone, as it
-does wherever a body is layered along c.  Nothing asks c to increase
-outward, a body to have a centre, or the lateral coordinates to have
-poles: those are the sphere's.
+`CARTESIAN`; and `labels`, the names of (c, a, b) in messages.  Local
+components become Cartesian by a factor of R on every slot.  The frame
+depends on the lateral coordinates alone, as it does wherever a body is
+layered along c, and its first vector points out of the body (up).
+Nothing asks c to increase along that vector, a body to have a centre,
+or the lateral coordinates to have poles: those are the sphere's.
+`increases_outward` reads from the points and the frame which way c
+runs, and `layer_samples` is the sample of c inside every layer that a
+lattice is built on.
 
 `SPHERICAL` is (r, theta, phi), theta the colatitude and phi the
 longitude in radians, with the local frame (e_r, e_theta, e_phi), built
 on `planetmodel.frames`; its frames are ("spherical", "cartesian"), its
 lattice is `mapping.validity_lattice`'s and its probes keep 0.05 rad off
 the poles.  It is the system of every field, geometry and model that
-does not state another.
+does not state another.  The flat system, (depth, x, y), is
+`planetmodel.cartesian.FLAT`.
 
 Fields of two systems are never combined: `common_coordinates` names
 the systems of a mix and refuses it, and `coordinates_of` reads the
@@ -49,7 +54,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Coordinates", "SphericalCoordinates", "SPHERICAL", "CARTESIAN",
            "coordinates_of", "common_coordinates", "checked_coordinates",
-           "resolve_frame"]
+           "resolve_frame", "increases_outward", "layer_samples"]
 
 #: The name of the Cartesian frame, the second of every system's `frames`.
 CARTESIAN = "cartesian"
@@ -60,11 +65,12 @@ class Coordinates(Protocol):
     """What a coordinate system says; see the module docstring.
 
     `name` names the system in messages; `frames` is (the local frame's
-    name, `CARTESIAN`).
+    name, `CARTESIAN`); `labels` names (c, a, b) in messages.
     """
 
     name: str
     frames: tuple[str, str]
+    labels: tuple[str, str, str]
 
     def points(self, c: ArrayLike, a: ArrayLike, b: ArrayLike) -> np.ndarray:
         """The Cartesian points of the broadcast coordinates, shape
@@ -111,6 +117,7 @@ class SphericalCoordinates:
 
     name: ClassVar[str] = "spherical"
     frames: ClassVar[tuple[str, str]] = ("spherical", CARTESIAN)
+    labels: ClassVar[tuple[str, str, str]] = ("radius", "theta", "phi")
 
     def points(self, c: ArrayLike, a: ArrayLike, b: ArrayLike) -> np.ndarray:
         """X = r e_r(theta, phi): `frames.cartesian_points`."""
@@ -156,12 +163,8 @@ class SphericalCoordinates:
         (1, n_a, 1) and (1, 1, n_b), n being nlayers * n_c, one more for
         the centre.
         """
-        b = np.asarray(skeleton.boundaries, dtype=float)
-        rs = [np.zeros(1)] if b[0] == 0.0 else []
-        for lo, hi in zip(b[:-1], b[1:]):
-            inset = 1e-6 * (hi - lo)
-            rs.append(np.linspace(lo + inset, hi - inset, n_c))
-        r = np.concatenate(rs)
+        centre = [np.zeros(1)] if skeleton.boundaries[0] == 0.0 else []
+        r = np.concatenate(centre + [layer_samples(skeleton, n_c)])
         theta = np.linspace(0.0, np.pi, n_a)
         phi = np.linspace(-np.pi, np.pi, n_b, endpoint=False)
         return (r[:, None, None], theta[None, :, None], phi[None, None, :])
@@ -225,3 +228,27 @@ def resolve_frame(coordinates: Coordinates, frame: str | None) -> str:
         raise ValueError(
             f"unknown frame {frame!r}: expected one of {coordinates.frames}")
     return frame
+
+
+def increases_outward(coordinates: Coordinates) -> bool:
+    """Whether the layered coordinate c increases along the first vector of
+    the local frame, the one pointing out of the body: True on the sphere,
+    whose c is the radius, False where c is a depth.  Read from the
+    system's points and frame across c = 1 at its first probe."""
+    a, b = coordinates.probe(np.random.default_rng(0), 1)
+    step = (np.asarray(coordinates.points(1.0 + 1e-3, a, b), dtype=float)
+            - np.asarray(coordinates.points(1.0 - 1e-3, a, b), dtype=float))
+    first = np.asarray(coordinates.frame(a, b), dtype=float)[..., :, 0]
+    return bool(np.sum(step * first) > 0.0)
+
+
+def layer_samples(skeleton: Skeleton, n: int) -> np.ndarray:
+    """`n` values of the layered coordinate strictly inside every layer of
+    `skeleton`, inset by 1e-6 of the layer's width from its ends, in
+    increasing order: a thin layer is sampled as densely as a thick one."""
+    b = np.asarray(skeleton.boundaries, dtype=float)
+    samples = []
+    for lo, hi in zip(b[:-1], b[1:]):
+        inset = 1e-6 * (hi - lo)
+        samples.append(np.linspace(lo + inset, hi - inset, n))
+    return np.concatenate(samples)

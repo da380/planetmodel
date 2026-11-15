@@ -30,6 +30,7 @@ class Toy:
     multiplies all three."""
 
     frames = ("local", "cartesian")
+    labels = ("c", "a", "b")
 
     def __init__(self, name: str, P: list) -> None:
         self.name = name

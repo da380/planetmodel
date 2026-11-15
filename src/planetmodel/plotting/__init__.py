@@ -9,7 +9,9 @@ matplotlib axes they are given, returning what they drew and leaving
 the figure to the caller.  Nothing here is particular to the Earth.
 
 `profile` and `radial_profile` draw a field against radius, radius
-upward, a step at every interface (`profiles`); `section` draws a
+upward, or against depth, depth downward, for a flat model of
+`planetmodel.cartesian`, a step at every interface (`profiles`);
+`section` draws a
 great-circle section as a wedge of the annulus or a disc, or in the
 body's deformed shape (`sections`); `sphere_map` draws a sphere slice on
 cartopy's projections (`maps`, the `maps` extra); `cutaway` draws the

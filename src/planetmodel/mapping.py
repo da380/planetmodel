@@ -23,6 +23,14 @@ generic versions of the first two, and `scaled_mapping(m, k)` asks for
 carries `h`, its radial displacement, and
 `deformation_gradient_spherical(X)`.
 
+`is_valid` takes Cartesian points X or a sample of coordinates, which
+are spherical (r, theta, phi) unless `coordinates` names another system
+(`planetmodel.coordinates`); the sample's points and the worst point it
+reports are that system's, and a `ScaledMapping` scales the sample
+through it.  `validity` tells a mapping's own `is_valid` the system only
+when it is not the sphere, so one written for spherical samples alone
+keeps working there.
+
 Mappings are Cartesian-first because meshes and solvers are; the
 conversion to and from (r, theta, phi) happens once, through
 `planetmodel.frames`.  Nothing here knows about units: every tolerance
@@ -36,7 +44,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .coordinates import SPHERICAL
+from .coordinates import SPHERICAL, Coordinates
 from .displacement import (CallableDisplacement, RadialDisplacement, SphericalFunction,
                            ZeroDisplacement, as_displacement)
 from .frames import cartesian_points, spherical_coordinates
@@ -54,7 +62,7 @@ __all__ = [
 
 #: A set of points given as (r, theta, phi) arrays that broadcast against
 #: one another, as `validity_lattice` builds and `is_valid(sample=...)`
-#: takes.
+#: takes; (c, a, b) of another system where `is_valid` is told it.
 type SphericalSample = tuple[ArrayLike, ArrayLike, ArrayLike]
 
 #: A point closer to the origin than this fraction of `rmax` is treated as
@@ -119,7 +127,8 @@ class ValidityReport:
     """Whether a mapping preserves orientation, and where it is worst.
 
     `margin` is dimensionless: the smallest factor of J found.  For an
-    invalid mapping `worst_point` is (r, theta, phi) of the failure and
+    invalid mapping `worst_point` is the coordinates of the failure,
+    (r, theta, phi) unless `labels` names those of another system, and
     `reason` names the failing factor.
     """
 
@@ -128,6 +137,7 @@ class ValidityReport:
     _: KW_ONLY
     worst_point: tuple[float, float, float] | None = None
     reason: str = ""
+    labels: tuple[str, str, str] = SPHERICAL.labels
 
     def __bool__(self) -> bool:
         return self.valid
@@ -136,7 +146,7 @@ class ValidityReport:
         if self.valid:
             return f"ValidityReport(valid, margin={self.margin:.4g})"
         where = ("" if self.worst_point is None
-                 else f" at (r, theta, phi) = ("
+                 else f" at ({', '.join(self.labels)}) = ("
                       f"{self.worst_point[0]:.6g}, {self.worst_point[1]:.4f}, "
                       f"{self.worst_point[2]:.4f})")
         return f"ValidityReport(INVALID: {self.reason}{where})"
@@ -176,23 +186,31 @@ def outer_radius_of(domain: float | Skeleton | Geometry) -> float:
     return r
 
 
-def _points_or_sample(X: ArrayLike | None, sample: SphericalSample | None
-                      ) -> np.ndarray:
-    """Cartesian points from either argument of `is_valid`, or ValueError."""
+def _points_or_sample(X: ArrayLike | None, sample: SphericalSample | None,
+                      coordinates: Coordinates | None) -> np.ndarray:
+    """Cartesian points from either argument of `is_valid`, the sample in
+    `coordinates` (spherical when None), or ValueError."""
     if X is None and sample is not None:
-        X = cartesian_points(*sample)
+        X = (cartesian_points(*sample) if coordinates is None
+             else coordinates.points(*sample))
     if X is None:
-        raise ValueError("give either points X or a (r, theta, phi) sample")
+        labels = (SPHERICAL if coordinates is None else coordinates).labels
+        raise ValueError(f"give either points X or a ({', '.join(labels)}) sample")
     return np.asarray(X, dtype=float)
 
 
 def validity(m: Mapping, *, X: ArrayLike | None = None,
-             sample: SphericalSample | None = None) -> ValidityReport:
+             sample: SphericalSample | None = None,
+             coordinates: Coordinates | None = None) -> ValidityReport:
     """A mapping's verdict on the points or sample: its own `is_valid`
-    where it has one, else J > 0 there (`MappingBase.is_valid`)."""
+    where it has one, else J > 0 there (`MappingBase.is_valid`).  The
+    sample is in `coordinates`, spherical when None; the mapping's own
+    `is_valid` is told the system only when it is not `SPHERICAL`."""
+    told = {} if coordinates is None or coordinates == SPHERICAL else {
+        "coordinates": coordinates}
     if hasattr(m, "is_valid"):
-        return m.is_valid(X=X, sample=sample)
-    return MappingBase.is_valid(m, X=X, sample=sample)
+        return m.is_valid(X=X, sample=sample, **told)
+    return MappingBase.is_valid(m, X=X, sample=sample, **told)
 
 
 def scaled_mapping(m: Mapping, k: float) -> Mapping:
@@ -236,23 +254,28 @@ class MappingBase:
         return np.asarray(self(X), dtype=float) - X
 
     def is_valid(self, *, X: ArrayLike | None = None,
-                 sample: SphericalSample | None = None) -> ValidityReport:
-        """Whether J > 0 on the given points or on a (r, theta, phi) sample.
+                 sample: SphericalSample | None = None,
+                 coordinates: Coordinates | None = None) -> ValidityReport:
+        """Whether J > 0 on the given points or on a sample of coordinates,
+        (r, theta, phi) unless `coordinates` names another system, in
+        which the worst point is then reported.
 
         The verdict is only as good as the sample; `validity_lattice`
-        builds one that covers every layer and the whole sphere.
+        builds one that covers every layer and the whole sphere, and a
+        geometry's `lattice` one that covers its body.
         """
-        X = _points_or_sample(X, sample)
+        X = _points_or_sample(X, sample, coordinates)
         J = np.asarray(self.jacobian(X), dtype=float)
         worst = float(np.min(J))
         if worst > 0.0:
             return ValidityReport(True, worst)
         i = int(np.argmin(J.reshape(-1)))
         P = X.reshape(-1, 3)[i]
-        r, theta, phi, _ = spherical_coordinates(P)
+        system = SPHERICAL if coordinates is None else coordinates
+        c, a, b, _ = system.split(P)
         return ValidityReport(
-            False, worst, worst_point=(float(r), float(theta), float(phi)),
-            reason=f"J = {worst:.4g} is not positive")
+            False, worst, worst_point=(float(c), float(a), float(b)),
+            reason=f"J = {worst:.4g} is not positive", labels=system.labels)
 
     def inverse(self, x: ArrayLike) -> np.ndarray:
         """X such that m(X) = x, where the mapping can invert itself."""
@@ -299,8 +322,9 @@ class IdentityMapping(MappingBase):
         return self
 
     def is_valid(self, *, X: ArrayLike | None = None,
-                 sample: SphericalSample | None = None) -> ValidityReport:
-        """Valid everywhere, whatever the sample."""
+                 sample: SphericalSample | None = None,
+                 coordinates: Coordinates | None = None) -> ValidityReport:
+        """Valid everywhere, whatever the sample and its system."""
         return ValidityReport(True, 1.0)
 
     @property
@@ -398,14 +422,19 @@ class RadialStretch(MappingBase):
         return (1.0 + dr) * (1.0 + self._ratio(r, h, dr)) ** 2
 
     def is_valid(self, *, X: ArrayLike | None = None,
-                 sample: SphericalSample | None = None) -> ValidityReport:
+                 sample: SphericalSample | None = None,
+                 coordinates: Coordinates | None = None) -> ValidityReport:
         """The analytic conditions 1 + dh/dr > 0 and 1 + h/r > 0.
 
         Conditions on the mapping itself rather than on a discrete
         Jacobian, checked at the given points or sample.  A displacement
         that is not zero at the origin is reported as its own failure,
-        with margin h / rmax.
+        with margin h / rmax.  A sample in another system than the
+        sphere's (`coordinates`) is checked at its points, the worst point
+        reported in (r, theta, phi), the coordinates of a radial stretch.
         """
+        if X is None and sample is not None and coordinates is not None:
+            X = coordinates.points(*sample)
         if X is not None:
             r, theta, phi, _ = spherical_coordinates(X)
         elif sample is not None:
@@ -592,15 +621,24 @@ class ScaledMapping(MappingBase):
         return self.mapping.jacobian(np.asarray(X, dtype=float) / self.k)
 
     def is_valid(self, *, X: ArrayLike | None = None,
-                 sample: SphericalSample | None = None) -> ValidityReport:
-        """The underlying mapping's verdict, in its own coordinates."""
+                 sample: SphericalSample | None = None,
+                 coordinates: Coordinates | None = None) -> ValidityReport:
+        """The underlying mapping's verdict, in its own coordinates: the
+        points divided by k, or the sample's coordinates of the point X / k
+        in its system (`coordinates`, spherical when None)."""
         if X is not None:
-            return validity(self.mapping, X=np.asarray(X, dtype=float) / self.k)
+            return validity(self.mapping, X=np.asarray(X, dtype=float) / self.k,
+                            coordinates=coordinates)
         if sample is not None:
-            r, theta, phi = sample
+            if coordinates is None:
+                r, theta, phi = sample
+                scaled = (np.asarray(r, dtype=float) / self.k, theta, phi)
+                return validity(self.mapping, sample=scaled)
             return validity(self.mapping,
-                            sample=(np.asarray(r, dtype=float) / self.k, theta, phi))
-        raise ValueError("give either points X or a (r, theta, phi) sample")
+                            sample=coordinates.scaled(*sample, 1.0 / self.k),
+                            coordinates=coordinates)
+        labels = (SPHERICAL if coordinates is None else coordinates).labels
+        raise ValueError(f"give either points X or a ({', '.join(labels)}) sample")
 
     def inverse(self, x: ArrayLike) -> np.ndarray:
         """k m^-1(x / k), where the underlying mapping inverts itself."""
