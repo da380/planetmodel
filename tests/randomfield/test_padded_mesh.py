@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.randomfield import (RadialOperatorFamily, Restriction,
+from planetmodel.randomfield import (SeparableOperatorFamily, Restriction,
                                      matern_reach, padded_mesh, restriction)
 
 
@@ -28,11 +28,15 @@ def test_padded_mesh_pins_the_interval_and_the_measure_decides_the_clamp():
     assert below.left[0] == -1.5 and below.right[-1] == 1.5
     bare = padded_mesh(0.0, 1.0, pad=(0.0, 0.0))
     assert bare.nspec == 1 and (bare.left[0], bare.right[-1]) == (0.0, 1.0)
-    for kw in (dict(pad=-0.1), dict(pad=(0.1, np.inf)), dict(pad=0.1, weight="r")):
+    disk = padded_mesh(0.5, 1.0, pad=2.0, weight="r")
+    assert disk.left[0] == 0.0 and disk.right[-1] == 3.0
+    for kw in (dict(pad=-0.1), dict(pad=(0.1, np.inf)), dict(pad=0.1, weight="x")):
         with pytest.raises(ValueError):
             padded_mesh(0.5, 1.0, **kw)
     with pytest.raises(ValueError, match="r1 >= 0"):
         padded_mesh(-1.0, 1.0, pad=0.1)
+    with pytest.raises(ValueError, match="r1 >= 0"):
+        padded_mesh(-1.0, 1.0, pad=0.1, weight="r")
     with pytest.raises(ValueError, match="r1 < r2"):
         padded_mesh(1.0, 1.0, pad=0.1)
 
@@ -73,7 +77,7 @@ def test_padding_insensitivity_of_the_restricted_covariance(a, b, weight):
         mesh = padded_mesh(a, b, pad=pad_factor * matern_reach(nu, lam),
                            weight=weight, drmax=lam / 2.0)
         R = restriction(mesh, a, b)
-        theta, Phi = RadialOperatorFamily(mesh, kappa=lam ** 2, weight=weight).eig(0)
+        theta, Phi = SeparableOperatorFamily(mesh, kappa=lam ** 2, weight=weight).eig(0)
         Phi = Phi[R.nodes]
         C = (Phi * theta ** -p) @ Phi.T
         d = np.sqrt(np.diag(C))

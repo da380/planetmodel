@@ -27,7 +27,9 @@ base as geometry) or `with_lid` (the base as a field: the viscosity
 above it raised to a lid value, kept a log perturbation of the layer's
 radial viscosity, which a file stores and a code reads as it reads any
 viscosity; a fully 3D viscosity, which has no radial reference, becomes
-a field of its own, the lid above and the viscosity below).
+a field of its own, the lid above and the viscosity below).  Radial
+lines, an angular grid and a surface measuring a radius are the
+sphere's: a flat model is refused by name.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..coordinates import SPHERICAL, require_coordinates
 from ..fields import Field
 from ..gridded import GriddedFunction
 from ..materials import kappa_mu
@@ -67,8 +70,10 @@ def _layers(model: Model, layers: Iterable[int | str] | None, holds: str
 def _base(model: Model, read: Reading, threshold: float, hot_above: bool,
           which: list[int], grid: AngularGrid, step: float, rtol: float,
           name: str) -> Surface:
-    """The base by the rule of the module docstring, as a Surface."""
+    """The base by the rule of the module docstring, as a Surface; a model
+    off the sphere is refused."""
     from ..datasets.surfaces import Surface
+    require_coordinates(model, SPHERICAL, "the base of the lithosphere on radial lines")
     length = model.scales.length
     theta = np.concatenate([np.repeat(grid.colatitudes, grid.nphi), [0.0, np.pi]])
     phi = np.concatenate([np.tile(grid.longitudes, grid.ntheta), [0.0, 0.0]])
@@ -172,7 +177,9 @@ def with_lid(model: Model, base: Surface, *, viscosity: float,
     `viscosity` (Pa s) above `base`, a log perturbation of the layer's
     radial viscosity (or of a perturbed one's reference) or, for a fully
     3D one, a field of its own, by the rule of the module docstring; a
-    layer wholly below the base untouched."""
+    layer wholly below the base untouched; a model off the sphere is
+    refused, the base being a surface measuring a radius."""
+    require_coordinates(model, SPHERICAL, "a lid below a surface measuring a radius")
     length = model.scales.length
     lid = float(viscosity) / model.scales.factor(VISCOSITY)
     f = base.function

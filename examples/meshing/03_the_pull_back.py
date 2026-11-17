@@ -29,9 +29,8 @@ from matplotlib.lines import Line2D
 
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
 from planetmodel.fault import Fault, GeographicFrame, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -66,19 +65,20 @@ plane = Plane.at_depth(UNIT, LAT, LON, 0.5 * width * np.sin(np.deg2rad(dip)),
 fault = Fault([plane])
 
 # %% [markdown]
-# Two meshes of order 2, refined to 0.03 near the fault: one built under
-# the hill, the fault pulled back through it, and one built on the
-# reference ball with the fault as given, its nodes moved by the same
-# mapping afterwards (the pull-back off).
+# Two meshes of order 2, the fault's size 0.03 (graded to the background
+# and relocated, `EmbeddedFault`'s rule): one built under the hill, the
+# fault pulled back through it, and one built on the reference ball with
+# the fault as given, its nodes moved by the same mapping afterwards (the
+# pull-back off).
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_pullback_"))
-near = InterfaceSizing(0.03, 0.15, 0.1)
+size = 0.03
 meshes = {}
 for label, g in (("pulled back", geometry), ("built as given", reference)):
     result = build_layered_mesh(
         MeshSpec(g, UniformInterfaces(0.1, 0.3, 0.3), order=2,
-                 faults=[EmbeddedFault(fault, name="thrust", sizing=near)]),
+                 faults=[EmbeddedFault(fault, name="thrust", sizing=size)]),
         work / label.replace(" ", "_"))
     meshes[label] = (read_mesh(result.msh_path), manifest.read(result.manifest_path))
 mapping = geometry.mapping
@@ -101,7 +101,7 @@ for label, (mesh, card) in meshes.items():
     worst[label] = float(np.abs(found.distance[~carried]).max())
     print(f"{label}: {nodes.size} nodes, {int(np.count_nonzero(carried))} carried "
           f"across to the surface; the rest within {worst[label]:.2g} of the true "
-          f"fault, {worst[label] / near.size:.2g} of an element")
+          f"fault, {worst[label] / size:.2g} of an element")
 
 # %% [markdown]
 # The section through the centre spanned by east and up at the fault's

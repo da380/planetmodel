@@ -1,19 +1,22 @@
 """The look every picture shares: boundary guides and colour scales.
 
-A boundary of the skeleton is a faint guide beneath what is drawn
-(`BOUNDARY_STYLE`).  A departure, and any field asked for with
-`diverging=True` (a kernel, any signed field), is drawn on a diverging
-colour map (`DIVERGING`, negative red and positive blue) with limits
-symmetric about zero, the largest absolute value; anything else on a
-sequential one (`SEQUENTIAL`), the limits the finite range of what is
-drawn.  `clip=p` puts the limits at the p-th percentile of the absolute
-values instead (and of the values, from the (100 - p)-th, on a
-sequential scale), so that a spike beside a source does not wash out
-the rest; a percentile of zero, where most of a field is, falls back to
-the largest value.  The caller's limits win over both.  `colour_scale`
-decides them once for a picture of several parts, so that every layer
-of a section shares one scale, and `colour_extend` says which ends of a
-colour bar the values run beyond, to be drawn as arrows.
+A boundary of the skeleton is a faint guide (`BOUNDARY_STYLE`), drawn
+over a picture's colours and beneath its curves: above an image (zorder
+0), a colour mesh (1) and the axes' grid (1.5, matplotlib's default for
+`axes.axisbelow`), so that an interface shows on a section, and below
+lines (2), so that a profile runs over its guides.  A departure, and any
+field asked for with `diverging=True` (a kernel, any signed field), is
+drawn on a diverging colour map (`DIVERGING`, negative red and positive
+blue) with limits symmetric about zero, the largest absolute value;
+anything else on a sequential one (`SEQUENTIAL`), the limits the finite
+range of what is drawn.  `clip=p` puts the limits at the p-th percentile
+of the absolute values instead (and of the values, from the
+(100 - p)-th, on a sequential scale), so that a spike beside a source
+does not wash out the rest; a percentile of zero, where most of a field
+is, falls back to the largest value.  The caller's limits win over both.
+`colour_scale` decides them once for a picture of several parts, so that
+every layer of a section shares one scale, and `colour_extend` says
+which ends of a colour bar the values run beyond, to be drawn as arrows.
 """
 from __future__ import annotations
 
@@ -29,8 +32,9 @@ if TYPE_CHECKING:
 __all__ = ["BOUNDARY_STYLE", "DIVERGING", "SEQUENTIAL", "colour_scale",
            "colour_extend"]
 
-#: The style of the guide drawn at a layer boundary, beneath the picture.
-BOUNDARY_STYLE = {"color": "0.85", "lw": 0.8, "zorder": 0.5}
+#: The style of the guide drawn at a layer boundary: over colours, beneath
+#: curves (the module docstring).
+BOUNDARY_STYLE = {"color": "0.85", "lw": 0.8, "zorder": 1.75}
 
 #: The colour map of a departure: negative red, positive blue.
 DIVERGING = "RdBu"

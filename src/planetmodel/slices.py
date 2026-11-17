@@ -26,19 +26,27 @@ ref)).  Every slice records what it shows (`Shown`) and labels itself.
 **Reference or physical.**  A slice is taken at reference points, where
 the fields live (`at="reference"`), and gives besides where the mapping
 takes each of them, so that it can be drawn as the body is.  At physical
-points (`at="physical"`: a true sphere |x| = r, a true plane, a true
+points (`at="physical"`: a true sphere `|x| = r`, a true plane, a true
 radius) each point is pulled back through the mapping's inverse and the
 field evaluated there, which is offered where the mapping inverts
 itself and refused by name where it does not; a physical section or
 profile also needs the mapping to keep each ray, as a radial stretch
-does, so that each layer's part of a ray is one run of radii.  Points
-are given as the library gives them, colatitude and longitude in
-radians; `frames.from_geographic` converts latitudes and longitudes.
+does, so that each layer's part of a ray is one run of radii.  That run
+lies between where the mapping puts the layer's two boundaries on the
+ray, so that which layer a point is in is decided in the physical body,
+and by default the section covers the body as the mapping shapes it: on
+each ray from the mapped inner boundary to the mapped surface, above the
+reference outer radius where the surface is raised and below it where
+it is lowered, nothing outside the body sampled.  `radii` bound the
+runs, and on a ray where a layer has nothing within them its values are
+NaN.  Points are given as the library gives them, colatitude and
+longitude in radians; `frames.from_geographic` converts latitudes and
+longitudes.
 
 **Spectra.**  `spectrum` analyses a sphere slice into the library's
 real orthonormal harmonics (`planetmodel.harmonics`: the integral of
 Y_lm^2 over the unit sphere is one, with no Condon-Shortley phase),
-and gives the power by degree
+and gives the power by degree ::
 
     P_l = sum_m c_lm^2 / (4 pi),
 
@@ -97,24 +105,45 @@ radius lies on an interface to the geometry's tolerance and of no effect
 elsewhere, so that a loop over radii names it once; a physical sphere's
 points that fall on an interface take the side the same way, and its
 points outside the body are NaN.
+
+**Shared with the flat slices.**  What is sliced and how it departs is
+the same concept in every coordinate system, and the slices of a flat
+model (`planetmodel.cartesian.slices`) take it from here: `evaluator`
+gives a layer's values at reference points (c, a, b) of the model's own
+system, the departure from the mean asked of the averaging operator it
+is handed (`MeanOf`: the spherical mean here, the horizontal mean in a
+box); `layers_of` the layer holding each value of the layered
+coordinate, the side of an interface taken as the body is (below is
+toward the centre on the sphere and deeper in a box); `to_reference`
+and `to_physical` the passage through the mapping; `evaluate_layers`
+the values at points each in its layer; `runs` each layer's part of a
+section or a profile along its lines, rays or verticals, at reference
+or physical points (`Lines`); `layer_quadrature` the
+quadrature of a layer's field along its layered coordinate;
+`SliceLayer`, `Shown` and `normalised` the parts of a slice.  Every
+slice states its `coordinates`, so that a picture asks it which way
+its layered coordinate runs.
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .fields import Field, check_frame, stored_shape
+from .coordinates import (SPHERICAL, Coordinates, coordinates_of, increases_outward,
+                          resolve_frame)
+from .fields import Field, stored_shape
 from .frames import cartesian_points, spherical_coordinates, wrapped
 from .means import spherical_mean
-from .model import Model
+from .model import ModelBase
 from .units import Dimensions, Scales, scaled_unit
 
 if TYPE_CHECKING:
     from .geometry import InterfaceInfo
+    from .model import Model
     from .sampling import AngularGrid
 
 __all__ = ["AT", "SIDES", "DEPARTURES", "WEIGHTS", "NO_POWER", "Fields", "RelativeTo",
@@ -123,7 +152,9 @@ __all__ = ["AT", "SIDES", "DEPARTURES", "WEIGHTS", "NO_POWER", "Fields", "Relati
            "Hits", "Spectrum", "Correlation", "sphere", "section", "profile",
            "mean_profile", "integrated", "surface", "cutaway", "discs", "normalised",
            "evaluate",
-           "spectrum", "spectrum_of", "correlation"]
+           "spectrum", "spectrum_of", "correlation", "Values", "MeanOf", "evaluator",
+           "field_of", "layers_of", "to_reference", "to_physical", "evaluate_layers",
+           "Lines", "runs", "layer_quadrature"]
 
 #: Where a slice's points are: in the reference body, or the physical one.
 AT = ("reference", "physical")
@@ -146,10 +177,22 @@ NO_POWER = 1e-10
 type Fields = str | Mapping[int, Field]
 
 #: What a departure is from: the mean, the reference, or another model.
-type RelativeTo = str | Model | None
+type RelativeTo = str | ModelBase | None
 
-#: A layer's values at points, from (layer, r, theta, phi).
-type _Values = Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray]
+#: A layer's values at reference points, from (layer, c, a, b): the layered
+#: coordinate and the two lateral ones of the model's system, (layer, r,
+#: theta, phi) on the sphere and (layer, depth, x, y) in a box.
+type Values = Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray]
+
+#: The mean of a layer's field, a field of the layered coordinate alone,
+#: from (field, layer): the averaging a departure from the mean asks of.
+type MeanOf = Callable[[Field, int], Field]
+
+#: The points on the lines of a section or a profile, rays from the centre
+#: on the sphere and verticals in a box: from values (k, m) of the layered
+#: coordinate, or (k, 1) for one value on every line, the points (k, m, 3),
+#: column j on line j.
+type Lines = Callable[[np.ndarray], np.ndarray]
 
 #: One field's numbers at points, from (r, theta, phi).
 type _PointValues = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
@@ -185,7 +228,7 @@ class Shown:
     @property
     def label(self) -> str:
         """A label for an axis or a colour bar: "vs, percent from the mean
-        [%]", "rho [kg m-3]", "|u| [m]", "K, normalised"."""
+        [%]", "rho [kg m-3]", `"|u| [m]"`, "K, normalised"."""
         base = self.name or "field"
         if self.component == "norm":
             base = f"|{base}|"
@@ -237,6 +280,9 @@ class SphereSlice:
     at: str = "reference"
     side: str | None = None
 
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
+
     @property
     def label(self) -> str:
         """The label of what the slice shows."""
@@ -281,6 +327,9 @@ class SectionSlice:
     _: KW_ONLY
     at: str = "reference"
 
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
+
     @property
     def label(self) -> str:
         """The label of what the slice shows."""
@@ -304,6 +353,9 @@ class ProfileSlice:
     shown: Shown
     _: KW_ONLY
     at: str = "reference"
+
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
 
     @property
     def label(self) -> str:
@@ -390,6 +442,9 @@ class CutawaySlice:
     longitudes: tuple[float, float] | None = None
     colatitudes: tuple[float, float] | None = None
 
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
+
     @property
     def label(self) -> str:
         """The label of what the slice shows."""
@@ -446,6 +501,9 @@ class Spectrum:
     at: str = "reference"
     side: str | None = None
 
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
+
     @property
     def amplitude(self) -> np.ndarray:
         """The square root of the power, by degree."""
@@ -473,6 +531,9 @@ class Correlation:
     first: tuple[Spectrum, ...]
     second: tuple[Spectrum, ...]
 
+    #: The coordinate system the slice's points are in.
+    coordinates: ClassVar[Coordinates] = SPHERICAL
+
     @property
     def label(self) -> str:
         """What is correlated with what, by name: "correlation of vs", or
@@ -484,8 +545,9 @@ class Correlation:
 
 # -- what is evaluated --------------------------------------------------------------
 
-def _field_of(model: Model, fields: Fields, layer: int) -> Field | None:
-    """The field of a layer, or None where it has none."""
+def field_of(model: ModelBase, fields: Fields, layer: int) -> Field | None:
+    """The field of a layer that `fields` names (a name, or a mapping from
+    layer indices to fields), or None where it has none."""
     if isinstance(fields, str):
         held = model.layer(layer)
         return held[fields] if fields in held else None
@@ -518,10 +580,11 @@ def _components(field: Field, layer: int, component: int | str | None,
                              f"of rank {rank}")
         return lambda r, t, p: np.linalg.norm(_real(field.evaluate(r, t, p), field),
                                               axis=-1)
+    frames = coordinates_of(field).frames
     if frame is None:
-        raise ValueError("a component is of a frame: name frame='spherical' or "
-                         "'cartesian' with component=")
-    check_frame(frame)
+        raise ValueError(f"a component is of a frame: name frame=, one of {frames}, "
+                         "with component=")
+    resolve_frame(coordinates_of(field), frame)
     size = int(np.prod(stored_shape(field.character)))
     if not (isinstance(component, (int, np.integer)) and 0 <= component < size):
         raise ValueError(f"component must be an index in 0..{size - 1} or 'norm', "
@@ -534,7 +597,7 @@ def _components(field: Field, layer: int, component: int | str | None,
     return one
 
 
-def _other_layer(model: Model, r: np.ndarray, toward: float) -> np.ndarray:
+def _other_layer(model: ModelBase, r: np.ndarray, toward: float) -> np.ndarray:
     """The layer of another model holding each radius, nudged toward
     `toward`, a radius inside the slice's own layer, so that a radius on
     an interface of the other model is read on the side of the slice's
@@ -545,11 +608,42 @@ def _other_layer(model: Model, r: np.ndarray, toward: float) -> np.ndarray:
     return np.clip(np.searchsorted(b, nudged, side="right") - 1, 0, b.size - 2)
 
 
+def _spherical_means(mean_grid: AngularGrid | None) -> MeanOf:
+    """The spherical mean of a layer's field, its own or by `mean_grid`'s
+    quadrature, a field with neither refused by name."""
+    def mean(field: Field, layer: int) -> Field:
+        if (mean_grid is None and getattr(field, "spherical_mean", None) is None
+                and not getattr(field, "is_radial", False)):
+            raise ValueError(f"layer {layer}'s {field!r} has no spherical mean of its "
+                             "own: pass mean_grid=, an angular grid with weights to "
+                             "take it by quadrature")
+        return spherical_mean(field, grid=mean_grid)
+    return mean
+
+
 def _evaluator(model: Model, fields: Fields, *, component: int | str | None,
                frame: str | None, relative_to: RelativeTo, departure: str | None,
-               mean_grid: AngularGrid | None) -> tuple[_Values, Shown]:
-    """The values of a layer at points, with the departure asked for, and
-    what they show."""
+               mean_grid: AngularGrid | None) -> tuple[Values, Shown]:
+    """`evaluator` with the spherical mean."""
+    return evaluator(model, fields, component=component, frame=frame,
+                     relative_to=relative_to, departure=departure,
+                     mean=_spherical_means(mean_grid))
+
+
+def evaluator(model: ModelBase, fields: Fields, *,
+              component: int | str | None = None, frame: str | None = None,
+              relative_to: RelativeTo = None, departure: str | None = None,
+              mean: MeanOf | None = None) -> tuple[Values, Shown]:
+    """The values of a slice of `fields` of `model` at reference points of a
+    layer, with the departure asked for, and what they show: the rules of
+    the module docstring for any model, spherical or flat.
+
+    `component`, `frame`, `relative_to` and `departure` are a slice's;
+    `mean` is the averaging of a departure from the mean (the spherical
+    mean, or the horizontal one in a box), a departure from the mean
+    being refused without it.  Another model departed from is in the
+    model's coordinates.
+    """
     if departure is not None and departure not in DEPARTURES:
         raise ValueError(f"departure must be one of {DEPARTURES}, got {departure!r}")
     if relative_to is None and departure is not None:
@@ -560,8 +654,17 @@ def _evaluator(model: Model, fields: Fields, *, component: int | str | None,
     if isinstance(relative_to, str) and relative_to not in ("mean", "reference"):
         raise ValueError(f"relative_to must be 'mean', 'reference' or a Model, got "
                          f"{relative_to!r}")
-    if isinstance(relative_to, Model) and not isinstance(fields, str):
-        raise ValueError("a departure from another model is of a field by name")
+    if isinstance(relative_to, ModelBase):
+        if not isinstance(fields, str):
+            raise ValueError("a departure from another model is of a field by name")
+        if relative_to.coordinates != model.coordinates:
+            raise ValueError(
+                f"a departure from another model is from one in the same coordinates; "
+                f"this model is in {model.coordinates.name!r} and the other in "
+                f"{relative_to.coordinates.name!r}")
+    if isinstance(relative_to, str) and relative_to == "mean" and mean is None:
+        raise ValueError("a departure from the mean needs the averaging of the "
+                         "model's coordinates")
     name = fields if isinstance(fields, str) else None
     if name is not None and not model.layers_with(name):
         raise KeyError(f"no layer holds a field {name!r}")
@@ -578,7 +681,7 @@ def _evaluator(model: Model, fields: Fields, *, component: int | str | None,
 
     def value(layer: int) -> _PointValues | None:
         if layer not in own:
-            field = _field_of(model, fields, layer)
+            field = field_of(model, fields, layer)
             own[layer] = (None if field is None
                           else _components(field, layer, component, frame))
         return own[layer]
@@ -587,20 +690,15 @@ def _evaluator(model: Model, fields: Fields, *, component: int | str | None,
         """The values a departure on a layer is from."""
         if layer in against:
             return against[layer]
-        field = _field_of(model, fields, layer)
+        field = field_of(model, fields, layer)
         if relative_to in ("mean", "reference") and (
                 field.character.rank or component is not None):
             raise ValueError(f"a departure from the {relative_to} is of a field of "
                              f"rank 0; layer {layer}'s is of rank "
                              f"{field.character.rank}")
         if relative_to == "mean":
-            if (mean_grid is None and getattr(field, "spherical_mean", None) is None
-                    and not getattr(field, "is_radial", False)):
-                raise ValueError(f"layer {layer}'s {field!r} has no spherical mean of "
-                                 "its own: pass mean_grid=, an angular grid with "
-                                 "weights to take it by quadrature")
-            mean = spherical_mean(field, grid=mean_grid)
-            fn = lambda r, t, p: _real(mean.evaluate(r, None, None), mean)
+            averaged = mean(field, layer)
+            fn = lambda r, t, p: _real(averaged.evaluate(r, None, None), averaged)
         elif relative_to == "reference":
             ref = getattr(field, "reference", None)
             if ref is None and getattr(field, "is_radial", False):
@@ -656,9 +754,9 @@ def _check(at: str, side: str | None) -> None:
         raise ValueError(f"side must be one of {SIDES}, got {side!r}")
 
 
-def _pulled_back(model: Model, x: np.ndarray) -> np.ndarray:
-    """Reference points X with m(X) = x, or the refusal of a mapping
-    without an inverse."""
+def to_reference(model: ModelBase, x: np.ndarray) -> np.ndarray:
+    """Reference points X with m(X) = x, of physical points x (..., 3), by
+    the mapping's inverse, or the refusal of a mapping without one."""
     mapping = model.geometry.mapping
     if model.geometry.is_identity:
         return np.array(x, dtype=float)
@@ -671,34 +769,41 @@ def _pulled_back(model: Model, x: np.ndarray) -> np.ndarray:
             "(at='reference'), which give their physical positions too") from None
 
 
-def _forward(model: Model, X: np.ndarray) -> np.ndarray:
-    """m(X), the physical positions of reference points."""
+def to_physical(model: ModelBase, X: np.ndarray) -> np.ndarray:
+    """m(X), the physical positions of reference points X (..., 3)."""
     if model.geometry.is_identity:
         return np.array(X, dtype=float)
     return np.asarray(model.geometry.mapping(X), dtype=float)
 
 
-def _interface_name(model: Model, boundary: int) -> str:
+def _interface_name(model: ModelBase, boundary: int) -> str:
     """The interface at a boundary, as an error names it."""
     radius = float(model.skeleton.boundaries[boundary])
     face = min(model.geometry.interfaces, key=lambda f: abs(f.radius - radius))
     return f"interface {face.name!r}" if face.name else f"interface {face.index}"
 
 
-def _sided(model: Model, boundary: int, side: str | None, radius: float) -> int:
-    """The layer a side of an interior boundary names, or the refusal."""
+def _sided(model: ModelBase, boundary: int, side: str | None, radius: float) -> int:
+    """The layer a side of an interior boundary names, or the refusal: below
+    is the layer toward the centre on the sphere and the deeper one in a
+    box, as the body is."""
     if side is None:
+        what = model.coordinates.labels[0]
         raise ValueError(
-            f"radius {radius} lies on {_interface_name(model, boundary)}: name the "
+            f"{what} {radius} lies on {_interface_name(model, boundary)}: name the "
             "side to slice, side='below' or 'above'")
-    return boundary - 1 if side == "below" else boundary
+    lower = (side == "below") == increases_outward(model.coordinates)
+    return boundary - 1 if lower else boundary
 
 
-def _layers_of(model: Model, s: np.ndarray, side: str | None
-               ) -> tuple[np.ndarray, bool]:
-    """The layer holding each reference radius, the side taken where it
-    lies on an interior boundary and -1 outside the body, and whether a
-    side was taken."""
+def layers_of(model: ModelBase, s: np.ndarray, side: str | None
+              ) -> tuple[np.ndarray, bool]:
+    """The layer holding each reference value `s` of the layered coordinate
+    (a radius, a depth), the side `side` taken where it lies on an
+    interior boundary (to the geometry's tolerance), below as the body is,
+    and -1 outside the body; and whether a side was taken.  A value on an
+    interior boundary without a side is refused, naming the interface."""
+    s = np.asarray(s, dtype=float)
     b = model.skeleton.boundaries
     tol = model.geometry.rtol * model.skeleton.span
     out = np.clip(np.searchsorted(b, s, side="right") - 1, 0, b.size - 2)
@@ -708,16 +813,19 @@ def _layers_of(model: Model, s: np.ndarray, side: str | None
     if np.any(interior):
         k = tuple(np.argwhere(interior)[0])
         _sided(model, int(nearest[k]), side, float(s[k]))
-        out = np.where(interior, nearest - 1 if side == "below" else nearest, out)
+        lower = (side == "below") == increases_outward(model.coordinates)
+        out = np.where(interior, nearest - 1 if lower else nearest, out)
     out = np.where(on & (nearest == 0), 0, out)
     out = np.where(on & (nearest == b.size - 1), b.size - 2, out)
     outside = (s < b[0] - tol) | (s > b[-1] + tol)
     return np.where(outside, -1, out), bool(np.any(interior))
 
 
-def _evaluate_layers(values: _Values, layers: np.ndarray, X: np.ndarray) -> np.ndarray:
-    """The values at reference points X, each from its layer, NaN at -1."""
-    s, t, p, _ = spherical_coordinates(X)
+def evaluate_layers(values: Values, layers: np.ndarray, X: np.ndarray,
+                    coordinates: Coordinates) -> np.ndarray:
+    """The values at reference points X (..., 3) of a system of
+    `coordinates`, each from its layer in `layers` (...), NaN at -1."""
+    s, t, p, _ = coordinates.split(X)
     out = np.full(s.shape, np.nan)
     for layer in np.unique(layers):
         if layer < 0:
@@ -725,6 +833,73 @@ def _evaluate_layers(values: _Values, layers: np.ndarray, X: np.ndarray) -> np.n
         k = layers == layer
         out[k] = values(int(layer), s[k], t[k], p[k])
     return out
+
+
+def runs(model: ModelBase, values: Values, path: np.ndarray, lines: Lines,
+         bounds: tuple[float, float] | None, n: int, at: str, *,
+         keeps: Callable[[ModelBase, np.ndarray], None]) -> tuple[SliceLayer, ...]:
+    """Each layer's part of a section or a profile, `n` points on each of
+    its lines, the ends included: the rule of the module docstring in
+    either system.
+
+    `path` (m, 3) holds a point of each line, whose lateral coordinates
+    the line keeps, and `lines` the points along them; `bounds` (lo, hi)
+    bounds the layered coordinate.  At reference points a layer runs
+    over its reference interval within `bounds`, the reference body's
+    span by default, the same on every line, and is left out where it
+    has nothing within them.  At physical points it runs on each line
+    between where the mapping puts its two boundaries there, within
+    `bounds`, which by default are none: the slice covers the body as the
+    mapping shapes it, a raised surface and a lowered one alike, a
+    point's layer is decided in the physical body and nothing outside it
+    is sampled.  On a line where a layer has nothing within `bounds` its
+    run is one point repeated, NaN, and a layer with nothing on any line
+    is left out.  `keeps` refuses a mapping that moves the lines' points
+    off them.
+    """
+    if int(n) < 2:
+        raise ValueError(f"n must be at least 2, got {n}")
+    edges = model.skeleton.boundaries
+    if at == "physical" and model.geometry.is_identity:
+        at = "reference"
+    if bounds is not None:
+        lo, hi = (float(v) for v in bounds)
+        if not lo < hi:
+            raise ValueError(f"bounds must be (lo, hi) with lo < hi, got {bounds}")
+    else:
+        # the whole body: its reference span, or wherever the mapping puts it
+        lo, hi = ((float(edges[0]), float(edges[-1])) if at == "reference"
+                  else (-np.inf, np.inf))
+    coordinates = model.coordinates
+    _, a, b, _ = coordinates.split(path)
+    out = []
+    for layer in range(model.nlayers):
+        b0, b1 = float(edges[layer]), float(edges[layer + 1])
+        if at == "reference":
+            c0, c1 = max(lo, b0), min(hi, b1)
+            if not c0 < c1:
+                continue
+            c = np.linspace(c0, c1, int(n))[:, None] * np.ones((1, path.shape[0]))
+            X = lines(c)
+            v = values(layer, c, np.broadcast_to(a, c.shape),
+                       np.broadcast_to(b, c.shape))
+            out.append(SliceLayer(layer, c, v, X, to_physical(model, X)))
+            continue
+        ends = lines(np.array([[b0], [b1]]))
+        keeps(model, ends)
+        mapped = coordinates.split(to_physical(model, ends))[0]
+        c0, c1 = np.maximum(mapped[0], lo), np.minimum(mapped[1], hi)
+        if not np.any(c0 < c1):
+            continue
+        frac = np.linspace(0.0, 1.0, int(n))[:, None]
+        c = c0[None, :] + frac * np.maximum(c1 - c0, 0.0)[None, :]
+        x = lines(c)
+        X = to_reference(model, x)
+        s, sa, sb, _ = coordinates.split(X)
+        v = values(layer, np.clip(s, b0, b1), sa, sb)
+        v = np.where((c1 > c0)[None, :], v, np.nan)
+        out.append(SliceLayer(layer, c, v, X, x))
+    return tuple(out)
 
 
 # -- the slices ---------------------------------------------------------------------
@@ -770,15 +945,15 @@ def sphere(model: Model, fields: Fields, *, radius: float | None = None,
             taken = side
         th, ph = np.broadcast_arrays(theta, phi)
         v = values(layer, np.full(th.shape, r), th, ph)
-        reference, physical = points, _forward(model, points)
+        reference, physical = points, to_physical(model, points)
     else:
         physical = points
-        reference = _pulled_back(model, points)
+        reference = to_reference(model, points)
         s = np.linalg.norm(reference, axis=-1)
-        layers, sided = _layers_of(model, s, side)
+        layers, sided = layers_of(model, s, side)
         if np.all(layers < 0):
             raise ValueError(f"the physical sphere of radius {r} lies outside the body")
-        v = _evaluate_layers(values, layers, reference)
+        v = evaluate_layers(values, layers, reference, SPHERICAL)
         taken = side if sided else None
     return SphereSlice(r, grid, v, reference, physical, shown, at=at, side=taken)
 
@@ -826,7 +1001,7 @@ def _arc(start: tuple[float, float], end: tuple[float, float] | None,
 def _keeps_rays(model: Model, X: np.ndarray) -> None:
     """Refuse a physical section or profile of a mapping that moves points
     off their rays."""
-    x = _forward(model, X)
+    x = to_physical(model, X)
     rx = np.linalg.norm(x, axis=-1, keepdims=True)
     rX = np.linalg.norm(X, axis=-1, keepdims=True)
     ok = (rX[..., 0] == 0.0) | (np.linalg.norm(x / np.where(rx > 0, rx, 1.0)
@@ -838,47 +1013,15 @@ def _keeps_rays(model: Model, X: np.ndarray) -> None:
                          "at reference points (at='reference')")
 
 
-def _runs(model: Model, values: _Values, path: np.ndarray,
+def _runs(model: Model, values: Values, path: np.ndarray,
           radii: tuple[float, float] | None, n: int, at: str
           ) -> tuple[SliceLayer, ...]:
-    """Each layer's points and values along the rays of `path` (m, 3)."""
-    if int(n) < 2:
-        raise ValueError(f"n must be at least 2, got {n}")
-    b = model.skeleton.boundaries
-    if at == "physical" and model.geometry.is_identity:
-        at = "reference"
-    lo, hi = (float(b[0]), float(b[-1])) if radii is None else map(float, radii)
-    if not lo < hi:
+    """Each layer's points and values along the rays through the unit
+    vectors `path` (m, 3): `runs` on the sphere."""
+    if radii is not None and not float(radii[0]) < float(radii[1]):
         raise ValueError(f"radii must be (lo, hi) with lo < hi, got {radii}")
-    t, p = spherical_coordinates(path)[1:3]
-    out = []
-    for layer in range(model.nlayers):
-        b0, b1 = float(b[layer]), float(b[layer + 1])
-        if at == "reference":
-            r0, r1 = max(lo, b0), min(hi, b1)
-            if not r0 < r1:
-                continue
-            r = np.linspace(r0, r1, int(n))[:, None] * np.ones((1, path.shape[0]))
-            X = r[..., None] * path[None, :, :]
-            v = values(layer, r, np.broadcast_to(t, r.shape),
-                       np.broadcast_to(p, r.shape))
-            out.append(SliceLayer(layer, r, v, X, _forward(model, X)))
-            continue
-        ends = np.stack([b0 * path, b1 * path])
-        _keeps_rays(model, ends)
-        bounds = np.linalg.norm(_forward(model, ends), axis=-1)
-        r0, r1 = np.maximum(bounds[0], lo), np.minimum(bounds[1], hi)
-        if not np.any(r0 < r1):
-            continue
-        frac = np.linspace(0.0, 1.0, int(n))[:, None]
-        rho = r0[None, :] + frac * np.maximum(r1 - r0, 0.0)[None, :]
-        x = rho[..., None] * path[None, :, :]
-        X = _pulled_back(model, x)
-        s, tt, pp, _ = spherical_coordinates(X)
-        v = values(layer, np.clip(s, b0, b1), tt, pp)
-        v = np.where((r1 > r0)[None, :], v, np.nan)
-        out.append(SliceLayer(layer, rho, v, X, x))
-    return tuple(out)
+    return runs(model, values, path, lambda r: r[..., None] * path[None, :, :], radii,
+                n, at, keeps=_keeps_rays)
 
 
 def section(model: Model, fields: Fields, start: tuple[float, float], *,
@@ -894,9 +1037,11 @@ def section(model: Model, fields: Fields, start: tuple[float, float], *,
     The arc runs from `start` (theta, phi) along the minor arc to `end`,
     or from `start` at `azimuth` (from north toward east, in radians) for
     `length` radians, up to a whole circle, the one or the other given;
-    `radii` (lo, hi) bounds it, the whole body by default; `n` points per
-    layer, its ends included, and `m` along the arc; `at`, the component,
-    frame and departure as the module docstring says.
+    `radii` (lo, hi) bounds it, the whole body by default, at physical
+    points as the mapping shapes it, from its mapped inner boundary to its
+    mapped surface on each ray; `n` points per layer, its ends included,
+    and `m` along the arc; `at`, the component, frame and departure as the
+    module docstring says.
     """
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
@@ -914,7 +1059,8 @@ def profile(model: Model, fields: Fields, theta: float, phi: float, *, n: int = 
             mean_grid: AngularGrid | None = None) -> ProfileSlice:
     """A field along the radius at (theta, phi), by the rules of the
     module docstring: `n` points per layer, its ends included, within
-    `radii` (lo, hi), the whole body by default."""
+    `radii` (lo, hi), the whole body by default, at physical points from
+    its mapped inner boundary to its mapped surface."""
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
                                relative_to=relative_to, departure=departure,
@@ -948,7 +1094,7 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
                   dimensions=dims, scales=model.scales)
     out = []
     for layer in range(model.nlayers):
-        field = _field_of(model, fields, layer)
+        field = field_of(model, fields, layer)
         lo, hi = model.skeleton.interval(layer)
         r = np.linspace(lo, hi, int(n))
         X = r[:, None] * np.array([0.0, 0.0, 1.0])[None, :]
@@ -971,11 +1117,13 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
     return ProfileSlice(None, None, tuple(out), shown)
 
 
-def _pieces(field: Field, lo: float, hi: float, n: int
-            ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Gauss-Legendre radii and weights on [lo, hi] within a field's
-    layer: on each of its radial pieces, with points enough to be exact
-    for their degree times r^2, or `n` points on the whole span."""
+def layer_quadrature(field: Field, lo: float, hi: float, n: int
+                     ) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Gauss-Legendre nodes and weights of the layered coordinate on [lo,
+    hi] within a field's layer, piece by piece: on each of its radial
+    pieces, with points enough to be exact for their degree times r^2
+    (and so for the degree alone), or `n` points on the whole span for a
+    field that declares none."""
     pieces = getattr(field, "radial_pieces", lambda: None)()
     if pieces is None:
         breaks, count = np.array([lo, hi]), int(n)
@@ -1022,11 +1170,11 @@ def integrated(model: Model, fields: Fields, *,
     for layer in range(model.nlayers):
         a, c = model.skeleton.interval(layer)
         a, c = max(a, lo), min(c, hi)
-        field = _field_of(model, fields, layer)
+        field = field_of(model, fields, layer)
         if field is None or not c > a:
             continue
         held = True
-        for r, w in _pieces(field, a, c, n):
+        for r, w in layer_quadrature(field, a, c, n):
             factor = w * (r ** 2 if weight == "volume" else 1.0)
             for rk, fk in zip(r, factor):
                 total += fk * values(layer, np.full(th.shape, rk), th, ph)
@@ -1040,7 +1188,7 @@ def integrated(model: Model, fields: Fields, *,
                             f"{'r^2 dr' if weight == 'volume' else 'dr'}",
                   dimensions=dims, scales=model.scales)
     points = cartesian_points(hi, grid.colatitudes[:, None], grid.longitudes[None, :])
-    return SphereSlice(hi, grid, total, points, _forward(model, points), shown)
+    return SphereSlice(hi, grid, total, points, to_physical(model, points), shown)
 
 
 def surface(model: Model, function: Callable[[np.ndarray, np.ndarray], ArrayLike],
@@ -1069,7 +1217,7 @@ def surface(model: Model, function: Callable[[np.ndarray, np.ndarray], ArrayLike
                   dimensions=None if spec is None else spec.dimensions,
                   scales=model.scales)
     points = cartesian_points(face.radius, th, ph)
-    return SphereSlice(face.radius, grid, v, points, _forward(model, points), shown)
+    return SphereSlice(face.radius, grid, v, points, to_physical(model, points), shown)
 
 
 def _face_label(face: InterfaceInfo) -> str:
@@ -1180,18 +1328,18 @@ def _cutaway_hits(points: np.ndarray, view: np.ndarray, outer: float, inner: flo
     return best_t, best_face, best_q
 
 
-def _picture_values(model: Model, values: _Values, face: np.ndarray, X: np.ndarray,
+def _picture_values(model: Model, values: Values, face: np.ndarray, X: np.ndarray,
                     side: str | None) -> tuple[np.ndarray, np.ndarray, bool]:
     """The field at the points the pixels look at, their physical
     positions, and whether a side was taken; NaN where a pixel looks at
     nothing."""
     hit = face > 0
     s, _, _, _ = spherical_coordinates(X[hit])
-    layers, sided = _layers_of(model, s, side)
+    layers, sided = layers_of(model, s, side)
     v = np.full(face.shape, np.nan)
-    v[hit] = _evaluate_layers(values, layers, X[hit])
+    v[hit] = evaluate_layers(values, layers, X[hit], SPHERICAL)
     physical = np.full(face.shape + (3,), np.nan)
-    physical[hit] = _forward(model, X[hit])
+    physical[hit] = to_physical(model, X[hit])
     return v, physical, sided
 
 
@@ -1411,20 +1559,20 @@ def discs(model: Model, fields: Fields, *, poles: Sequence[tuple[float, float]],
 
 def normalised(slice_: Slice) -> Slice:
     """The slice divided by its largest absolute finite value, its label
-    saying so; a slice whose values are all zero is refused."""
+    saying so; a slice whose values are all zero is refused.  Any slice
+    with `values`, or with `layers`, each a `SliceLayer`, of either system."""
     from dataclasses import replace
-    if isinstance(slice_, (SphereSlice, CutawaySlice)):
-        parts = [slice_.values]
-    else:
-        parts = [lay.values for lay in slice_.layers]
+    layered = getattr(slice_, "layers", None)
+    parts = ([slice_.values] if layered is None
+             else [lay.values for lay in layered])
     finite = np.concatenate([v[np.isfinite(v)].ravel() for v in parts])
     scale = float(np.max(np.abs(finite))) if finite.size else 0.0
     if not scale > 0.0:
         raise ValueError(f"{slice_.label} has no value but zero to be normalised by")
     shown = replace(slice_.shown, normalised=True)
-    if isinstance(slice_, (SphereSlice, CutawaySlice)):
+    if layered is None:
         return replace(slice_, values=slice_.values / scale, shown=shown)
-    layers = tuple(replace(lay, values=lay.values / scale) for lay in slice_.layers)
+    layers = tuple(replace(lay, values=lay.values / scale) for lay in layered)
     return replace(slice_, layers=layers, shown=shown)
 
 

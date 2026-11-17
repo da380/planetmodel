@@ -2,7 +2,7 @@
 
 A generalised Maxwell body in shear is a sum of branches, each a
 fraction w_k of the unrelaxed shear modulus mu_U relaxing with time
-tau_k, its complex modulus at angular frequency omega
+tau_k, its complex modulus at angular frequency omega ::
 
     mu(omega) / mu_U = 1 - sum_k w_k / (1 + i omega tau_k),
 
@@ -47,7 +47,8 @@ nodes would overshoot, where its logarithm does not.  Built:
   rather than one `PronySeries`; with eta_K a fixed fraction of eta they
   are `burgers_series(strength=1 / f, viscosity_ratio=eta / eta_K)`.
   `burgers_branches` is the same pair of branches over fields of a
-  layer, a Kelvin element that varies with radius among them;
+  layer, a Kelvin element that varies with radius among them, and
+  `burgers_layers` the fields a burgers deck's model holds;
 - `burgers_parameters(modulus, strengths, times)`: the inverse, the
   viscosity eta and the Kelvin element (eta_K, f) of two branches whose
   strengths sum to one.  From a c = x_1 x_2 and a + b + c = x_1 + x_2,
@@ -58,7 +59,9 @@ nodes would overshoot, where its logarithm does not.  Built:
   body without a relaxed part is a Burgers body;
 - `prony_deck(model)` and `burgers_deck(model)`: the model as the decks
   `deck.PRONY` and `deck.BURGERS` hold it, on its own knots where it
-  was read from a deck.  A prony deck holds every layer's branches, a
+  was read from a deck (or as the decks of depths hold a flat model,
+  `cartesian.PRONY` and `cartesian.BURGERS`, given as `format`).  A
+  prony deck holds every layer's branches, a
   layer holding a viscosity as its one Maxwell branch (`with_branches`
   of `maxwell_series`), N the most a layer holds; a burgers deck holds
   each layer as the Maxwell or Burgers body it is, the Kelvin element
@@ -76,10 +79,16 @@ nodes would overshoot, where its logarithm does not.  Built:
   Andrade body J(omega) / J_U = 1 + Gamma(1 + alpha) (i omega tau_A)^-alpha
   + 1 / (i omega tau_M), tau_A in Maxwell times (`andrade_time`, 1 by
   default), which has no finite Prony form.
+
+Every one of them is pointwise in the layered coordinate, so a flat
+model (`planetmodel.cartesian`) takes them as a spherical one does; a
+constant they put on a layer is a field of the geometry's
+`radial_field_type`.
 """
 from __future__ import annotations
 
 import numbers
+from collections import abc
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass
 
@@ -90,16 +99,27 @@ from scipy.special import gamma
 
 from ..character import SCALAR
 from ..deck import (BURGERS, BURGERS_COLUMNS, MAXWELL_COLUMNS, PRONY, PRONY_COLUMNS,
-                    SAMPLE_SPACING, STRENGTH_ROUNDING, Deck, prony_columns, sample_deck)
-from ..fields import ComposedField, Field, constant_field
+                    SAMPLE_SPACING, STRENGTH_ROUNDING, Deck, DeckFormat, prony_columns,
+                    sample_deck)
+from ..fields import ComposedField, Field
+from ..layerfunction import constant_layer
 from ..materials import is_fluid, kappa_mu
-from ..model import Layer, Model, cited
+from ..model import Layer, Model, ModelBase, cited
 from ..perturbation import PerturbedField, unperturbed
 from ..rheology import BRANCH_STEMS, branches
 
 __all__ = ["PronySeries", "maxwell_series", "burgers_series", "fitted_series",
            "andrade_series", "with_branches", "burgers_terms", "burgers_branches",
-           "burgers_parameters", "with_burgers", "prony_deck", "burgers_deck"]
+           "burgers_layers", "burgers_parameters", "with_burgers", "prony_deck",
+           "burgers_deck"]
+
+
+def _constant(model: ModelBase, interval: tuple[float, float], value: float,
+              name: str) -> Field:
+    """`value` as a constant field named `name` on `interval`, of the class
+    of the model's geometry's fields of the layered coordinate."""
+    return model.geometry.radial_field_type(interval, constant_layer(interval, value),
+                                            name=name)
 
 
 @dataclass(frozen=True)
@@ -237,8 +257,8 @@ def with_branches(model: Model, series: PronySeries, *,
         mu, mu0 = kappa_mu(lay)[1], kappa_mu(plain.layer(i))[1]
         for k, (w, c) in enumerate(zip(series.strengths, series.times), start=1):
             key = f"relaxation_time_{k}"
-            fields[i][f"relaxation_strength_{k}"] = constant_field(
-                lay.interval, w, name=f"relaxation_strength_{k}")
+            fields[i][f"relaxation_strength_{k}"] = _constant(
+                model, lay.interval, w, f"relaxation_strength_{k}")
             fields[i][key] = _time(c, eta, mu, eta0, mu0, key)
         del fields[i][name]
     return model.replaced(layers=fields).with_citation(*series.citation)
@@ -327,6 +347,25 @@ def burgers_branches(modulus: Field, viscosity: Field, *, kelvin_viscosity: Fiel
     return out
 
 
+def burgers_layers(layers: Sequence[abc.Mapping[str, Field]]
+                   ) -> list[dict[str, Field]]:
+    """The base fields of a burgers deck's layers (`deck.deck_layers`) as
+    its model holds them: a layer holding the Kelvin element's columns
+    holds, in their place and the viscosity's, the two Prony branches of
+    `burgers_branches` over its elastic (Voigt) shear modulus; any other
+    layer is as it is."""
+    out = []
+    for fields in layers:
+        fields = dict(fields)
+        if "kelvin_viscosity" in fields:
+            kelvin = {name: fields.pop(name) for name in
+                      ("kelvin_viscosity", "kelvin_modulus_fraction")}
+            mu = kappa_mu(fields)[1]
+            fields.update(burgers_branches(mu, fields.pop("viscosity"), **kelvin))
+        out.append(fields)
+    return out
+
+
 def with_burgers(model: Model, layers: Iterable[int | str], *,
                  kelvin_viscosity: float, kelvin_modulus_fraction: float,
                  name: str = "viscosity") -> Model:
@@ -356,7 +395,7 @@ def with_burgers(model: Model, layers: Iterable[int | str], *,
         if is_fluid(lay):
             raise ValueError(f"layer {i} ({lay.name}) is fluid: it has no shear to "
                              "relax")
-        kelvin = {key: constant_field(lay.interval, float(value), name=key)
+        kelvin = {key: _constant(model, lay.interval, float(value), key)
                   for key, value in (("kelvin_viscosity", kelvin_viscosity),
                                      ("kelvin_modulus_fraction",
                                       kelvin_modulus_fraction))}
@@ -398,7 +437,7 @@ def _both(lay: Layer, held: tuple[tuple[Field, Field], ...]) -> None:
 
 
 def prony_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
-               spacing: float = SAMPLE_SPACING) -> Deck:
+               spacing: float = SAMPLE_SPACING, format: DeckFormat = PRONY) -> Deck:
     """The model as a prony deck (`deck.PRONY`), in SI, as it is written:
     the density, the elastic velocities, and the Prony branches of every
     layer by the module docstring, a solid layer holding a viscosity as
@@ -408,9 +447,11 @@ def prony_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
     N is the most branches a layer holds, and a layer holding fewer is
     completed as `deck.PRONY` writes it.  `knots` and `spacing` are
     `sample_deck`'s; without knots a model read from a deck is sampled
-    on its own.  A layer holding a viscosity and branches is refused, as
-    is a model whose every layer is elastic: a prony deck has at least
-    one branch."""
+    on its own.  `format` is the prony format whose completion and rules
+    the deck is held to, that of radii by default (`cartesian.PRONY` for
+    a flat model's knots, which names them in its messages).  A layer
+    holding a viscosity and branches is refused, as is a model whose
+    every layer is elastic: a prony deck has at least one branch."""
     knots = _deck_knots(model, knots)
     viscous = []
     for lay in model.layers:
@@ -424,13 +465,13 @@ def prony_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
         raise ValueError("no solid layer holds a viscosity or Prony branches; a prony "
                          "deck has at least one branch")
     sampled = sample_deck(model, prony_columns(n), knots=knots, spacing=spacing)
-    deck = PRONY.complete(sampled)
-    PRONY.check_table(deck)
+    deck = format.complete(sampled)
+    format.check_table(deck)
     return deck
 
 
 def burgers_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
-                 spacing: float = SAMPLE_SPACING) -> Deck:
+                 spacing: float = SAMPLE_SPACING, format: DeckFormat = BURGERS) -> Deck:
     """The model as a burgers deck (`deck.BURGERS`), in SI: the density,
     the elastic velocities, and each layer as the body it is.  A layer
     holding a viscosity, or one Prony branch of strength one (to
@@ -441,7 +482,9 @@ def burgers_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
     shear modulus; an elastic or fluid layer holds none of the three.  A
     layer holding other branches, more than two or with a relaxed part, is
     no Burgers body and is refused, as is one holding a viscosity and
-    branches.  `knots` and `spacing` are `prony_deck`'s."""
+    branches.  `knots` and `spacing` are `prony_deck`'s, and `format` the
+    burgers format whose rules the deck is held to, that of radii by
+    default (`cartesian.BURGERS` for a flat model's)."""
     knots = _deck_knots(model, knots)
     counts = []
     for lay in model.layers:
@@ -470,7 +513,8 @@ def burgers_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
         if off.any():
             j = int(np.argmax(off))
             raise ValueError(f"layer {lay.index} ({lay.name}): the strengths of its "
-                             f"branches sum to {total[j]:.9g} at r = {r[j]:g}, not "
+                             f"branches sum to {total[j]:.9g} at "
+                             f"{format.coordinate.word} = {r[j]:g}, not "
                              "one; a body with a relaxed part is no Maxwell or Burgers "
                              "body")
         mu = np.asarray(kappa_mu(lay)[1](r), dtype=float)
@@ -482,7 +526,7 @@ def burgers_deck(model: Model, *, knots: Sequence[ArrayLike] | None = None,
         columns["kelvin_viscosity"][s] = eta_k
         columns["kelvin_modulus_fraction"][s] = f
     deck = Deck(sampled.radius, columns, header=sampled.header)
-    BURGERS.check_table(deck)
+    format.check_table(deck)
     return deck
 
 

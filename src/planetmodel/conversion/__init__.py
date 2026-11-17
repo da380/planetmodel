@@ -24,7 +24,7 @@ or a Maxwell time (`lithosphere`), and used as geometry
 here is particular to the Earth.
 
 Reached through its modules, off the top-level surface, with numpy and
-scipy alone:
+scipy alone::
 
     from planetmodel.conversion import laws, parameters
     dt = laws.temperature_from_density(

@@ -47,6 +47,14 @@ namespace planetmodel {
  * change. */
 inline constexpr std::string_view SURFACE_SCHEMA = "planetmodel.surface/1";
 
+/**
+ * @brief The schema of a flat surface file, fields on a horizontal plane of
+ * a flat body, which `ReadSurfaceFile` refuses by name:
+ * `planetmodel::cartesian::ReadSurfaceFile`
+ * (`planetmodel/cartesian/surfacefile.hpp`) reads it.
+ */
+inline constexpr std::string_view SURFACE_SCHEMA_FLAT = "planetmodel.surface/2";
+
 /** @brief The lateral rules a surface file may state: the model file's,
  * with `harmonic`, which this library reads as data and does not
  * evaluate. */
@@ -219,7 +227,9 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
 }
 
 /**
- * @brief Read a surface file whole.
+ * @brief Read a surface file whole; a file of another schema is refused by
+ * its schema, a flat surface file (`SURFACE_SCHEMA_FLAT`) naming its
+ * reader.
  * @param path The file.
  * @return Its numbers and metadata, held to the structure first.
  * @throws planetmodel::Error naming the place of the first fault.
@@ -238,7 +248,13 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
   if (!schema) fail("schema", "is missing: not a planetmodel surface file");
   out.schema = *schema;
   if (out.schema != SURFACE_SCHEMA) {
-    fail("schema", std::format("is {}, this reader reads {}", out.schema, SURFACE_SCHEMA));
+    fail("schema",
+         std::format("is {}, this reader reads {}{}", out.schema, SURFACE_SCHEMA,
+                     out.schema == SURFACE_SCHEMA_FLAT
+                         ? "; a file of that schema is a flat surface's, read by "
+                           "planetmodel::cartesian::ReadSurfaceFile "
+                           "(planetmodel/cartesian/surfacefile.hpp)"
+                         : ""));
   }
   out.source = detail::TextOf(attrs, "source").value_or("");
   out.created = detail::TextOf(attrs, "created").value_or("");

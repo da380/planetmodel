@@ -22,6 +22,7 @@ dependencies = [
     "numpy>=2.0,<3",
     "scipy>=1.15,<2",
     "ducc0>=0.41,<1",
+    "finufft>=2.3,<3",
 ]
 
 [project.urls]

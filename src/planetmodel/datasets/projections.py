@@ -10,7 +10,7 @@ south pole the easting x runs along the meridian 90 degrees east of the
 central one and the northing y along the central meridian; for the north
 pole y runs along the meridian opposite the central one.  With the
 ellipsoid's eccentricity e and, for a geodetic latitude phi measured
-toward the projection's pole,
+toward the projection's pole::
 
     t   = tan(pi/4 - phi/2) / ((1 - e sin phi) / (1 + e sin phi))^(e/2),
     rho = a m_c t / t_c                              (variant B),

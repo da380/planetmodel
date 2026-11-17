@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from ..coordinates import increases_outward
 from ..slices import SectionSlice, normalised as _normalised
 from .style import BOUNDARY_STYLE, colour_extend, colour_scale
 
@@ -52,6 +53,8 @@ def section(ax: Any, slice_: SectionSlice, *, scale: float = 1.0,
     values run beyond; `style` goes to `pcolormesh`.  Returns the meshes
     drawn, one per layer.
     """
+    if not increases_outward(slice_.coordinates):
+        raise ValueError("a section of a flat model is drawn by vertical_section")
     polar = getattr(ax, "name", None) == "polar"
     if physical and slice_.at == "physical":
         raise ValueError("this slice is at physical points already: draw it on polar "

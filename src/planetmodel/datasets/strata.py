@@ -32,7 +32,7 @@ mixing in the zeros or blanks a source gives for what is not there.
   the next one's top;
 - a table's columns (`TableStrataReader`, LithoRef18's).
 
-The surfaces are `GriddedFunction`s on the source's grid, read
+The surfaces are each a `GriddedFunction` on the source's grid, read
 bilinearly between its cell centres, with the mean of the nearest ring
 at each pole (`grids.ring_poles`).  `Crust1Reader`, `Litho1Reader` and
 `TableStrataReader` are the registry's readers, whose strata and every

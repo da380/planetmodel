@@ -1,28 +1,45 @@
 """A skeleton placed in the physical world by one continuous mapping.
 
-A Geometry is a Skeleton, a Mapping from the reference ball to the
-physical body, and the names of the layers and interfaces.  It is the
+A geometry is a Skeleton, a Mapping from the reference body to the
+physical one, and the names of the layers and interfaces.  It is the
 object a mesher takes and the object on which fields are later hung.
+`GeometryBase` is what every geometry shares; a leaf states its
+coordinate system, which boundaries are interfaces, and the lattice
+covering its body.  `Geometry` is the spherical leaf, a ball or a shell
+in (r, theta, phi); `planetmodel.cartesian.Geometry` is the flat one,
+layers in depth over a lateral domain.
 
 The mapping is one continuous map of the whole reference domain,
-orientation-preserving, whose gradient may jump only at the radii the
-mapping declares, its knots: skeleton boundaries, or radii inside the
-layers where a relief sits on a surface that is no boundary of the
-model or a mapping read from a mesh or a grid has an element edge.
-Those are the invariants a Geometry checks on construction: the
-mapping satisfies the protocol, its Jacobian is positive on a lattice
-covering every layer and the whole sphere, and it is continuous across
-every interior boundary.  The geometry's knots are those of the
-mapping's within the skeleton; a mapping may be defined on a larger
-body, and a truncated or hollowed geometry keeps its mapping.  A
-piecewise construction is therefore legitimate as long as the pieces
-agree where they meet.
+orientation-preserving, whose gradient may jump only at the values of
+the layered coordinate the mapping declares, its knots: skeleton
+boundaries, or values inside the layers where a relief sits on a
+surface that is no boundary of the model or a mapping read from a mesh
+or a grid has an element edge.  Those are the invariants a geometry
+checks on construction: the mapping satisfies the protocol, its
+Jacobian is positive on a lattice covering every layer and the whole
+body, and it is continuous across every interior boundary.  The
+geometry's knots are those of the mapping's within the skeleton; a
+mapping may be defined on a larger body, and a truncated or hollowed
+geometry keeps its mapping.  A piecewise construction is therefore
+legitimate as long as the pieces agree where they meet.
 
-Interfaces are the boundaries that separate two layers plus the outer
-boundary.  For a full geometry (innermost radius zero) interface k is
-skeleton boundary k + 1, and `between = (k, k + 1)` with -1 standing for
-the outside.  For a hollow geometry the inner boundary is interface 0
-with `between = (-1, 0)`, so interface k is skeleton boundary k.
+Interfaces are the boundaries that separate two layers, plus those of
+the skeleton's ends the leaf counts, numbered in the skeleton's order;
+`between` is (the layer below, the layer above), -1 standing for the
+outside.  On the sphere the outer boundary is an interface and the
+centre is not: for a full geometry (innermost radius zero) interface k
+is skeleton boundary k + 1, and `between = (k, k + 1)` with -1 standing
+for the outside.  For a hollow geometry the inner boundary is interface
+0 with `between = (-1, 0)`, so interface k is skeleton boundary k.
+
+The lattice of those checks is the geometry's `lattice`, in its
+`coordinates` (`SPHERICAL`'s lattice on the sphere), and is the sample
+the mapping's `is_valid(sample=..., coordinates=...)` takes; the
+messages, and the repr's skeleton, name the system's coordinates.  A
+leaf states the class of a field of its layered coordinate alone
+(`radial_field_type`: `RadialField` on the sphere, `cartesian.DepthField`
+in a box), which whatever builds such a field for a geometry's layers
+asks for: a model's coarsening, a deck read, a constant put on a layer.
 
 Nothing here knows about units: radii are numbers and every tolerance
 is `rtol` times the skeleton's span.
@@ -31,17 +48,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .coordinates import SPHERICAL, Coordinates
 from .displacement import RadialDisplacement, SphericalFunction
-from .frames import cartesian_points
+from .fields import RadialField
 from .mapping import (IdentityMapping, Mapping, RadialStretch, SphericalSample,
-                      ValidityReport, scaled_mapping, validity, validity_lattice)
+                      ValidityReport, scaled_mapping, validity)
 from .skeleton import CoarseningMap, Skeleton
 
-__all__ = ["Geometry", "LayerInfo", "InterfaceInfo", "Names", "Renames"]
+__all__ = ["GeometryBase", "Geometry", "LayerInfo", "InterfaceInfo", "Names",
+           "Renames"]
 
 #: Optional names for the layers or interfaces of a geometry, one per item
 #: in order, None where an item is unnamed; None for no names at all.
@@ -66,9 +86,12 @@ class LayerInfo:
 class InterfaceInfo:
     """One interface of a geometry.
 
-    `between` is (layer below, layer above); -1 stands for the outside of
-    the geometry, so the outer interface has `between = (L - 1, -1)` and a
-    hollow geometry's inner interface has `between = (-1, 0)`.
+    `radius` is the boundary it sits on, a value of the layered
+    coordinate: a radius on the sphere, a depth in a box.  `between` is
+    (layer below, layer above); -1 stands for the outside of the
+    geometry, so on the sphere the outer interface has `between = (L - 1,
+    -1)` and a hollow geometry's inner interface has `between = (-1, 0)`,
+    and in a box the surface has `between = (0, -1)`.
     """
 
     index: int
@@ -91,12 +114,23 @@ def _names(names: Names, n: int, what: str) -> tuple[str | None, ...]:
     return names
 
 
-class Geometry:
-    """A skeleton, a mapping and names; see the module docstring.
+class GeometryBase:
+    """What every geometry shares: a skeleton, a mapping and names; see
+    the module docstring.
 
-    `check=False` skips the invariant checks, for a mapping already known
-    to satisfy them.
+    A leaf states its `_coordinates` and `radial_field_type`, which
+    boundaries are interfaces and the layers on either side
+    (`_face_boundaries`, `_between`), the lattice covering its body
+    (`_lattice`) and how a copy is built (`_made`); everything else is
+    here.  `check=False` skips the invariant checks, for a mapping already
+    known to satisfy them.
     """
+
+    _coordinates: Coordinates
+
+    #: The class of a field of the layered coordinate alone in the
+    #: geometry's system, built without naming the system.
+    radial_field_type: ClassVar[type[RadialField]]
 
     def __init__(self, skeleton: Skeleton, *, mapping: Mapping | None = None,
                  layer_names: Names = None, interface_names: Names = None,
@@ -113,10 +147,33 @@ class Geometry:
         if check:
             self._check_mapping()
 
+    # -- what a leaf states -------------------------------------------------
+
+    def _face_boundaries(self, skeleton: Skeleton) -> range:
+        """The indices of the boundaries of `skeleton` that are interfaces,
+        in increasing order: interface k sits on the k-th of them."""
+        raise NotImplementedError
+
+    def _between(self, j: int, nlayers: int) -> tuple[int, int]:
+        """(layer below, layer above) of the interface on boundary j of a
+        skeleton of `nlayers` layers, -1 for the outside."""
+        raise NotImplementedError
+
+    def _lattice(self, **sizes: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The lattice of `lattice`, with the sizes given."""
+        raise NotImplementedError
+
+    def _made(self, skeleton: Skeleton, *, k: float, mapping: Mapping,
+              layer_names: Names, interface_names: Names, rtol: float,
+              check: bool) -> "GeometryBase":
+        """A geometry of this leaf over `skeleton`, whatever else it holds
+        scaled by `k` (its lateral domain, in a box)."""
+        raise NotImplementedError
+
     # -- construction checks ------------------------------------------------
 
     def _n_interfaces(self) -> int:
-        return self._sk.nlayers + (1 if self._sk.is_hollow else 0)
+        return len(self._face_boundaries(self._sk))
 
     def _check_mapping(self) -> None:
         """The invariants: protocol, validity, continuity."""
@@ -126,19 +183,21 @@ class Geometry:
                 f"{type(m).__name__} is not a Mapping: it needs __call__, "
                 "deformation_gradient and jacobian on (..., 3) points")
         tol = self._rtol * self._sk.span
-        report = validity(m, sample=validity_lattice(self._sk))
+        report = validity(m, sample=self.lattice(), coordinates=self.coordinates)
         if not report:
             raise ValueError(f"the mapping does not preserve orientation: {report!r}")
         self._check_continuity(tol)
 
     def _check_continuity(self, tol: float) -> None:
         """m agrees across every interior boundary to tol, on a set of directions."""
-        _, theta, phi = validity_lattice(self._sk)
+        coords = self.coordinates
+        c, a, b = coords.labels
+        _, theta, phi = self.lattice()
         theta = theta.reshape(-1)[:, None]
         phi = phi.reshape(-1)[None, :]
         for r in self._sk.inner_boundaries:
-            below = cartesian_points(r - tol, theta, phi)
-            above = cartesian_points(r + tol, theta, phi)
+            below = coords.points(r - tol, theta, phi)
+            above = coords.points(r + tol, theta, phi)
             gap = np.linalg.norm(np.asarray(self._m(above), dtype=float)
                                  - np.asarray(self._m(below), dtype=float), axis=-1)
             # the images of two points 2 tol apart differ by 2 tol times the
@@ -150,15 +209,22 @@ class Geometry:
                 ph = float(np.broadcast_to(phi, gap.shape).reshape(-1)[k])
                 raise ValueError(
                     f"the mapping is discontinuous across the boundary at "
-                    f"r = {float(r):g}: images differ by {worst:.3g} at "
-                    f"(theta, phi) = ({th:.3f}, {ph:.3f})")
+                    f"{c} {float(r):g}: images differ by {worst:.3g} at "
+                    f"({a}, {b}) = ({th:.3f}, {ph:.3f})")
 
     # -- what it is ---------------------------------------------------------
 
     @property
     def skeleton(self) -> Skeleton:
-        """The boundary radii the geometry is built over."""
+        """The boundaries the geometry is built over: radii on the sphere,
+        depths in a box."""
         return self._sk
+
+    @property
+    def coordinates(self) -> Coordinates:
+        """The coordinate system of the skeleton, the checks and the
+        fields hung on the geometry: `SPHERICAL` for a `Geometry`."""
+        return self._coordinates
 
     @property
     def mapping(self) -> Mapping:
@@ -182,29 +248,26 @@ class Geometry:
 
     @property
     def is_hollow(self) -> bool:
-        """Whether the innermost boundary is above zero."""
+        """Whether the skeleton's first boundary is above zero: a ball with
+        a cavity, a box whose top lies below the free surface."""
         return self._sk.is_hollow
 
     @property
     def layers(self) -> tuple[LayerInfo, ...]:
-        """Index, interval and name of every layer, centre outward."""
+        """Index, interval and name of every layer, in the skeleton's order:
+        centre outward on the sphere, from the surface down in a box."""
         return tuple(LayerInfo(i, self._sk.interval(i), name=self._layer_names[i])
                      for i in range(self._sk.nlayers))
 
     @property
     def interfaces(self) -> tuple[InterfaceInfo, ...]:
-        """Index, radius, `between` and name of every interface, centre
-        outward; see the module docstring for the numbering."""
+        """Index, place, `between` and name of every interface, in the
+        skeleton's order; see the module docstring for the numbering."""
         b = self._sk.boundaries
         L = self._sk.nlayers
-        faces = []
-        first = 0 if self._sk.is_hollow else 1
-        for k, j in enumerate(range(first, b.size)):
-            below = j - 1
-            above = j if j < L else -1
-            faces.append(InterfaceInfo(k, float(b[j]), (below, above),
-                                       name=self._face_names[k]))
-        return tuple(faces)
+        return tuple(InterfaceInfo(k, float(b[j]), self._between(j, L),
+                                   name=self._face_names[k])
+                     for k, j in enumerate(self._face_boundaries(self._sk)))
 
     def layer(self, which: int | str) -> LayerInfo:
         """A layer by index (negatives count back) or by name."""
@@ -230,33 +293,66 @@ class Geometry:
         return i
 
     def knots(self) -> tuple[float, ...]:
-        """The radii within the skeleton, to `rtol` of its span, where the
-        mapping declares its gradient may jump, in increasing order."""
+        """The values of the layered coordinate within the skeleton, to
+        `rtol` of its span, where the mapping declares its gradient may
+        jump, in increasing order."""
         tol = self._rtol * self._sk.span
         b = self._sk.boundaries
         return tuple(sorted(float(k) for k in getattr(self._m, "knots", ())
                             if b[0] - tol <= float(k) <= b[-1] + tol))
 
+    def lattice(self, *, n_c: int | None = None, n_a: int | None = None,
+                n_b: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(c, a, b) broadcastable arrays covering every layer and the whole
+        body, in the geometry's coordinates: the sample of the invariant
+        checks and of `validity`.  `n_c` values lie strictly inside each
+        layer and `n_a` by `n_b` lateral ones cover the body, each leaf
+        holding its own defaults: on the sphere `SPHERICAL.lattice`, over
+        a box its lateral domain's."""
+        sizes = {key: int(n) for key, n in (("n_c", n_c), ("n_a", n_a), ("n_b", n_b))
+                 if n is not None}
+        return self._lattice(**sizes)
+
     def validity(self, *, sample: SphericalSample | None = None) -> ValidityReport:
-        """The mapping's validity report on `sample`, or on the lattice."""
-        lattice = validity_lattice(self._sk) if sample is None else sample
-        return validity(self._m, sample=lattice)
+        """The mapping's validity report on `sample`, coordinates of the
+        geometry's system, or on its `lattice`."""
+        lattice = self.lattice() if sample is None else sample
+        return validity(self._m, sample=lattice, coordinates=self.coordinates)
 
     # -- copies -------------------------------------------------------------
 
     def _copy(self, *, skeleton: Skeleton | None = None,
               mapping: Mapping | None = None, layer_names: Names = None,
-              interface_names: Names = None, check: bool = False) -> "Geometry":
-        return Geometry(
-            self._sk if skeleton is None else skeleton,
+              interface_names: Names = None, check: bool = False,
+              k: float = 1.0) -> "GeometryBase":
+        return self._made(
+            self._sk if skeleton is None else skeleton, k=k,
             mapping=self._m if mapping is None else mapping,
             layer_names=self._layer_names if layer_names is None else layer_names,
             interface_names=(self._face_names if interface_names is None
                              else interface_names),
             rtol=self._rtol, check=check)
 
+    def _face_values(self, skeleton: Skeleton) -> list[float]:
+        """The boundaries of `skeleton` that are interfaces, in order."""
+        return [float(skeleton.boundaries[j]) for j in self._face_boundaries(skeleton)]
+
+    def _name_cut(self, skeleton: Skeleton, j: int, names: list[str | None],
+                  name: str | None) -> None:
+        """`name`, when given, on the interface a cut made at boundary j of
+        `skeleton`; refused where that boundary is no interface."""
+        if name is None:
+            return
+        faces = list(self._face_boundaries(skeleton))
+        if j not in faces:
+            raise ValueError(
+                f"the cut at {self.coordinates.labels[0]} "
+                f"{float(skeleton.boundaries[j]):g} is no interface of the result, "
+                f"so it takes no name; got {name!r}")
+        names[faces.index(j)] = name
+
     def renamed(self, *, layers: Renames = None,
-                interfaces: Renames = None) -> "Geometry":
+                interfaces: Renames = None) -> "GeometryBase":
         """A copy with layer and interface names replaced.
 
         Each argument is a full sequence of names, or a mapping from
@@ -266,30 +362,20 @@ class Geometry:
             layer_names=_updated(self._layer_names, layers),
             interface_names=_updated(self._face_names, interfaces))
 
-    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "Geometry":
+    def with_mapping(self, mapping: Mapping, *, check: bool = True) -> "GeometryBase":
         """A copy with another mapping, checked unless told otherwise."""
         return self._copy(mapping=mapping, check=check)
 
-    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
-                  name: str | None = None, check: bool = True) -> "Geometry":
-        """A copy whose mapping is the radial stretch driven by `h`.
-
-        `h` is any radial displacement; the stretch's `rmax` is this
-        geometry's outer radius.
-        """
-        return self.with_mapping(RadialStretch(h, rmax=self._sk, name=name),
-                                 check=check)
-
-    def scaled(self, k: float) -> "Geometry":
+    def scaled(self, k: float) -> "GeometryBase":
         """The same geometry with every length multiplied by k."""
         k = float(k)
         sk = Skeleton(self._sk.boundaries * k)
         m = self._m if self.is_identity else scaled_mapping(self._m, k)
-        return self._copy(skeleton=sk, mapping=m)
+        return self._copy(skeleton=sk, mapping=m, k=k)
 
     # -- surgery ------------------------------------------------------------
 
-    def refined(self, radii: ArrayLike, *, names: Names = None) -> "Geometry":
+    def refined(self, radii: ArrayLike, *, names: Names = None) -> "GeometryBase":
         """Interior boundaries inserted; the mapping is kept.
 
         A split layer loses its name; `names` name the new interfaces.
@@ -307,56 +393,54 @@ class Geometry:
             olo, ohi = self._sk.interval(src)
             layer_names.append(self._layer_names[src]
                                if (lo == olo and hi == ohi) else None)
-        face_names = []
-        first = 0 if sk.is_hollow else 1
-        for j in range(first, sk.boundaries.size):
-            r = float(sk.boundaries[j])
-            face_names.append(by_radius.get(r, old_faces.get(r)))
+        face_names = [by_radius.get(r, old_faces.get(r)) for r in self._face_values(sk)]
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def truncated(self, radius: float, *, name: str | None = None) -> "Geometry":
-        """The geometry cut at `radius`; the mapping is kept.
+    def truncated(self, radius: float, *, name: str | None = None) -> "GeometryBase":
+        """The geometry cut at `radius`, the part beyond it dropped; the
+        mapping is kept.
 
-        A cut on an existing boundary keeps that interface's name unless
-        `name` is given; the shortened layer keeps its name.
+        On the sphere the cut is the new outer interface; a cut on an
+        existing boundary keeps that interface's name unless `name` is
+        given; the shortened layer keeps its name.  In a box the cut is
+        the new base, a face and no interface, which takes no name.
         """
         sk = self._sk.truncated(radius)
         old_faces = {f.radius: f.name for f in self.interfaces}
         layer_names = list(self._layer_names[:sk.nlayers])
-        face_names = []
-        first = 0 if sk.is_hollow else 1
-        for j in range(first, sk.boundaries.size):
-            face_names.append(old_faces.get(float(sk.boundaries[j])))
-        if name is not None or face_names[-1] is None:
-            face_names[-1] = name
+        face_names = [old_faces.get(r) for r in self._face_values(sk)]
+        self._name_cut(sk, sk.nlayers, face_names, name)
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def hollowed(self, radius: float, *, name: str | None = None) -> "Geometry":
-        """The geometry cut at `radius` from below; the mapping is kept.
+    def hollowed(self, radius: float, *, name: str | None = None) -> "GeometryBase":
+        """The geometry cut at `radius`, the part before it dropped; the
+        mapping is kept.
 
-        The result is hollow, with the cut as its inner interface.  A cut
-        on an existing boundary keeps that interface's name unless `name`
-        is given; the shortened layer keeps its name.
+        The result is hollow, with the cut as its first interface: the
+        inner one on the sphere, the top in a box.  A cut on an existing
+        boundary keeps that interface's name unless `name` is given; the
+        shortened layer keeps its name.
         """
         sk = self._sk.hollowed(radius)
         old_faces = {f.radius: f.name for f in self.interfaces}
         dropped = self._sk.nlayers - sk.nlayers
         layer_names = list(self._layer_names[dropped:])
-        face_names = [old_faces.get(float(b)) for b in sk.boundaries]
-        if name is not None or face_names[0] is None:
-            face_names[0] = name
+        face_names = [old_faces.get(r) for r in self._face_values(sk)]
+        self._name_cut(sk, 0, face_names, name)
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
     def extended(self, radii: ArrayLike, *, names: Names = None,
-                 interface_names: Names = None) -> "Geometry":
-        """Layers appended beyond the outer boundary; identity mapping only.
+                 interface_names: Names = None) -> "GeometryBase":
+        """Layers appended beyond the last boundary; identity mapping only.
 
-        `names` name the new layers, `interface_names` their outer
-        boundaries.  A geometry whose mapping is not the identity is
-        refused: extend the skeleton first and build the mapping after.
+        `names` name the new layers and `interface_names` the interfaces
+        they bring, one each: the new layers' outer boundaries on the
+        sphere, their tops in a box (the old base first).  A geometry
+        whose mapping is not the identity is refused: extend the
+        skeleton first and build the mapping after.
         """
         self._require_identity("extended")
         radii = [float(r) for r in np.atleast_1d(np.asarray(radii, dtype=float))]
@@ -369,7 +453,7 @@ class Geometry:
 
     def coarsened(self, *, keep: Iterable[int] | None = None,
                   drop: Iterable[int] | None = None
-                  ) -> tuple["Geometry", CoarseningMap]:
+                  ) -> tuple["GeometryBase", CoarseningMap]:
         """Interior boundaries removed; identity mapping only.
 
         A merged layer's name is None; kept interfaces keep theirs.
@@ -379,9 +463,7 @@ class Geometry:
         layer_names = [self._layer_names[fine[0]] if len(fine) == 1 else None
                        for fine in cmap.layers]
         old_faces = {f.radius: f.name for f in self.interfaces}
-        first = 0 if sk.is_hollow else 1
-        face_names = [old_faces.get(float(sk.boundaries[j]))
-                      for j in range(first, sk.boundaries.size)]
+        face_names = [old_faces.get(r) for r in self._face_values(sk)]
         return (self._copy(skeleton=sk, layer_names=layer_names,
                            interface_names=face_names), cmap)
 
@@ -392,9 +474,50 @@ class Geometry:
                 "identity: do the surgery on the skeleton first and build "
                 "the mapping for the result")
 
+
+class Geometry(GeometryBase):
+    """A spherical geometry, a ball or a shell in (r, theta, phi): a
+    skeleton of radii, a mapping and names; see the module docstring.
+
+    `check=False` skips the invariant checks, for a mapping already known
+    to satisfy them.
+    """
+
+    _coordinates: Coordinates = SPHERICAL
+    radial_field_type: ClassVar[type[RadialField]] = RadialField
+
+    def _face_boundaries(self, skeleton: Skeleton) -> range:
+        """Every boundary but the centre: from boundary 1 on a full skeleton,
+        from boundary 0 on a hollow one."""
+        return range(0 if skeleton.is_hollow else 1, skeleton.boundaries.size)
+
+    def _between(self, j: int, nlayers: int) -> tuple[int, int]:
+        """(j - 1, j), the outside -1: the layer below is the inner one."""
+        return (j - 1, j if j < nlayers else -1)
+
+    def _lattice(self, **sizes: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return self.coordinates.lattice(self._sk, **sizes)
+
+    def _made(self, skeleton: Skeleton, *, k: float, mapping: Mapping,
+              layer_names: Names, interface_names: Names, rtol: float,
+              check: bool) -> "Geometry":
+        return Geometry(skeleton, mapping=mapping, layer_names=layer_names,
+                        interface_names=interface_names, rtol=rtol, check=check)
+
+    def stretched(self, h: RadialDisplacement | SphericalFunction, *,
+                  name: str | None = None, check: bool = True) -> "Geometry":
+        """A copy whose mapping is the radial stretch driven by `h`.
+
+        `h` is any radial displacement; the stretch's `rmax` is this
+        geometry's outer radius.
+        """
+        return self.with_mapping(RadialStretch(h, rmax=self._sk, name=name),
+                                 check=check)
+
     def __repr__(self) -> str:
         m = "identity" if self.is_identity else repr(self._m)
-        return f"Geometry({self._sk!r}, mapping={m})"
+        return (f"Geometry({self._sk.describe(self.coordinates.labels[0])}, "
+                f"mapping={m})")
 
 
 def _updated(current: tuple[str | None, ...], new: Renames) -> tuple[str | None, ...]:

@@ -23,7 +23,8 @@ elastic values are those at a reference period of 1 s.
 
 `LayeredIsotropicElastic` builds an isotropic model of exact layers
 from a few numbers per layer, a constant or the coefficients of a
-polynomial in r / scale, a fluid layer being one with vs = 0; its
+polynomial in r / scale, a fluid layer being one with vs = 0
+(`isotropic_layers`, which builds them for any geometry); its
 `homogeneous` classmethod is the one-layer case.
 
 `MineosModel` is the model of a mineos deck, PREM's own tabulation
@@ -38,7 +39,11 @@ a seismic reference period would otherwise reach glacial periods.
 `PronyDeckModel` is the model of a prony deck, the same with Prony
 branches in place of the viscosity, a generalised Maxwell body, and
 `BurgersDeckModel` that of a burgers deck, each layer a Maxwell or a
-Burgers body, the latter held as its two branches.
+Burgers body, the latter held as its two branches.  What a deck's
+model holds of its columns is said once, beside the format
+(`deck.deck_from`, `deck.prony_layers`, `conversion.prony.burgers_layers`),
+and the flat catalogue (`planetmodel.cartesian`) builds its own deck
+models from the same.
 """
 from __future__ import annotations
 
@@ -50,20 +55,23 @@ import numpy as np
 from .behaviours import ConstantQ, Elastic, SelfGravitating, Viscoelastic
 from .character import DENSITY, SCALAR
 from .deck import (BURGERS, BURGERS_KINDS, MAXWELL, MAXWELL_KINDS, MINEOS, PRONY,
-                   PRONY_KINDS, Deck, Tabulated, deck_layers, maxwell_names,
-                   mineos_names, prony_branches, read_deck)
-from .fields import RadialField, constant_field
-from .geometry import Geometry
-from .layerfunction import polynomial_layer
-from .materials import kappa_mu
+                   PRONY_KINDS, Deck, Tabulated, deck_from, deck_layers, maxwell_names,
+                   mineos_names, prony_layers)
+from .fields import Field, RadialField
+from .geometry import Geometry, GeometryBase
+from .layerfunction import constant_layer, polynomial_layer
 from .model import Model
-from .rheology import BRANCH_STEMS
 from .skeleton import Skeleton
 from .units import FREQUENCY, Scales
 from .vocabulary import Constant
 
 __all__ = ["PREM", "LayeredIsotropicElastic", "MineosModel", "MaxwellDeckModel",
-           "PronyDeckModel", "BurgersDeckModel", "PREM_RADIUS"]
+           "PronyDeckModel", "BurgersDeckModel", "PREM_RADIUS", "isotropic_layers",
+           "LayerValue"]
+
+#: One layer's value of an isotropic model: a constant, or the ascending
+#: coefficients of a polynomial in the layered coordinate over a scale.
+type LayerValue = float | Sequence[float]
 
 #: The normalisation radius a of PREM's polynomials, metres.
 PREM_RADIUS = 6371e3
@@ -216,6 +224,33 @@ class PREM(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Model):
                          citation=(_PREM_CITATION,))
 
 
+def isotropic_layers(geometry: GeometryBase, *, rho: Sequence[LayerValue],
+                     vp: Sequence[LayerValue], vs: Sequence[LayerValue],
+                     scale: float = 1.0) -> list[dict[str, Field]]:
+    """`rho`, `vp` and `vs` on every layer of `geometry`, one entry each
+    per layer: a number for a constant, or a sequence of ascending
+    polynomial coefficients in the layered coordinate over `scale`, each
+    an exact field of the geometry's `radial_field_type`.  A layer with
+    vs = 0 throughout is fluid."""
+    sk = geometry.skeleton
+    values = {"rho": rho, "vp": vp, "vs": vs}
+    for key, seq in values.items():
+        if len(seq) != sk.nlayers:
+            raise ValueError(f"{key} needs {sk.nlayers} values, got {len(seq)}")
+    make = geometry.radial_field_type
+    layers = []
+    for i in range(sk.nlayers):
+        iv = sk.interval(i)
+        fields: dict[str, Field] = {}
+        for key, character in (("rho", DENSITY), ("vp", SCALAR), ("vs", SCALAR)):
+            value = values[key][i]
+            function = (constant_layer(iv, float(value)) if np.isscalar(value)
+                        else polynomial_layer(iv, value, scale=scale))
+            fields[key] = make(iv, function, character=character, name=key)
+        layers.append(fields)
+    return layers
+
+
 class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
     """An isotropic model of exact polynomial layers between `boundaries`.
 
@@ -227,35 +262,14 @@ class LayeredIsotropicElastic(Elastic, SelfGravitating, Model):
     """
 
     def __init__(self, boundaries: Sequence[float], *,
-                 rho: Sequence[float | Sequence[float]],
-                 vp: Sequence[float | Sequence[float]],
-                 vs: Sequence[float | Sequence[float]],
-                 scale: float = 1.0,
+                 rho: Sequence[LayerValue], vp: Sequence[LayerValue],
+                 vs: Sequence[LayerValue], scale: float = 1.0,
                  layer_names: Sequence[str | None] | None = None,
                  interface_names: Sequence[str | None] | None = None,
                  scales: Scales = Scales.SI, name: str | None = None) -> None:
-        sk = Skeleton(boundaries)
-        values = {"rho": rho, "vp": vp, "vs": vs}
-        for key, seq in values.items():
-            if len(seq) != sk.nlayers:
-                raise ValueError(f"{key} needs {sk.nlayers} values, got {len(seq)}")
-        geometry = Geometry(sk, layer_names=layer_names,
+        geometry = Geometry(Skeleton(boundaries), layer_names=layer_names,
                             interface_names=interface_names)
-        layers = []
-        for i in range(sk.nlayers):
-            iv = sk.interval(i)
-            fields = {}
-            for key, character in (("rho", DENSITY), ("vp", SCALAR),
-                                   ("vs", SCALAR)):
-                value = values[key][i]
-                if np.isscalar(value):
-                    fields[key] = constant_field(iv, float(value),
-                                                 character=character, name=key)
-                else:
-                    fields[key] = RadialField(
-                        iv, polynomial_layer(iv, value, scale=scale),
-                        character=character, name=key)
-            layers.append(fields)
+        layers = isotropic_layers(geometry, rho=rho, vp=vp, vs=vs, scale=scale)
         super().__init__(geometry, layers, scales=scales, name=name)
 
     @classmethod
@@ -287,7 +301,7 @@ class MineosModel(Elastic, ConstantQ, SelfGravitating, Viscoelastic, Tabulated, 
 
     def __init__(self, source: str | os.PathLike[str] | Deck, *,
                  kind: str = "cubic") -> None:
-        deck = source if isinstance(source, Deck) else read_deck(source, MINEOS)
+        deck = deck_from(source, MINEOS)
         skeleton, layers = deck_layers(deck, kind=kind)
         layer_names, interface_names = mineos_names(deck)
         geometry = Geometry(skeleton, layer_names=layer_names,
@@ -327,7 +341,7 @@ class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
 
     def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
                  kinds: Mapping[str, str] = MAXWELL_KINDS) -> None:
-        deck = source if isinstance(source, Deck) else read_deck(source, MAXWELL)
+        deck = deck_from(source, MAXWELL)
         skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
         layer_names, interface_names = maxwell_names(deck)
         geometry = Geometry(skeleton, layer_names=layer_names,
@@ -335,14 +349,6 @@ class MaxwellDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
         self.keep_deck(deck)
         super().__init__(geometry, layers,
                          name=str(deck.header.get("name", "")) or None)
-
-
-def _sampled_header(model: Tabulated, sampled: Deck) -> Deck:
-    """A deck sampled from a model read from a deck, its header the deck's
-    with the model's name and names as they now are, and without the
-    column line read, which the format writes from the columns."""
-    kept = {k: v for k, v in model.header.items() if k != "columns"}
-    return Deck(sampled.radius, sampled.columns, header={**kept, **sampled.header})
 
 
 class PronyDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
@@ -372,20 +378,9 @@ class PronyDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
 
     def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
                  kinds: Mapping[str, str] = PRONY_KINDS) -> None:
-        if isinstance(source, Deck):
-            deck = PRONY.complete(source)
-            PRONY.check_table(deck)
-        else:
-            deck = read_deck(source, PRONY)
+        deck = deck_from(source, PRONY)
         skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
-        n = prony_branches(deck)
-        strength = f"{BRANCH_STEMS[0]}_{{}}"
-        for fields, s in zip(layers, deck.layers()):
-            used = max((k for k in range(1, n + 1)
-                        if np.any(deck[strength.format(k)][s] != 0.0)), default=0)
-            for k in range(used + 1, n + 1):
-                for stem in BRANCH_STEMS:
-                    fields.pop(f"{stem}_{k}", None)
+        layers = prony_layers(deck, layers)
         layer_names, interface_names = maxwell_names(deck)
         geometry = Geometry(skeleton, layer_names=layer_names,
                             interface_names=interface_names)
@@ -402,7 +397,7 @@ class PronyDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
         if columns is not None:
             return super().to_deck(columns=columns)
         from .conversion.prony import prony_deck
-        return _sampled_header(self, prony_deck(self, knots=self.knots))
+        return self.restated(prony_deck(self, knots=self.knots))
 
 
 class BurgersDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model):
@@ -433,19 +428,10 @@ class BurgersDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
 
     def __init__(self, source: str | os.PathLike[str] | Deck, *, kind: str = "cubic",
                  kinds: Mapping[str, str] = BURGERS_KINDS) -> None:
-        from .conversion.prony import burgers_branches
-        if isinstance(source, Deck):
-            deck = source
-            BURGERS.check_table(deck)
-        else:
-            deck = read_deck(source, BURGERS)
+        from .conversion.prony import burgers_layers
+        deck = deck_from(source, BURGERS)
         skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds)
-        for fields in layers:
-            if "kelvin_viscosity" in fields:
-                kelvin = {name: fields.pop(name) for name in
-                          ("kelvin_viscosity", "kelvin_modulus_fraction")}
-                fields.update(burgers_branches(kappa_mu(fields)[1],
-                                               fields.pop("viscosity"), **kelvin))
+        layers = burgers_layers(layers)
         layer_names, interface_names = maxwell_names(deck)
         geometry = Geometry(skeleton, layer_names=layer_names,
                             interface_names=interface_names)
@@ -462,4 +448,4 @@ class BurgersDeckModel(Elastic, SelfGravitating, Viscoelastic, Tabulated, Model)
         if columns is not None:
             return super().to_deck(columns=columns)
         from .conversion.prony import burgers_deck
-        return _sampled_header(self, burgers_deck(self, knots=self.knots))
+        return self.restated(burgers_deck(self, knots=self.knots))

@@ -1,20 +1,21 @@
 """The MFEM delivery: the mesh, the displacement, and the manifest.
 
 Everything is built on the reference mesh: the mesher writes concentric
-spheres as MSH 2.2 in the geometry's own numbers, PyMFEM reads them,
-and the geometry's mapping is evaluated at the nodal degrees of freedom
-of that mesh, whose coordinates are reference coordinates and need no
-inverse mapping.  This is the one place the mapping meets a mesh: a
-displacement is a vector in the mesh's own nodal space, whatever the
-mapping is made of.  `delivery="physical"` adds the displacement to the
-nodes before the mesh is written, and the moved mesh is checked for
-folding through the Jacobian of every element at its quadrature and
-nodal points, refused if any is not positive; `delivery="referential"`
-leaves the mesh spherical and writes `m(X) - X` beside it as a
-GridFunction in the mesh's own nodal space, from which the consumer
-forms the physical mesh in one call.  A 2D mesh has two coordinates per
-node; they are lifted to the plane z = 0 for the mapping and dropped
-again.
+spheres, or a box's planes, as MSH 2.2 in the geometry's own numbers,
+PyMFEM reads them, and the geometry's mapping is evaluated at the nodal
+degrees of freedom of that mesh, whose coordinates are reference
+coordinates and need no inverse mapping.  This is the one place the
+mapping meets a mesh: a displacement is a vector in the mesh's own
+nodal space, whatever the mapping is made of.  `delivery="physical"`
+adds the displacement to the nodes before the mesh is written, and the
+moved mesh is checked for folding through the Jacobian of every
+element at its quadrature and nodal points, refused if any is not
+positive; `delivery="referential"` leaves the mesh as built and writes
+`m(X) - X` beside it as a GridFunction in the mesh's own nodal space,
+from which the consumer forms the physical mesh in one call.  A 2D mesh
+has two coordinates per node, a disc's x and y and a rectangle's x and z
+(the manifest's `mesh_axes`); they are lifted to the physical point,
+the third coordinate zero, for the mapping and dropped again.
 
 `export_mfem` adds the fields of a model, one GridFunction per name in
 an L2 space: a material discontinuity is the point of a layered model,
@@ -25,14 +26,16 @@ its element's attribute (the manifest's `layer_of`: its own, or one of
 its collars' in a mesh with faults), and each layer is evaluated in one
 vectorised call; every
 value is referential, the model's own field at the reference point,
-with Cartesian components in the model's units, whichever delivery the
-mesh is written in.  A dof of a curved element can sit a chord's depth
-outside its layer's sphere; the element's attribute is the truth, so
-the point is pulled radially to the nearer interface before the layer
-is asked.  A shell outside the model, and a layer of the model without
-the field, are written as zero: a GridFunction has no room for "not
-defined here", and each field's manifest record says on which layers
-it means anything.
+with Cartesian components (x, y, z) in the model's units, whichever
+delivery the mesh is written in.  A dof of a curved element can sit a
+chord's depth outside its layer's sphere; the element's attribute is
+the truth, so the point is pulled along the layered coordinate to the
+nearer interface before the layer is asked (the manifest's
+`pulled_into`: radially, or in a box vertically).  The model must be in
+the coordinates of the geometry the mesh was built from.  A shell
+outside the model, and a layer of the model without the field, are
+written as zero: a GridFunction has no room for "not defined here", and
+each field's manifest record says on which layers it means anything.
 
 `<base>.mesh` is MFEM native and carries the curved nodes.  A `.gf`
 file is indexed by the dof numbering of that mesh, and MFEM re-marks
@@ -64,7 +67,7 @@ from . import manifest
 from .spec import DELIVERIES, MeshResult
 
 if TYPE_CHECKING:
-    from ..model import Layer, Model
+    from ..model import Layer, ModelBase
     from ..modelfile import Grids
 
 __all__ = ["ExportResult", "export_mfem_mesh", "export_mfem",
@@ -237,24 +240,29 @@ def _write_vector(gf: Any, values: ArrayLike) -> None:
         data[:] = np.asarray(values, dtype=float).ravel()
 
 
-def _lifted(X: ArrayLike) -> np.ndarray:
-    """Points of shape (n, 2) or (n, 3) as (n, 3), a 2D mesh's in z = 0."""
+def _lifted(X: ArrayLike, card: manifest.MeshManifest) -> np.ndarray:
+    """Points of a mesh's coordinates, (n, 2) or (n, 3), as the physical
+    points (n, 3) they stand for (`MeshManifest.mesh_axes`): a disc's in
+    z = 0, a rectangle's in y = 0."""
     X = np.asarray(X, dtype=float)
     n, sdim = X.shape
     X3 = np.zeros((n, 3))
-    X3[:, :sdim] = X
+    X3[:, list(card.mesh_axes(sdim))] = X
     return X3
 
 
-def _displacement_at(mapping: Mapping, X: ArrayLike, *, scale: float) -> np.ndarray:
-    """m(X) - X at nodal coordinates of shape (n, 2) or (n, 3).
+def _displacement_at(mapping: Mapping, X: ArrayLike, card: manifest.MeshManifest
+                     ) -> np.ndarray:
+    """m(X) - X at nodal coordinates of shape (n, 2) or (n, 3), in the
+    mesh's coordinates.
 
-    Two-dimensional points are lifted to z = 0 for the mapping, which
-    must then keep them in the plane to `1e-12 * scale`, and the third
-    component is dropped again.
+    Two-dimensional points are lifted to their physical points for the
+    mapping, which must then keep them in the mesh's plane to
+    `1e-12 * card.scale`, and the third component is dropped again.
     """
-    X3 = _lifted(X)
     sdim = np.shape(X)[1]
+    axes = list(card.mesh_axes(sdim))
+    X3 = _lifted(X, card)
     if hasattr(mapping, "displacement"):
         u = np.asarray(mapping.displacement(X3), dtype=float)
     else:
@@ -263,14 +271,14 @@ def _displacement_at(mapping: Mapping, X: ArrayLike, *, scale: float) -> np.ndar
         raise ValueError(f"the mapping returned {u.shape} for {X3.shape} points")
     if not np.all(np.isfinite(u)):
         raise ValueError("the mapping is not finite at some nodal dof")
-    if sdim == 2:
-        out_of_plane = float(np.max(np.abs(u[:, 2])))
-        if out_of_plane > 1e-12 * scale:
+    for normal in sorted(set(range(3)) - set(axes)):
+        out_of_plane = float(np.max(np.abs(u[:, normal])))
+        if out_of_plane > 1e-12 * card.scale:
             raise ValueError(
-                f"the mapping moves points of the disc out of its plane by up "
-                f"to {out_of_plane:.3g}; a 2D export needs a mapping that "
-                "keeps z = 0")
-    return u[:, :sdim]
+                f"the mapping moves points of the two-dimensional mesh out of its "
+                f"plane by up to {out_of_plane:.3g}; a 2D export needs a mapping "
+                f"that keeps {manifest.AXES[normal]} = 0")
+    return u[:, axes]
 
 
 def _field_entry(name: str, path: str | Path, fes: Any, *, character: Character,
@@ -326,7 +334,7 @@ def export_mfem_mesh(result: MeshResult, path_base: str | Path, *,
     mesh = _load_mesh(result.msh_path)
     nodes = mesh.GetNodes()
     X = np.array(_node_array(nodes), dtype=float, copy=True)
-    u = _displacement_at(mapping, X, scale=card.outer_radius)
+    u = _displacement_at(mapping, X, card)
     displacement = mfem.GridFunction(nodes.FESpace())
     _write_vector(displacement, u)
 
@@ -411,20 +419,19 @@ def _dofs_by_layer(mesh: Any, fes: Any, card: manifest.MeshManifest
             for a in np.unique(layers)}
 
 
-def _clipped_into(X: ArrayLike, interval: tuple[float, float]) -> np.ndarray:
-    """`X` pulled radially into `[lo, hi]`, direction untouched."""
-    lo, hi = (float(x) for x in interval)
-    r = np.linalg.norm(X, axis=-1)
-    safe = np.where(r > 0.0, r, 1.0)
-    return X * (np.clip(r, lo, hi) / safe)[..., None]
-
-
-def _check_model_sits_on(result: MeshResult, model: Model) -> None:
-    """Refuse a mesh not built from a geometry, or a model on another skeleton."""
+def _check_model_sits_on(result: MeshResult, model: ModelBase) -> None:
+    """Refuse a mesh not built from a geometry, a model in other
+    coordinates, or a model on another skeleton."""
     if result.geometry is None:
         raise ValueError(
             f"{Path(result.msh_path).name} was not built from a geometry, so "
             "no model sits on it; fields are exported on a layered mesh")
+    mine, theirs = model.geometry.coordinates, result.geometry.coordinates
+    if mine != theirs:
+        raise ValueError(
+            f"the model is in the coordinates {mine.name!r} and the mesh was built "
+            f"from a geometry in {theirs.name!r}; export the fields of a model on "
+            "the mesh's own geometry")
     a = model.skeleton.boundaries
     b = result.geometry.skeleton.boundaries
     if a.size != b.size or not np.allclose(a, b, rtol=model.geometry.rtol,
@@ -435,7 +442,7 @@ def _check_model_sits_on(result: MeshResult, model: Model) -> None:
             "mesh's own geometry")
 
 
-def _chosen_names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]:
+def _chosen_names(model: ModelBase, fields: Iterable[str] | None) -> tuple[str, ...]:
     """The names to write: every name the model holds, or those given."""
     if fields is None:
         return tuple(model.field_names())
@@ -448,7 +455,7 @@ def _chosen_names(model: Model, fields: Iterable[str] | None) -> tuple[str, ...]
     return names
 
 
-def _character_of(model: Model, name: str) -> Character:
+def _character_of(model: ModelBase, name: str) -> Character:
     """The one character `name` has on every layer holding it."""
     layers = model.layers_with(name)
     characters = {model.layer(i)[name].character for i in layers}
@@ -459,13 +466,15 @@ def _character_of(model: Model, name: str) -> Character:
     return characters.pop()
 
 
-def _field_values(model: Model, name: str, X: np.ndarray,
-                  groups: MappingOf[int, np.ndarray], *, vdim: int) -> np.ndarray:
+def _field_values(model: ModelBase, name: str, X: np.ndarray,
+                  groups: MappingOf[int, np.ndarray], *, vdim: int,
+                  card: manifest.MeshManifest) -> np.ndarray:
     """`name` at the dof coordinates `X`, (ndof, vdim), layer by layer.
 
     `groups` maps a layer's own attribute -> its dofs.  The layer of
     own attribute i + 1 is layer i of the model; everything the model
-    does not hold the field on stays zero.
+    does not hold the field on stays zero.  Each dof is lifted to its
+    physical point and pulled into its layer as the manifest says.
     """
     values = np.zeros((X.shape[0], vdim))
     shape = stored_shape(_character_of(model, name))
@@ -474,7 +483,7 @@ def _field_values(model: Model, name: str, X: np.ndarray,
         if dofs is None:
             continue
         layer = model.layer(i)
-        points = _clipped_into(_lifted(X[dofs]), layer.interval)
+        points = card.pulled_into(_lifted(X[dofs], card), layer.interval)
         got = np.asarray(layer[name].evaluate_at(points, frame=FRAME))
         if np.iscomplexobj(got):
             raise ValueError(
@@ -517,10 +526,11 @@ def _interface_kind(below: int, above: int, in_model: Sequence[bool],
     return "outer" if above == -1 else None
 
 
-def _side_value(model: Model, layer: int, in_model: Sequence[bool], name: str,
+def _side_value(model: ModelBase, layer: int, in_model: Sequence[bool], name: str,
                 radius: float) -> float | None:
-    """`name` just inside the 0-based `layer` at `radius`, where it is
-    a real scalar radial value there; None otherwise."""
+    """`name` just inside the 0-based `layer` at `radius`, the layered
+    coordinate (a depth in a box), where it is a real scalar field of
+    that coordinate alone there; None otherwise."""
     if layer == -1 or not in_model[layer]:
         return None
     fields = model.layer(layer)
@@ -535,7 +545,7 @@ def _side_value(model: Model, layer: int, in_model: Sequence[bool], name: str,
     return float(value)
 
 
-def _radial_degree(model: Model, name: str) -> int | None:
+def _radial_degree(model: ModelBase, name: str) -> int | None:
     """The degree in r reproducing `name` within every layer holding
     it, or None for a field of higher rank or one without a single
     degree on some layer."""
@@ -550,7 +560,7 @@ def _radial_degree(model: Model, name: str) -> int | None:
     return max(degrees)
 
 
-def _annotate_from_model(card: manifest.MeshManifest, model: Model,
+def _annotate_from_model(card: manifest.MeshManifest, model: ModelBase,
                          names: Iterable[str]) -> None:
     """Write what the model says onto the manifest's skeleton records.
 
@@ -570,14 +580,14 @@ def _annotate_from_model(card: manifest.MeshManifest, model: Model,
         entry["kind"] = _interface_kind(below, above, in_model, fluid)
         values = {}
         for name in names:
-            pair = [_side_value(model, k, in_model, name, entry["radius"])
+            pair = [_side_value(model, k, in_model, name, card.interface_level(entry))
                     for k in (below, above)]
             if any(v is not None for v in pair):
                 values[name] = pair
         entry["values"] = values or None
 
 
-def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
+def export_mfem(result: MeshResult, path_base: str | Path, *, model: ModelBase,
                 fields: Iterable[str] | None = None, delivery: str = "physical",
                 order: int | None = None,
                 model_file: bool | Grids = False) -> ExportResult:
@@ -590,21 +600,23 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     default) with `vdim` the number of stored components (Voigt for
     ranks 2 and 4), ordered byNODES, holding the referential value at
     every dof: the model's field at the dof's reference coordinates,
-    with Cartesian components, in the model's units, whichever delivery
-    the mesh is written in.  A dof is evaluated by the layer its
+    with Cartesian components (x, y, z), in the model's units, whichever
+    delivery the mesh is written in.  A dof is evaluated by the layer its
     element's attribute belongs to (`MeshManifest.layer_of`: the layer's
-    own attribute, or one of its collars'), pulled radially to that
-    layer's nearer
+    own attribute, or one of its collars'), pulled along the layered
+    coordinate (radially, or in a box vertically) to that layer's nearer
     interface when a curved element leaves it outside; a shell outside
     the model, and a layer of the model without the field, are written
     as zero.  `fields` is None for every name the model holds, or the
     names to write (KeyError for a name no layer holds).  The model must
-    sit on the geometry the mesh was built from: the same skeleton to
-    the model's geometry's `rtol`; a mesh not built from a geometry is
-    refused.  The manifest gains one `fields[]` record per name, saying
+    sit on the geometry the mesh was built from: the same coordinates,
+    and the same skeleton to the model's geometry's `rtol`; a mesh not
+    built from a geometry is refused.  The manifest gains one `fields[]`
+    record per name, saying
     the file, the space to read it into, the character, the unit, the
     layers on which the values mean anything and, for a scalar field
-    polynomial in r, the degree that reproduces it (`radial_degree`);
+    polynomial in the layered coordinate, the degree that reproduces it
+    (`radial_degree`);
     and `scales` and `constants` blocks from the model.  What the model
     says about the skeleton is written onto its records: `fluid` on
     every layer (the vanishing of shear in the model's layer, whichever
@@ -616,12 +628,15 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     `<base>.model.nc` on the mesh's reference skeleton, the fields
     chosen by `fields`, and records it in the manifest's `model` block:
     a grid (or a mapping from layers to grids) for the file's parts, as
-    `modelfile.write_model` takes it, or True for a model that does not
-    vary with direction under the identity, written on the smallest
+    `modelfile.write_model` takes it (an `AngularGrid`, or for a flat
+    model a `cartesian.Grid` over its domain), or True for a model that
+    does not vary laterally under the identity, written on the smallest
     grid.  Layer n of the file is the mesh's layer of own attribute
     n + 1, whose cells carry its `attributes`; a shell
     the spec appended has no model data.  The `.gf` fields are written
-    either way.
+    either way.  A flat model's file is the flat model file
+    (`cartesian.modelfile`, of `modelfile.SCHEMA_FLAT`), which the
+    manifest's `model` block names by its schema.
     """
     mfem = _mfem()
     _check_model_sits_on(result, model)
@@ -631,6 +646,7 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
             f"a field named {DISPLACEMENT!r} would take the file of the mapping's "
             "displacement in referential delivery; rename the field, or leave it "
             "out of fields=")
+    built = manifest.read(result.manifest_path)
     grid = None if model_file is False else _model_file_grid(model, names, model_file)
     mesh = _load_mesh(result.msh_path)
     order = _mesh_order(mesh) if order is None else int(order)
@@ -643,11 +659,12 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
     collection = mfem.L2_FECollection(order, mesh.Dimension())
     scalar = mfem.FiniteElementSpace(mesh, collection, 1)
     X = _dof_coordinates(mesh, scalar)
-    groups = _dofs_by_layer(mesh, scalar, manifest.read(result.manifest_path))
+    groups = _dofs_by_layer(mesh, scalar, built)
     values = {}
     for name in names:
         vdim = int(np.prod(stored_shape(_character_of(model, name)), dtype=int))
-        values[name] = (vdim, _field_values(model, name, X, groups, vdim=vdim))
+        values[name] = (vdim, _field_values(model, name, X, groups, vdim=vdim,
+                                            card=built))
 
     path_base = Path(path_base)
     model_path = None
@@ -688,11 +705,11 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: Model,
                                field_paths=written, model_path=model_path)
 
 
-def _model_file_grid(model: Model, names: Sequence[str], grid: bool | Grids
+def _model_file_grid(model: ModelBase, names: Sequence[str], grid: bool | Grids
                      ) -> Grids:
     """The grids of the model file: those given, or for a model that does
-    not vary with direction, the smallest grid."""
-    from ..sampling import gauss_legendre
+    not vary laterally, the smallest grid: the sphere's of band 0, or the
+    one node over a flat model's domain."""
     if grid is True:
         lateral = [n for n in names for i in model.layers_with(n)
                    if not getattr(model.layer(i)[n], "is_radial", False)]
@@ -702,5 +719,11 @@ def _model_file_grid(model: Model, names: Sequence[str], grid: bool | Grids
                 "model_file=True writes a model that does not vary with "
                 f"direction under the identity; {varies} does: give the "
                 "angular grid, model_file=grid")
-        grid = gauss_legendre(0)
+        domain = getattr(model.geometry, "domain", None)
+        if domain is None:
+            from ..sampling import gauss_legendre
+            grid = gauss_legendre(0)
+        else:
+            from ..cartesian.grid import Grid
+            grid = Grid(domain, 1)
     return grid

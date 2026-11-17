@@ -35,9 +35,8 @@ import numpy as np
 
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
 from planetmodel.fault import Fault, GeographicFrame, Plane, Slip, StructuredPatch
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 
 UNIT = GeographicFrame(1.0)
 LAT, LON = 20.0, 30.0
@@ -88,19 +87,23 @@ splay = StructuredPatch(UNIT, UNIT.coordinates(controls),
 faults = {"thrust": Fault([thrust]), "splay": Fault([splay])}
 
 # %% [markdown]
-# The mesh, of order 2, refined towards both faults. The validation
-# report holds the faults' own checks (every face a face of two cells,
-# every face pointing into the hanging wall) and the warnings beside the
-# usual ones; the manifest, of the schema of a mesh with faults, gains
-# one record a fault, and each layer the list of element attributes its
-# cells carry, its collars' after its own.
+# The mesh, of order 2, refined towards both faults by the size on them,
+# 0.05: by `EmbeddedFault`'s rule the size grows from it to the
+# background's by about 30 per cent an element, and the linear mesh is
+# relocated by gmsh's Relocate3D pass, which moves no node of a fault or
+# an interface. The validation report holds the faults' own checks
+# (every face a face of two cells, every face pointing into the hanging
+# wall) and the warnings beside the usual ones; the manifest, of the
+# schema of a mesh with faults, gains one record a fault, and each layer
+# the list of element attributes its cells carry, its collars' after its
+# own.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
-near = InterfaceSizing(0.05, 0.3, 0.1)
+size = 0.05
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
-             faults=[EmbeddedFault(f, name=n, sizing=near) for n, f in faults.items()]),
+             faults=[EmbeddedFault(f, name=n, sizing=size) for n, f in faults.items()]),
     work / "faulted")
 print(f"{result.counts['elements']} elements, {result.counts['nodes']} nodes")
 print(result.validation)
@@ -131,9 +134,9 @@ for record in card.faults:
     worst = float(np.abs(found.distance[~carried]).max())
     print(f"{record['name']}: {nodes.size} nodes, {int(np.count_nonzero(carried))} "
           f"carried across the surface; the rest within {worst:.2g} of the fault "
-          f"({worst / near.size:.2g} of an element; the pull-back's offset "
+          f"({worst / size:.2g} of an element; the pull-back's offset "
           f"{record['offset']:.2g})")
-    slip = fault.slip_at(x[nodes[~carried][:3]], max_distance=near.size)
+    slip = fault.slip_at(x[nodes[~carried][:3]], max_distance=size)
     print("  slip (east, north, up) at three of them:",
           np.array2string(slip, precision=3, suppress_small=True).replace("\n", ""))
 

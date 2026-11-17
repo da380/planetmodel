@@ -8,8 +8,10 @@ boundary could only express one size for all of them, which is what a
 layered domain does not want.
 
 Every interface is a full circle or sphere when it is meshed, of radius
-R about a centre c, so the distance to it is | |x - c| - R | and is
-given to gmsh in closed form.  gmsh's own Distance field is not used:
+R about a centre c, so the distance to it is | |x - c| - R |, or a
+plane across a box, |z - z_k|, and is given to gmsh in closed form, as
+the tagging states it (`Tagging.distance`).  gmsh's own Distance field
+is not used:
 it measures the distance to a sampling of the entity by points, which
 on the interface itself is zero at the points and about half their
 spacing between them, and the Threshold turns that into an element size
@@ -43,9 +45,10 @@ def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing], *,
     """Build the background size field from per-interface sizings.
 
     `sizes` maps interface index to InterfaceSizing, in the lengths the
-    geometry is drawn in.  `centres` maps a surface's entity tag to its
-    centre where that is not the origin.  Returns the tag of the field
-    set as the background.
+    geometry is drawn in.  The distance to each interface is the
+    tagging's (`Tagging.distance`); `centres` maps a sphere's entity tag
+    to its centre where that is not the origin.  Returns the tag of the
+    field set as the background.
     """
     if not sizes:
         raise ValueError("no sizing given: every interface needs one")
@@ -53,14 +56,13 @@ def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing], *,
     centres = centres or {}
     thresholds: list[float] = []
 
-    for i, (face, radius) in enumerate(zip(tagging.faces, tagging.radii)):
+    for i, face in enumerate(tagging.faces):
         sizing = sizes.get(i)
         if sizing is None:
             raise ValueError(f"no sizing for interface {i}")
         dist = gmsh.model.mesh.field.add("MathEval")
         gmsh.model.mesh.field.setString(
-            dist, "F", _distance_to_sphere(centres.get(face, (0.0, 0.0, 0.0)),
-                                           radius))
+            dist, "F", tagging.distance(i, centre=centres.get(face, (0.0, 0.0, 0.0))))
 
         thr = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(thr, "InField", dist)
@@ -74,17 +76,6 @@ def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing], *,
     gmsh.model.mesh.field.setNumbers(combined, "FieldsList", thresholds)
     gmsh.model.mesh.field.setAsBackgroundMesh(combined)
     return combined
-
-
-def _distance_to_sphere(centre: ArrayLike, radius: float) -> str:
-    """The distance | |x - c| - R | as an expression gmsh evaluates.
-
-    Each number is written with the digits that round-trip and in
-    brackets, so a sign or an exponent is read as part of it.
-    """
-    cx, cy, cz = (float(c) for c in np.asarray(centre, dtype=float))
-    return (f"Fabs(Sqrt((x-({cx!r}))^2+(y-({cy!r}))^2+(z-({cz!r}))^2)"
-            f"-({float(radius)!r}))")
 
 
 def apply_refinements(refinements: Sequence[Refinement], *,
@@ -150,6 +141,7 @@ def apply_mesh_options(*, order: int, algorithm_2d: int, algorithm_3d: int,
 
 def check_sizing_resolves_spans(boundaries: ArrayLike,
                                 sizes: Mapping[int, InterfaceSizing], *,
+                                faces: Sequence[int] | None = None,
                                 max_ratio: float = 10.0,
                                 strict: bool = True) -> list[str]:
     """Refuse element sizes too coarse for the layers they must fill.
@@ -159,19 +151,25 @@ def check_sizing_resolves_spans(boundaries: ArrayLike,
     from the sizing rule that caused it.  `max_ratio` is the ratio of
     element size to layer thickness at which gmsh fails.
 
-    `boundaries` are the skeleton boundaries, innermost first (a leading
-    zero for a full domain); `sizes` maps interface
-    index to InterfaceSizing, interface k sitting on boundary k for a
+    `boundaries` are the skeleton boundaries in its order; `sizes` maps
+    interface index to InterfaceSizing.  `faces` gives the boundary each
+    interface sits on, in order: on a sphere every boundary but a
+    leading zero, the centre, and in a box every boundary but the last,
+    the base.  None takes the sphere's: interface k on boundary k for a
     hollow domain and on boundary k + 1 for a full one.  Each layer is
-    judged by the finer of its two bounding interfaces.
+    judged by the finer of its bounding interfaces, a layer with only
+    one (at the centre, or above the base) by that one.
     """
     b = np.asarray(boundaries, dtype=float)
-    first = 0 if b[0] > 0.0 else 1          # the boundary interface 0 sits on
+    if faces is None:
+        first = 0 if b[0] > 0.0 else 1      # the boundary interface 0 sits on
+        faces = range(first, b.size)
+    on = {int(j): k for k, j in enumerate(faces)}   # boundary -> interface
     problems = []
     for i in range(b.size - 1):
         thickness = float(b[i + 1] - b[i])
-        bounding = [sizes[j].size for j in (i - first, i + 1 - first)
-                    if j in sizes and j >= 0]
+        bounding = [sizes[on[j]].size for j in (i, i + 1)
+                    if j in on and on[j] in sizes]
         h = min(bounding)
         if h > max_ratio * thickness:
             problems.append(

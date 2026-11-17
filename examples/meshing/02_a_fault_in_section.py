@@ -7,8 +7,10 @@
 # taken through the fault's centroid, normal to its strike; it passes
 # through the centre, so the whole section is a disc. The same fault is
 # built twice, with the refinement towards it that `EmbeddedFault`'s
-# `sizing` asks for and without, when its faces conform at whatever size
-# the interfaces' rule gives there.
+# `sizing` asks for, the size on it given and the rest following by
+# rule, and without, when its faces conform at whatever size the
+# interfaces' rule gives there; and the section is drawn as a cut and as
+# a crinkle, the cells it passes through whole.
 #
 # Needs: meshing, plot
 # Network: none
@@ -26,9 +28,8 @@ from matplotlib.patches import Patch
 
 from planetmodel import Geometry, Skeleton
 from planetmodel.fault import Fault, GeographicFrame, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh, manifest,
-                                read_mesh)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, manifest, read_mesh)
 from planetmodel.plotting import mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -51,13 +52,16 @@ plane = Plane.at_depth(UNIT, 20.0, 30.0, 0.33, strike=0.0, dip=50.0, length=0.3,
 fault = Fault([plane])
 
 # %% [markdown]
-# The mesh twice, of order 1, with and without a refinement to 0.025 on
-# the fault; the interfaces' own size is 0.12.
+# The mesh twice, of order 1, with and without the size 0.025 on the
+# fault. By `EmbeddedFault`'s rule the size grows from it by about 30
+# per cent an element until it meets the interfaces' sizing; either way
+# the linear mesh is relocated by gmsh's Relocate3D pass, which moves no
+# node of a fault or an interface.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_section_"))
 built = {}
-for label, sizing in (("without", None), ("with", InterfaceSizing(0.025, 0.12, 0.1))):
+for label, sizing in (("without", None), ("with", 0.025)):
     result = build_layered_mesh(
         MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1,
                  faults=[EmbeddedFault(fault, name="fault", sizing=sizing)]),
@@ -72,20 +76,27 @@ for label, sizing in (("without", None), ("with", InterfaceSizing(0.025, 0.12, 0
     built[label] = (mesh, card, len(faces))
 
 # %% [markdown]
-# The cut: the plane through the centre spanned by east and up at the
-# fault's centroid, which holds the fault's dip direction. Its cells are
-# coloured by layer; the interfaces' faces and the fault's, cut by the
-# same plane, are the curves they leave in it.
+# The section by the plane through the centre spanned by east and up at
+# the fault's centroid, which holds the fault's dip direction, drawn
+# twice. Above, the cut: the cells as the plane leaves them, coloured by
+# layer, exact, the interfaces' faces and the fault's, cut by the same
+# plane, the curves they leave in it, which the cut's edges run along;
+# but a plane near a corner or an edge of a cell cuts a thin shard from
+# it, whatever its shape. Below, the crinkle (`plane_cut(...,
+# kind="crinkle")`): the faces of the cells the plane passes through,
+# whole, on a stepped surface an element or less in front of the plane,
+# with the same curves over them, which their edges do not run along.
 
 # %%
 east, north, up = np.moveaxis(UNIT.basis(plane.centroid), -1, 0)
 axes = np.stack([east, up])
 
 
-def draw(ax: plt.Axes, mesh: object, card: object, *, lw: float) -> None:
+def draw(ax: plt.Axes, mesh: object, card: object, *, kind: str, lw: float) -> None:
     """The section of a mesh: cells by layer, interfaces, the fault."""
     colours = np.array(list(LAYERS.values()))[mesh.layers(card) - 1]
-    mesh_section(ax, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes),
+    mesh_section(ax, plane_cut(mesh.points, mesh.cells[:, :4], np.zeros(3), axes,
+                               kind=kind),
                  colours=colours, edgecolor=EDGES, linewidth=lw)
     interfaces = np.isin(mesh.face_attributes,
                          [e["attribute"] for e in card.interfaces])
@@ -96,28 +107,30 @@ def draw(ax: plt.Axes, mesh: object, card: object, *, lw: float) -> None:
                  colours=FAULT, linewidth=2.5, capstyle="round")
 
 
-fig, (whole, *zooms) = plt.subplots(1, 3, figsize=(12, 4.6))
-draw(whole, *built["with"][:2], lw=0.25)
-whole.set_title("The section normal to the fault's strike")
+fig, panels = plt.subplots(2, 3, figsize=(12, 9.0))
 ends = np.array([plane.cartesian(0.0, v) for v in (-0.5, 0.5)]) @ axes.T
 box = np.array([[-0.13, 0.13]] * 2) + ends.mean(axis=0)[:, None]
-whole.add_patch(plt.Rectangle(box[:, 0], *np.diff(box).ravel(), fill=False,
-                              edgecolor="#0b0b0b", linewidth=1.0))
-whole.set_axis_off()
-for ax, label in zip(zooms, ("without", "with")):
-    mesh, card, count = built[label]
-    draw(ax, mesh, card, lw=0.6)
-    ax.set(xlim=box[0], ylim=box[1], xticks=[], yticks=[])
-    ax.set_title(f"Near the fault, {label} its sizing: {count} faces")
-    x0, y0 = box[0, 0] + 0.015, box[1, 0] + 0.015
-    ax.plot([x0, x0 + 0.05], [y0, y0], color="#0b0b0b", lw=2.0,
-            solid_capstyle="butt")
-    ax.text(x0 + 0.025, y0 + 0.006, "0.05", ha="center", va="bottom")
+for (whole, *zooms), kind in zip(panels, ("cut", "crinkle")):
+    draw(whole, *built["with"][:2], kind=kind, lw=0.25)
+    whole.set_title(f"Normal to the fault's strike, a {kind}")
+    whole.add_patch(plt.Rectangle(box[:, 0], *np.diff(box).ravel(), fill=False,
+                                  edgecolor="#0b0b0b", linewidth=1.0))
+    whole.set_axis_off()
+    for ax, label in zip(zooms, ("without", "with")):
+        mesh, card, count = built[label]
+        draw(ax, mesh, card, kind=kind, lw=0.6)
+        ax.set(xlim=box[0], ylim=box[1], xticks=[], yticks=[])
+        ax.set_title(f"{label.capitalize()} its sizing: {count} faces, a {kind}")
+        x0, y0 = box[0, 0] + 0.015, box[1, 0] + 0.015
+        ax.plot([x0, x0 + 0.05], [y0, y0], color="#0b0b0b", lw=2.0,
+                solid_capstyle="butt")
+        ax.text(x0 + 0.025, y0 + 0.006, "0.05", ha="center", va="bottom")
 fig.legend(handles=[Patch(facecolor=c, edgecolor=EDGES, label=n)
                     for n, c in LAYERS.items()]
            + [Line2D([], [], color=INK, lw=0.9, label="interface"),
               Line2D([], [], color=FAULT, lw=2.5, label="fault")],
            loc="lower center", ncol=5, frameon=False)
-fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.1, wspace=0.06)
+fig.subplots_adjust(left=0.01, right=0.99, top=0.95, bottom=0.06, wspace=0.06,
+                    hspace=0.12)
 fig.savefig(FIGURES / "meshing_02.png", dpi=120)
 shutil.rmtree(work)

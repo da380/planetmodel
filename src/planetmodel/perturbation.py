@@ -5,7 +5,7 @@ reference and a perturbation of it, a tomographic model as relative
 perturbations of a reference's velocities, a viscosity as the logarithm
 of its departure from a radial profile.  `PerturbedField(reference,
 perturbation, *, kind)` is such a field, and the kind is how the two
-combine:
+combine::
 
     absolute   reference + perturbation
     relative   reference (1 + perturbation)
@@ -30,21 +30,26 @@ model type's own rule runs: on an `Elastic` model a perturbed velocity
 re-derives the Love moduli from it.  `unperturbed(model)` puts every
 perturbed field's reference back the same way.  A fully 3D field is
 simply a field that is not perturbed; the reference and the spherical
-mean of a perturbed field differ in general and are named apart.
+mean of a perturbed field differ in general and are named apart.  A
+flat perturbed field (a `DepthField` reference, any flat perturbation)
+has a horizontal mean, by the same rules (`horizontal_mean`), and no
+spherical one.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from .character import SCALAR
+from .coordinates import SPHERICAL, common_coordinates, require_coordinates
 from .fields import ComposedField, Field, FieldBase, RadialField
 from .layerfunction import same_interval
 from .model import Layer, Model
 
 if TYPE_CHECKING:
+    from .cartesian.grid import Grid
     from .sampling import AngularGrid
 
 __all__ = ["KINDS", "PerturbedField", "perturbed", "unperturbed"]
@@ -57,9 +62,9 @@ class PerturbedField(FieldBase):
     """A radial reference of rank 0 combined with a perturbation by `kind`.
 
     `kind` is one of `KINDS`; `name` is the reference's unless given.
-    Both fields must lie on the same interval, and the perturbation must
-    have the reference's character when absolute and be `SCALAR`
-    otherwise.
+    Both fields must lie on the same interval and in one coordinate
+    system, which is the field's, and the perturbation must have the
+    reference's character when absolute and be `SCALAR` otherwise.
     """
 
     def __init__(self, reference: Field, perturbation: Field, *, kind: str,
@@ -87,6 +92,7 @@ class PerturbedField(FieldBase):
             raise ValueError(
                 f"the perturbation lies on {perturbation.interval}, the reference "
                 f"on {reference.interval}; restate it with on_interval")
+        self._coordinates = common_coordinates((reference, perturbation))
         self._reference, self._perturbation, self._kind = reference, perturbation, kind
         self._interval = tuple(float(x) for x in reference.interval)
         self._character = reference.character
@@ -140,25 +146,50 @@ class PerturbedField(FieldBase):
         absolute, reference (1 + mean(perturbation)) when relative, and
         reference mean(exp(perturbation)) when logarithmic, the last by
         quadrature on `grid`, or on the perturbation's own grid where it
-        has weights; a radial perturbation's mean is itself."""
+        has weights; a radial perturbation's mean is itself.  A field of
+        another system than the sphere's is refused."""
         from .means import quadrature_mean, spherical_mean
+        require_coordinates(self, SPHERICAL, "a spherical mean")
+        return self._mean(spherical_mean, quadrature_mean, grid,
+                          lambda g: getattr(g, "weights", None) is not None,
+                          "a grid with weights")
+
+    def horizontal_mean(self, *, grid: Grid | None = None) -> RadialField:
+        """The mean over a box's period at every depth from the parts, by
+        the rules of `spherical_mean` with the horizontal mean
+        (`cartesian.horizontal_mean`) in place of the spherical one, the
+        quadrature of a log perturbation on `grid`, a `cartesian.Grid`, or
+        on the perturbation's own grid.  A field of another system than
+        the flat one is refused."""
+        from .cartesian.coordinates import FLAT
+        from .cartesian.grid import Grid
+        from .cartesian.means import horizontal_mean, quadrature_mean
+        require_coordinates(self, FLAT, "a horizontal mean")
+        return self._mean(horizontal_mean, quadrature_mean, grid,
+                          lambda g: isinstance(g, Grid), "a cartesian.Grid")
+
+    def _mean(self, mean: Callable[..., RadialField],
+              quadrature: Callable[[Field, Any], RadialField], grid: Any,
+              usable: Callable[[Any], bool], wanted: str) -> RadialField:
+        """The mean from the parts by `mean`, the system's mean of a field,
+        and `quadrature`, its mean on a grid that is `usable`."""
         ref, d = self._reference, self._perturbation
         if self._kind == "absolute":
-            out = ref + spherical_mean(d, grid=grid)
+            out = ref + mean(d, grid=grid)
         elif self._kind == "relative":
-            out = ref * (1.0 + spherical_mean(d, grid=grid))
+            out = ref * (1.0 + mean(d, grid=grid))
         else:
             ex = ComposedField(np.exp, [d], character=SCALAR)
             if getattr(d, "is_radial", False):
-                ex_mean = spherical_mean(ex)
+                ex_mean = mean(ex)
             else:
                 g = grid if grid is not None else getattr(d, "grid", None)
-                if g is None or getattr(g, "weights", None) is None:
+                if g is None or not usable(g):
                     raise ValueError(
                         "the mean of a log perturbation is the mean of its "
-                        "exponential, taken by quadrature: pass grid=, a grid "
-                        "with weights")
-                ex_mean = quadrature_mean(ex, g)
+                        "exponential, taken by quadrature: pass grid=, "
+                        f"{wanted}")
+                ex_mean = quadrature(ex, g)
             out = ref * ex_mean
         return out.renamed(self._name)
 

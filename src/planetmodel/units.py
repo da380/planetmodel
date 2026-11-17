@@ -14,7 +14,7 @@ invariant, yet one is dimensionless and the other is seconds.
 
 **Scales** say what one unit of each base dimension is, in SI.  A
 quantity of dimensions d stored under scales s relates to its SI value
-by
+by ::
 
     stored = SI / s.factor(d),   s.factor(d) = mass^d.mass length^d.length
                                               time^d.time
@@ -40,7 +40,7 @@ that unit is v times the factor in SI.  It is a small grammar, not a
 table of whole strings: symbols (m, g, s, K, Pa, N, J, W, Hz, min, h,
 day, yr, bar, cc, %, deg, rad) with an SI prefix where one applies,
 products by ".", "*" or a space, a quotient of the next factor by "/",
-powers by "^n", "**n" or a trailing integer ("s-1", "m3"), numbers as
+powers by "^n", `"**n"` or a trailing integer ("s-1", "m3"), numbers as
 factors (so that `scaled_unit`'s own strings read back), the spelled-out
 words sources use (kilometer, meters, second, sec, gram, per, percent,
 degrees), and the words they use for a pure number (1, count, ratio,

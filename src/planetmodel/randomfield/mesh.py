@@ -18,10 +18,11 @@ effective range sqrt(8 nu) lambda, the distance at which the
 correlation has fallen to about a tenth, which `matern_reach` returns.
 
 The measure decides what happens at the centre.  With the r^2 dr measure
-of an annulus or ball the inner pad stops at r = 0, which is a regular
+of an annulus or ball, or the r dr measure of a disk, the inner pad
+stops at r = 0, which is a regular
 point of the operator and needs neither padding nor a boundary
 condition; with the plain measure dr the mesh is an interval of the
-line and may extend anywhere.
+line and may extend anywhere, below zero included.
 """
 from __future__ import annotations
 
@@ -54,9 +55,10 @@ def padded_mesh(r1: float, r2: float, *, pad: float | tuple[float, float],
 
     `pad` is one length for both ends or a pair (lower, upper); a zero
     pad leaves that end of the physical interval as the mesh boundary.
-    `weight` is the measure the mesh is for, "r2" or "one" as
-    `RadialOperatorFamily` takes it: under "r2" the interval must lie in
-    r >= 0 and the lower pad stops at r = 0.  `ngll` and `drmax` are
+    `weight` is the measure the mesh is for, "r2", "r" or "one" as
+    `SeparableOperatorFamily` takes it: under "r2" and "r" the interval
+    must lie in r >= 0 and the lower pad stops at r = 0.  `ngll` and
+    `drmax` are
     those of `Mesh1D`, `drmax=None` meaning one element per span.
     """
     if weight not in WEIGHTS:
@@ -69,9 +71,10 @@ def padded_mesh(r1: float, r2: float, *, pad: float | tuple[float, float],
     if lo < 0.0 or hi < 0.0 or not np.isfinite(lo + hi):
         raise ValueError("pads must be non-negative and finite")
     a, b = r1 - lo, r2 + hi
-    if weight == "r2":
+    if weight != "one":
         if r1 < 0.0:
-            raise ValueError("the r^2 measure needs r1 >= 0")
+            raise ValueError(f"the {'r^2' if weight == 'r2' else 'r'} measure "
+                             f"needs r1 >= 0")
         a = max(0.0, a)
     return Mesh1D(np.unique([a, r1, r2, b]), ngll=ngll, drmax=drmax)
 

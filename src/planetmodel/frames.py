@@ -3,7 +3,7 @@
 Fields speak (r, theta, phi) and give their components in the local
 orthonormal frame (e_r, e_theta, e_phi); mappings speak Cartesian points
 and give Cartesian components.  This module is where the two meet.  With
-theta the colatitude and phi the longitude, both in radians,
+theta the colatitude and phi the longitude, both in radians::
 
     e_r     = (sin th cos ph,  sin th sin ph,  cos th)
     e_theta = (cos th cos ph,  cos th sin ph, -sin th)
@@ -152,7 +152,7 @@ def rotation_subscripts(rank: int) -> str:
 
     Each factor is written [out, contracted], so the same string serves
     a rotation R (new components from old), a deformation gradient F
-    (physical from reference) and their inverses without transposing:
+    (physical from reference) and their inverses without transposing::
 
         rank 1   ...iA,...A->...i
         rank 2   ...iA,...jB,...AB->...ij
@@ -196,7 +196,7 @@ def bond_matrix(R: ArrayLike) -> np.ndarray:
     A frame change with orthogonal R takes tensor components as
     c'_ijkl = R_ia R_jb R_kc R_ld c_abcd, and the Voigt matrix holding
     those same components, with no engineering-strain factors, therefore
-    transforms as V' = M V M^T with
+    transforms as V' = M V M^T with ::
 
         M[a, b] = R[i, k] R[j, l] + R[i, l] R[j, k]   (k != l)
                 = R[i, k] R[j, k]                     (k == l)

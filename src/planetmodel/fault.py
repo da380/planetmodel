@@ -21,7 +21,11 @@ through longitude zero; the ambient basis at a point is (east, north,
 up) = (e_phi, -e_theta, e_r), a point on the polar axis taking the
 frame `frames.spherical_coordinates` gives it.  `CartesianFrame` is
 local: a position is (x, y, z) with x east, y north and z up, and the
-ambient basis is (x, y, z) everywhere.  A frame's reference surface,
+ambient basis is (x, y, z) everywhere; its points are those of the
+flat-layered bodies of `planetmodel.cartesian`, its depths read
+through their system (`cartesian.FLAT`), so that a fault in it is
+built into a box's mesh as it stands (`mesh3d.EmbeddedFault`), as one
+in a geographic frame is into a sphere's.  A frame's reference surface,
 the sphere or the plane z = `surface`, is what a depth is measured
 from (`below`); a depth is below that surface, not below any
 topography on it.
@@ -31,7 +35,7 @@ topography on it.
 With x_u and x_v the tangents, the area element is the length of
 x_u x x_v, the unit normal n is x_v x x_u over that length, pointing
 from the footwall into the hanging wall, and the fault basis at (u, v)
-is
+is ::
 
     strike  s = x_u / norm(x_u),   up dip  a = n x s,   normal  n,
 
@@ -45,7 +49,7 @@ Fig. 4.13): not a surface following the sphere, so its points away
 from the centroid lie at other radii.  With (east, north, up) the
 frame's basis at the centroid c, the strike phi measured clockwise
 from north (in a Cartesian frame from +y towards +x) and the dip delta
-from the horizontal, down to the right of the strike, 0 to 90 degrees,
+from the horizontal, down to the right of the strike, 0 to 90 degrees::
 
     s = sin phi east + cos phi north      r = cos phi east - sin phi north
     d = cos delta r - sin delta up        n = sin delta r + cos delta up
@@ -157,7 +161,7 @@ direction of travel there, the surface descends from depth `top` in
 the vertical plane through the point normal to t, on the right of the
 direction of travel (the dip to the right of the strike), along the
 curve that makes the angle dip(z) with the local horizontal at depth z
-below the reference surface:
+below the reference surface::
 
     dX/dw = cos dip(z) (t x up(X)) - sin dip(z) up(X),
 
@@ -180,19 +184,33 @@ refusing NaN (`finite_block` finds a crop).  Both give an ordinary
 a `TensorSpline` (`spline`), the tensor-product B-spline a CAD kernel
 takes a surface in: a plane the bilinear spline through its corners, a
 structured patch its own rule's knots and coefficients, either one the
-patch exactly.  `TensorSpline.extended` continues it beyond the square,
-its end pieces' polynomials carried on, which is how a mesher carries a
-fault's edge across a boundary that is to trim it.
+patch exactly.  Beyond the square the spline continues its end pieces'
+polynomials (`TensorSpline.extended` widens its bounds so): the patch's
+own continuation, a plane as its plane, a structured patch as its
+interpolation's end pieces carry on.  A `Region` is a region of a
+patch's parameter plane, u between two bounds and v between two curves
+of u, within the square or reaching beyond it, as a patch of its own
+whose map is the patch's continued: a piece of the patch, or of its
+continuation.  A mesher builds a fault from such regions where its edge
+is carried across a boundary that is to trim it, or where a mapping
+creases its preimage (below).
 
 **Pulled back.**  A mesh is built on a reference body and its nodes are
 then moved by a mapping m (`planetmodel.mapping`), so a fault, defined
 where it physically is, enters the mesh as its preimage: `pull_back`
 inverts the mapping at the patch's points on a grid of control nodes (a
-root-find along the radius for a radial mapping) and passes the bicubic
+root-find along the radius for a radial mapping, down the column for a
+flat vertical stretch) and passes the bicubic
 structured patch through the results, which m takes back onto the patch
 exactly at the nodes and to the interpolation error between them,
 measured and returned as the preimage's `offset`.  Under the identity
-a patch is its own preimage.
+a patch is its own preimage.  Where the mapping's derivative jumps, at
+the levels it declares as `knots` (the interfaces of a stack of reliefs
+interpolated layer by layer), the preimage of a patch crossing one is
+creased along the crossing, which a bicubic follows only to low order;
+the regions of the patch between its crossings (`Region`) have smooth
+preimages, and are pulled back one by one, as the mesher does
+(`mesh3d.EmbeddedFault`).
 
 A kind of patch provides its map and the map's first and second
 derivatives (`cartesian`, `tangents`, `second_derivatives`, on any
@@ -209,7 +227,7 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.integrate import quad, solve_ivp
-from scipy.interpolate import NdBSpline, make_interp_spline
+from scipy.interpolate import BSpline, NdBSpline, make_interp_spline
 from scipy.spatial import cKDTree
 
 from .frames import (cartesian_points, from_geographic, geographic,
@@ -227,8 +245,8 @@ __all__ = ["SQUARE", "INTERPOLATIONS", "SLIP_RULES", "BASES", "SLIP_COMPONENTS",
            "StructuredPatch", "PatchQuadrature", "Quadrature", "SliceQuadrature",
            "Location", "Fault", "parameter_rule",
            "DipProfile", "Trace", "GreatCircle", "SmallCircle", "Polyline",
-           "finite_block", "TensorSpline", "PULL_BACK_CONTROLS", "Preimage",
-           "pull_back"]
+           "finite_block", "TensorSpline", "Region", "RegionBound",
+           "PULL_BACK_CONTROLS", "Preimage", "inverse_of", "pull_back"]
 
 #: The interval u and v each run over: the parameter square is SQUARE x SQUARE,
 #: (0, 0) at its centre, u along strike and v down dip.
@@ -445,12 +463,20 @@ class GeographicFrame:
 class CartesianFrame:
     """Positions as (x, y, z), x east, y north and z up, the ambient basis
     (x, y, z) everywhere; the reference surface is the plane z =
-    `surface`."""
+    `surface`.
+
+    The points are those of `planetmodel.cartesian`, whose flat system
+    `cartesian.FLAT` places a depth d at z = -d below its free surface
+    z = 0: a depth below this frame's reference surface is read through
+    it (`below`), so that with `surface` 0 the two depths are one, and a
+    fault in this frame is built into a box of a flat geometry as it
+    stands."""
 
     #: The frame's name, as a fault file states it.
     kind: ClassVar[str] = "cartesian"
 
     _: KW_ONLY
+    #: The height z of the reference plane depths are measured from.
     surface: float = 0.0
 
     def __post_init__(self) -> None:
@@ -470,10 +496,14 @@ class CartesianFrame:
         return np.broadcast_to(np.eye(3), c.shape[:-1] + (3, 3)).copy()
 
     def below(self, a: ArrayLike, b: ArrayLike, depth: ArrayLike) -> np.ndarray:
-        """(x a, y b, surface - depth)."""
+        """(x a, y b, surface - depth): the point of `cartesian.FLAT` at the
+        depth `depth - surface` below its free surface."""
+        from .cartesian.coordinates import FLAT
         a, b, depth = np.broadcast_arrays(*(np.asarray(x, dtype=float)
                                             for x in (a, b, depth)))
-        return np.stack([a, b, self.surface - depth], axis=-1)
+        X = FLAT.points(depth - self.surface, a, b)
+        X[..., 2] += 0.0        # z on the reference plane is +0.0, not -0.0
+        return X
 
 
 # -- values on a grid over the square ---------------------------------------------
@@ -796,7 +826,6 @@ def _continued(t: np.ndarray, c: np.ndarray, k: int, below: float,
     polynomials carried on, the new end knots clamped there.  The
     continuation lies in the spline space of the new knots, so
     interpolation at their Greville abscissae gives it exactly."""
-    from scipy.interpolate import BSpline
     new = t.copy()
     new[:k + 1] = t[0] - below
     new[-(k + 1):] = t[-1] + above
@@ -814,8 +843,8 @@ class TensorSpline:
     repeated k + 1 times, so that the ends are the bounds of the
     parameters; `coefficients` the Cartesian control points, (n_u, n_v,
     3), with n = len(knots) - k - 1 each way.  Beyond its bounds the map
-    continues its end pieces' polynomials.  The arrays are held
-    read-only.
+    continues its end pieces' polynomials, and its derivatives with it.
+    The arrays are held read-only.
     """
 
     degree: tuple[int, int]
@@ -847,13 +876,15 @@ class TensorSpline:
         tu, tv = self.knots
         return (float(tu[0]), float(tu[-1])), (float(tv[0]), float(tv[-1]))
 
-    def __call__(self, u: ArrayLike, v: ArrayLike) -> np.ndarray:
-        """x(u, v), Cartesian, (..., 3); continued beyond the bounds."""
+    def __call__(self, u: ArrayLike, v: ArrayLike, *,
+                 nu: tuple[int, int] = (0, 0)) -> np.ndarray:
+        """x(u, v), Cartesian, (..., 3), or its derivative of orders
+        `nu` = (i, j) in u and v; continued beyond the bounds."""
         u, v = np.broadcast_arrays(np.asarray(u, dtype=float),
                                    np.asarray(v, dtype=float))
         spline = NdBSpline(self.knots, self.coefficients, self.degree,
                            extrapolate=True)
-        return spline(np.stack([u.ravel(), v.ravel()], axis=-1)).reshape(
+        return spline(np.stack([u.ravel(), v.ravel()], axis=-1), nu=nu).reshape(
             u.shape + (3,))
 
     def extended(self, *, u: tuple[float, float] = (0.0, 0.0),
@@ -1606,6 +1637,176 @@ class StructuredPatch(PatchBase):
                 f"positions, {self._slip!r})")
 
 
+#: A bound of a region's v (`Region`): a number, or the values of v at
+#: uniform nodes over the region's u.
+type RegionBound = float | ArrayLike
+
+
+class Region(PatchBase):
+    """A region of a patch's parameter plane as a patch of its own: a
+    piece of the patch, or of its continuation beyond its square.
+
+    The region is u from a to b (`u`) and, at each u, v from `lower(u)`
+    to `upper(u)`, each bound a number or values at n uniform nodes over
+    [a, b], at least four, read by the not-a-knot cubic through them; the
+    upper bound lies above the lower (checked at 257 points of u).  Its
+    own square maps
+    onto it by ::
+
+        U = a + (s + 1/2)(b - a),   V = lower(U) + (t + 1/2)(upper(U) - lower(U)),
+
+    and its map is the patch's own, x(s, t) = X(U, V), X the patch's
+    `spline` continued beyond the square by its end pieces' polynomials
+    (`TensorSpline`): a plane continues as its plane, and a structured
+    patch as the end pieces of its interpolation continue.  So s runs
+    along u and t along v, the normal is the patch's at the same point,
+    and a region within the square is a piece of the patch, a region
+    reaching beyond it a piece of the patch continued.  The tangents and
+    second derivatives are those of the composition, exact.  A region
+    carries no slip of its own (a zero slip): it is a part of a fault's
+    surface, the slip on which is the fault's, read where a point of it
+    lies on the fault's own parameters (`Fault.locate`).
+    """
+
+    def __init__(self, patch: Patch, *, u: tuple[float, float] = SQUARE,
+                 lower: RegionBound = SQUARE[0],
+                 upper: RegionBound = SQUARE[1]) -> None:
+        if not isinstance(patch, Patch):
+            raise TypeError(f"expected a Patch, got {type(patch).__name__}")
+        own = getattr(patch, "spline", None)
+        if not callable(own):
+            raise TypeError(f"{type(patch).__name__} gives no spline, the map a "
+                            "region continues beyond the square")
+        a, b = (_real(x, "u") for x in u)
+        if not b > a:
+            raise ValueError(f"u runs from a to b with b > a, got {u!r}")
+        self._frame = patch.frame
+        self._parent = patch
+        self._spline = own()
+        self._u = (a, b)
+        self._bounds = tuple(self._bound(x, what)
+                             for x, what in ((lower, "lower"), (upper, "upper")))
+        s = np.linspace(a, b, 257)
+        width = self._width(s)
+        if not np.all(width > 0.0):
+            raise ValueError("the region's upper bound of v must lie above its "
+                             "lower bound at every u")
+        self._attach(Slip(np.zeros((1, 1, 3))))
+
+    def _bound(self, x: RegionBound, what: str) -> float | BSpline:
+        """A bound as a number, or the not-a-knot cubic through its values."""
+        values = np.asarray(x, dtype=float)
+        if values.ndim == 0:
+            return _real(float(values), what)
+        if values.ndim != 1 or values.size < MIN_NODES["cubic"] \
+                or not np.all(np.isfinite(values)):
+            raise ValueError(f"the {what} bound is a number or at least "
+                             f"{MIN_NODES['cubic']} finite values, got shape "
+                             f"{values.shape}")
+        a, b = self._u
+        return make_interp_spline(np.linspace(a, b, values.size), values, k=3)
+
+    @staticmethod
+    def _at(bound: float | BSpline, U: np.ndarray, *, nu: int = 0) -> np.ndarray:
+        """A bound, or its derivative of order nu in u, at U."""
+        if isinstance(bound, float):
+            return np.full(U.shape, bound if nu == 0 else 0.0)
+        return np.asarray(bound(U, nu=nu), dtype=float)
+
+    def _width(self, U: np.ndarray, *, nu: int = 0) -> np.ndarray:
+        """upper - lower, or its derivative, at U."""
+        lo, hi = self._bounds
+        return self._at(hi, U, nu=nu) - self._at(lo, U, nu=nu)
+
+    @property
+    def patch(self) -> Patch:
+        """The patch whose parameter plane the region is a region of."""
+        return self._parent
+
+    @property
+    def u(self) -> tuple[float, float]:
+        """(a, b): the range of the patch's u the region spans."""
+        return self._u
+
+    def lower(self, u: ArrayLike) -> np.ndarray:
+        """The region's lower bound of the patch's v at the patch's u."""
+        return self._at(self._bounds[0], np.asarray(u, dtype=float))
+
+    def upper(self, u: ArrayLike) -> np.ndarray:
+        """The region's upper bound of the patch's v at the patch's u."""
+        return self._at(self._bounds[1], np.asarray(u, dtype=float))
+
+    def parameters(self, s: ArrayLike, t: ArrayLike
+                   ) -> tuple[np.ndarray, np.ndarray]:
+        """(U, V): the patch's parameters of the region's (s, t), which may
+        lie beyond the patch's square."""
+        fs, ft, shape = _parameters(s, t)
+        U, V = self._map(fs, ft)
+        return U.reshape(shape), V.reshape(shape)
+
+    def _map(self, s: np.ndarray, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(U, V) of flat (s, t)."""
+        a, b = self._u
+        U = a + (s - SQUARE[0]) * (b - a)
+        V = self._at(self._bounds[0], U) + (t - SQUARE[0]) * self._width(U)
+        return U, V
+
+    def cartesian(self, u: ArrayLike, v: ArrayLike) -> np.ndarray:
+        """x(s, t) = X(U, V), (..., 3)."""
+        fs, ft, shape = _parameters(u, v)
+        U, V = self._map(fs, ft)
+        return self._spline(U, V).reshape(shape + (3,))
+
+    def _chain(self, s: np.ndarray, t: np.ndarray
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+                          np.ndarray, np.ndarray, np.ndarray]:
+        """At flat (s, t): (U, V), and the derivatives of the map (U, V)
+        of (s, t): U_s, V_s, V_t, V_ss and V_st (U_t, U_ss, U_st and V_tt
+        vanish)."""
+        a, b = self._u
+        U, V = self._map(s, t)
+        q = t - SQUARE[0]
+        lo = self._bounds[0]
+        Us = np.full(U.shape, b - a)
+        Vs = Us * (self._at(lo, U, nu=1) + q * self._width(U, nu=1))
+        Vt = self._width(U)
+        Vss = Us ** 2 * (self._at(lo, U, nu=2) + q * self._width(U, nu=2))
+        Vst = Us * self._width(U, nu=1)
+        return U, V, Us, Vs, Vt, Vss, Vst
+
+    def tangents(self, u: ArrayLike, v: ArrayLike
+                 ) -> tuple[np.ndarray, np.ndarray]:
+        """(x_s, x_t) = (X_u U_s + X_v V_s, X_v V_t), each (..., 3)."""
+        fs, ft, shape = _parameters(u, v)
+        U, V, Us, Vs, Vt, _, _ = self._chain(fs, ft)
+        Xu, Xv = self._spline(U, V, nu=(1, 0)), self._spline(U, V, nu=(0, 1))
+        return ((Us[:, None] * Xu + Vs[:, None] * Xv).reshape(shape + (3,)),
+                (Vt[:, None] * Xv).reshape(shape + (3,)))
+
+    def second_derivatives(self, u: ArrayLike, v: ArrayLike
+                           ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(x_ss, x_st, x_tt) of the composition, each (..., 3)."""
+        fs, ft, shape = _parameters(u, v)
+        U, V, *chain = self._chain(fs, ft)
+        Us, Vs, Vt, Vss, Vst = (x[:, None] for x in chain)
+        Xv = self._spline(U, V, nu=(0, 1))
+        Xuu, Xuv, Xvv = (self._spline(U, V, nu=nu)
+                         for nu in ((2, 0), (1, 1), (0, 2)))
+        xss = Us ** 2 * Xuu + 2.0 * Us * Vs * Xuv + Vs ** 2 * Xvv + Vss * Xv
+        xst = Us * Vt * Xuv + Vs * Vt * Xvv + Vst * Xv
+        xtt = Vt ** 2 * Xvv
+        return tuple(x.reshape(shape + (3,)) for x in (xss, xst, xtt))
+
+    def __repr__(self) -> str:
+        a, b = self._u
+
+        def bound(x: float | BSpline) -> str:
+            return f"{x:g}" if isinstance(x, float) else "a curve"
+        lo, hi = (bound(x) for x in self._bounds)
+        return (f"Region(u from {a:g} to {b:g}, v from {lo} to {hi}, of "
+                f"{self._parent!r})")
+
+
 # -- traces and dip profiles -----------------------------------------------------------
 
 #: A dip as a function of depth below the reference surface: a number of
@@ -2119,6 +2320,22 @@ def _offset(patch: Patch, preimage: Patch, mapping: Mapping, n_u: int,
     return float(np.max(np.abs(patch.locate(x, strict=False).distance)))
 
 
+def inverse_of(mapping: Mapping, probe: ArrayLike
+               ) -> Callable[[np.ndarray], np.ndarray]:
+    """The mapping's own `inverse`, tried at the points `probe` (..., 3):
+    what a fault is pulled back through; a mapping without one, or whose
+    inverse refuses (`NotImplementedError`), is refused by name."""
+    inverse = getattr(mapping, "inverse", None)
+    try:
+        if not callable(inverse):
+            raise NotImplementedError
+        inverse(np.asarray(probe, dtype=float))
+    except NotImplementedError:
+        raise ValueError(f"the mapping {mapping!r} does not invert itself, so a "
+                         "fault cannot be pulled back through it") from None
+    return inverse
+
+
 def pull_back(patch: Patch, mapping: Mapping, *,
               controls: int | tuple[int, int] | None = None,
               rtol: float = 1e-6) -> Preimage:
@@ -2126,7 +2343,7 @@ def pull_back(patch: Patch, mapping: Mapping, *,
     (`planetmodel.mapping`): the bicubic `StructuredPatch` through
     X = m^-1(x(u, v)) at the nodes of a uniform grid of `controls` by
     `controls` nodes over the square (or (n_u, n_v)), at least four each
-    way, by the mapping's own `inverse`.
+    way, by the mapping's own `inverse` (`inverse_of`).
 
     Mapped forward the preimage is the patch at the control nodes, to
     the inverse's tolerance, and between them to the interpolation
@@ -2137,23 +2354,23 @@ def pull_back(patch: Patch, mapping: Mapping, *,
     Without `controls` the grids of `PULL_BACK_CONTROLS` are tried in
     turn until the offset is at most `rtol` times the patch's size (the
     longer diagonal between its corners); none meeting it is refused.
-    Under the identity (`is_identity`) the patch is its own preimage,
-    exactly.  A mapping that does not invert itself is refused.
+    A patch crossing a knot of the mapping, where its gradient jumps (an
+    interface of a stack of reliefs whose slope changes there), has a
+    preimage creased along the crossing, which the bicubic follows only
+    to first or second order in the spacing: it meets a small `rtol`
+    with many control nodes or none of these.  The regions of the patch
+    on either side of the crossing (`Region`) have smooth preimages, each
+    pulled back to `rtol` as any patch is, which is how the mesher builds
+    such a patch in.  Under the identity (`is_identity`) the patch is its
+    own preimage, exactly.  A mapping that does not invert itself is
+    refused.
     """
     if not isinstance(patch, Patch):
         raise TypeError(f"expected a Patch, got {type(patch).__name__}")
     if bool(getattr(mapping, "is_identity", False)):
         return Preimage(patch=patch, controls=None, offset=0.0)
     rtol = _positive(rtol, "rtol")
-    inverse = getattr(mapping, "inverse", None)
-    probe = patch.cartesian(0.0, 0.0)[None]
-    try:
-        if not callable(inverse):
-            raise NotImplementedError
-        inverse(probe)
-    except NotImplementedError:
-        raise ValueError(f"the mapping {mapping!r} does not invert itself, so a "
-                         "fault cannot be pulled back through it") from None
+    inverse = inverse_of(mapping, patch.cartesian(0.0, 0.0)[None])
     target = size = None
     if controls is None:
         grids = [(n, n) for n in PULL_BACK_CONTROLS]

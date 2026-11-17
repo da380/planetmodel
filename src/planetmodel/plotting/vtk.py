@@ -20,6 +20,16 @@ standard library; the files are written under a name of their own and
 moved into place when whole, so that a failed write leaves nothing and
 an earlier write stands until it is replaced.  Nothing here needs
 matplotlib.
+
+`write_flat_vtk` writes a flat model of `planetmodel.cartesian` the same
+way: a layer's grid is its depth nodes by the nodes of a `cartesian.Grid`
+(48 along each axis of the model's domain by default), each lateral axis
+closed by the far end of its period, where the fields are evaluated as
+they are, so that the box has no gap; over a `Rectangle`, whose body is
+the same at every y, the one row y = 0, a sheet in the (x, z) plane.
+The points are z up, at their physical positions by default, the
+components Cartesian, and a departure is from the horizontal mean
+(`cartesian.slices.evaluate`), taken on the grid by default.
 """
 from __future__ import annotations
 
@@ -39,14 +49,21 @@ from ..frames import cartesian_points, voigt_to_tensor
 from ..slices import evaluate
 
 if TYPE_CHECKING:
-    from ..model import Model
+    from collections.abc import Callable
+
+    from ..cartesian.grid import Grid
+    from ..cartesian.model import Model as FlatModel
+    from ..model import Model, ModelBase
     from ..sampling import AngularGrid
 
-__all__ = ["write_vtk", "BLOCK_BYTES"]
+__all__ = ["write_vtk", "write_flat_vtk", "BLOCK_BYTES", "FLAT_NODES"]
 
 #: The bytes of each block an array is compressed in, as VTK's own writer
 #: blocks them.
 BLOCK_BYTES = 32768
+
+#: The nodes along each axis of a flat model's grid when none is given.
+FLAT_NODES = 48
 
 _TYPES = {np.dtype("<f8"): "Float64", np.dtype("<i4"): "Int32"}
 
@@ -129,6 +146,12 @@ def _block(model: Model, layer: int, grid: AngularGrid, n: int, physical: bool,
                              np.asarray(values, dtype="<f8").reshape(-1, 1), 1))
     arrays.append(_array("layer", np.full(R.size, layer, dtype="<i4"), 1))
     extent = f"0 {phi.size - 1} 0 {theta.size - 1} 0 {r.size - 1}"
+    return _document(extent, arrays, X)
+
+
+def _document(extent: str, arrays: list[str], X: np.ndarray) -> str:
+    """A structured grid of `extent`, its point data `arrays` and its points
+    X, as a `.vts` document."""
     points = _array(None, np.asarray(X, dtype="<f8").reshape(-1, 3), 3)
     return ('<?xml version="1.0"?>\n'
             '<VTKFile type="StructuredGrid" version="1.0" byte_order="LittleEndian" '
@@ -157,9 +180,18 @@ def write_vtk(path: str | os.PathLike[str], model: Model, *,
     a field without a mean of its own taking it on `mean_grid`.
     """
     from ..sampling import equiangular
+    grid = equiangular(60, 120) if grid is None else grid
+    names, departures = _checked(model, n, fields, departures)
+    return _written(path, model, lambda layer: _block(
+        model, layer, grid, int(n), physical, names, departures, mean_grid))
+
+
+def _checked(model: ModelBase, n: int, fields: Iterable[str] | None,
+             departures: Mapping[str, str] | None
+             ) -> tuple[tuple[str, ...], dict[str, str]]:
+    """The names to write and the departures, or the refusal."""
     if int(n) < 2:
         raise ValueError(f"n must be at least 2, got {n}")
-    grid = equiangular(60, 120) if grid is None else grid
     names = model.field_names() if fields is None else tuple(fields)
     if isinstance(names, str):
         raise TypeError("fields is a sequence of names, not one string")
@@ -171,6 +203,15 @@ def write_vtk(path: str | os.PathLike[str], model: Model, *,
         if what not in ("mean", "reference"):
             raise ValueError(f"a departure of {name!r} is from 'mean' or 'reference', "
                              f"got {what!r}")
+    return names, departures
+
+
+def _written(path: str | os.PathLike[str], model: ModelBase,
+             document: Callable[[int], str]) -> Path:
+    """The multiblock file at `path` and its layers' documents, each
+    `document(layer)`, written whole under names of their own and moved
+    into place, an earlier write standing until it is replaced; the
+    multiblock file's path."""
     path = Path(path)
     if path.suffix != ".vtm":
         path = path.with_name(path.name + ".vtm")
@@ -183,9 +224,7 @@ def write_vtk(path: str | os.PathLike[str], model: Model, *,
         for info in model.geometry.layers:
             label = info.name or "layer"
             file = f"{info.index:02d}_{label}.vts"
-            (partial / stem / file).write_text(
-                _block(model, info.index, grid, int(n), physical, names, departures,
-                       mean_grid))
+            (partial / stem / file).write_text(document(info.index))
             entries.append(f'<DataSet index="{info.index}" name="{label}" '
                            f'file="{stem}/{file}"/>')
         (partial / f"{stem}.vtm").write_text(
@@ -208,3 +247,65 @@ def write_vtk(path: str | os.PathLike[str], model: Model, *,
     finally:
         shutil.rmtree(partial, ignore_errors=True)
     return path
+
+
+def _flat_block(model: FlatModel, layer: int, grid: Grid, n: int, physical: bool,
+                names: Iterable[str], departures: Mapping[str, str],
+                mean_grid: Grid) -> str:
+    """One layer of a flat model's structured grid, as a `.vts` document."""
+    from ..cartesian.coordinates import FLAT
+    from ..cartesian.slices import evaluate as flat_evaluate
+    lo, hi = model.skeleton.interval(layer)
+    depth = np.linspace(lo, hi, n)
+    x = np.append(grid.x, grid.x[0] + grid.lengths[0])
+    y = (np.append(grid.y, grid.y[0] + grid.lengths[1]) if grid.dimension == 2
+         else np.zeros(1))
+    D, A, B = np.meshgrid(depth, x, y, indexing="ij")
+    X = FLAT.points(D, A, B)
+    if physical and not model.geometry.is_identity:
+        X = np.asarray(model.geometry.mapping(X), dtype=float)
+    held = model.layer(layer)
+    arrays = []
+    for name in names:
+        if name not in held:
+            continue
+        values, size = _point_values(held[name], D, A, B)
+        arrays.append(_array(name, values, size))
+    for name, what in departures.items():
+        if name not in held:
+            continue
+        values = flat_evaluate(model, name, layer, D, A, B, relative_to=what,
+                               departure="percent", mean_grid=mean_grid)
+        arrays.append(_array(f"{name}_percent_from_{what}",
+                             np.asarray(values, dtype="<f8").reshape(-1, 1), 1))
+    arrays.append(_array("layer", np.full(D.size, layer, dtype="<i4"), 1))
+    extent = f"0 {y.size - 1} 0 {x.size - 1} 0 {depth.size - 1}"
+    return _document(extent, arrays, X)
+
+
+def write_flat_vtk(path: str | os.PathLike[str], model: FlatModel, *,
+                   grid: Grid | None = None, fields: Iterable[str] | None = None,
+                   n: int = 8, physical: bool = True,
+                   departures: Mapping[str, str] | None = None,
+                   mean_grid: Grid | None = None) -> Path:
+    """Write a flat model as VTK files for ParaView, by the rules of the
+    module docstring, and return the multiblock file's path.
+
+    `path` names the `.vtm` as `write_vtk` takes it; `grid` a
+    `cartesian.Grid`, `FLAT_NODES` along each axis of the model's domain
+    by default; `fields`, `n`, `physical` and `departures` as
+    `write_vtk` takes them, a departure from the mean of a field without
+    one of its own taken on `mean_grid`, `grid` itself by default.
+    """
+    from ..cartesian.grid import Grid
+    from ..cartesian.model import Model as FlatModel
+    if not isinstance(model, FlatModel):
+        raise TypeError(f"expected a cartesian.Model, got {type(model).__name__}: a "
+                        "spherical model is written by write_vtk")
+    grid = Grid(model.geometry.domain, FLAT_NODES) if grid is None else grid
+    if not isinstance(grid, Grid):
+        raise TypeError(f"grid must be a cartesian.Grid, got {type(grid).__name__}")
+    names, departures = _checked(model, n, fields, departures)
+    mean_grid = grid if mean_grid is None else mean_grid
+    return _written(path, model, lambda layer: _flat_block(
+        model, layer, grid, int(n), physical, names, departures, mean_grid))

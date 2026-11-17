@@ -16,29 +16,32 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 if TYPE_CHECKING:
+    from .cartesian.displacement import VerticalDisplacement
+    from .cartesian.grid import Grid
+    from .cartesian.randomfield import LayerBasis
     from .datasets import Dataset, RegionalGrid, Strata, Surface
     from .displacement import RadialDisplacement
     from .fault import Fault, Location, Patch
     from .fields import Field
-    from .geometry import Geometry
+    from .geometry import GeometryBase
     from .layerfunction import LayerFunction
-    from .mapping import Mapping
+    from .mapping import Mapping as BodyMapping
     from .mesh3d.spec import Refinement
-    from .model import Model
+    from .model import ModelBase
     from .modelfile import Surfaces
     from .randomfield.basis import SpectralBasis, SphericalBasis
-    from .sampling import AngularGrid, Sample
+    from .sampling import AngularGrid, SampleBase
     from .skeleton import Skeleton
     from .surfacefile import SurfaceVariable
     from .units import Scales
 
-__all__ = ["check_displacement", "check_mapping", "check_geometry",
-           "check_layer_function", "check_field", "check_model",
+__all__ = ["check_displacement", "check_vertical_displacement", "check_mapping",
+           "check_geometry", "check_layer_function", "check_field", "check_model",
            "check_refinement", "check_sample", "check_spectral_basis",
-           "check_spherical_basis", "check_model_file", "check_dataset",
-           "check_surface", "check_strata", "check_regional",
+           "check_spherical_basis", "check_layer_basis", "check_model_file",
+           "check_dataset", "check_surface", "check_strata", "check_regional",
            "check_surface_file", "check_patch", "check_fault_file",
-           "check_fault_mesh"]
+           "check_fault_mesh", "check_slice", "check_spectrum"]
 
 
 def _rel(a: ArrayLike, b: ArrayLike, *, rtol: float, floor: float = 1.0) -> bool:
@@ -161,7 +164,112 @@ def _check_scaled_displacement(h: RadialDisplacement, r: np.ndarray,
                 "scaled(k).angular_gradient is not k times h's at r / k")
 
 
-def check_mapping(m: Mapping, points: ArrayLike, *, rtol: float = 1e-6,
+def check_vertical_displacement(w: VerticalDisplacement, skeleton: Skeleton, *,
+                                bounds: tuple[tuple[float, float],
+                                              tuple[float, float]] | None = None,
+                                n: int = 33) -> None:
+    """Hold a flat `cartesian.VerticalDisplacement` to its protocol over a
+    skeleton of depths and lateral `bounds` ((x0, x1), (y0, y1)), by
+    default the square of half-width the skeleton's span about the
+    origin.
+
+    Checks finite values of the broadcast shape; continuity across every
+    declared knot inside the skeleton; `depth_derivative`, when present,
+    against a central difference away from the knots and free of
+    undeclared kinks; `lateral_gradient`, when present, against central
+    differences; and, when present, `scaled(k)` against
+    k w(depth / k, x / k, y / k), with its knots and derivatives.  Every
+    tolerance is relative to the skeleton's span or to the value.
+    """
+    lo, hi = float(skeleton.boundaries[0]), float(skeleton.boundaries[-1])
+    span = hi - lo
+    if bounds is None:
+        bounds = ((-span, span), (-span, span))
+    (x0, x1), (y0, y1) = bounds
+    depth = np.linspace(lo, hi, n)[:, None, None]
+    x = np.linspace(x0, x1, 5)[None, :, None]
+    y = np.linspace(y0, y1, 5)[None, None, :]
+    shape = np.broadcast(depth, x, y).shape
+    values = np.asarray(w(depth, x, y), dtype=float)
+    assert values.shape == shape, f"w returned shape {values.shape}, expected {shape}"
+    assert np.all(np.isfinite(values)), "w returned non-finite values"
+    scale = max(float(np.max(np.abs(values))), 1e-12 * span)
+
+    knots = tuple(sorted(float(k) for k in getattr(w, "knots", ())))
+    eps = 1e-6 * span
+    for k in knots:
+        if not lo < k < hi:
+            continue
+        above = np.asarray(w(k - eps, x, y), dtype=float)
+        below = np.asarray(w(k + eps, x, y), dtype=float)
+        assert np.allclose(above, below, atol=1e-4 * scale, rtol=0.0), (
+            f"w is discontinuous across its knot at depth = {k:g}")
+
+    probes = np.linspace(lo + 1e-3 * span, hi - 1e-3 * span, 4 * n + 1)
+    away = np.ones(probes.shape, dtype=bool)
+    for k in knots:
+        away &= np.abs(probes - k) > 1e-3 * span
+    dp = probes[away][:, None, None]
+    step = 1e-5 * span
+    if hasattr(w, "depth_derivative"):
+        want = (np.asarray(w(dp + step, x, y), dtype=float)
+                - np.asarray(w(dp - step, x, y), dtype=float)) / (2.0 * step)
+        got = np.asarray(w.depth_derivative(dp, x, y), dtype=float)
+        assert got.shape == want.shape, "depth_derivative has the wrong shape"
+        # dw/d depth is dimensionless, so a floor of 1 is a floor of 100 % strain
+        dscale = max(1.0, float(np.max(np.abs(want))))
+        assert np.allclose(got, want, atol=1e-3 * dscale, rtol=0.0), (
+            "depth_derivative disagrees with a central difference of w")
+        # between two probes in one knot span the derivative may change by
+        # what a smooth function changes over that spacing; an outlier is
+        # an undeclared kink
+        flat = got.reshape(len(dp), -1)
+        edges = np.searchsorted(np.asarray(knots, dtype=float), probes[away])
+        same = edges[1:] == edges[:-1]
+        jumps = np.max(np.abs(flat[1:] - flat[:-1]), axis=1)[same]
+        if jumps.size:
+            typical = float(np.median(jumps))
+            limit = 0.05 * float(np.max(np.abs(want))) + 10.0 * typical + 1e-12
+            assert np.all(jumps <= limit), (
+                "depth_derivative jumps between neighbouring probes at a depth "
+                "not declared as a knot")
+
+    if hasattr(w, "lateral_gradient"):
+        gx, gy = w.lateral_gradient(dp, x, y)
+        assert np.shape(gx) == np.shape(gy) == np.broadcast(dp, x, y).shape, (
+            "lateral_gradient components have the wrong shape")
+        for got, (sx, sy) in zip((gx, gy), ((step, 0.0), (0.0, step))):
+            want = (np.asarray(w(dp, x + sx, y + sy), dtype=float)
+                    - np.asarray(w(dp, x - sx, y - sy), dtype=float)) / (2.0 * step)
+            gscale = max(1.0, float(np.max(np.abs(want))))
+            assert np.allclose(got, want, atol=1e-3 * gscale, rtol=0.0), (
+                "lateral_gradient disagrees with a central difference of w")
+
+    if callable(getattr(w, "scaled", None)):
+        k = 2.5
+        wk = w.scaled(k)
+        point = (dp, x, y)
+        big = tuple(k * np.asarray(v) for v in point)
+        assert np.allclose(np.asarray(wk(*big), dtype=float),
+                           k * np.asarray(w(*point), dtype=float), rtol=0.0,
+                           atol=1e-12 * k * scale), (
+            "scaled(k) is not k w(depth / k, x / k, y / k)")
+        got_knots = sorted(float(v) for v in getattr(wk, "knots", ()))
+        assert np.allclose(got_knots, [k * v for v in knots], rtol=1e-12, atol=0.0), (
+            "scaled(k) does not carry the knots multiplied by k")
+        if hasattr(w, "depth_derivative") and hasattr(wk, "depth_derivative"):
+            assert _rel(np.asarray(wk.depth_derivative(*big), dtype=float),
+                        np.asarray(w.depth_derivative(*point), dtype=float),
+                        rtol=1e-9), (
+                "scaled(k).depth_derivative is not dw/d depth at the point / k")
+        if hasattr(w, "lateral_gradient") and hasattr(wk, "lateral_gradient"):
+            for got, want in zip(wk.lateral_gradient(*big), w.lateral_gradient(*point)):
+                assert _rel(np.asarray(got, dtype=float), np.asarray(want, dtype=float),
+                            rtol=1e-9), (
+                    "scaled(k).lateral_gradient is not w's at the point / k")
+
+
+def check_mapping(m: BodyMapping, points: ArrayLike, *, rtol: float = 1e-6,
                   step: float | None = None) -> None:
     """Hold a Mapping to its protocol on the given Cartesian points.
 
@@ -243,37 +351,54 @@ def check_mapping(m: Mapping, points: ArrayLike, *, rtol: float = 1e-6,
                            rtol=1e-9, atol=1e-9), "scaled(k) does not keep J"
 
 
-def check_geometry(geometry: Geometry) -> None:
-    """Hold a Geometry to its invariants and its numbering.
+def check_geometry(geometry: GeometryBase) -> None:
+    """Hold a geometry to its invariants and its numbering.
 
-    Checks that the invariants hold (by reconstructing the geometry with
-    checks on), that names are unique, that the interfaces sit on the
-    skeleton's boundaries with consistent `between`, that `scaled(k)`
-    round-trips, and that the mapping passes `check_mapping` on the
-    validity lattice's angles, at radii inside every span between the
-    boundaries and the declared knots.
+    Checks that the invariants hold (by rebuilding the geometry with
+    checks on), that names are unique, and the numbering of the
+    interfaces: indexed in the skeleton's order, each on a boundary,
+    every interior boundary one of them and the outermost boundary (the
+    end the local frame's first vector points towards) one too, and
+    `between` the layers either side, the one below being on the side
+    away from that vector; whether the other end is an interface is the
+    geometry's own rule (a hollow ball's inner boundary is, a box's base
+    is not); that its `radial_field_type` builds a radial field in its
+    coordinates without being told them.  Then that
+    `scaled(k)` round-trips, and that the mapping passes `check_mapping`
+    on the lateral coordinates of the geometry's `lattice`, at values of
+    the layered coordinate inside every span between the boundaries and
+    the declared knots.
     """
-    from .frames import cartesian_points
-    from .geometry import Geometry
-    from .mapping import validity_lattice
+    from .coordinates import coordinates_of, increases_outward
 
+    coords = geometry.coordinates
     sk = geometry.skeleton
-    Geometry(sk, mapping=geometry.mapping,
-             layer_names=[lay.name for lay in geometry.layers],
-             interface_names=[f.name for f in geometry.interfaces],
-             rtol=geometry.rtol, check=True)
+    again = geometry.with_mapping(geometry.mapping, check=True)
+    assert type(again) is type(geometry), "with_mapping does not keep the class"
+    probe = geometry.radial_field_type(sk.interval(0), 1.0)
+    assert probe.is_radial and coordinates_of(probe) == coords, (
+        f"radial_field_type {geometry.radial_field_type.__name__} does not build a "
+        "field of the layered coordinate in the geometry's coordinates")
 
     faces = geometry.interfaces
     b = sk.boundaries
-    first = 0 if sk.is_hollow else 1
-    assert len(faces) == b.size - first, "wrong number of interfaces"
+    L = sk.nlayers
+    up = increases_outward(coords)
+    on = []
     for k, f in enumerate(faces):
         assert f.index == k
-        assert f.radius == float(b[first + k]), "interface off a boundary"
-        below, above = f.between
-        assert below == first + k - 1, "between[0] inconsistent"
-        assert above == (first + k if first + k < sk.nlayers else -1), (
-            "between[1] inconsistent")
+        hits = np.flatnonzero(b == f.radius)
+        assert hits.size == 1, "interface off a boundary"
+        j = int(hits[0])
+        on.append(j)
+        lower = j - 1 if j > 0 else -1          # the layer of smaller coordinate
+        upper = j if j < L else -1              # the layer of larger coordinate
+        want = (lower, upper) if up else (upper, lower)
+        assert f.between == want, (
+            f"interface {k} has between {f.between}, expected {want}")
+    assert on == sorted(set(on)), "interfaces not in the skeleton's order"
+    assert set(range(1, L)) <= set(on), "an interior boundary is no interface"
+    assert (L if up else 0) in on, "the outermost boundary is no interface"
     for i, lay in enumerate(geometry.layers):
         assert lay.index == i and lay.interval == sk.interval(i)
 
@@ -283,13 +408,13 @@ def check_geometry(geometry: Geometry) -> None:
         "scaled(k).scaled(1/k) does not restore the skeleton")
     # points well inside every span between the boundaries and the
     # declared knots, where the mapping's gradient may jump
-    _, theta, phi = validity_lattice(sk, n_theta=5, n_phi=4)
+    _, theta, phi = geometry.lattice(n_a=5, n_b=4)
     tol = geometry.rtol * sk.span
     cuts = np.unique(np.concatenate([b, np.asarray(geometry.knots(), dtype=float)]))
     cuts = cuts[np.concatenate([[True], np.diff(cuts) > tol])]
     r = np.concatenate([lo + (hi - lo) * np.array([0.25, 0.5, 0.75])
                         for lo, hi in zip(cuts[:-1], cuts[1:])])[:, None, None]
-    X = cartesian_points(r, theta, phi)
+    X = coords.points(r, theta, phi)
     assert np.allclose(twice.mapping(X), geometry.mapping(X), rtol=1e-10,
                        atol=1e-10 * max(1.0, float(sk.span))), (
         "scaled(k).scaled(1/k) does not restore the mapping")
@@ -371,21 +496,24 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
                 n: int = 64) -> None:
     """Hold a Field to its protocol.
 
-    Checks the three attributes; that a call with the radius alone is
-    accepted exactly when the field is radial and of rank 0; float64 (or
-    complex128) values of the broadcast shape plus the stored shape,
-    agreeing with `dtype`; both ends of the
-    interval; refusal outside it and of an unknown frame; the two
-    frames related by the rotation the character implies (a factor of
-    R on every slot, expanded from Voigt where the field is Voigt);
-    `evaluate_at` against `evaluate`; `on_interval` on the overlap;
-    the `rescaled` round trip; and, where the field declares the pieces
-    of its logarithm (`log_radial_pieces`), that it is of rank 0 and
-    positive, the breakpoints spanning the interval in increasing order.
+    Checks the three attributes, and the coordinate system the field
+    states (`SPHERICAL` where it states none), whose probes, points,
+    frames and scaling every check below goes through; that a call with
+    the radius alone is accepted exactly when the field is radial and of
+    rank 0; float64 (or complex128) values of the broadcast shape plus
+    the stored shape, agreeing with `dtype`; both ends of the interval;
+    refusal outside it and of an unknown frame; the local and Cartesian
+    frames related by the rotation the character implies (a factor of R
+    on every slot, expanded from Voigt where the field is Voigt);
+    `evaluate_at` against `evaluate`; `on_interval` on the overlap; the
+    `rescaled` round trip, the rescaled field read at the point k X; and,
+    where the field declares the pieces of its logarithm
+    (`log_radial_pieces`), that it is of rank 0 and positive, the
+    breakpoints spanning the interval in increasing order.
     """
+    from .coordinates import CARTESIAN, SPHERICAL, Coordinates
     from .fields import stored_shape
-    from .frames import cartesian_points, rotate_slots, spherical_frame
-    from .frames import tensor_to_voigt, voigt_to_tensor
+    from .frames import rotate_slots, tensor_to_voigt, voigt_to_tensor
 
     rng = np.random.default_rng(0) if rng is None else rng
     lo, hi = (float(x) for x in field.interval)
@@ -393,13 +521,16 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     width = hi - lo
     char = field.character
     assert hasattr(field, "name"), "no name attribute"
+    coords = getattr(field, "coordinates", SPHERICAL)
+    assert isinstance(coords, Coordinates), (
+        f"the coordinates {coords!r} are not a Coordinates")
+    local = coords.frames[0]
     shape = stored_shape(char)
     radial_scalar = bool(getattr(field, "is_radial", False)) and char.rank == 0
 
     r = lo + width * rng.uniform(0.0, 1.0, n)
     r[0], r[-1] = lo, hi
-    theta = rng.uniform(0.05, np.pi - 0.05, n)
-    phi = rng.uniform(-np.pi, np.pi, n)
+    theta, phi = coords.probe(rng, n)
 
     values = field.evaluate(r, theta, phi)
     assert isinstance(values, np.ndarray) and values.dtype in (np.float64,
@@ -422,15 +553,15 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     if radial_scalar:
         alone = field(r)
         assert np.allclose(alone, values, rtol=1e-12, atol=1e-12 * scale), (
-            "the radius alone gives different values")
+            f"the {coords.labels[0]} alone gives different values")
     else:
         try:
             field(r)
         except ValueError:
             pass
         else:
-            raise AssertionError("the radius alone was accepted by a field that "
-                                 "is not radial and of rank 0")
+            raise AssertionError(f"the {coords.labels[0]} alone was accepted by a "
+                                 "field that is not radial and of rank 0")
 
     for bad in (lo - 1e-3 * width, hi + 1e-3 * width):
         try:
@@ -438,7 +569,8 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
         except ValueError:
             pass
         else:
-            raise AssertionError(f"radius {bad:g} outside the interval was accepted")
+            raise AssertionError(
+                f"{coords.labels[0]} {bad:g} outside the interval was accepted")
     try:
         field.evaluate(r, theta, phi, frame="nowhere")
     except ValueError:
@@ -446,27 +578,27 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     else:
         raise AssertionError("an unknown frame was accepted")
 
-    cart = field.evaluate(r, theta, phi, frame="cartesian")
+    cart = field.evaluate(r, theta, phi, frame=CARTESIAN)
     assert cart.shape == values.shape, "the Cartesian frame changes the shape"
     if char.rank:
-        R = spherical_frame(theta, phi)
+        R = coords.frame(theta, phi)
         full = (voigt_to_tensor(values, rank=char.rank) if char.voigt_shape
                 else values)
         want = rotate_slots(full, R, char.rank)
         if char.voigt_shape:
             want = tensor_to_voigt(want, rank=char.rank)
         assert np.allclose(cart, want, rtol=1e-10, atol=1e-10 * scale), (
-            "the Cartesian components are not the rotated spherical ones")
+            f"the Cartesian components are not the rotated {local} ones")
     else:
         assert np.allclose(cart, values), "a rank-0 field changes with the frame"
 
-    X = cartesian_points(r, theta, phi)
+    X = coords.points(r, theta, phi)
     at = field.evaluate_at(X)
     assert np.allclose(at, cart, rtol=1e-10, atol=1e-10 * scale), (
         "evaluate_at disagrees with evaluate in the Cartesian frame")
-    at_s = field.evaluate_at(X, frame="spherical")
+    at_s = field.evaluate_at(X, frame=local)
     assert np.allclose(at_s, values, rtol=1e-10, atol=1e-10 * scale), (
-        "evaluate_at in the spherical frame disagrees with evaluate")
+        f"evaluate_at in the {local} frame disagrees with evaluate")
 
     wider = field.on_interval(lo - 0.25 * width, hi + 0.25 * width)
     assert np.allclose(wider.interval, (lo - 0.25 * width, hi + 0.25 * width)), (
@@ -481,7 +613,7 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     assert np.allclose(g.interval, (k * lo, k * hi), rtol=1e-12), (
         "rescaled does not scale the interval")
     assert g.character == char, "rescaled changes the character"
-    assert np.allclose(g.evaluate(k * r, theta, phi), v * values,
+    assert np.allclose(g.evaluate(*coords.scaled(r, theta, phi, k)), v * values,
                        rtol=1e-10, atol=1e-10 * scale), "rescaled is not v f(r / k)"
     back = g.rescaled(k=1.0 / k, v=1.0 / v)
     assert np.allclose(back.evaluate(r, theta, phi), values,
@@ -538,22 +670,31 @@ def check_refinement(refinement: Refinement, points: ArrayLike) -> None:
             "a batch disagrees with its points taken one at a time")
 
 
-def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None:
-    """Hold a Model to its invariants.
+def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> None:
+    """Hold a model, spherical or flat, to its invariants.
 
     Checks that `replaced` with checks on accepts it and keeps its class,
-    fields and citation, which `cite` gives a work a line; that every
-    layer's fields pass `check_field`, sit on the layer's interval, and
-    have their spec's character; that `layer(name)` and `layer(i)`
-    agree; that every constant is its SI value over the scales' factor;
-    that conversion to other scales and back restores every field to
-    1e-12; and that every surgery keeps the class and validates again.
+    fields and citation, which `cite` gives a work a line; that its
+    geometry is of its leaf's `geometry_type`, and its `coordinates` the
+    geometry's; that every layer's fields
+    pass `check_field`, sit on the layer's interval, are in the
+    geometry's coordinates and have their spec's character; that
+    `layer(name)` and `layer(i)` agree; that every constant is its SI
+    value over the scales' factor; that conversion to other scales and
+    back restores every field to 1e-12 at points the coordinates probe;
+    and that every surgery, the extension by "extrapolate" and by "hold"
+    among them, keeps the class and validates again.
     """
-    from .model import Model
+    from .coordinates import coordinates_of
+    from .model import ModelBase
     from .units import Scales
 
     rng = np.random.default_rng(0) if rng is None else rng
-    assert isinstance(model, Model), f"{type(model).__name__} is not a Model"
+    assert isinstance(model, ModelBase), f"{type(model).__name__} is not a model"
+    assert isinstance(model.geometry, model.geometry_type), (
+        f"the geometry is not a {model.geometry_type.__name__}")
+    assert model.coordinates == model.geometry.coordinates, (
+        "the model's coordinates are not its geometry's")
     cls = type(model)
     again = model.replaced(check=True)
     assert type(again) is cls, "replaced does not keep the class"
@@ -578,6 +719,8 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
             assert np.allclose(field.interval, layer.interval, rtol=0.0,
                                atol=rtol * width), (
                 f"{name!r} on layer {i} is on {field.interval}")
+            assert coordinates_of(field) == model.geometry.coordinates, (
+                f"{name!r} on layer {i} is not in the geometry's coordinates")
             spec = model.spec(name)
             if spec is not None:
                 assert field.character == spec.character, (
@@ -603,7 +746,7 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
         for layer, layer2 in zip(model.layers, back.layers):
             lo, hi = layer.interval
             r = lo + (hi - lo) * rng.uniform(0.0, 1.0, 8)
-            theta, phi = rng.uniform(0.1, 3.0, 8), rng.uniform(-3.0, 3.0, 8)
+            theta, phi = model.geometry.coordinates.probe(rng, 8)
             for name, f in layer.fields.items():
                 a, b = f.evaluate(r, theta, phi), layer2[name].evaluate(r, theta, phi)
                 scale = max(float(np.max(np.abs(a))), 1e-300)
@@ -616,11 +759,13 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
     mid = 0.5 * (lo + hi)
     inner = b[(b > lo) & (b < hi)]
     cut = float(inner[0]) if inner.size else mid
+    beyond = hi + 0.1 * (hi - lo)
     for verb, made in (("refined", lambda: model.refined([mid])),
                        ("truncated", lambda: model.truncated(cut)),
                        ("hollowed", lambda: model.hollowed(cut)),
                        ("extended", lambda: model.extended([hi * 1.1],
                                                            fields="extrapolate")),
+                       ("extended", lambda: model.extended([beyond], fields="hold")),
                        ("renamed", lambda: model.renamed())):
         if verb in ("refined",) and np.min(np.abs(b - mid)) <= rtol * (hi - lo):
             continue
@@ -636,40 +781,45 @@ def check_model(model: Model, *, rng: np.random.Generator | None = None) -> None
         out.validate()
 
 
-def check_sample(sample: Sample, model: Model, *,
+def check_sample(sample: SampleBase, model: ModelBase, *,
                  rng: np.random.Generator | None = None, n: int = 64,
                  rtol: float = 1e-12) -> None:
-    """Hold a Sample to its layout and to the model it was taken from.
+    """Hold a Sample, spherical or flat, to its layout and to the model it
+    was taken from.
 
     Layout: the radial mesh lies over the model's skeleton and the nodes
-    are its per-element GLL nodes flattened; the angular nodes increase,
-    colatitudes in [0, pi] and longitudes in [0, 2 pi); every field is
-    float64 and read-only, shaped `(nnode,) + c` exactly when every
-    layer holding it declares itself radial and `(nnode, ntheta, nphi)
-    + c` otherwise, with `c` the stored shape of its character.
-    Metadata: the characters and
-    dimensions are those of the model's fields and specs, the scales
-    and layer names the model's.  Values: NaN on every node of a layer
-    lacking the field and finite everywhere else; `n` random (node,
-    colatitude, longitude) entries re-evaluated from the node's own
-    layer, so the two nodes at an interface are two questions.  The
-    displacement is None for an identity geometry and otherwise
-    `(nnode, ntheta, nphi, 3)`, read-only, finite, and `R^T (m(X) - X)`
-    at `n` random entries.  Tolerances are `rtol` of the field's
-    largest value, or of the outer radius for the displacement.
+    are its per-element GLL nodes flattened; the lateral grid is the
+    model's kind (an `AngularGrid` for a spherical model, its
+    colatitudes increasing in [0, pi] and longitudes in [0, 2 pi); a
+    `cartesian.Grid` for a flat one, its nodes along each axis
+    increasing over one period), and its `nodes` broadcast to its
+    `shape`; every field is float64 and read-only, shaped `(nnode,) + c`
+    exactly when every layer holding it declares itself radial and
+    `(nnode,) + grid.shape + c` otherwise, with `c` the stored shape of
+    its character.  Metadata: the characters and dimensions are those
+    of the model's fields and specs, the scales and layer names the
+    model's.  Values: NaN on every node of a layer lacking the field and
+    finite everywhere else; `n` random (node, lateral node) entries
+    re-evaluated from the node's own layer, so the two nodes at an
+    interface are two questions.  The displacement is None for an
+    identity geometry and otherwise `(nnode,) + grid.shape + (3,)`,
+    read-only, finite, and `R^T (m(X) - X)` at `n` random entries, X and
+    the local frame R the model's coordinates' at the node.  Tolerances
+    are `rtol` of the field's largest value, or of the largest layered
+    coordinate for the displacement.
     """
+    from .coordinates import SPHERICAL
     from .fields import stored_shape
-    from .frames import spherical_frame
     from .mesh1d.mesh import RadialMesh
-    from .sampling import AngularGrid, Sample
+    from .sampling import AngularGrid, SampleBase
 
     rng = np.random.default_rng(0) if rng is None else rng
-    assert isinstance(sample, Sample), f"not a Sample: {type(sample).__name__}"
-    mesh, grid = sample.radial, sample.angular
+    assert isinstance(sample, SampleBase), f"not a Sample: {type(sample).__name__}"
+    mesh, grid = sample.radial, sample.grid
     assert isinstance(mesh, RadialMesh), "radial is not a RadialMesh"
-    assert isinstance(grid, AngularGrid), "angular is not an AngularGrid"
     assert mesh.skeleton == model.skeleton, (
         "the radial mesh lies over another skeleton than the model's")
+    coords = model.geometry.coordinates
 
     # -- layout -------------------------------------------------------------
     nnode = mesh.nspec * mesh.ngll
@@ -682,12 +832,27 @@ def check_sample(sample: Sample, model: Model, *,
     node_layer = np.repeat(np.asarray(mesh.layer, dtype=int), mesh.ngll)
     assert np.array_equal(sample.node_layer, node_layer), (
         "node_layer is not element_layer repeated over the nodes")
-    theta, phi = grid.colatitudes, grid.longitudes
-    assert np.all(np.diff(theta) > 0) and 0 <= theta[0] and theta[-1] <= np.pi, (
-        "colatitudes are not increasing in [0, pi]")
-    assert np.all(np.diff(phi) > 0) and 0 <= phi[0] and phi[-1] < 2 * np.pi, (
-        "longitudes are not increasing inside [0, 2 pi)")
-    ntheta, nphi = theta.size, phi.size
+    if coords == SPHERICAL:
+        assert isinstance(grid, AngularGrid), (
+            "the lateral grid of a spherical model's sample is not an AngularGrid")
+        theta, phi = grid.colatitudes, grid.longitudes
+        assert np.all(np.diff(theta) > 0) and 0 <= theta[0] and theta[-1] <= np.pi, (
+            "colatitudes are not increasing in [0, pi]")
+        assert np.all(np.diff(phi) > 0) and 0 <= phi[0] and phi[-1] < 2 * np.pi, (
+            "longitudes are not increasing inside [0, 2 pi)")
+    else:
+        from .cartesian.grid import Grid
+        assert isinstance(grid, Grid), (
+            "the lateral grid of a flat model's sample is not a cartesian.Grid")
+        for axis, length in zip(grid.axes, grid.lengths):
+            assert np.all(np.diff(axis) > 0) and axis[-1] - axis[0] < length, (
+                "a grid's nodes do not increase over one period")
+    lateral = tuple(grid.shape)
+    a, b = (np.asarray(v, dtype=float) for v in grid.nodes)
+    assert np.broadcast(a, b).shape == lateral, (
+        f"the grid's nodes broadcast to {np.broadcast(a, b).shape}, not its shape "
+        f"{lateral}")
+    a, b = np.broadcast_to(a, lateral), np.broadcast_to(b, lateral)
 
     # -- metadata -----------------------------------------------------------
     names = set(sample.fields)
@@ -703,8 +868,8 @@ def check_sample(sample: Sample, model: Model, *,
 
     # -- the fields ---------------------------------------------------------
     nodes = rng.integers(nnode, size=n)
-    it = rng.integers(ntheta, size=n)
-    ip = rng.integers(nphi, size=n)
+    at = tuple(rng.integers(size, size=n) for size in lateral)
+    label = coords.labels[0]
     for name, arr in sample.fields.items():
         char = sample.characters[name]
         holders = model.layers_with(name)
@@ -727,7 +892,7 @@ def check_sample(sample: Sample, model: Model, *,
         assert not arr.flags.writeable, f"{name!r} is writable"
         radial = all(getattr(model.layer(L)[name], "is_radial", False)
                      for L in holders)
-        want_shape = (nnode,) + c if radial else (nnode, ntheta, nphi) + c
+        want_shape = (nnode,) + c if radial else (nnode,) + lateral + c
         assert arr.shape == want_shape, (
             f"{name!r} has shape {arr.shape}; expected {want_shape} for a field "
             f"that {'does not depend' if radial else 'depends'} on direction")
@@ -752,13 +917,14 @@ def check_sample(sample: Sample, model: Model, *,
         for k in range(n):
             j, L = int(sel[k]), int(node_layer[sel[k]])
             field = model.layer(L)[name]
-            point = (r[j], theta[it[k]], phi[ip[k]])
-            got = arr[j] if radial else arr[j, it[k], ip[k]]
+            node = tuple(int(i[k]) for i in at)
+            point = (r[j], a[node], b[node])
+            got = arr[j] if radial else arr[(j,) + node]
             want = field.evaluate(*point)
             assert np.allclose(got, want, rtol=rtol, atol=rtol * scale), (
-                f"{name!r} at node {j} (layer {L}, r = {r[j]:.6g}), colatitude "
-                f"{theta[it[k]]:.4g}, longitude {phi[ip[k]]:.4g} differs from "
-                "the model's field")
+                f"{name!r} at node {j} (layer {L}, {label} = {r[j]:.6g}) and "
+                f"lateral node {node} ({a[node]:.4g}, {b[node]:.4g}) differs "
+                "from the model's field")
 
     # -- the displacement ---------------------------------------------------
     u = sample.displacement
@@ -770,22 +936,233 @@ def check_sample(sample: Sample, model: Model, *,
     assert isinstance(u, np.ndarray) and u.dtype == np.float64, (
         "displacement is not a float64 array")
     assert not u.flags.writeable, "displacement is writable"
-    assert u.shape == (nnode, ntheta, nphi, 3), (
-        f"displacement has shape {u.shape}, expected {(nnode, ntheta, nphi, 3)}")
+    assert u.shape == (nnode,) + lateral + (3,), (
+        f"displacement has shape {u.shape}, expected {(nnode,) + lateral + (3,)}")
     assert np.all(np.isfinite(u)), "displacement has non-finite values"
-    R = spherical_frame(theta[it], phi[ip])                # (n, 3, 3)
-    X = r[nodes, None] * R[..., :, 0]
+    R = coords.frame(a[at], b[at])                          # (n, 3, 3)
+    X = coords.points(r[nodes], a[at], b[at])
     m = geometry.mapping
     cart = np.asarray(m(X), dtype=float) - X
     want = np.einsum("kji,kj->ki", R, cart)
     scale = float(np.max(np.abs(r)))
-    assert np.allclose(u[nodes, it, ip], want, rtol=rtol, atol=rtol * scale), (
+    assert np.allclose(u[(nodes,) + at], want, rtol=rtol, atol=rtol * scale), (
         "displacement differs from R^T (m(X) - X) at the sample points")
 
 
+def _slice_values(model: ModelBase, name: str, shown: Any, layer: int,
+                  points: tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
+    """What a slice of the field `name` shows at reference points of a layer,
+    evaluated afresh from the model's field: the component or the norm
+    `shown` names."""
+    field = model.layer(layer)[name]
+    if shown.component is None:
+        return np.asarray(field.evaluate(*points), dtype=float)
+    if shown.component == "norm":
+        return np.linalg.norm(np.asarray(field.evaluate(*points), dtype=float), axis=-1)
+    v = np.asarray(field.evaluate(*points, frame=shown.frame), dtype=float)
+    return v.reshape(v.shape[:len(points[0].shape)] + (-1,))[..., shown.component]
+
+
+def _check_physical_runs(slice_: Any, model: ModelBase,
+                         bounds: tuple[float, float] | None, rtol: float) -> None:
+    """The runs of a section or a profile at physical points, against the
+    mapping of the model's boundaries onto each of its lines."""
+    from .slices import to_physical
+
+    if not slice_.layers:
+        return
+    coords = model.geometry.coordinates
+    edges = model.skeleton.boundaries
+    lo, hi = ((-np.inf, np.inf) if bounds is None
+              else (float(bounds[0]), float(bounds[1])))
+    # a line's lateral coordinates, read from the point of the last layer's
+    # last row on it, away from the sphere's centre
+    last = np.asarray(slice_.layers[-1].physical)
+    _, a, b, _ = coords.split(last.reshape(last.shape[0], -1, 3)[-1])
+    ends = np.stack([coords.split(to_physical(model, coords.points(e, a, b)))[0]
+                     for e in edges])
+    tol = rtol * 1e3 * max(float(np.max(np.abs(ends))), model.skeleton.span)
+    held = {lay.index: lay for lay in slice_.layers}
+    for k in range(model.nlayers):
+        c0, c1 = np.maximum(ends[k], lo), np.minimum(ends[k + 1], hi)
+        reach = c1 - c0 > tol
+        lay = held.get(k)
+        if lay is None:
+            assert not np.any(reach), (
+                f"layer {k} lies within the slice's bounds on a line, but the slice "
+                "leaves it out")
+            continue
+        radius = np.asarray(lay.radius)
+        radius = radius.reshape(radius.shape[0], -1)
+        values = np.asarray(lay.values).reshape(radius.shape)
+        assert (np.allclose(radius[0, reach], c0[reach], rtol=0.0, atol=tol)
+                and np.allclose(radius[-1, reach], c1[reach], rtol=0.0, atol=tol)), (
+            f"layer {k}'s run at physical points is not the part, within the "
+            "slice's bounds, of each line between where the mapping puts the "
+            "layer's boundaries on it")
+        assert np.all(np.isnan(values[:, c1 - c0 < -tol])), (
+            f"layer {k} carries values on a line it has no part of within the "
+            "slice's bounds")
+
+
+def check_slice(slice_: Any, model: ModelBase, *,
+                rng: np.random.Generator | None = None, n: int = 32,
+                rtol: float = 1e-12, bounds: tuple[float, float] | None = None
+                ) -> None:
+    """Hold a slice, spherical or flat, to its protocol and to the model it
+    was taken from.
+
+    Protocol: `coordinates` is the model's system; `shown` is a
+    `slices.Shown` and `label` its label; `at` is one of `slices.AT`.  A
+    slice has `values` with `reference` and `physical` points of their
+    shape followed by 3 (a sphere, a plane, a cutaway), or `layers`, each a
+    `slices.SliceLayer` of a layer of the model, its `radius` and
+    `values` of one shape and its points of that shape followed by 3 (a
+    section, a profile, a block).  Points: where finite, `physical` is
+    the mapping of `reference` (but for a mean profile, whose points
+    stand on an axis for drawing); at reference points each layer's
+    `radius` is the layered coordinate of its reference points, inside
+    its layer, and at physical points of its physical ones.  Values:
+    where the slice shows a named field as it is (no departure,
+    statistic or normalisation), `n` random finite values of each part
+    are the model's field at the reference points evaluated afresh, a
+    part without layers read from the layer `slices.layers_of` gives its
+    reference points on the slice's `side`.  Runs: at physical points
+    each layer of a section or a profile runs on each of its lines (a
+    ray, a vertical) between where the mapping puts the layer's two
+    boundaries on that line, within `bounds`, the (lo, hi) of the layered
+    coordinate the slice was given (its `radii` or `depths`), None for the
+    whole body, which the slice then covers as the mapping shapes it; it
+    is NaN on a line it has no part of within them, and a layer with a
+    part of some line within them is present; the lines are read from
+    the last row of the slice's last layer, and the mapped boundaries
+    are the mapping of the model's boundary points on each.
+    `slices.normalised` of a slice with a value
+    other than zero has largest absolute value one.  Tolerances are
+    `rtol` of the largest value, or of the largest coordinate for points.
+    """
+    from .slices import AT, Shown, SliceLayer, layers_of, normalised, to_physical
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    coords = model.geometry.coordinates
+    assert slice_.coordinates == coords, (
+        f"the slice is in {slice_.coordinates!r}, the model in {coords!r}")
+    assert isinstance(slice_.shown, Shown), "shown is not a slices.Shown"
+    assert slice_.label == slice_.shown.label, "label is not shown.label"
+    assert slice_.at in AT, f"at is {slice_.at!r}, not one of {AT}"
+    layered = getattr(slice_, "layers", None)
+    if layered is None:
+        values = np.asarray(slice_.values)
+        layer_of = None
+        parts = [(None, values, np.asarray(slice_.reference),
+                  np.asarray(slice_.physical))]
+    else:
+        parts = []
+        for lay in layered:
+            assert isinstance(lay, SliceLayer), "a layer is not a SliceLayer"
+            assert 0 <= lay.index < model.nlayers, f"no layer {lay.index}"
+            assert np.shape(lay.radius) == np.shape(lay.values), (
+                f"layer {lay.index}'s radius and values differ in shape")
+            parts.append((lay, np.asarray(lay.values), np.asarray(lay.reference),
+                          np.asarray(lay.physical)))
+    shown = slice_.shown
+    plain = (shown.name is not None and shown.relative_to is None
+             and shown.statistic is None and not shown.normalised)
+    # a mean profile has no location: its points stand on an axis for drawing
+    located = all(getattr(slice_, a, 0.0) is not None for a in ("theta", "x"))
+    tol = model.geometry.rtol * model.skeleton.span
+    for lay, values, reference, physical in parts:
+        assert reference.shape == values.shape + (3,), (
+            f"reference points have shape {reference.shape}, values {values.shape}")
+        assert physical.shape == values.shape + (3,), (
+            f"physical points have shape {physical.shape}, values {values.shape}")
+        ok = np.all(np.isfinite(reference), axis=-1) & np.all(np.isfinite(physical),
+                                                             axis=-1)
+        size = max(float(np.max(np.abs(reference[ok]), initial=0.0)), 1.0)
+        assert not located or np.allclose(
+            to_physical(model, reference[ok]), physical[ok], rtol=0.0,
+            atol=rtol * size * 1e3), (
+            "physical points are not the mapping of the reference points")
+        c = coords.split(reference)[0]
+        if lay is not None:
+            seen = coords.split(physical if slice_.at == "physical" else reference)[0]
+            assert np.allclose(np.asarray(lay.radius)[ok], seen[ok], rtol=0.0,
+                               atol=rtol * size * 1e3), (
+                f"layer {lay.index}'s radius is not the layered coordinate of its "
+                f"{slice_.at} points")
+            lo, hi = model.skeleton.interval(lay.index)
+            assert np.all((c[ok] >= lo - tol) & (c[ok] <= hi + tol)), (
+                f"layer {lay.index}'s reference points leave the layer")
+        if not plain:
+            continue
+        finite = np.flatnonzero(np.isfinite(values.ravel()) & ok.ravel())
+        if finite.size == 0:
+            continue
+        pick = finite[rng.integers(finite.size, size=min(n, finite.size))]
+        _, a, b, _ = coords.split(reference.reshape(-1, 3)[pick])
+        cc = c.ravel()[pick]
+        if lay is None:
+            layer_of, _ = layers_of(model, cc, getattr(slice_, "side", None))
+        else:
+            layer_of = np.full(pick.size, lay.index)
+        scale = max(float(np.max(np.abs(values.ravel()[finite]))), 1e-300)
+        for L in np.unique(layer_of):
+            if L < 0 or shown.name not in model.layer(int(L)):
+                continue
+            k = layer_of == L
+            want = _slice_values(model, shown.name, shown, int(L), (cc[k], a[k], b[k]))
+            got = values.ravel()[pick[k]]
+            assert np.allclose(got, want, rtol=0.0, atol=rtol * scale), (
+                f"the slice's values on layer {int(L)} differ from the model's field "
+                "evaluated at its reference points")
+    if layered is not None and located and slice_.at == "physical":
+        _check_physical_runs(slice_, model, bounds, rtol)
+    every = np.concatenate([v[np.isfinite(v)].ravel() for _, v, _, _ in parts])
+    if every.size and np.max(np.abs(every)) > 0.0:
+        unit = normalised(slice_)
+        lay2 = getattr(unit, "layers", None)
+        got = (np.asarray(unit.values) if lay2 is None
+               else np.concatenate([np.ravel(x.values) for x in lay2]))
+        assert np.isclose(np.nanmax(np.abs(got)), 1.0, rtol=1e-12), (
+            "the normalised slice's largest absolute value is not one")
+        assert unit.shown.normalised and "normalised" in unit.label, (
+            "the normalised slice does not say so")
+
+
+def check_spectrum(spectrum_: Any) -> None:
+    """Hold a spectrum, spherical or flat, to its protocol: `degrees` the
+    integers from 0, `power` one finite non-negative number for each and
+    `amplitude` its square root, `label` its `shown`'s label and
+    `coordinates` a coordinate system; a flat spectrum's `wavenumbers`
+    (where it has them) one for each degree, zero first and increasing.
+    """
+    from .coordinates import Coordinates
+    from .slices import Shown
+
+    d = np.asarray(spectrum_.degrees)
+    assert (np.issubdtype(d.dtype, np.integer)
+            and np.array_equal(d, np.arange(d.size))), (
+        "degrees are not the integers from 0")
+    p = np.asarray(spectrum_.power)
+    assert p.shape == d.shape, f"power has shape {p.shape}, degrees {d.shape}"
+    assert np.all(np.isfinite(p)) and np.all(p >= 0.0), (
+        "power is not finite and non-negative")
+    assert np.allclose(spectrum_.amplitude, np.sqrt(p), rtol=1e-15, atol=0.0), (
+        "amplitude is not the square root of the power")
+    assert isinstance(spectrum_.shown, Shown), "shown is not a slices.Shown"
+    assert spectrum_.label == spectrum_.shown.label, "label is not shown.label"
+    assert isinstance(spectrum_.coordinates, Coordinates), (
+        "coordinates is not a Coordinates")
+    k = getattr(spectrum_, "wavenumbers", None)
+    if k is not None:
+        k = np.asarray(k)
+        assert k.shape == d.shape and k[0] == 0.0 and np.all(np.diff(k) > 0.0), (
+            "wavenumbers are not one for each degree, zero first and increasing")
+
+
 def _full_mass(basis: SpectralBasis) -> np.ndarray:
-    """The family's diagonal mass at every node of the mesh, the massless
-    centre of a ball included."""
+    """The family's diagonal mass at every node of the mesh, a massless
+    centre included."""
     mass = basis.family.mass(basis.degree)
     full = np.zeros(basis.family.mesh.nglob)
     full[full.size - mass.size:] = mass
@@ -795,12 +1172,16 @@ def _full_mass(basis: SpectralBasis) -> np.ndarray:
 def check_spectral_basis(basis: SpectralBasis, *,
                          rng: np.random.Generator | None = None,
                          rtol: float = 1e-10) -> None:
-    """Hold a SpectralBasis to what it promises of one degree's eigenbasis.
+    """Hold a SpectralBasis to what it promises of one member's eigenbasis,
+    whatever the family's weight, lateral profile and index.
 
     The spectrum: `theta` read-only, ascending, at least 1, `nmodes` of
     them.  The modes: read-only, of shape (nglob, nmodes), M-orthonormal
     on the full mesh, each an eigenfunction of the family's operator with
-    its theta, and zero at the centre of a ball when l >= 1.  The
+    its theta, and zero at a centre (of a ball or a disk) when the
+    member's lateral eigenvalue is positive under the inverse-square
+    profile; `degree` is the label as the family holds it and
+    `lateral_eigenvalue` the family's lambda for it.  The
     transforms: the physical synthesis is the full one read on the
     restriction's nodes; `analyse` inverts the full synthesis and is
     idempotent on arbitrary nodal values, for one vector and for a stack.
@@ -810,11 +1191,12 @@ def check_spectral_basis(basis: SpectralBasis, *,
     mass inside the physical interval and no more than it at the two
     ends (where the mass counts the pad elements too), and, on a mesh of
     at least three GLL nodes, sum to the measure of the physical
-    interval, (r2^3 - r1^3) / 3 or r2 - r1.  `pointwise_variance` is the
-    diagonal of the synthesised covariance.  `white_noise` has the shapes
-    it promises and unit covariance on the leading modes to six standard
-    errors.  `rtol` is relative to the largest kept eigenvalue where an
-    operator is applied and to one elsewhere.
+    interval, (r2^3 - r1^3) / 3, (r2^2 - r1^2) / 2 or r2 - r1.
+    `pointwise_variance` is the diagonal of the synthesised covariance.
+    `white_noise` has the shapes it promises and unit covariance on the
+    leading modes to six standard errors.  `rtol` is relative to the
+    largest kept eigenvalue where an operator is applied and to one
+    elsewhere.
     """
     from .randomfield.basis import SpectralBasis
 
@@ -842,8 +1224,14 @@ def check_spectral_basis(basis: SpectralBasis, *,
     scale = theta[-1] * np.max(np.abs(Phi))
     assert np.max(np.abs(resid)) <= 1e3 * rtol * scale, (
         "a mode is not an eigenfunction of the family's operator")
-    if fam.is_ball and l >= 1:
-        assert np.all(Phi[0] == 0.0), "a mode of degree l >= 1 is non-zero at r = 0"
+    assert l == fam.label(l) and type(l) is type(fam.label(l)), (
+        f"degree is not the label as the family holds it: {l!r}")
+    lam = basis.lateral_eigenvalue
+    assert lam == fam.lateral_eigenvalue(l), (
+        "lateral_eigenvalue is not the family's for the label")
+    if fam.has_centre and fam.lateral == "inverse_square" and lam > 0.0:
+        assert np.all(Phi[0] == 0.0), (
+            "a mode of a member with lambda > 0 is non-zero at the centre")
 
     assert np.array_equal(basis.r, mesh.rglob[R.nodes]), (
         "r is not the mesh's nodes on the restriction")
@@ -886,7 +1274,8 @@ def check_spectral_basis(basis: SpectralBasis, *,
     assert np.all(w <= M[R.nodes] * (1.0 + rtol)), (
         "a weight exceeds the family's mass at its node")
     if mesh.ngll >= 3:
-        measure = (r2 ** 3 - r1 ** 3) / 3.0 if fam.weight == "r2" else r2 - r1
+        measure = {"r2": (r2 ** 3 - r1 ** 3) / 3.0, "r": (r2 ** 2 - r1 ** 2) / 2.0,
+                   "one": r2 - r1}[fam.weight]
         assert abs(w.sum() - measure) <= rtol * abs(measure), (
             f"weights sum to {w.sum()!r}, the interval measures {measure!r}")
 
@@ -983,7 +1372,125 @@ def check_spherical_basis(basis: SphericalBasis, *,
         "analyse reads entries that belong to no harmonic")
 
 
-def check_model_file(path: str | os.PathLike[str], model: Model, *,
+def check_layer_basis(basis: LayerBasis, *,
+                      rng: np.random.Generator | None = None,
+                      rtol: float = 1e-10) -> None:
+    """Hold a LayerBasis to the order it fixes and to its lateral
+    eigenvalues.
+
+    The bases are those of the distinct lateral eigenvalues of the
+    transform, ascending, each labelled by its eigenvalue, on one family
+    indexed by value and one restriction; `member` sends every packed
+    component to the basis of its own `|k|^2` (to `rtol` of the largest),
+    `multiplicity` counts the components of each and `components` lists
+    them, and `nmodes` and `size` count the coefficients.  The blocks of
+    the components, taken in the transform's order, tile `range(size)`
+    without gap or overlap, each as long as its basis has modes, and
+    `theta` on each block is its basis's.  `synthesise` gives each
+    component its basis's synthesis of its block, physical values being
+    the full ones on the restriction's nodes; `analyse` inverts the full
+    synthesis and is idempotent on arbitrary functions of depth.
+    """
+    from .cartesian.randomfield import LayerBasis
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    assert isinstance(basis, LayerBasis), (
+        f"not a LayerBasis: {type(basis).__name__}")
+    transform, values = basis.transform, basis.eigenvalues
+    N = transform.size
+    assert len(basis) == values.size and np.all(np.diff(values) > 0.0), (
+        "the eigenvalues are not one for each basis, ascending")
+    assert basis.family.index == "value", "the family is not indexed by value"
+    for i, b in enumerate(basis):
+        assert b is basis[i], "iteration is not in the order of the eigenvalues"
+        assert b.degree == values[i] and b.lateral_eigenvalue == values[i], (
+            f"basis {i} is not labelled by its eigenvalue")
+        assert b.family is basis.family, "the bases do not share one family"
+        assert b.restriction.nodes == basis.restriction.nodes, (
+            "the bases do not share one restriction")
+        assert basis.nmodes[i] == b.nmodes, f"nmodes[{i}] is not the basis's"
+    member = basis.member
+    assert member.shape == (N,), "member is not one index for each component"
+    lam = transform.laplacian_eigenvalues
+    assert _rel(values[member], lam, rtol=rtol, floor=float(lam.max())), (
+        "a component's basis is not that of its lateral eigenvalue")
+    assert np.array_equal(basis.multiplicity,
+                          np.bincount(member, minlength=len(basis))), (
+        "multiplicity does not count the components of each basis")
+    for i in range(len(basis)):
+        assert np.array_equal(basis.components(i), np.flatnonzero(member == i)), (
+            f"components({i}) are not the components of basis {i}, ascending")
+    assert basis.size == int(np.sum(basis.multiplicity * basis.nmodes)), (
+        "size is not sum multiplicity * nmodes")
+    for a in (basis.theta, values, member, basis.multiplicity, basis.nmodes):
+        assert not a.flags.writeable, "an array of the basis is writeable"
+    assert basis.theta.shape == (basis.size,), "theta is not a vector of length size"
+
+    at = 0
+    for c in range(N):
+        blk, b = basis.block(c), basis.basis_of(c)
+        assert b is basis[int(member[c])], "basis_of is not the member's basis"
+        assert (blk.start, blk.stop) == (at, at + b.nmodes), (
+            f"the block of component {c} does not follow its predecessor in the "
+            f"transform's order")
+        assert np.array_equal(basis.theta[blk], b.theta), (
+            f"theta on the block of component {c} is not its basis's")
+        at = blk.stop
+    assert at == basis.size, "the blocks do not tile the vector"
+    for bad in (-1, N):
+        try:
+            basis.block(bad)
+        except IndexError:
+            continue
+        raise AssertionError(f"block accepted component {bad}")
+
+    v = rng.standard_normal(basis.size)
+    full = basis.synthesise(v, physical=False)
+    nglob = basis.family.mesh.nglob
+    assert full.shape == (N, nglob), "full synthesis has the wrong shape"
+    assert _rel(basis.synthesise(v), full[:, basis.restriction.nodes], rtol=rtol,
+                floor=np.max(np.abs(full))), (
+        "the physical synthesis is not the full one on the restriction")
+    for c in rng.choice(N, size=min(N, 12), replace=False):
+        want = basis.basis_of(c).synthesise(v[basis.block(c)], physical=False)
+        assert _rel(full[c], want, rtol=rtol, floor=np.max(np.abs(want))), (
+            f"component {c} is not its basis's synthesis of its block")
+    assert _rel(basis.analyse(full), v, rtol=rtol), (
+        "analyse does not invert the full synthesis")
+    w = basis.analyse(rng.standard_normal((N, nglob)))
+    assert _rel(basis.analyse(basis.synthesise(w, physical=False)), w, rtol=rtol,
+                floor=np.max(np.abs(w))), "analyse is not idempotent"
+
+
+def _check_file_root(data: Any, model: ModelBase) -> None:
+    """A model file's skeleton, names, scales, citation, stamps and
+    tolerance against the model it was written from."""
+    from datetime import datetime
+    assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
+                       rtol=1e-15), "the file's skeleton is not the model's"
+    assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
+        "the file's layer names are not the model's")
+    assert data.interface_names == tuple(f.name for f in model.geometry.interfaces), (
+        "the file's interface names are not the model's")
+    assert data.scales == model.scales, (
+        f"the file is in {data.scales!r}, the model in {model.scales!r}")
+    assert data.citation == model.citation, "the file does not cite what the model does"
+    assert data.source.strip(), "the file names no source"
+    datetime.fromisoformat(data.created)
+    assert data.rtol == model.geometry.rtol, (
+        f"the file states rtol {data.rtol!r}, the model's geometry has "
+        f"{model.geometry.rtol!r}")
+
+
+def _stored_against(values: np.ndarray, want: ArrayLike, what: str, *,
+                    rtol: float) -> None:
+    """A file's values against what they hold, to `rtol` of their largest."""
+    scale = max(float(np.nanmax(np.abs(values))) if values.size else 0.0, 1e-300)
+    assert np.allclose(values, want, rtol=0.0, atol=rtol * scale), (
+        f"{what}: the file's values are not the model's at its nodes")
+
+
+def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
                      surfaces: Surfaces | None = None,
                      rng: np.random.Generator | None = None, n: int = 48,
                      rtol: float = 1e-12) -> None:
@@ -1009,13 +1516,32 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     interfaces, NaN on the others, their values at its nodes and poles,
     and that `read_surfaces` gives functions taking the stored values at
     the nodes, for a local rule.  Tolerances are `rtol` of a variable's
-    largest value.  netCDF4 is imported here.
+    largest value.
+
+    A flat file (`modelfile.SCHEMA_FLAT`, a model of
+    `planetmodel.cartesian`) is held the same way at its own nodes, in
+    depth and on its parts' horizontal grids, by `_check_flat_model_file`:
+    its schema; its domain, the model's to the bit; every variable's
+    values at its nodes, the model's there in the local frame, and the
+    model read back taking them, by the Fourier rule to the accuracy of
+    `fourier.POINT_EPSILON` (a series' nodes are written by the fast
+    transform, and the model's field is read by the synthesis at points)
+    and by the local rules to `rtol`; the
+    geometry group's heights, the stretch's at each boundary, and the
+    displacement variable's w, the stretch's at its nodes, both read back
+    at them; and the surfaces group as on the sphere, without poles.
+    netCDF4 is imported here.
     """
     from .frames import cartesian_points, spherical_frame
-    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_WITH_LOG_RULES, read_model,
-                            read_model_file, read_surfaces, validate_structure)
+    from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_FLAT, SCHEMA_WITH_LOG_RULES,
+                            read_model, read_model_file, read_surfaces, schema_of,
+                            validate_structure)
 
     rng = np.random.default_rng(0) if rng is None else rng
+    if schema_of(path) == SCHEMA_FLAT:
+        _check_flat_model_file(path, model, surfaces=surfaces, rng=rng, n=n,
+                               rtol=rtol)
+        return
     validate_structure(path)
     data = read_model_file(path)
     logged = any(var.attributes.get("radial_interpolation") in LOG_RULES
@@ -1023,27 +1549,11 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
     assert data.schema == (SCHEMA_WITH_LOG_RULES if logged else SCHEMA), (
         f"the file's schema is {data.schema!r}, and "
         f"{'a' if logged else 'no'} variable states a rule in the logarithm")
-    assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
-                       rtol=1e-15), "the file's skeleton is not the model's"
-    assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
-        "the file's layer names are not the model's")
-    assert data.interface_names == tuple(f.name for f in model.geometry.interfaces), (
-        "the file's interface names are not the model's")
-    assert data.scales == model.scales, (
-        f"the file is in {data.scales!r}, the model in {model.scales!r}")
-    assert data.citation == model.citation, "the file does not cite what the model does"
-    assert data.source.strip(), "the file names no source"
-    from datetime import datetime
-    datetime.fromisoformat(data.created)
-    assert data.rtol == model.geometry.rtol, (
-        f"the file states rtol {data.rtol!r}, the model's geometry has "
-        f"{model.geometry.rtol!r}")
+    _check_file_root(data, model)
     back = read_model(path)
 
     def stored_against(values: np.ndarray, want: np.ndarray, what: str) -> None:
-        scale = max(float(np.nanmax(np.abs(values))) if values.size else 0.0, 1e-300)
-        assert np.allclose(values, want, rtol=0.0, atol=rtol * scale), (
-            f"{what}: the file's values are not the model's at its nodes")
+        _stored_against(values, want, what, rtol=rtol)
 
     for k, part in enumerate(data.parts):
         mesh, grid = part.mesh, part.grid
@@ -1178,6 +1688,155 @@ def check_model_file(path: str | os.PathLike[str], model: Model, *,
                 key = data.interface_names[k]
                 fn = read[name][k if key is None else key]
                 stored_against(values, fn(theta, phi), f"{where} read back")
+
+
+def _check_flat_model_file(path: str | os.PathLike[str], model: ModelBase, *,
+                           surfaces: Surfaces | None, rng: np.random.Generator,
+                           n: int, rtol: float) -> None:
+    """`check_model_file` of a flat file: its docstring's checks at the
+    file's nodes in depth and on its horizontal grids."""
+    from .cartesian.modelfile import read_model_file
+    from .fourier import POINT_EPSILON
+    from .modelfile import SCHEMA_FLAT, read_model, read_surfaces, validate_structure
+
+    validate_structure(path)
+    data = read_model_file(path)
+    assert data.schema == SCHEMA_FLAT, f"the file's schema is {data.schema!r}"
+    _check_file_root(data, model)
+    domain = model.geometry.domain
+    assert data.domain == domain, (
+        f"the file's domain is {data.domain!r}, the model's {domain!r}")
+    back = read_model(path)
+    assert back.geometry.domain == domain, "the model read back is over another domain"
+
+    def tolerance(attributes: Mapping[str, Any]) -> float:
+        # a variable stating the Fourier rule holds a series, its nodes
+        # written by the fast transform and read by the synthesis at points
+        fourier = attributes.get("lateral_interpolation") == "fourier"
+        return max(rtol, 100.0 * POINT_EPSILON) if fourier else rtol
+
+    def nodes_of(grid: Any) -> tuple[np.ndarray, np.ndarray]:
+        x, y = np.broadcast_arrays(*grid.nodes)
+        return x.ravel(), y.ravel()
+
+    for k, part in enumerate(data.parts):
+        mesh, grid = part.mesh, part.grid
+        assert grid.domain == domain, f"part_{k} lies over another domain"
+        depth_all = mesh.r.ravel()
+        node_layer = np.repeat(mesh.layer, mesh.ngll)
+        X, Y = nodes_of(grid)
+        for name, var in part.variables.items():
+            if name.endswith("_perturbation") or name == "displacement":
+                continue
+            holders = [int(i) for i in np.atleast_1d(var.attributes["layers"])]
+            for i in part.layers:
+                on = node_layer == i
+                if i not in holders:
+                    assert np.all(np.isnan(var.values[on])), (
+                        f"part_{k}/{name} is not NaN on layer {i}, which lacks it")
+                    continue
+                field = model.layer(i)[name]
+                c = field.character
+                stated = (int(var.attributes["rank"]), int(var.attributes["weight"]),
+                          bool(var.attributes["voigt"]))
+                assert stated == (c.rank, c.weight, bool(c.voigt)), (
+                    f"part_{k}/{name} states the character {stated}, the model's "
+                    f"field on layer {i} is {c}")
+                pert_name = var.attributes.get("perturbation")
+                reference = getattr(field, "reference", None)
+                split = bool(pert_name) and reference is not None
+                source = reference if split else field
+                idx = rng.choice(np.flatnonzero(on), size=min(n, int(on.sum())),
+                                 replace=False)
+                d = depth_all[idx]
+                pairs = [(name, var, source, back.layer(i)[name])]
+                if split:
+                    pairs.append((pert_name, part.variables[pert_name],
+                                  field.perturbation, back.layer(i)[name].perturbation))
+                for label, held, want, got in pairs:
+                    if label == name and split:
+                        got = getattr(got, "reference", got)
+                    shape = want.stored_shape
+                    where = f"part_{k}/{label} on layer {i}"
+                    if held.values.ndim == 1 + len(shape):
+                        _stored_against(held.values[idx], want.evaluate(d, 0.0, 0.0),
+                                        where, rtol=rtol)
+                        _stored_against(held.values[idx], got.evaluate(d, 0.0, 0.0),
+                                        f"{where} read back", rtol=rtol)
+                        continue
+                    values = held.values.reshape((held.values.shape[0], X.size)
+                                                 + shape)
+                    j = rng.integers(X.size, size=idx.size)
+                    _stored_against(values[idx, j], want.evaluate(d, X[j], Y[j]),
+                                    where, rtol=tolerance(held.attributes))
+                    _stored_against(values[idx, j], got.evaluate(d, X[j], Y[j]),
+                                    f"{where} read back",
+                                    rtol=tolerance(held.attributes))
+                    listed = i in {int(m) for m in np.atleast_1d(
+                        held.attributes.get("radial_layers", []))}
+                    radial = bool(getattr(want, "is_radial", False))
+                    assert listed == radial, (
+                        f"{where} is {'' if listed else 'not '}in radial_layers, but "
+                        f"the model's field there is {'' if radial else 'not '}of "
+                        "depth alone")
+        disp = part.variables.get("displacement")
+        if disp is not None:
+            idx = rng.integers(depth_all.size, size=n)
+            j = rng.integers(X.size, size=n)
+            d = depth_all[idx]
+            values = disp.values.reshape(depth_all.size, X.size)[idx, j]
+            _stored_against(values, model.geometry.mapping.w(d, X[j], Y[j]),
+                            f"part_{k}/displacement", rtol=rtol)
+            _stored_against(values, back.geometry.mapping.w(d, X[j], Y[j]),
+                            f"part_{k}/displacement read back",
+                            rtol=tolerance(disp.attributes))
+    if data.geometry is not None:
+        g = data.geometry
+        w = model.geometry.mapping.w
+        assert np.array_equal(g.radii, np.asarray(w.boundaries, dtype=float)), (
+            "the geometry group's depths are not the stretch's boundaries")
+        X, Y = nodes_of(g.grid)
+        attrs = {"lateral_interpolation": g.lateral}
+        for j, depth in enumerate(g.radii):
+            values = g.values[j].ravel()
+            at = np.full(X.shape, depth)
+            where = f"geometry/boundary_displacement[{j}]"
+            _stored_against(values, w(at, X, Y), where, rtol=tolerance(attrs))
+            _stored_against(values, back.geometry.mapping.w(at, X, Y),
+                            f"{where} read back", rtol=tolerance(attrs))
+    if surfaces is None:
+        return
+    held = data.surfaces
+    assert held is not None, "the file has no surfaces group"
+    given = {name: {model.geometry.interface(w).index: fn for w, fn in on.items()}
+             for name, on in surfaces.items()}
+    names = set(held.variables)
+    assert names == set(given), (
+        f"the surfaces group holds {sorted(names)}, written with {sorted(given)}")
+    faces = sorted({k for on in given.values() for k in on})
+    assert list(held.interfaces) == faces, (
+        f"the surfaces are interfaces {list(held.interfaces)}, the functions are on "
+        f"{faces}")
+    read = read_surfaces(path)
+    x, y = held.grid.nodes
+    for name, on in given.items():
+        var = held.variables[name]
+        listed = {int(k) for k in np.atleast_1d(var.attributes["interfaces"])}
+        assert listed == set(on), (
+            f"surfaces/{name} names interfaces {sorted(listed)}, held on {sorted(on)}")
+        for row, k in enumerate(held.interfaces):
+            where = f"surfaces/{name} on interface {k}"
+            if k not in on:
+                assert np.all(np.isnan(var.values[row])), (
+                    f"{where} is not NaN, and the interface lacks it")
+                continue
+            values = var.values[row]
+            want = np.broadcast_to(np.asarray(on[k](x, y), dtype=float), values.shape)
+            _stored_against(values, want, where, rtol=tolerance(var.attributes))
+            key = data.interface_names[k]
+            fn = read[name][k if key is None else key]
+            _stored_against(values, fn(x, y), f"{where} read back",
+                            rtol=tolerance(var.attributes))
 
 
 def check_dataset(dataset: Dataset, *,
@@ -1379,11 +2038,12 @@ def check_regional(regional: RegionalGrid, *, rng: np.random.Generator | None = 
     assert held, f"{regional!r}: nothing at its centre half way down"
 
 
-def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
+def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid | Grid, *,
                        fields: Mapping[str, SurfaceVariable],
                        time: ArrayLike | None = None,
                        instant: ArrayLike | None = None,
                        radius: float | None = None,
+                       depth: float | None = None,
                        scales: Scales | None = None,
                        meta: Mapping[str, Any] | None = None,
                        citation: Iterable[str] = ()) -> None:
@@ -1396,27 +2056,48 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
     file holds exactly the given fields (their polar values apart), each
     of its stated support, rules and dimensions, its values the given
     ones with NaN preserved; and that a field's polar values are held
-    exactly when they were given.  netCDF4 is imported here.
+    exactly when they were given.  A flat file
+    (`surfacefile.SCHEMA_FLAT`) is held to its `cartesian.Grid`: its grid
+    the given one (the domain's bounds and padding to the bit, and the
+    shape), its `depth` as given and no radius, and no polar values.
+    netCDF4 is imported here.
     """
     from datetime import datetime
 
-    from .surfacefile import SCHEMA, read_surface_file, validate_structure
+    from .surfacefile import (SCHEMA, SCHEMA_FLAT, read_surface_file, schema_of,
+                              validate_structure)
     from .units import BASE, Scales
 
     validate_structure(path)
-    data = read_surface_file(path)
-    assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
-    assert data.grid.kind == grid.kind and data.grid.lmax == grid.lmax, (
-        "the file's grid is not of the given kind and band")
-    assert np.allclose(data.grid.colatitudes, grid.colatitudes, rtol=0,
-                       atol=1e-12), "the file's colatitudes are not the grid's"
-    assert np.allclose(data.grid.longitudes, grid.longitudes, rtol=0,
-                       atol=1e-12), "the file's longitudes are not the grid's"
-    assert (grid.weights is None) == (data.grid.weights is None), (
-        "the file does not hold the grid's weights")
-    if grid.weights is not None:
-        assert np.allclose(data.grid.weights, grid.weights, rtol=1e-15), (
-            "the file's weights are not the grid's")
+    if schema_of(path) == SCHEMA_FLAT:
+        from .cartesian.surfacefile import read_surface_file as read_flat
+        data = read_flat(path)
+        assert data.grid == grid, f"the file's grid is {data.grid!r}, not {grid!r}"
+        assert radius is None, "a flat surface lies at a depth, not a radius"
+        assert data.depth == (None if depth is None else float(depth)), (
+            f"the file's depth is {data.depth!r}, not {depth!r}")
+        lateral = tuple(grid.shape)
+    else:
+        data = read_surface_file(path)
+        assert data.schema == SCHEMA, f"the file's schema is {data.schema!r}"
+        assert depth is None, "a spherical surface lies at a radius, not a depth"
+        assert data.grid.kind == grid.kind and data.grid.lmax == grid.lmax, (
+            "the file's grid is not of the given kind and band")
+        assert np.allclose(data.grid.colatitudes, grid.colatitudes, rtol=0,
+                           atol=1e-12), "the file's colatitudes are not the grid's"
+        assert np.allclose(data.grid.longitudes, grid.longitudes, rtol=0,
+                           atol=1e-12), "the file's longitudes are not the grid's"
+        assert (grid.weights is None) == (data.grid.weights is None), (
+            "the file does not hold the grid's weights")
+        if grid.weights is not None:
+            assert np.allclose(data.grid.weights, grid.weights, rtol=1e-15), (
+                "the file's weights are not the grid's")
+        if radius is None:
+            assert data.radius is None, "the file states a radius it was not given"
+        else:
+            assert data.radius == float(radius), (
+                f"the file's radius is {data.radius!r}, not {radius!r}")
+        lateral = (grid.ntheta, grid.nphi)
     for name, want in (("time", time), ("instant", instant)):
         stored = getattr(data, name)
         assert (want is None) == (stored is None), (
@@ -1424,11 +2105,6 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
         if want is not None:
             assert np.array_equal(stored, np.asarray(want, dtype=float)), (
                 f"the file's {name} values are not as given")
-    if radius is None:
-        assert data.radius is None, "the file states a radius it was not given"
-    else:
-        assert data.radius == float(radius), (
-            f"the file's radius is {data.radius!r}, not {radius!r}")
     assert data.scales == (Scales.SI if scales is None else scales), (
         f"the file is in {data.scales!r}")
     assert data.source.strip(), "the file names no source"
@@ -1464,7 +2140,7 @@ def check_surface_file(path: str | os.PathLike[str], grid: AngularGrid, *,
                    "interval": (None if sizes["node"] is None
                                 else sizes["node"] - 1,),
                    "instant": (sizes["instant"],)}[field.support]
-        shape = tuple(leading) + (grid.ntheta, grid.nphi)
+        shape = tuple(leading) + lateral
         want = np.broadcast_to(np.asarray(field.values, dtype=float), shape)
         assert np.array_equal(var.values, want, equal_nan=True), (
             f"{name}: the file's values are not as given")
@@ -1773,12 +2449,6 @@ def check_fault_file(path: str | os.PathLike[str], fault: Fault, *,
 #: node gmsh places on a trimmed edge may lie off the surface it trims.
 _CAD_RTOL = 1e-7
 
-#: How far the part of a fault carried across the surface may stray from
-#: the fault's own surface continued, as a fraction of how far beyond the
-#: edge it lies: measured 2e-5 for a plane and 8.3e-4 for a curved patch
-#: under a relief of 0.05, carried by up to 0.07 on a unit ball.
-_CARRIED_SLOPE = 2e-3
-
 
 def _patch_size(patch: Patch) -> float:
     """The longer diagonal between a patch's corners."""
@@ -1833,8 +2503,9 @@ def _nearest_edges(found: Location) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray,
                        tip: np.ndarray, free: np.ndarray, *, distance: float) -> None:
     """A fault's nodes against the fault (`check_fault_mesh`): `nodes` its
-    faces' nodes, `tip` and `free` those of its tip and free edge,
-    indices into the positions `x`."""
+    faces' nodes, `tip` those of its tip and `free` those of the edges it
+    may have been carried across a boundary along, its free edge and in a
+    box its face edge, indices into the positions `x`."""
     found = fault.locate(x[nodes], strict=False)
     off = np.abs(found.distance)
     beyond = ~found.inside & (off > distance)
@@ -1846,9 +2517,11 @@ def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray
         assert free.size, (
             f"{name}: {int(np.count_nonzero(beyond))} nodes of its faces lie beyond "
             f"its edges, up to {float(off[beyond].max()):.3g}, and it has no free "
-            "edge to have been carried across the surface")
-        # the edges of the square its free edge lies along or beyond, read
-        # from its nodes clear of its tip, whose ends lie on the tip's edges
+            "edge, or face edge, to have been carried across the surface or a face "
+            "of a box")
+        # the edges of the square its free and face edges lie along or
+        # beyond, read from their nodes clear of its tip, whose ends lie on
+        # the tip's edges
         along = np.setdiff1d(free, tip)
         along = along if along.size else free
         _, sides, corner = _nearest_edges(fault.locate(x[along], strict=False))
@@ -1857,18 +2530,17 @@ def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray
             carried |= getattr(found, _EDGES[int(k)])
         assert np.all(carried[beyond]), (
             f"{name}: {int(np.count_nonzero(beyond & ~carried))} nodes of its faces "
-            "lie beyond an edge of it that is not its free edge, up to "
-            f"{float(off[beyond & ~carried].max()):.3g}")
+            "lie beyond an edge of it that is not its free edge or a face edge, up "
+            f"to {float(off[beyond & ~carried].max()):.3g}")
         for k in np.unique(found.patch[beyond]):
             m = beyond & (found.patch == k)
             patch = fault.patches[int(k)]
             stray = _off_continued(patch, x[nodes[m]], found.u[m], found.v[m])
-            allowed = (distance + _CARRIED_SLOPE * off[m]
-                       + _CAD_RTOL * _patch_size(patch))
+            allowed = distance + _CAD_RTOL * _patch_size(patch)
             assert np.all(stray <= allowed), (
                 f"{name}: a node of the part carried across the surface lies "
                 f"{float(np.max(stray)):.3g} off the fault continued beyond its "
-                f"edge, more than {float(allowed[np.argmax(stray)]):.3g}")
+                f"edge, more than {allowed:.3g}")
     # every node of its tip on an edge of the square, held or not
     on_tip = np.isin(nodes, tip) & ~beyond
     if np.any(on_tip):
@@ -1886,7 +2558,7 @@ def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray
 
 
 def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Fault], *,
-                     mapping: Mapping | None = None, distance: float) -> None:
+                     mapping: BodyMapping | None = None, distance: float) -> None:
     """Hold a mesh with faults built in to what its manifest promises of
     them (the format page of the mesh manifest).
 
@@ -1903,17 +2575,19 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
     cells lie one on each side of it by the rule a consumer applies
     (`mesh3d.manifest.plus_cell`); every node of its faces, high-order
     ones included, lies within `distance` of the fault once mapped, or,
-    for a fault with a free edge, beyond the edge its free edge lies
-    along (`Location` names it), where it was carried across the
-    surface, and there within `distance`, plus a five-hundredth of how
-    far beyond it lies, plus the CAD kernel's tolerance (a
-    ten-millionth of the patch's size), of the patch's own surface
-    continued beyond that edge; every node of
+    for a fault with a free edge (or in a box a face edge), beyond the
+    edge that lies along (`Location` names it), where it was carried
+    across the surface (or a face of the box), and there within
+    `distance`, plus the CAD kernel's tolerance (a ten-millionth of the
+    patch's size), of the patch's own surface continued beyond that
+    edge, the part carried being the preimage of that continuation; every node of
     its tip lies on an edge of its patch, within `distance` and that
-    tolerance; its curve groups hold the edges of its faces that
-    the rule a consumer of a mesh without curves applies gives
-    (`mesh3d.manifest.fault_curves`), and its `ends_on` the faults that
-    rule finds it ending on.  And the collars: the classification of
+    tolerance; its curve groups (`MeshManifest.fault_curves`: in a box
+    its face edge too, on the base and sides) hold the edges of its
+    faces that the rule a consumer of a mesh without curves applies
+    gives (`mesh3d.manifest.fault_curves`, the box's faces given), and
+    its `ends_on` the faults that rule finds it ending on.  And the
+    collars: the classification of
     every fault's walls on the mesh as read
     (`mesh3d.manifest.walls_of_faults`) gives each cell the element
     attribute it carries, every cell's attribute is one of the layer it
@@ -1939,7 +2613,8 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
     triangles = {e["name"]: mesh.faces_with(e["attribute"]) for e in card.faults}
     recovered = dict(zip(triangles, mf.fault_curves(
         [t[:, :3] for t in triangles.values()],
-        mesh.faces_with(card.surface_attribute)[:, :3])))
+        mesh.faces_with(card.surface_attribute)[:, :3],
+        faces=mesh.boundary_of(card.face_attributes))))
     layer = mesh.layers(card)
     walls = mesh.walls(card)
     try:
@@ -1981,12 +2656,14 @@ def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Faul
         except ValueError as error:
             raise AssertionError(f"{name}: {error}") from None
 
-        tip, free = (np.unique(mesh.curves[record[key]]) if record[key] is not None
-                     else np.empty(0, dtype=np.int64) for key in ("tip", "free_edge"))
-        _check_fault_nodes(name, fault, x, np.unique(tri), tip, free,
-                           distance=distance)
+        tip, free, cut = (np.unique(mesh.curves[record[key]])
+                          if record.get(key) is not None
+                          else np.empty(0, dtype=np.int64)
+                          for key in ("tip", "free_edge", "face_edge"))
+        _check_fault_nodes(name, fault, x, np.unique(tri), tip,
+                           np.union1d(free, cut), distance=distance)
 
-        for key in ("tip", "free_edge", "junction"):
+        for key in card.fault_curves:
             expected = {(int(a), int(b)) for a, b in getattr(recovered[name], key)}
             group = record[key]
             got = (set() if group is None else

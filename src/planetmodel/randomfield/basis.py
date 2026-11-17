@@ -1,10 +1,12 @@
-"""Truncated eigenbases of the radial operators, as coordinates for fields.
+"""Truncated eigenbases of the family's operators, as coordinates for fields.
 
-The eigenfunctions of one member A_l of a `RadialOperatorFamily`,
-M-orthonormal on the mesh, are an orthonormal basis of the discrete
-weighted space L^2(w dr), and the leading ones a finite-dimensional
-subspace of it.  A `SpectralBasis` is that subspace made usable: a
-function is its vector of coefficients c, and
+The eigenfunctions of one member of a `SeparableOperatorFamily` (the
+A_l of a degree l on a ball or annulus, the member of an order on a
+disk or of a lateral eigenvalue on a flat layer), M-orthonormal on the
+mesh, are an orthonormal basis of the discrete weighted space
+L^2(w dr), and the leading ones a finite-dimensional subspace of it.
+A `SpectralBasis` is that subspace made usable: a function is its
+vector of coefficients c, and::
 
     synthesis      u = Phi c            nodal values from coefficients,
     analysis       c = Phi^T M u        the M-orthogonal projection back,
@@ -56,7 +58,7 @@ from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
 from .mesh import Restriction, restriction
-from .operator import RadialOperatorFamily
+from .operator import Label, SeparableOperatorFamily
 
 __all__ = ["SpectralBasis", "SphericalBasis"]
 
@@ -66,28 +68,32 @@ _INTERVAL_RTOL = 1e-12
 
 
 class SpectralBasis:
-    """The kept eigenpairs of one A_l, with the restriction to the
-    physical interval.
+    """The kept eigenpairs of one member of a family, with the
+    restriction to the physical interval.
 
-    `family` and the degree `l` name the operator; `restrict` is the
-    physical interval inside the family's mesh, the whole mesh when
-    None.  The truncation is at most one of `nmodes` (that many leading
-    modes), `theta_max` (the modes with theta <= theta_max) or the pair
-    `power`, `tol` (the fewest leading modes whose omitted share of
-    trace(A_l^-power) is at most `tol`, never fewer than one); with none
-    of them every mode is kept.
+    `family` and the label `l` name the operator, `l` being whatever
+    the family's index takes: a degree, an order or a lateral
+    eigenvalue.  `restrict` is the physical interval inside the
+    family's mesh, the whole mesh when None.  The truncation is at
+    most one of `nmodes` (that many leading modes), `theta_max` (the
+    modes with theta <= theta_max) or the pair `power`, `tol` (the
+    fewest leading modes whose omitted share of trace(A_l^-power) is at
+    most `tol`, never fewer than one); with none of them every mode is
+    kept.
 
-    Attributes: `family`, `degree`, `restriction`, `theta` (the kept
-    eigenvalues, ascending, read-only), `nmodes`, and `r`, the physical
-    nodes.
+    Attributes: `family`, `degree` (the member's label as the family
+    holds it: the integer of a degree or an order, the float of a
+    lateral eigenvalue), `lateral_eigenvalue`, `restriction`, `theta`
+    (the kept eigenvalues, ascending, read-only), `nmodes`, and `r`,
+    the physical nodes.
     """
 
-    def __init__(self, family: RadialOperatorFamily, l: int, *,
+    def __init__(self, family: SeparableOperatorFamily, l: Label, *,
                  restrict: Restriction | None = None, nmodes: int | None = None,
                  theta_max: float | None = None, power: float | None = None,
                  tol: float | None = None) -> None:
-        if not isinstance(family, RadialOperatorFamily):
-            raise TypeError("family must be a RadialOperatorFamily")
+        if not isinstance(family, SeparableOperatorFamily):
+            raise TypeError("family must be a SeparableOperatorFamily")
         if (power is None) != (tol is None):
             raise ValueError("power and tol are given together")
         rules = sum(x is not None for x in (nmodes, theta_max, power))
@@ -102,7 +108,7 @@ class SpectralBasis:
             raise ValueError("the restriction is not one of the family's mesh")
 
         self.family = family
-        self.degree = int(l)
+        self.degree = family.label(l)
         self.restriction = restrict
         self.r = restrict.r
 
@@ -122,7 +128,7 @@ class SpectralBasis:
         if theta_max is not None:
             theta, Phi = fam.eig(l, theta_max=float(theta_max))
             if theta.size == 0:
-                raise ValueError(f"no eigenvalue of degree {l} lies below "
+                raise ValueError(f"no eigenvalue of {fam.index} {l} lies below "
                                  f"theta_max = {theta_max:g}; the smallest is "
                                  f"{fam.eigvalsh(l)[0]:g}")
             return theta, Phi
@@ -144,7 +150,7 @@ class SpectralBasis:
             return fam.eig(l)
         theta, Phi = fam.eig(l, count=k)
         if theta.size != k:
-            raise RuntimeError(f"degree {l}: asked for {k} eigenpairs, the solver "
+            raise RuntimeError(f"{fam.index} {l}: asked for {k} eigenpairs, the solver "
                                f"returned {theta.size}")
         return theta, Phi
 
@@ -153,10 +159,17 @@ class SpectralBasis:
         """The number of modes kept."""
         return int(self.theta.size)
 
+    @property
+    def lateral_eigenvalue(self) -> float:
+        """The lambda of the member the basis is of: l (l + 1) of a degree,
+        m^2 of an order, the label itself of a family indexed by value."""
+        return self.family.lateral_eigenvalue(self.degree)
+
     def modes(self) -> np.ndarray:
         """The kept eigenfunctions at the nodes of the full mesh, shape
         (nglob, nmodes), read-only: M-orthonormal columns, ascending in
-        theta.  At the centre of a ball those of degree l >= 1 vanish."""
+        theta.  At the centre of a ball or a disk those of a member with
+        lambda > 0 under the inverse-square profile vanish."""
         return self._modes
 
     def synthesise(self, coeffs: ArrayLike, *, physical: bool = True) -> np.ndarray:
@@ -184,7 +197,7 @@ class SpectralBasis:
             raise ValueError(f"expected values at the {nglob} nodes of the mesh "
                              f"along the first axis, got shape {v.shape}")
         mass = self.family.mass(self.degree)
-        v = v[nglob - mass.size:]             # the centre of a ball is massless
+        v = v[nglob - mass.size:]             # a centre is massless
         return self._Phi.T @ (mass * v if v.ndim == 1 else mass[:, None] * v)
 
     def evaluate(self, r: ArrayLike) -> np.ndarray:
@@ -237,21 +250,24 @@ class SpectralBasis:
         Phi = self._modes[self.restriction.nodes]
         return np.einsum("ij,ij->i", Phi @ C, Phi)
 
-    def galerkin(self, family: RadialOperatorFamily) -> np.ndarray:
+    def galerkin(self, family: SeparableOperatorFamily) -> np.ndarray:
         """The matrix (nmodes, nmodes) of `family`'s member of this basis's
-        degree in the kept modes: Phi^T K'_l Phi, the bilinear form of A'_l
+        label in the kept modes: Phi^T K'_l Phi, the bilinear form of A'_l
         (u^T K'_l v, with K'_l its banded pencil) between pairs of the
         M-orthonormal modes, so that for this basis's own family it is
         diag(theta), and in general the Galerkin block of A'_l on the
         span of the modes.  `family` must be on this basis's mesh with
-        the same weight.  The product is symmetrised explicitly,
-        (B + B^T) / 2, which removes its rounding asymmetry."""
+        the same weight, lateral profile and index.  The product is
+        symmetrised explicitly, (B + B^T) / 2, which removes its rounding
+        asymmetry."""
         own = self.family
-        if not isinstance(family, RadialOperatorFamily):
-            raise TypeError("family must be a RadialOperatorFamily")
-        if family.weight != own.weight:
-            raise ValueError(f"the family's weight is {family.weight!r}; this "
-                             f"basis's is {own.weight!r}")
+        if not isinstance(family, SeparableOperatorFamily):
+            raise TypeError("family must be a SeparableOperatorFamily")
+        for what in ("weight", "lateral", "index"):
+            theirs, ours = getattr(family, what), getattr(own, what)
+            if theirs != ours:
+                raise ValueError(f"the family's {what} is {theirs!r}; this "
+                                 f"basis's is {ours!r}")
         mesh, other = own.mesh, family.mesh
         if other is not mesh and (
                 other.nglob != mesh.nglob or other.ngll != mesh.ngll
@@ -278,7 +294,7 @@ class SpectralBasis:
 
     def __repr__(self) -> str:
         r1, r2 = self.restriction.interval
-        return (f"SpectralBasis(l={self.degree}, {self.nmodes} modes, "
+        return (f"SpectralBasis(l={self.degree!r}, {self.nmodes} modes, "
                 f"theta <= {self.theta[-1]:g}, on [{r1:g}, {r2:g}])")
 
 
@@ -326,7 +342,7 @@ class SphericalBasis:
         self.theta.setflags(write=False)
 
     @property
-    def family(self) -> RadialOperatorFamily:
+    def family(self) -> SeparableOperatorFamily:
         """The family the bases are of."""
         return self._bases[0].family
 

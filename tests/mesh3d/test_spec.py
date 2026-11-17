@@ -133,6 +133,21 @@ def test_interface_sizing_validates_and_scales():
 
 # --------------------------------------------------------- sizing rules
 
+def test_a_graded_sizing_takes_its_width_from_its_gradient():
+    """The decay width is the size ratio's: the size grows at the gradient
+    asked for, 0.3 by default, whatever the two sizes; equal sizes take
+    one size for the width; a gradient of zero or less is refused."""
+    s = InterfaceSizing.graded(0.03, 0.15)
+    assert s == InterfaceSizing(0.03, 0.15, (0.15 - 0.03) / 0.3)
+    assert (s.far_size - s.size) / s.decay_width == pytest.approx(0.3, rel=1e-15)
+    assert InterfaceSizing.graded(1.0, 3.0, gradient=0.5).decay_width == 4.0
+    assert InterfaceSizing.graded(0.1, 0.1) == InterfaceSizing(0.1, 0.1, 0.1)
+    with pytest.raises(ValueError, match="gradient must be positive"):
+        InterfaceSizing.graded(0.1, 0.2, gradient=0.0)
+    with pytest.raises(ValueError, match="smaller than size"):
+        InterfaceSizing.graded(0.2, 0.1)
+
+
 def test_angular_resolution_scales_with_radius():
     faces = full_geometry().interfaces
     rule = AngularResolution(h_ref=0.1, h_far=0.5)

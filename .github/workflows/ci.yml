@@ -92,14 +92,14 @@ jobs:
       - name: Build package
         run: poetry build
 
-  # The fast suite again under the oldest numpy, scipy and ducc0 that
-  # pyproject.toml admits, installed over the locked environment, so that
-  # the lower bounds stay true.  Linux and one Python: the question is the
-  # libraries' API, not the platform.  The versions here are the floors of
-  # `dependencies` in pyproject.toml and move with them.  The newest
+  # The fast suite again under the oldest numpy, scipy, ducc0 and finufft
+  # that pyproject.toml admits, installed over the locked environment, so
+  # that the lower bounds stay true.  Linux and one Python: the question is
+  # the libraries' API, not the platform.  The versions here are the floors
+  # of `dependencies` in pyproject.toml and move with them.  The newest
   # versions the pins admit are newest.yml's.
   lowest-pins:
-    name: Test (lowest numpy, scipy and ducc0)
+    name: Test (lowest numpy, scipy, ducc0 and finufft)
     runs-on: ubuntu-latest
 
     steps:
@@ -118,12 +118,12 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev --extras "plot netcdf"
 
-      - name: Step numpy, scipy and ducc0 down to their floors
-        run: pip install "numpy==2.0.*" "scipy==1.15.*" "ducc0==0.41.*"
+      - name: Step numpy, scipy, ducc0 and finufft down to their floors
+        run: pip install "numpy==2.0.*" "scipy==1.15.*" "ducc0==0.41.*" "finufft==2.3.*"
 
       - name: Test with pytest
         run: |
-          python -c "import numpy, scipy, ducc0; print(numpy.__version__, scipy.__version__, ducc0.__version__)"
+          python -c "import numpy, scipy, ducc0, finufft; print(numpy.__version__, scipy.__version__, ducc0.__version__, finufft.__version__)"
           poetry run pytest
 
   # The gmsh unit geometries and the MFEM exports, which the fast suite
@@ -219,11 +219,18 @@ jobs:
       - name: The Python reads what the C++ wrote
         env:
           PLANETMODEL_CPP_WRITTEN: build/cpp/tests/written
-        run: poetry run pytest -q tests/test_cpp_written.py tests/test_cpp_written_decks.py
+        run: >-
+          poetry run pytest -q tests/test_cpp_written.py tests/test_cpp_written_decks.py
+          tests/test_cpp_written_cartesian.py
 
-      # The example reader, on a file the Python wrote.
+      # The example readers, on files the Python wrote.
       - name: The example reads a Python model file
         run: build/cpp/examples/planetmodel_read_model cpp/tests/fixtures/model_stacked.nc
+
+      - name: The flat example reads a Python flat model file
+        run: >-
+          build/cpp/examples/planetmodel_read_flat_model
+          cpp/tests/fixtures/flat_model_stacked.nc
 
       # The kernel the example wrote, drawn by tutorial 15, which checks it
       # against the Python's own at every node.

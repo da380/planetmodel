@@ -4,13 +4,15 @@ A field is numbers plus a Character = (rank, weight), and push-forward
 is one generic operation driven by that character alone.  For a mapping
 m taking the reference body to the physical one, with F[i, j] = d m_i /
 d X_j and J = det F, a contravariant field of rank n and weight 1
-transforms as
+transforms as ::
 
     T_phys[i1..in](x) = (1/J) F[i1, m1] ... F[in, mn] T_ref[m1..mn](X)
 
 with x = m(X); a weight-0 field carries the factors of F but no 1/J,
 and a rank-0 weight-0 field simply composes with the mapping.  In
 particular rho_phys = rho_ref / J.
+
+::
 
     field                                         rank  weight
     rho                                              0       1

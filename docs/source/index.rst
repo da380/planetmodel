@@ -13,7 +13,8 @@ it with ellipticity or surface topography, and mesh it: a
 spectral-element mesh along the radius, or a 2D or 3D finite-element
 mesh for `MFEM <https://mfem.org>`_, refined where you need it.  A
 sub-package, `planetmodel.randomfield`, draws Matérn random fields on
-balls, annuli and layers.
+balls, annuli and layers, and `planetmodel.cartesian.randomfield` on
+the boxes and layers of flat models.
 
 A model is three things:
 
@@ -32,8 +33,9 @@ Installation
 
    pip install planetmodel
 
-The base install depends on numpy, scipy and ducc0, which does the
-spherical-harmonic transforms.  Meshing, MFEM export, the model file,
+The base install depends on numpy, scipy, ducc0, which does the
+spherical-harmonic transforms, and finufft, which does the non-uniform
+Fourier transforms.  Meshing, MFEM export, the model file,
 plotting and maps are extras:
 
 .. code-block:: bash
@@ -58,9 +60,11 @@ The files the library writes for codes in other languages, described
 for their readers:
 
 * :doc:`formats/model_file`: a model in one netCDF file, its fields on
-  angular grids at radial nodes, and its mapping.
-* :doc:`formats/surface_file`: fields on one spherical surface, static
-  or in time, in one netCDF file.
+  angular grids at radial nodes, and its mapping; a flat model's on
+  horizontal grids at depth nodes.
+* :doc:`formats/surface_file`: fields on one spherical surface, or on a
+  horizontal plane of a flat body, static or in time, in one netCDF
+  file.
 * :doc:`formats/fault_file`: a fault, its patches of surface and the slip
   on them, static or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what

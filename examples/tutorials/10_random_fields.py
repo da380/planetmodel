@@ -185,7 +185,7 @@ except ImportError as exc:
 # %% [markdown]
 # ## The operator family underneath
 #
-# `RadialOperatorFamily` holds the operator A = 1 - div(lambda^2 grad)
+# `SeparableOperatorFamily` holds the operator A = 1 - div(lambda^2 grad)
 # on the mesh as one matrix A_l for each spherical-harmonic degree l,
 # together with its mass matrix, its eigenvalues and eigenvectors, its
 # powers, its inverse and its white noise. These are the pieces from

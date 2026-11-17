@@ -120,6 +120,14 @@ inline constexpr std::string_view MODEL_SCHEMA = "planetmodel.model/1";
  */
 inline constexpr std::string_view MODEL_SCHEMA_WITH_LOG_RULES = "planetmodel.model/2";
 
+/**
+ * @brief The schema of a flat model file, a model of `planetmodel.cartesian`
+ * layered in depth over a box or a rectangle, which `ReadModelFile` refuses
+ * by name: `planetmodel::cartesian::ReadModelFile`
+ * (`planetmodel/cartesian/modelfile.hpp`) reads it.
+ */
+inline constexpr std::string_view MODEL_SCHEMA_FLAT = "planetmodel.model/3";
+
 /** @brief The CF conventions the file follows; groups are admitted from 1.8. */
 inline constexpr std::string_view MODEL_CONVENTIONS = "CF-1.8";
 
@@ -225,10 +233,15 @@ struct FileVariable {
     return detail::NumbersOf(attributes, key);
   }
 
-  /** @brief Whether the variable varies with direction. */
+  /**
+   * @brief Whether the variable varies laterally: its dimensions after the
+   * first are a grid's, (latitude, longitude) in a spherical file, and in a
+   * flat one (x, y) over a box or (x) over a rectangle.
+   */
   [[nodiscard]] bool IsLateral() const {
-    return dimensions.size() >= 3 && dimensions[1] == "latitude" &&
-           dimensions[2] == "longitude";
+    return (dimensions.size() >= 3 && dimensions[1] == "latitude" &&
+            dimensions[2] == "longitude") ||
+           (dimensions.size() >= 2 && dimensions[1] == "x");
   }
 };
 
@@ -2627,7 +2640,9 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
 
 /**
  * @brief A model file, read whole and checked as the Python's
- * `read_model_file` checks it.
+ * `read_model_file` checks it; a file of another schema is refused by its
+ * schema before anything else is read, a flat model file
+ * (`MODEL_SCHEMA_FLAT`) naming its reader.
  * @param path The file.
  * @return Its numbers and metadata, as stored.
  * @throws planetmodel::Error naming the file and the place of the first
@@ -2650,6 +2665,18 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   const auto schema = text("schema");
   if (!schema) fail("schema", "is missing: not a planetmodel model file");
   out.schema_ = *schema;
+  // the schema first: a file of another schema is refused by it, not by
+  // whatever of its structure this reader would stumble on
+  if (out.schema_ != MODEL_SCHEMA && out.schema_ != MODEL_SCHEMA_WITH_LOG_RULES) {
+    fail("schema",
+         std::format("is {}, and this reader reads {} and {}{}", out.schema_, MODEL_SCHEMA,
+                     MODEL_SCHEMA_WITH_LOG_RULES,
+                     out.schema_ == MODEL_SCHEMA_FLAT
+                         ? "; a file of that schema is a flat model's, read by "
+                           "planetmodel::cartesian::ReadModelFile "
+                           "(planetmodel/cartesian/modelfile.hpp)"
+                         : ""));
+  }
   out.name_ = text("name");
   out.written_by_ = text("source").value_or("");
   out.created_ = text("created").value_or("");

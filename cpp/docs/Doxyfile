@@ -21,7 +21,8 @@ STRIP_FROM_PATH        = include
 STRIP_FROM_INC_PATH    = include
 
 # The internals of a header are left out of the reference.
-EXCLUDE_SYMBOLS        = planetmodel::detail planetmodel::netcdf::detail
+EXCLUDE_SYMBOLS        = planetmodel::detail planetmodel::netcdf::detail \
+                         planetmodel::cartesian::detail
 
 OUTPUT_LANGUAGE        = English
 MARKDOWN_SUPPORT       = YES

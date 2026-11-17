@@ -5,7 +5,10 @@ the nodes of a radial layout and an angular grid, and its mapping, in
 the model's own units with its scales recorded, CF-styled so that
 xarray, Panoply and ncview open it as it stands.  The Python here is the
 definition of the format and the reference the C++ readers are held to;
-`docs/source/formats/model_file.rst` describes it for consumers.
+`docs/source/formats/model_file.rst` describes it for consumers.  This
+docstring describes the spherical file; a flat model
+(`planetmodel.cartesian`) is written to a file of schema `SCHEMA_FLAT`,
+which `cartesian.modelfile` describes where it differs.
 
 **Global attributes**: `schema` (`SCHEMA`, or `SCHEMA_WITH_LOG_RULES`
 for a file that states a radial rule in the logarithm; checked by every
@@ -107,11 +110,21 @@ that asks for one and varies with direction, is refused by name:
 does not hold a field.  A reader uses the stated rules unless its
 caller overrides them.
 
-`read_model_file` gives the numbers and the metadata as a `ModelFile`,
-the way `read_deck` gives a deck; `file_layers`, `file_geometry` and
-`file_surfaces` turn them into fields, a geometry and the functions on
-interfaces; `read_model` is the plain model, and `read_surfaces` the
-functions beside it; `schema_of` reads the schema alone.  A variable
+**The two kinds.**  What a coordinate system decides of the file is a
+`Layout`, asked by the writer and the readers here, which hold the rest
+in common: `SphericalLayout`, of `SCHEMAS`, and the flat
+`cartesian.modelfile.FlatLayout`, of `SCHEMA_FLAT`.  `write_model` takes
+the layout of the model's coordinate system; a reader takes the one of
+the schema the file states.
+
+`read_model_file` gives a spherical file's numbers and metadata as a
+`ModelFile`, the way `read_deck` gives a deck, refusing a flat one by
+its schema (`cartesian.modelfile.read_model_file` reads that, and refuses
+a spherical one); `file_layers`, `file_geometry` and `file_surfaces` turn
+the numbers of either kind into fields, a geometry and the functions on
+interfaces; `read_model` is the plain model of either kind, by what the
+file states, and `read_surfaces` the functions beside it; `schema_of`
+reads the schema alone.  A variable
 read by a rule in the logarithm is an `ExponentialLayer` on each layer,
 or the constant where the layer holds one value.
 netCDF4 (the `netcdf` extra) is imported where a file is opened.  Real
@@ -122,11 +135,11 @@ from __future__ import annotations
 
 import numbers
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -147,20 +160,23 @@ from .units import BASE, Dimensions, Scales, scaled_unit
 from .vocabulary import Constant, FieldSpec, shipped
 
 if TYPE_CHECKING:
+    from .cartesian.domains import Domain
     from .displacement import Relief
-    from .geometry import Geometry
+    from .geometry import GeometryBase
     from .gridded import GriddedFunction
-    from .model import Model
-    from .sampling import AngularGrid
+    from .model import ModelBase
+    from .sampling import AngularGrid, LateralGrid
 
-__all__ = ["SCHEMA", "SCHEMA_WITH_LOG_RULES", "SCHEMAS", "LOG_RULES", "RADIAL_RULES",
-           "CONVENTIONS", "DEFAULT_INTERPOLATION", "Grids",
+__all__ = ["SCHEMA", "SCHEMA_WITH_LOG_RULES", "SCHEMA_FLAT", "SCHEMAS", "LOG_RULES",
+           "RADIAL_RULES", "CONVENTIONS", "DEFAULT_INTERPOLATION", "Grids",
            "Interpolation", "Surfaces", "FileVariable",
-           "FilePart", "FileGeometry", "FileSurfaces", "ModelFile", "write_model",
-           "read_model_file", "file_layers", "file_geometry", "file_surfaces",
-           "read_model", "read_surfaces", "validate_structure", "schema_of",
-           "netcdf_module", "put_variable", "variable_attributes",
-           "variable_values", "grid_degrees", "grid_of_group"]
+           "FilePart", "FileGeometry", "FileSurfaces", "ModelFile", "Layout",
+           "SphericalLayout", "write_model", "read_model_file", "file_layers",
+           "file_geometry", "file_surfaces", "read_model", "read_surfaces",
+           "validate_structure", "schema_of", "read_file", "relief_grid",
+           "displacement_fields", "malformed", "real_values", "netcdf_module",
+           "put_variable", "variable_attributes", "variable_values", "grid_degrees",
+           "grid_of_group"]
 
 #: The schema string every reader checks, of a file in which no variable
 #: states a rule in the logarithm; bumped only for an incompatible change.
@@ -171,8 +187,20 @@ SCHEMA = "planetmodel.model/1"
 #: know, and so refuses the file by its schema before reading a value.
 SCHEMA_WITH_LOG_RULES = "planetmodel.model/2"
 
-#: The schemas the readers read.
+#: The schema of a flat model file, a model of `planetmodel.cartesian`
+#: (`cartesian.modelfile` describes it), which a reader of the spherical
+#: schemas refuses by its schema; a flat file states a rule in the
+#: logarithm under this one schema, its readers knowing them all.
+SCHEMA_FLAT = "planetmodel.model/3"
+
+#: The schemas of a spherical model file, which `read_model_file` reads.
 SCHEMAS = (SCHEMA, SCHEMA_WITH_LOG_RULES)
+
+#: The reader of the numbers of each kind of file, named where a reader of
+#: the other kind refuses one.
+_READERS = {SCHEMA: "planetmodel.modelfile.read_model_file",
+            SCHEMA_WITH_LOG_RULES: "planetmodel.modelfile.read_model_file",
+            SCHEMA_FLAT: "planetmodel.cartesian.modelfile.read_model_file"}
 
 #: The radial rules in the logarithm: the logarithms of the values read
 #: by the rule of `mesh1d.RADIAL_METHODS` they name, the value their
@@ -308,6 +336,9 @@ class ModelFile:
     #: When the file was written, ISO 8601 (the attribute `created`);
     #: empty in files written before the writers stamped it.
     created: str = ""
+    #: The lateral domain of a flat file, a `cartesian.Box` or
+    #: `cartesian.Rectangle`; None for a spherical one.
+    domain: Domain | None = None
 
     def part_of(self, layer: int) -> FilePart:
         """The part holding `layer`."""
@@ -317,13 +348,625 @@ class ModelFile:
         raise IndexError(f"no part holds layer {layer}")
 
 
+# -- what a coordinate system decides ---------------------------------------------
+
+class Layout(Protocol):
+    """What a model file's coordinate system decides, asked by the writer
+    and the readers of this module, which hold the rest of the format in
+    common: `SphericalLayout`, of `SCHEMAS`, and the flat
+    `cartesian.modelfile.FlatLayout`, of `SCHEMA_FLAT`.
+
+    A layout names the system whose models it writes, the schemas it
+    reads, its layered coordinate and the names it keeps; it states the
+    lateral grid of a part and of the surfaces group and reads it back,
+    with the lateral rules the grid carries; it evaluates a field at a
+    part's nodes; it holds the mapping in the forms it has; and it builds
+    the fields, functions, geometry and model the numbers are read back
+    as.  `context` is what `validate_root` reads of a file's root for the
+    rest of its reading (a flat file's domain; nothing on the sphere).
+    """
+
+    #: The coordinate system of the models written in the layout,
+    #: `Coordinates.name`.
+    system: str
+    #: The schemas the layout reads.
+    schemas: tuple[str, ...]
+    #: The layered coordinate: a part's node variable, and the suffix of
+    #: the root's `interface_<coordinate>` and the geometry group's
+    #: `boundary_<coordinate>`.
+    coordinate: str
+    #: The `long_name` of `layer_bounds`, of `interface_<coordinate>` and of
+    #: a part's `element_bounds`.
+    bounds_meaning: str
+    interface_meaning: str
+    element_meaning: str
+    #: Names the format keeps for itself, which no field may take.
+    reserved: tuple[str, ...]
+    #: The lateral rules a variable may state.
+    methods: tuple[str, ...]
+    #: The lateral rule that analyses the grid, stated only where it holds
+    #: the fields exactly (`spectral_holds`).
+    spectral: str
+    #: How a function of the lateral coordinates is called, in a message.
+    arguments: str
+    #: The attributes every part states.
+    part_attributes: tuple[str, ...]
+    #: The trailing shape of the variable `displacement`.
+    displacement_shape: tuple[int, ...]
+
+    def schema(self, logged: bool) -> str:
+        """The schema of a file in which some variable states a rule in
+        the logarithm (`logged`), or none does."""
+        ...
+
+    def check_schema(self, schema: str, logged: Sequence[str], path: object) -> None:
+        """Refuse a file whose schema disagrees with whether a variable
+        states a rule in the logarithm, `logged` naming those that do."""
+        ...
+
+    def check_grid(self, model: ModelBase, grid: object, layer: int) -> None:
+        """Refuse, by name, a grid the layout does not take for `layer`."""
+        ...
+
+    def mapping_form(self, model: ModelBase) -> str:
+        """How the model's mapping is held: 'none' (the identity), 'stack'
+        (the geometry group) or 'field' (a displacement in every part);
+        one the layout cannot hold is refused by name."""
+        ...
+
+    def outer(self, parts: Sequence[tuple[list[int], Any]]) -> Any:
+        """The grid of the part at the model's outer or free surface."""
+        ...
+
+    def check_rule(self, grid: Any, rule: str) -> None:
+        """Refuse, by name, a lateral rule the grid cannot carry."""
+        ...
+
+    def spectral_holds(self, grid: Any, fields: Sequence[object]) -> bool:
+        """Whether the spectral rule on `grid` holds every one of `fields`
+        that varies laterally exactly."""
+        ...
+
+    def inexact_step(self, model: ModelBase, grid: Any) -> float:
+        """The widest element in the layered coordinate of a layer whose
+        field declares no polynomial description, as a sample of the grid
+        takes it; refused by name where the grid sets none."""
+        ...
+
+    def write_root(self, root: Any, model: ModelBase) -> None:
+        """The root's statements of the layout, after the shared ones."""
+        ...
+
+    def grid_dimensions(self, group: Any, grid: Any) -> None:
+        """The grid's dimensions in a group."""
+        ...
+
+    def grid_attributes(self, group: Any, grid: Any) -> None:
+        """The grid's attributes of a group."""
+        ...
+
+    def grid_variables(self, group: Any, grid: Any, length: str) -> None:
+        """The grid's coordinate variables in a group, `length` the unit of
+        a length."""
+        ...
+
+    def node_attributes(self, length: str) -> dict[str, Any]:
+        """The attributes of a part's node variable."""
+        ...
+
+    def lacks_pole(self, grid: Any) -> bool:
+        """Whether a variable on the grid needs its polar values beside it."""
+        ...
+
+    def lateral_dims(self, grid: Any) -> tuple[str, ...]:
+        """The grid's dimensions, in a variable's order."""
+        ...
+
+    def lateral_shape(self, grid: Any) -> tuple[int, ...]:
+        """The grid's shape, in a variable's order."""
+        ...
+
+    def evaluate(self, field: Field, r: np.ndarray, grid: Any, *,
+                 radial: bool) -> np.ndarray:
+        """A field at the nodes `r`: (n,) + c when `radial`, (n,) + the
+        grid's shape + c otherwise, real."""
+        ...
+
+    def poles_of(self, field: Field, r: np.ndarray) -> np.ndarray:
+        """A field at both poles at the nodes `r`, (n, 2) + c, where the
+        grid lacks one."""
+        ...
+
+    def on_grid(self, fn: Callable[[np.ndarray, np.ndarray], ArrayLike],
+                grid: Any) -> ArrayLike:
+        """A function of the lateral coordinates on the grid's nodes."""
+        ...
+
+    def at_poles(self, fn: Callable[[np.ndarray, np.ndarray], ArrayLike]
+                 ) -> ArrayLike | None:
+        """A function of the lateral coordinates at both poles, where the
+        layout has any."""
+        ...
+
+    def write_displacement(self, group: Any, model: ModelBase, r: np.ndarray,
+                           grid: Any, rules: tuple[str, str], *,
+                           lacks_pole: bool, length: str) -> None:
+        """The mapping held as a displacement in one part, stating the
+        (radial, lateral) `rules`."""
+        ...
+
+    def write_stack(self, root: Any, model: ModelBase,
+                    parts: Sequence[tuple[list[int], Any]],
+                    interpolation: Interpolation) -> None:
+        """The mapping held as the geometry group."""
+        ...
+
+    def validate_root(self, ds: Any, path: object) -> Any:
+        """The checks on the root's statements of the layout, giving the
+        context of the rest of the reading."""
+        ...
+
+    def axes(self, context: Any) -> tuple[str, ...]:
+        """The lateral dimensions of every grid of the file."""
+        ...
+
+    def grid_names(self, context: Any) -> tuple[str, ...]:
+        """The variables a group's grid takes."""
+        ...
+
+    def validate_grid(self, group: Any, where: str, path: object,
+                      context: Any) -> None:
+        """The checks on a part's or the surfaces group's grid, beyond its
+        dimensions and coordinate variables."""
+        ...
+
+    def read_grid(self, group: Any, context: Any) -> Any:
+        """The grid a group's coordinates and attributes hold."""
+        ...
+
+    def validate_stack(self, group: Any, path: object, context: Any) -> None:
+        """The checks on the geometry group."""
+        ...
+
+    def read_stack(self, group: Any, context: Any) -> FileGeometry:
+        """The geometry group's numbers."""
+        ...
+
+    def radial_field(self, interval: tuple[float, float], function: Any, *,
+                     character: Character, name: str | None) -> RadialField:
+        """A field of the layered coordinate alone in the layout's system."""
+        ...
+
+    def gridded_field(self, interval: tuple[float, float], breaks: np.ndarray,
+                      grid: Any, values: np.ndarray, poles: np.ndarray | None, *,
+                      character: Character, name: str | None, radial: str,
+                      lateral: str) -> Field:
+        """Values on a grid at GLL nodes as a gridded field."""
+        ...
+
+    def gridded_function(self, grid: Any, values: np.ndarray, *, lateral: str,
+                         poles: np.ndarray | None) -> Any:
+        """Values on a grid as a gridded function of the lateral coordinates."""
+        ...
+
+    def geometry(self, data: ModelFile, interpolation: Interpolation
+                 ) -> GeometryBase:
+        """The geometry a file holds, its mapping read by the stated rules
+        unless `interpolation` names others."""
+        ...
+
+    def model(self, geometry: GeometryBase, layers: list[dict[str, Field]], *,
+              data: ModelFile, specs: Mapping[str, FieldSpec]) -> ModelBase:
+        """The model of a file's geometry and layers, in its scales."""
+        ...
+
+
+def relief_grid(reliefs: Sequence[object], default: Any,
+                interpolation: Interpolation) -> tuple[Any, str]:
+    """The grid and lateral rule the geometry group holds a stack's
+    `reliefs` (None where a surface keeps its place) by: the one grid every
+    relief given is held on, `default` where none is given, and the rule
+    they share, the bicubic one where they share none, unless
+    `interpolation` names one for `boundary_displacement`.  Reliefs not
+    held on one grid of their own are refused by name."""
+    given = [rel for rel in reliefs if rel is not None]
+    grids = [getattr(rel, "grid", None) for rel in given]
+    if not given:
+        grid = default
+    elif all(g is not None for g in grids) and all(grids[0] == g for g in grids):
+        grid = grids[0]
+    else:
+        raise ValueError(
+            "the mapping's reliefs are not held on one grid of their own, which "
+            "the geometry group takes: sample them with GriddedFunction.sampled "
+            "on the grid the file should hold them on")
+    laterals = {getattr(rel, "lateral", None) for rel in given}
+    lateral = laterals.pop() if len(laterals) == 1 and None not in laterals else "cubic"
+    if "boundary_displacement" in interpolation:
+        lateral = interpolation["boundary_displacement"][1]
+    return grid, lateral
+
+
+class SphericalLayout:
+    """The spherical model file's `Layout`: the module docstring's parts on
+    angular grids, their polar values, components in the spherical frame,
+    the mapping as boundary displacements or a displacement field, read
+    back as a `Model`."""
+
+    system = "spherical"
+    schemas = SCHEMAS
+    coordinate = "radius"
+    bounds_meaning = "radii of the layer's inner and outer boundaries"
+    interface_meaning = "radius of the interface"
+    element_meaning = "radii of the element's ends"
+    reserved = _RESERVED
+    methods = LATERAL_METHODS
+    spectral = "harmonic"
+    arguments = "(theta, phi)"
+    part_attributes = ("ngll", "grid_kind")
+    displacement_shape = (3,)
+
+    # -- writing
+
+    def schema(self, logged: bool) -> str:
+        """`SCHEMA_WITH_LOG_RULES` where a variable states a rule in the
+        logarithm, `SCHEMA` otherwise."""
+        return SCHEMA_WITH_LOG_RULES if logged else SCHEMA
+
+    def check_schema(self, schema: str, logged: Sequence[str], path: object) -> None:
+        """A rule in the logarithm is stated in a file of
+        `SCHEMA_WITH_LOG_RULES` alone, and such a file states one."""
+        if logged and schema != SCHEMA_WITH_LOG_RULES:
+            _fail(path, f"{logged[0]} states a rule in the logarithm, which a file "
+                        f"of schema {schema!r} does not hold: such a file is "
+                        f"{SCHEMA_WITH_LOG_RULES!r}")
+        if not logged and schema == SCHEMA_WITH_LOG_RULES:
+            _fail(path, f"schema is {schema!r}, a file in which a variable states "
+                        "a rule in the logarithm, and none does")
+
+    def check_grid(self, model: ModelBase, grid: object, layer: int) -> None:
+        """An `AngularGrid` for every layer."""
+        from .sampling import AngularGrid
+        if not isinstance(grid, AngularGrid):
+            raise TypeError(f"the grid of layer {layer} is not an AngularGrid")
+
+    def mapping_form(self, model: ModelBase) -> str:
+        """A radial stretch of boundary reliefs is the stack; any other
+        mapping a displacement field."""
+        geometry = model.geometry
+        if geometry.is_identity:
+            return "none"
+        h = getattr(geometry.mapping, "h", None)
+        if (getattr(h, "reliefs", None) is not None
+                and getattr(h, "boundaries", None) is not None):
+            return "stack"
+        return "field"
+
+    def outer(self, parts: Sequence[tuple[list[int], Any]]) -> Any:
+        """The last part's grid, the parts running from the centre."""
+        return parts[-1][1]
+
+    def check_rule(self, grid: AngularGrid, rule: str) -> None:
+        """`lateral.check_rule`."""
+        check_rule(grid, rule)
+
+    def spectral_holds(self, grid: AngularGrid, fields: Sequence[object]) -> bool:
+        """A grid of a shipped kind whose band is at least every field's."""
+        bands = [getattr(f, "lmax", None) for f in fields
+                 if not getattr(f, "is_radial", False)]
+        return not (grid.kind == "custom" or grid.lmax is None
+                    or any(b is None or b > grid.lmax for b in bands))
+
+    def inexact_step(self, model: ModelBase, grid: AngularGrid) -> float:
+        """0.1 / (lmax + 1) of the outer radius, from the grid's band."""
+        if grid.lmax is None:
+            raise ValueError(
+                "a field or the mapping declares no polynomial description in "
+                f"radius, and the {grid.kind!r} grid carries no band to size "
+                "the elements by: pass radial=, a RadialMesh over the skeleton")
+        return 0.1 * float(model.skeleton.boundaries[-1]) / (grid.lmax + 1)
+
+    def write_root(self, root: Any, model: ModelBase) -> None:
+        """Nothing beyond the shared statements."""
+
+    def grid_dimensions(self, group: Any, grid: AngularGrid) -> None:
+        """`latitude` and `longitude`."""
+        group.createDimension("latitude", grid.ntheta)
+        group.createDimension("longitude", grid.nphi)
+
+    def grid_attributes(self, group: Any, grid: AngularGrid) -> None:
+        """`grid_kind`, and `grid_lmax` where the grid has a band."""
+        group.setncattr("grid_kind", grid.kind)
+        if grid.lmax is not None:
+            group.setncattr("grid_lmax", np.int32(grid.lmax))
+
+    def grid_variables(self, group: Any, grid: AngularGrid, length: str) -> None:
+        """The CF coordinates `latitude` and `longitude`, and the colatitude
+        weights where the grid has them."""
+        lat, lon = grid_degrees(grid)
+        var = group.createVariable("latitude", "f8", ("latitude",))
+        var[...] = lat
+        var.units, var.standard_name = "degrees_north", "latitude"
+        var.long_name = "latitude"
+        var = group.createVariable("longitude", "f8", ("longitude",))
+        var[...] = lon
+        var.units, var.standard_name = "degrees_east", "longitude"
+        var.long_name = "longitude"
+        if grid.weights is not None:
+            put_variable(group, "colatitude_weights", ("latitude",), grid.weights,
+                 {"long_name": "colatitude quadrature weights against sin(theta) "
+                               "dtheta", "units": "1"})
+
+    def node_attributes(self, length: str) -> dict[str, Any]:
+        """`radius(node)`: an element boundary is two nodes."""
+        return {"long_name": "radius of the node; an element boundary is two nodes",
+                "units": length}
+
+    def lacks_pole(self, grid: AngularGrid) -> bool:
+        """Whether either pole is not a node."""
+        return not all(grid.pole_nodes)
+
+    def lateral_dims(self, grid: AngularGrid) -> tuple[str, ...]:
+        """(latitude, longitude)."""
+        return ("latitude", "longitude")
+
+    def lateral_shape(self, grid: AngularGrid) -> tuple[int, ...]:
+        """(ntheta, nphi)."""
+        return (grid.ntheta, grid.nphi)
+
+    def evaluate(self, field: Field, r: np.ndarray, grid: AngularGrid, *,
+                 radial: bool) -> np.ndarray:
+        """`_evaluate`: a radial field's local components at the equator,
+        any other's on the grid, through its own `on_grid` where it has one."""
+        return _evaluate(field, r, grid, radial=radial)
+
+    def poles_of(self, field: Field, r: np.ndarray) -> np.ndarray:
+        """The field at both poles, Cartesian components."""
+        return _poles_of(field, r)
+
+    def on_grid(self, fn: Callable[[np.ndarray, np.ndarray], ArrayLike],
+                grid: AngularGrid) -> ArrayLike:
+        """fn(theta, phi) on the grid's nodes."""
+        return fn(grid.colatitudes[:, None], grid.longitudes[None, :])
+
+    def at_poles(self, fn: Callable[[np.ndarray, np.ndarray], ArrayLike]
+                 ) -> ArrayLike:
+        """fn at the north then the south pole."""
+        return fn(np.array([0.0, np.pi]), np.zeros(2))
+
+    def write_displacement(self, group: Any, model: ModelBase, r: np.ndarray,
+                           grid: AngularGrid, rules: tuple[str, str], *,
+                           lacks_pole: bool, length: str) -> None:
+        """m(X) - X in the spherical frame at X, and at the poles the grid
+        lacks in Cartesian components."""
+        axes = _axes(group, VECTOR)
+        mapping = model.geometry.mapping
+        R = spherical_frame(grid.colatitudes[:, None], grid.longitudes[None, :])
+        X = r[:, None, None, None] * R[None, ..., :, 0]
+        u = np.asarray(mapping(X), dtype=float) - X
+        values = np.einsum("tpji,ntpj->ntpi", R, u)
+        attrs = {"long_name": "displacement of the mapping, m(X) - X, spherical "
+                              "components at X", "units": length,
+                 "dimensions": np.asarray([getattr(Dimensions(length=1), b)
+                                           for b in BASE], dtype=np.int32),
+                 "radial_interpolation": rules[0],
+                 "lateral_interpolation": rules[1], "coordinates": "radius"}
+        put_variable(group, "displacement", ("node", "latitude", "longitude") + axes,
+             values, attrs)
+        if lacks_pole:
+            from .frames import cartesian_points
+            P = cartesian_points(r[:, None], np.array([0.0, np.pi]), np.zeros(2))
+            put_variable(group, "displacement_poles", ("node", "pole") + axes,
+                 np.asarray(mapping(P), dtype=float) - P,
+                 {"long_name": "displacement at the north and south poles, "
+                               "Cartesian components", "units": length})
+
+    def write_stack(self, root: Any, model: ModelBase,
+                    parts: Sequence[tuple[list[int], Any]],
+                    interpolation: Interpolation) -> None:
+        """The group `geometry`: the radial stretch's boundary reliefs."""
+        h = model.geometry.mapping.h
+        reliefs, radii = list(h.reliefs), np.asarray(h.boundaries, dtype=float)
+        grid, lateral = relief_grid(reliefs, self.outer(parts), interpolation)
+        g = root.createGroup("geometry")
+        g.createDimension("boundary", radii.size)
+        g.createDimension("latitude", grid.ntheta)
+        g.createDimension("longitude", grid.nphi)
+        g.setncattr("grid_kind", grid.kind)
+        if grid.lmax is not None:
+            g.setncattr("grid_lmax", np.int32(grid.lmax))
+        length = scaled_unit(Dimensions(length=1), model.scales)
+        put_variable(g, "boundary_radius", ("boundary",), radii,
+             {"long_name": "radius of the surface the displacement belongs to",
+              "units": length})
+        lat, lon = grid_degrees(grid)
+        var = g.createVariable("latitude", "f8", ("latitude",))
+        var[...] = lat
+        var.units, var.standard_name = "degrees_north", "latitude"
+        var = g.createVariable("longitude", "f8", ("longitude",))
+        var[...] = lon
+        var.units, var.standard_name = "degrees_east", "longitude"
+        if grid.weights is not None:
+            put_variable(g, "colatitude_weights", ("latitude",), grid.weights,
+                         {"units": "1"})
+        values = np.zeros((radii.size, grid.ntheta, grid.nphi))
+        poles = np.zeros((radii.size, 2))
+        for k, rel in enumerate(reliefs):
+            if rel is None:
+                continue
+            values[k] = np.broadcast_to(
+                np.asarray(rel(grid.colatitudes[:, None], grid.longitudes[None, :]),
+                           dtype=float), (grid.ntheta, grid.nphi))
+            poles[k] = np.asarray(rel(np.array([0.0, np.pi]), np.zeros(2)),
+                                  dtype=float)
+        put_variable(g, "boundary_displacement",
+                     ("boundary", "latitude", "longitude"), values,
+                     {"long_name": "radial displacement of the surface",
+                      "units": length, "lateral_interpolation": lateral,
+                      "between": "linear"})
+        if not all(grid.pole_nodes):
+            g.createDimension("pole", 2)
+            put_variable(g, "boundary_displacement_poles", ("boundary", "pole"), poles,
+                 {"long_name": "radial displacement at the north and south poles",
+                  "units": length})
+
+    # -- reading
+
+    def validate_root(self, ds: Any, path: object) -> None:
+        """Nothing beyond the shared statements."""
+
+    def axes(self, context: Any) -> tuple[str, ...]:
+        """(latitude, longitude)."""
+        return ("latitude", "longitude")
+
+    def grid_names(self, context: Any) -> tuple[str, ...]:
+        """The coordinates and the colatitude weights."""
+        return ("latitude", "longitude", "colatitude_weights")
+
+    def validate_grid(self, group: Any, where: str, path: object,
+                      context: Any) -> None:
+        """`grid_kind` one of `sampling.KINDS`."""
+        if "grid_kind" not in group.ncattrs():
+            _fail(path, f"{where}.grid_kind is missing or not a kind of grid, one of "
+                        f"{GRID_KINDS}")
+        if group.getncattr("grid_kind") not in GRID_KINDS:
+            _fail(path, f"{where}: grid_kind {group.getncattr('grid_kind')!r} is not "
+                        f"one of {GRID_KINDS}")
+
+    def read_grid(self, group: Any, context: Any) -> AngularGrid:
+        """`grid_of_group`."""
+        return grid_of_group(group)
+
+    def validate_stack(self, group: Any, path: object, context: Any) -> None:
+        """`_validate_stack`."""
+        _validate_stack(group, path)
+
+    def read_stack(self, group: Any, context: Any) -> FileGeometry:
+        """The surfaces' radii, grid, displacements and polar values."""
+        var = group.variables["boundary_displacement"]
+        poles = (np.asarray(group.variables["boundary_displacement_poles"][:],
+                            dtype=float)
+                 if "boundary_displacement_poles" in group.variables else None)
+        return FileGeometry(
+            np.asarray(group.variables["boundary_radius"][:], dtype=float),
+            grid_of_group(group), np.asarray(var[:], dtype=float), poles,
+            str(var.getncattr("lateral_interpolation")),
+            str(var.getncattr("between")))
+
+    def radial_field(self, interval: tuple[float, float], function: Any, *,
+                     character: Character, name: str | None) -> RadialField:
+        """A `RadialField`."""
+        return RadialField(interval, function, character=character, name=name)
+
+    def gridded_field(self, interval: tuple[float, float], breaks: np.ndarray,
+                      grid: AngularGrid, values: np.ndarray,
+                      poles: np.ndarray | None, *, character: Character,
+                      name: str | None, radial: str, lateral: str) -> Field:
+        """A `gridded.GriddedField`, its polar values the stored ones."""
+        from .gridded import GriddedField
+        return GriddedField(interval, breaks, grid, values, character=character,
+                            name=name, radial=radial, lateral=lateral, poles=poles)
+
+    def gridded_function(self, grid: AngularGrid, values: np.ndarray, *,
+                         lateral: str, poles: np.ndarray | None) -> GriddedFunction:
+        """A `gridded.GriddedFunction`, its polar values the stored ones."""
+        from .gridded import GriddedFunction
+        return GriddedFunction(grid, values, lateral=lateral, poles=poles)
+
+    def geometry(self, data: ModelFile, interpolation: Interpolation
+                 ) -> GeometryBase:
+        """A `Geometry`, its mapping a radial stretch of the stack or a
+        `GriddedDisplacement`."""
+        from .displacement import LayerLinear
+        from .geometry import Geometry
+        from .gridded import GriddedDisplacement, GriddedFunction
+        from .mapping import RadialStretch
+        sk = data.skeleton
+        mapping = None
+        if data.geometry is not None:
+            geo = data.geometry
+            lateral = interpolation.get("boundary_displacement", (None, geo.lateral))[1]
+            reliefs = []
+            for k in range(geo.radii.size):
+                v = geo.values[k]
+                p = None if geo.poles is None else geo.poles[k]
+                if not np.any(v) and (p is None or not np.any(p)):
+                    reliefs.append(None)
+                else:
+                    reliefs.append(GriddedFunction(geo.grid, v, lateral=lateral,
+                                                   poles=p))
+            mapping = RadialStretch(LayerLinear(Skeleton(geo.radii), reliefs),
+                                    rmax=float(sk.boundaries[-1]))
+        elif any("displacement" in part.variables for part in data.parts):
+            mapping = GriddedDisplacement(sk, displacement_fields(
+                data, interpolation, self, character=VECTOR))
+        return Geometry(sk, mapping=mapping, layer_names=list(data.layer_names),
+                        interface_names=list(data.interface_names), rtol=data.rtol)
+
+    def model(self, geometry: GeometryBase, layers: list[dict[str, Field]], *,
+              data: ModelFile, specs: Mapping[str, FieldSpec]) -> ModelBase:
+        """A plain `Model`."""
+        from .model import Model
+        return Model(geometry, layers, scales=data.scales, specs=specs,
+                     name=data.name, constants=data.declared,
+                     citation=data.citation)
+
+
+#: The spherical layout, the one of every file of `SCHEMAS`.
+_SPHERICAL = SphericalLayout()
+
+
+def _layouts() -> Iterator[Layout]:
+    """Every layout, the spherical one first and the flat one imported
+    where it is first asked for."""
+    yield _SPHERICAL
+    from .cartesian.modelfile import LAYOUT
+    yield LAYOUT
+
+
+def _layout_of_model(model: ModelBase) -> Layout:
+    """The layout of the model's coordinate system, refused by name where
+    none is."""
+    system = model.coordinates.name
+    for layout in _layouts():
+        if layout.system == system:
+            return layout
+    raise ValueError(f"a model in the coordinates {system!r} has no model file")
+
+
+def _listed(items: Sequence[str]) -> str:
+    """'a', 'a and b', 'a, b and c', each quoted."""
+    quoted = [repr(x) for x in items]
+    return quoted[0] if len(quoted) == 1 else (
+        f"{', '.join(quoted[:-1])} and {quoted[-1]}")
+
+
+def _layout_of_file(ds: Any, path: object, layouts: Iterable[Layout]) -> Layout:
+    """The layout among `layouts` whose schemas hold the file's, or the
+    error naming the schemas they read and, for a file of a schema they do
+    not read, the reader that does."""
+    if "schema" not in ds.ncattrs():
+        _fail(path, "no schema attribute: not a planetmodel model file")
+    schema = ds.getncattr("schema")
+    text = not isinstance(schema, np.ndarray)
+    seen: list[Layout] = []
+    for layout in layouts:
+        if text and schema in layout.schemas:
+            return layout
+        seen.append(layout)
+    known = [s for layout in seen for s in layout.schemas]
+    other = (f"; a file of {schema!r} is read by {_READERS[schema]}"
+             if text and schema in _READERS else "")
+    _fail(path, f"schema is {schema!r}, this reader reads {_listed(known)}{other}")
+
+
 # -- writing --------------------------------------------------------------------
 
-def _parts_of(model: Model, grid: Grids) -> list[tuple[list[int], AngularGrid]]:
+def _parts_of(model: ModelBase, grid: Grids, layout: Layout
+              ) -> list[tuple[list[int], Any]]:
     """The runs of contiguous layers on one grid, or the error."""
-    from .sampling import AngularGrid
     n = model.nlayers
-    if isinstance(grid, AngularGrid):
+    if not isinstance(grid, Mapping):
         per = [grid] * n
     else:
         per = [None] * n
@@ -332,10 +975,9 @@ def _parts_of(model: Model, grid: Grids) -> list[tuple[list[int], AngularGrid]]:
         missing = [model.layers[i].name or str(i) for i in range(n) if per[i] is None]
         if missing:
             raise ValueError(f"no grid given for layers {missing}")
-    parts: list[tuple[list[int], AngularGrid]] = []
+    parts: list[tuple[list[int], Any]] = []
     for i, g in enumerate(per):
-        if not isinstance(g, AngularGrid):
-            raise TypeError(f"the grid of layer {i} is not an AngularGrid")
+        layout.check_grid(model, g, i)
         if parts and parts[-1][1] == g:
             parts[-1][0].append(i)
         else:
@@ -346,18 +988,6 @@ def _parts_of(model: Model, grid: Grids) -> list[tuple[list[int], AngularGrid]]:
                     "its own grid")
             parts.append(([i], g))
     return parts
-
-
-def _mapping_form(model: Model) -> str:
-    """'none', 'stack' (boundary reliefs) or 'field' (a displacement)."""
-    geometry = model.geometry
-    if geometry.is_identity:
-        return "none"
-    h = getattr(geometry.mapping, "h", None)
-    if (getattr(h, "reliefs", None) is not None
-            and getattr(h, "boundaries", None) is not None):
-        return "stack"
-    return "field"
 
 
 def _pieces(field: object, rule: str) -> tuple[np.ndarray, int] | None:
@@ -383,9 +1013,9 @@ def _held_pieces(field: Field, name: str, rules: Mapping[str, tuple[str, str]]
     return _pieces(field, rules[name][0])
 
 
-def _part_mesh(model: Model, layers: list[int], grid: AngularGrid,
+def _part_mesh(model: ModelBase, layers: list[int], grid: Any,
                names: Sequence[str], form: str,
-               rules: Mapping[str, tuple[str, str]]) -> RadialMesh:
+               rules: Mapping[str, tuple[str, str]], layout: Layout) -> RadialMesh:
     """The exact radial layout of a part, by the rule of the module
     docstring, each field's pieces those its variables' `rules` hold."""
     b = model.skeleton.boundaries
@@ -411,13 +1041,8 @@ def _part_mesh(model: Model, layers: list[int], grid: AngularGrid,
     pins[0], pins[-1] = lo, hi
     ngll = degree + 1
     if inexact:
-        if grid.lmax is None:
-            raise ValueError(
-                "a field or the mapping declares no polynomial description in "
-                f"radius, and the {grid.kind!r} grid carries no band to size "
-                "the elements by: pass radial=, a RadialMesh over the skeleton")
+        drmax = layout.inexact_step(model, grid)
         ngll = max(ngll, 5)
-        drmax = 0.1 * float(b[-1]) / (grid.lmax + 1)
         runs = []
         for i in layers:
             inside = pins[(pins > b[i] + tol) & (pins < b[i + 1] - tol)]
@@ -440,8 +1065,9 @@ def _restricted(mesh: RadialMesh, layers: list[int]) -> RadialMesh:
                       edges=np.append(mesh.left[elems], mesh.right[elems[-1]]))
 
 
-def _real(values: ArrayLike, field: Field) -> np.ndarray:
-    """Values as float64, a complex field refused: the file holds reals."""
+def real_values(values: ArrayLike, field: Field) -> np.ndarray:
+    """A field's values as float64, a complex field refused: the file
+    holds reals."""
     v = np.asarray(values)
     if np.iscomplexobj(v):
         raise TypeError(f"{field!r} is complex; a model file holds real fields, so "
@@ -454,37 +1080,39 @@ def _evaluate(field: Field, r: np.ndarray, grid: AngularGrid, *,
     """A field at the nodes: (n,) + c when radial, (n, nt, np) + c else."""
     if radial:
         if field.character.rank == 0:
-            return _real(field.evaluate(r, None, None), field)
-        return _real(field.evaluate(r, 0.5 * np.pi, 0.0), field)
+            return real_values(field.evaluate(r, None, None), field)
+        return real_values(field.evaluate(r, 0.5 * np.pi, 0.0), field)
     on_grid = getattr(field, "on_grid", None)
     if on_grid is not None:
-        return _real(on_grid(r, grid), field)
-    return _real(field.evaluate(r[:, None, None], grid.colatitudes[None, :, None],
-                                grid.longitudes[None, None, :]), field)
+        return real_values(on_grid(r, grid), field)
+    return real_values(field.evaluate(r[:, None, None],
+                                      grid.colatitudes[None, :, None],
+                                      grid.longitudes[None, None, :]), field)
 
 
 def _poles_of(field: Field, r: np.ndarray) -> np.ndarray:
     """A field at both poles at the radii, Cartesian: (n, 2) + c."""
-    return _real(field.evaluate(r[:, None], np.array([0.0, np.pi]), np.zeros(2),
-                                frame="cartesian"), field)
+    return real_values(field.evaluate(r[:, None], np.array([0.0, np.pi]),
+                                      np.zeros(2), frame="cartesian"), field)
 
 
 def _stated(fields: Sequence[object], name: str, interpolation: Interpolation,
-            default: tuple[str, str], grid: AngularGrid) -> tuple[str, str]:
+            default: tuple[str, str], grid: Any, layout: Layout) -> tuple[str, str]:
     """The rules a variable states: the caller's, else the one its fields
     agree on (a field of the radius alone has no lateral rule to state),
     else the default.  Fields that state different rules are refused by
-    name.  A field's harmonic rule is stated only on a grid whose
-    transforms reproduce it, a shipped kind of band at least its own,
-    and the default lateral rule otherwise; the caller's rule must be
-    one the grid can carry, and a rule in the logarithm one of a variable
-    of rank 0 of the radius alone."""
+    name.  A field's spectral rule (harmonic on the sphere) is stated only
+    on a grid whose transforms reproduce it (on the sphere a shipped kind
+    of band at least its own; `Layout.spectral_holds`), and the default
+    lateral rule otherwise; the caller's rule must be one the grid can
+    carry, and a rule in the logarithm one of a variable of rank 0 of the
+    radius alone."""
     if name in interpolation:
         radial, lateral = interpolation[name]
-        if radial not in RADIAL_RULES or lateral not in LATERAL_METHODS:
+        if radial not in RADIAL_RULES or lateral not in layout.methods:
             raise ValueError(
                 f"{name!r}: the rules must be one of {RADIAL_RULES} and one of "
-                f"{LATERAL_METHODS}, got ({radial!r}, {lateral!r})")
+                f"{layout.methods}, got ({radial!r}, {lateral!r})")
         if radial in LOG_RULES and not all(
                 getattr(f, "is_radial", False)
                 and getattr(getattr(f, "character", None), "rank", None) == 0
@@ -494,7 +1122,7 @@ def _stated(fields: Sequence[object], name: str, interpolation: Interpolation,
                 "of rank 0 of the radius alone states it, and this one varies with "
                 "direction or has components")
         if not all(getattr(f, "is_radial", False) for f in fields):
-            check_rule(grid, lateral)
+            layout.check_rule(grid, lateral)
         return radial, lateral
     radials = {getattr(f, "radial", None) for f in fields} - {None}
     laterals = {getattr(f, "lateral", None) for f in fields
@@ -507,12 +1135,8 @@ def _stated(fields: Sequence[object], name: str, interpolation: Interpolation,
             "put the layers in parts of their own")
     radial = radials.pop() if radials else default[0]
     lateral = laterals.pop() if laterals else default[1]
-    if lateral == "harmonic":
-        bands = [getattr(f, "lmax", None) for f in fields
-                 if not getattr(f, "is_radial", False)]
-        if (grid.kind == "custom" or grid.lmax is None
-                or any(b is None or b > grid.lmax for b in bands)):
-            lateral = default[1]
+    if lateral == layout.spectral and not layout.spectral_holds(grid, fields):
+        lateral = default[1]
     return radial, lateral
 
 
@@ -533,7 +1157,7 @@ def _asks_values(field: object) -> bool:
 
 
 def _field_rules(fields: Mapping[int, object], name: str, interpolation: Interpolation,
-                 grid: AngularGrid) -> tuple[str, str]:
+                 grid: Any, layout: Layout) -> tuple[str, str]:
     """The rules a variable of the fields on its layers states: the
     caller's; else `log-polynomial` where a field asks for a rule in the
     logarithm (`_asks_log`) and none for one in its values
@@ -542,7 +1166,7 @@ def _field_rules(fields: Mapping[int, object], name: str, interpolation: Interpo
     `_stated`'s.  A variable whose layers ask for both, or that asks for a
     rule in the logarithm and varies with direction, is refused by name."""
     rules = _stated(list(fields.values()), name, interpolation, DEFAULT_INTERPOLATION,
-                    grid)
+                    grid, layout)
     if name in interpolation:
         return rules
     logs = sorted(i for i, f in fields.items() if _asks_log(f))
@@ -582,8 +1206,8 @@ def _in_values(interpolation: Interpolation, name: str) -> Interpolation:
     return {**interpolation, name: (str(radial).removeprefix("log-"), lateral)}
 
 
-def _part_rules(model: Model, layers: list[int], grid: AngularGrid,
-                names: Sequence[str], interpolation: Interpolation
+def _part_rules(model: ModelBase, layers: list[int], grid: Any,
+                names: Sequence[str], interpolation: Interpolation, layout: Layout
                 ) -> dict[str, tuple[str, str]]:
     """The rules of every variable a part holds, by `_field_rules`: a
     field's under its name, and a field written as a reference and a
@@ -597,15 +1221,15 @@ def _part_rules(model: Model, layers: list[int], grid: AngularGrid,
         if not fields:
             continue
         if not _is_split(fields):
-            out[name] = _field_rules(fields, name, interpolation, grid)
+            out[name] = _field_rules(fields, name, interpolation, grid, layout)
             continue
         references = {i: f if getattr(f, "reference", None) is None else f.reference
                       for i, f in fields.items()}
         perturbations = {i: f.perturbation for i, f in fields.items()
                          if getattr(f, "reference", None) is not None}
-        out[name] = _field_rules(references, name, interpolation, grid)
+        out[name] = _field_rules(references, name, interpolation, grid, layout)
         out[f"{name}_perturbation"] = _field_rules(
-            perturbations, name, _in_values(interpolation, name), grid)
+            perturbations, name, _in_values(interpolation, name), grid, layout)
     return out
 
 
@@ -624,7 +1248,7 @@ def _check_positive(values: np.ndarray, r: np.ndarray, name: str, layer: int,
             "finite at every node of a layer holding it")
 
 
-def _attributes(name: str, model: Model, character: Character, layers: list[int],
+def _attributes(name: str, model: ModelBase, character: Character, layers: list[int],
                 rules: tuple[str, str], *, lateral: bool) -> dict[str, Any]:
     """A field variable's attributes."""
     spec = model.spec(name)
@@ -687,50 +1311,34 @@ def grid_degrees(grid: AngularGrid) -> tuple[np.ndarray, np.ndarray]:
     return lat, lon
 
 
-def _write_part(group: Any, model: Model, index: int, layers: list[int],
-                grid: AngularGrid, mesh: RadialMesh, names: Sequence[str],
+def _write_part(group: Any, model: ModelBase, index: int, layers: list[int],
+                grid: Any, mesh: RadialMesh, names: Sequence[str],
                 rules: Mapping[str, tuple[str, str]],
-                interpolation: Interpolation, form: str) -> None:
+                interpolation: Interpolation, form: str, layout: Layout) -> None:
     """One part's layout, grid and variables, each stating its `rules`."""
     group.createDimension("node", mesh.nspec * mesh.ngll)
     group.createDimension("element", mesh.nspec)
     group.createDimension("bound", 2)
-    group.createDimension("latitude", grid.ntheta)
-    group.createDimension("longitude", grid.nphi)
+    layout.grid_dimensions(group, grid)
     group.setncattr("ngll", np.int32(mesh.ngll))
     group.setncattr("layers", np.asarray(layers, dtype=np.int32))
-    group.setncattr("grid_kind", grid.kind)
-    if grid.lmax is not None:
-        group.setncattr("grid_lmax", np.int32(grid.lmax))
+    layout.grid_attributes(group, grid)
     length = scaled_unit(Dimensions(length=1), model.scales)
     r = mesh.r.ravel()
     node_layer = np.repeat(mesh.layer, mesh.ngll)
-    put_variable(group, "radius", ("node",), r,
-         {"long_name": "radius of the node; an element boundary is two nodes",
-          "units": length})
+    put_variable(group, layout.coordinate, ("node",), r, layout.node_attributes(length))
     var = group.createVariable("element_layer", "i4", ("element",))
     var[...] = mesh.layer
     var.long_name = "skeleton layer of the element"
     put_variable(group, "element_bounds", ("element", "bound"),
          np.stack([mesh.left, mesh.right], axis=-1),
-         {"long_name": "radii of the element's ends", "units": length})
-    lat, lon = grid_degrees(grid)
-    var = group.createVariable("latitude", "f8", ("latitude",))
-    var[...] = lat
-    var.units, var.standard_name = "degrees_north", "latitude"
-    var.long_name = "latitude"
-    var = group.createVariable("longitude", "f8", ("longitude",))
-    var[...] = lon
-    var.units, var.standard_name = "degrees_east", "longitude"
-    var.long_name = "longitude"
-    if grid.weights is not None:
-        put_variable(group, "colatitude_weights", ("latitude",), grid.weights,
-             {"long_name": "colatitude quadrature weights against sin(theta) dtheta",
-              "units": "1"})
-    lacks_pole = not all(grid.pole_nodes)
+         {"long_name": layout.element_meaning, "units": length})
+    layout.grid_variables(group, grid, length)
+    lacks_pole = layout.lacks_pole(grid)
     if lacks_pole:
         group.createDimension("pole", 2)
         group.setncattr("poles", "north south")
+    lateral_dims, lateral_shape = layout.lateral_dims(grid), layout.lateral_shape(grid)
 
     for name in names:
         holders = [i for i in layers if name in model.layer(i)]
@@ -745,21 +1353,21 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
                         if getattr(f, "reference", None) is not None)
             _write_perturbed(group, model, name, fields, mesh, node_layer, grid,
                              rules[name], rules[f"{name}_perturbation"], kind,
-                             lacks_pole)
+                             lacks_pole, layout)
             continue
         radial = all(getattr(f, "is_radial", False) for f in fields.values())
-        shape = (r.size,) + (() if radial else (grid.ntheta, grid.nphi)) + c
+        shape = (r.size,) + (() if radial else lateral_shape) + c
         values = np.full(shape, np.nan)
         poles = None if radial or not lacks_pole else np.full((r.size, 2) + c, np.nan)
         for i, f in fields.items():
             m = node_layer == i
-            values[m] = _evaluate(f, r[m], grid, radial=radial)
+            values[m] = layout.evaluate(f, r[m], grid, radial=radial)
             _check_positive(values[m], r[m], name, i, rules[name][0])
             if poles is not None:
-                poles[m] = _poles_of(f, r[m])
-        dims = ("node",) if radial else ("node", "latitude", "longitude")
+                poles[m] = layout.poles_of(f, r[m])
+        dims = ("node",) if radial else ("node",) + lateral_dims
         attrs = _attributes(name, model, char, holders, rules[name], lateral=not radial)
-        attrs["coordinates"] = "radius"
+        attrs["coordinates"] = layout.coordinate
         if not radial:
             _mark_radial_layers(attrs, fields)
         put_variable(group, name, dims + axes, values, attrs)
@@ -768,36 +1376,17 @@ def _write_part(group: Any, model: Model, index: int, layers: list[int],
                  {"long_name": f"{name} at the north and south poles, Cartesian "
                                "components", "units": attrs["units"]})
     if form == "field":
-        axes = _axes(group, VECTOR)
-        mapping = model.geometry.mapping
-        R = spherical_frame(grid.colatitudes[:, None], grid.longitudes[None, :])
-        X = r[:, None, None, None] * R[None, ..., :, 0]
-        u = np.asarray(mapping(X), dtype=float) - X
-        values = np.einsum("tpji,ntpj->ntpi", R, u)
-        rules = _stated([mapping], "displacement", interpolation,
-                        _DISPLACEMENT_INTERPOLATION, grid)
-        attrs = {"long_name": "displacement of the mapping, m(X) - X, spherical "
-                              "components at X", "units": length,
-                 "dimensions": np.asarray([getattr(Dimensions(length=1), b)
-                                           for b in BASE], dtype=np.int32),
-                 "radial_interpolation": rules[0],
-                 "lateral_interpolation": rules[1], "coordinates": "radius"}
-        put_variable(group, "displacement", ("node", "latitude", "longitude") + axes,
-             values, attrs)
-        if lacks_pole:
-            from .frames import cartesian_points
-            P = cartesian_points(r[:, None], np.array([0.0, np.pi]), np.zeros(2))
-            put_variable(group, "displacement_poles", ("node", "pole") + axes,
-                 np.asarray(mapping(P), dtype=float) - P,
-                 {"long_name": "displacement at the north and south poles, "
-                               "Cartesian components", "units": length})
+        stated = _stated([model.geometry.mapping], "displacement", interpolation,
+                         _DISPLACEMENT_INTERPOLATION, grid, layout)
+        layout.write_displacement(group, model, r, grid, stated,
+                                  lacks_pole=lacks_pole, length=length)
 
 
-def _write_perturbed(group: Any, model: Model, name: str,
+def _write_perturbed(group: Any, model: ModelBase, name: str,
                      fields: Mapping[int, Field], mesh: RadialMesh,
-                     node_layer: np.ndarray, grid: AngularGrid,
+                     node_layer: np.ndarray, grid: Any,
                      ref_rules: tuple[str, str], rules: tuple[str, str], kind: str,
-                     lacks_pole: bool) -> None:
+                     lacks_pole: bool, layout: Layout) -> None:
     """A field held as a radial reference with a perturbation: two
     variables, stating `ref_rules` and `rules`."""
     r = mesh.r.ravel()
@@ -806,27 +1395,27 @@ def _write_perturbed(group: Any, model: Model, name: str,
     pert = [getattr(f, "perturbation", None) for f in fields.values()]
     pert_radial = all(p is None or getattr(p, "is_radial", False) for p in pert)
     ref = np.full((r.size,), np.nan)
-    dp_shape = (r.size,) + (() if pert_radial else (grid.ntheta, grid.nphi))
+    dp_shape = (r.size,) + (() if pert_radial else layout.lateral_shape(grid))
     dp = np.full(dp_shape, np.nan)
     poles = None if pert_radial or not lacks_pole else np.full((r.size, 2), np.nan)
     pert_char = None
     for i, f in fields.items():
         m = node_layer == i
         reference = getattr(f, "reference", None)
-        ref[m] = _evaluate(f if reference is None else reference, r[m], grid,
-                           radial=True)
+        ref[m] = layout.evaluate(f if reference is None else reference, r[m], grid,
+                                 radial=True)
         _check_positive(ref[m], r[m], name, i, ref_rules[0])
         if reference is None:
             continue
-        dp[m] = _evaluate(f.perturbation, r[m], grid, radial=pert_radial)
+        dp[m] = layout.evaluate(f.perturbation, r[m], grid, radial=pert_radial)
         _check_positive(dp[m], r[m], f"{name}_perturbation", i, rules[0])
         if poles is not None:
-            poles[m] = _poles_of(f.perturbation, r[m])
+            poles[m] = layout.poles_of(f.perturbation, r[m])
         pert_char = f.perturbation.character
     holders = sorted(fields)
     attrs = _attributes(name, model, char, holders, ref_rules, lateral=False)
     attrs.update({"perturbation": f"{name}_perturbation", "perturbation_kind": kind,
-                  "coordinates": "radius"})
+                  "coordinates": layout.coordinate})
     put_variable(group, name, ("node",), ref, attrs)
     perturbed = [i for i, f in fields.items()
                  if getattr(f, "reference", None) is not None]
@@ -836,11 +1425,11 @@ def _write_perturbed(group: Any, model: Model, name: str,
     if kind != "absolute":
         pattrs["units"] = "1"
         pattrs["dimensions"] = np.zeros(len(BASE), dtype=np.int32)
-    pattrs["coordinates"] = "radius"
+    pattrs["coordinates"] = layout.coordinate
     if not pert_radial:
         _mark_radial_layers(pattrs, {i: f.perturbation for i, f in fields.items()
                                      if getattr(f, "reference", None) is not None})
-    dims = ("node",) if pert_radial else ("node", "latitude", "longitude")
+    dims = ("node",) if pert_radial else ("node",) + layout.lateral_dims(grid)
     put_variable(group, f"{name}_perturbation", dims, dp, pattrs)
     if poles is not None:
         put_variable(group, f"{name}_perturbation_poles", ("node", "pole"), poles,
@@ -848,79 +1437,19 @@ def _write_perturbed(group: Any, model: Model, name: str,
               "units": pattrs["units"]})
 
 
-def _write_stack(root: Any, model: Model, parts: list[tuple[list[int], AngularGrid]],
-                 interpolation: Interpolation) -> None:
-    """The group `geometry`: the mapping's boundary reliefs, stacked."""
-    h = model.geometry.mapping.h
-    reliefs, radii = list(h.reliefs), np.asarray(h.boundaries, dtype=float)
-    given = [rel for rel in reliefs if rel is not None]
-    grids = [getattr(rel, "grid", None) for rel in given]
-    if not given:
-        grid = parts[-1][1]
-    elif all(g is not None for g in grids) and all(grids[0] == g for g in grids):
-        grid = grids[0]
-    else:
-        raise ValueError(
-            "the mapping's reliefs are not held on one grid of their own, which "
-            "the geometry group takes: sample them with GriddedFunction.sampled "
-            "on the grid the file should hold them on")
-    laterals = {getattr(rel, "lateral", None) for rel in given}
-    lateral = laterals.pop() if len(laterals) == 1 and None not in laterals else "cubic"
-    if "boundary_displacement" in interpolation:
-        lateral = interpolation["boundary_displacement"][1]
-    g = root.createGroup("geometry")
-    g.createDimension("boundary", radii.size)
-    g.createDimension("latitude", grid.ntheta)
-    g.createDimension("longitude", grid.nphi)
-    g.setncattr("grid_kind", grid.kind)
-    if grid.lmax is not None:
-        g.setncattr("grid_lmax", np.int32(grid.lmax))
-    length = scaled_unit(Dimensions(length=1), model.scales)
-    put_variable(g, "boundary_radius", ("boundary",), radii,
-         {"long_name": "radius of the surface the displacement belongs to",
-          "units": length})
-    lat, lon = grid_degrees(grid)
-    var = g.createVariable("latitude", "f8", ("latitude",))
-    var[...] = lat
-    var.units, var.standard_name = "degrees_north", "latitude"
-    var = g.createVariable("longitude", "f8", ("longitude",))
-    var[...] = lon
-    var.units, var.standard_name = "degrees_east", "longitude"
-    if grid.weights is not None:
-        put_variable(g, "colatitude_weights", ("latitude",), grid.weights,
-                     {"units": "1"})
-    values = np.zeros((radii.size, grid.ntheta, grid.nphi))
-    poles = np.zeros((radii.size, 2))
-    for k, rel in enumerate(reliefs):
-        if rel is None:
-            continue
-        values[k] = np.broadcast_to(
-            np.asarray(rel(grid.colatitudes[:, None], grid.longitudes[None, :]),
-                       dtype=float), (grid.ntheta, grid.nphi))
-        poles[k] = np.asarray(rel(np.array([0.0, np.pi]), np.zeros(2)), dtype=float)
-    put_variable(g, "boundary_displacement",
-                 ("boundary", "latitude", "longitude"), values,
-                 {"long_name": "radial displacement of the surface", "units": length,
-                  "lateral_interpolation": lateral, "between": "linear"})
-    if not all(grid.pole_nodes):
-        g.createDimension("pole", 2)
-        put_variable(g, "boundary_displacement_poles", ("boundary", "pole"), poles,
-             {"long_name": "radial displacement at the north and south poles",
-              "units": length})
-
-
-def _surface_holders(model: Model, surfaces: Surfaces, written: Sequence[str]
-                     ) -> dict[str, dict[int, Relief]]:
+def _surface_holders(model: ModelBase, surfaces: Surfaces, written: Sequence[str],
+                     layout: Layout) -> dict[str, dict[int, Relief]]:
     """Each surface field's functions by interface index, increasing: a
     name the format keeps or one written as a layer field, an interface
     given twice, and a name on no interface are refused."""
     if isinstance(surfaces, str) or not isinstance(surfaces, Mapping):
-        raise TypeError("surfaces maps names to {interface: function of (theta, phi)}")
+        raise TypeError("surfaces maps names to {interface: function of "
+                        f"{layout.arguments}}}")
     out: dict[str, dict[int, Relief]] = {}
     for name, on in surfaces.items():
         if not isinstance(name, str) or not name:
             raise TypeError(f"a surface field's name is a string, got {name!r}")
-        if name in _RESERVED or name.endswith(("_perturbation", "_poles")):
+        if name in layout.reserved or name.endswith(("_perturbation", "_poles")):
             raise ValueError(f"{name!r} is a name the model file keeps for itself")
         if name in written:
             raise ValueError(f"{name!r} is written as a field of the layers; a name "
@@ -936,7 +1465,7 @@ def _surface_holders(model: Model, surfaces: Surfaces, written: Sequence[str]
                 raise ValueError(f"{name!r} is given twice on interface {face.index}")
             if not callable(fn):
                 raise TypeError(f"{name!r} on interface {which!r} is not a function "
-                                "of (theta, phi)")
+                                f"of {layout.arguments}")
             held[face.index] = fn
         if not held:
             raise ValueError(f"{name!r} is held on no interface")
@@ -945,12 +1474,13 @@ def _surface_holders(model: Model, surfaces: Surfaces, written: Sequence[str]
 
 
 def _surface_grid(held: Mapping[str, Mapping[int, Relief]],
-                  parts: list[tuple[list[int], AngularGrid]]) -> AngularGrid:
-    """The grid the functions share, else the outermost part's."""
+                  parts: list[tuple[list[int], Any]], layout: Layout) -> Any:
+    """The grid the functions share, else the outermost part's (the one at
+    the free surface of a flat model)."""
     grids = [getattr(fn, "grid", None) for on in held.values() for fn in on.values()]
     if all(g is not None for g in grids) and all(grids[0] == g for g in grids):
         return grids[0]
-    return parts[-1][1]
+    return layout.outer(parts)
 
 
 def _on_angles(values: ArrayLike, shape: tuple[int, ...], name: str,
@@ -967,49 +1497,35 @@ def _on_angles(values: ArrayLike, shape: tuple[int, ...], name: str,
     return v
 
 
-def _write_surfaces(root: Any, model: Model, held: Mapping[str, Mapping[int, Relief]],
-                    grid: AngularGrid, interpolation: Interpolation) -> None:
+def _write_surfaces(root: Any, model: ModelBase,
+                    held: Mapping[str, Mapping[int, Relief]], grid: Any,
+                    interpolation: Interpolation, layout: Layout) -> None:
     """The group `surfaces`: each name's functions on its interfaces."""
     faces = sorted({k for on in held.values() for k in on})
     g = root.createGroup("surfaces")
     g.createDimension("surface", len(faces))
-    g.createDimension("latitude", grid.ntheta)
-    g.createDimension("longitude", grid.nphi)
-    g.setncattr("grid_kind", grid.kind)
-    if grid.lmax is not None:
-        g.setncattr("grid_lmax", np.int32(grid.lmax))
+    layout.grid_dimensions(g, grid)
+    layout.grid_attributes(g, grid)
     var = g.createVariable("surface_interface", "i4", ("surface",))
     var[...] = np.asarray(faces, dtype=np.int32)
     var.long_name = "the interface the surface is, by its index at the root"
-    lat, lon = grid_degrees(grid)
-    var = g.createVariable("latitude", "f8", ("latitude",))
-    var[...] = lat
-    var.units, var.standard_name = "degrees_north", "latitude"
-    var.long_name = "latitude"
-    var = g.createVariable("longitude", "f8", ("longitude",))
-    var[...] = lon
-    var.units, var.standard_name = "degrees_east", "longitude"
-    var.long_name = "longitude"
-    if grid.weights is not None:
-        put_variable(g, "colatitude_weights", ("latitude",), grid.weights,
-             {"long_name": "colatitude quadrature weights against sin(theta) dtheta",
-              "units": "1"})
-    lacks_pole = not all(grid.pole_nodes)
+    layout.grid_variables(g, grid, scaled_unit(Dimensions(length=1), model.scales))
+    lacks_pole = layout.lacks_pole(grid)
     if lacks_pole:
         g.createDimension("pole", 2)
         g.setncattr("poles", "north south")
     row = {k: i for i, k in enumerate(faces)}
-    theta, phi = grid.colatitudes[:, None], grid.longitudes[None, :]
+    shape = layout.lateral_shape(grid)
     for name, on in held.items():
-        values = np.full((len(faces), grid.ntheta, grid.nphi), np.nan)
+        values = np.full((len(faces),) + shape, np.nan)
         poles = np.full((len(faces), 2), np.nan)
         for k, fn in on.items():
-            values[row[k]] = _on_angles(fn(theta, phi), (grid.ntheta, grid.nphi),
-                                        name, k)
-            poles[row[k]] = _on_angles(fn(np.array([0.0, np.pi]), np.zeros(2)), (2,),
-                                       name, k)
+            values[row[k]] = _on_angles(layout.on_grid(fn, grid), shape, name, k)
+            at = layout.at_poles(fn)
+            if at is not None:
+                poles[row[k]] = _on_angles(at, (2,), name, k)
         rules = _stated(list(on.values()), name, interpolation, DEFAULT_INTERPOLATION,
-                        grid)
+                        grid, layout)
         spec = model.spec(name)
         dims = None if spec is None else spec.dimensions
         attrs: dict[str, Any] = {
@@ -1021,24 +1537,28 @@ def _write_surfaces(root: Any, model: Model, held: Mapping[str, Mapping[int, Rel
         if dims is not None:
             attrs["dimensions"] = np.asarray([getattr(dims, b) for b in BASE],
                                              dtype=np.int32)
-        put_variable(g, name, ("surface", "latitude", "longitude"), values, attrs)
+        put_variable(g, name, ("surface",) + layout.lateral_dims(grid), values, attrs)
         if lacks_pole:
             put_variable(g, f"{name}_poles", ("surface", "pole"), poles,
                  {"long_name": f"{name} at the north and south poles",
                   "units": attrs["units"]})
 
 
-def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
+def write_model(path: str | os.PathLike[str], model: ModelBase, *, grid: Grids,
                 radial: RadialMesh | None = None,
                 fields: Iterable[str] | None = None,
                 interpolation: Interpolation | None = None,
                 meta: Mapping[str, Any] | None = None,
                 surfaces: Surfaces | None = None,
-                surface_grid: AngularGrid | None = None,
+                surface_grid: LateralGrid | None = None,
                 source: str | None = None) -> Path:
     """Write `model` to a model file at `path`, which is returned.
 
-    `grid` is one `AngularGrid` for every layer, or a mapping from layers
+    A spherical model is written as the module docstring says, and a flat
+    one (`planetmodel.cartesian`) as `cartesian.modelfile` says, the
+    arguments the same: the layout is the model's coordinate system's.
+    `grid` is one `AngularGrid` for every layer (a `cartesian.Grid` over
+    the domain for a flat model), or a mapping from layers
     (by index or name) to grids, every layer given one: contiguous layers
     on one grid form one part, and a grid's layers that are not
     contiguous are refused.  `radial` is a `RadialMesh` over the model's
@@ -1051,21 +1571,24 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     a reference and a perturbation is the reference's, the perturbation
     read by the rule it names in its values); `meta` becomes
     `meta_<key>` attributes.  `surfaces` maps names to functions of
-    (theta, phi) on interfaces (by index or name), written to the group
-    `surfaces` on `surface_grid`: by default the grid the functions are
-    held on where they share one, else the outermost part's.  A surface
+    (theta, phi) on interfaces (of (x, y) on a flat model's), by index or
+    name, written to the group `surfaces` on `surface_grid`: by default
+    the grid the functions are held on where they share one, else the
+    outermost part's (the top part's of a flat model).  A surface
     field's dimensions and meaning are the model's spec of its name, and
     `interpolation` names its lateral rule as for a field.  `source`
     names the writing code and version in the attribute of that name,
     this library and its version unless given.  The model is
     written in its own units, and the file whole or not at all, with the
     permissions a plain `open(path, "w")` would give it
-    (`files.written_whole`); it is of schema `SCHEMA_WITH_LOG_RULES` where
-    a variable states a rule in the logarithm, and `SCHEMA` otherwise.
+    (`files.written_whole`); a spherical file is of schema
+    `SCHEMA_WITH_LOG_RULES` where a variable states a rule in the
+    logarithm, and `SCHEMA` otherwise, and a flat one of `SCHEMA_FLAT`.
     """
-    from .model import Model
-    if not isinstance(model, Model):
+    from .model import ModelBase
+    if not isinstance(model, ModelBase):
         raise TypeError(f"expected a Model, got {type(model).__name__}")
+    layout = _layout_of_model(model)
     nc = netcdf_module()
     interpolation = dict(interpolation or {})
     names = model.field_names() if fields is None else tuple(fields)
@@ -1075,10 +1598,10 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
     for name in names:
         if name not in known:
             raise KeyError(f"no layer holds a field {name!r}")
-        if name in _RESERVED or name.endswith(("_perturbation", "_poles")):
+        if name in layout.reserved or name.endswith(("_perturbation", "_poles")):
             raise ValueError(f"{name!r} is a name the model file keeps for itself")
-    parts = _parts_of(model, grid)
-    form = _mapping_form(model)
+    parts = _parts_of(model, grid, layout)
+    form = layout.mapping_form(model)
     if form == "field" and any(g != parts[0][1] for _, g in parts):
         raise ValueError(
             "a mapping that is not a stack of reliefs is held as a displacement "
@@ -1094,37 +1617,37 @@ def write_model(path: str | os.PathLike[str], model: Model, *, grid: Grids,
                             "a string or a number")
     if surfaces is None and surface_grid is not None:
         raise ValueError("surface_grid is given with no surfaces to hold on it")
-    held = {} if surfaces is None else _surface_holders(model, surfaces, names)
+    held = {} if surfaces is None else _surface_holders(model, surfaces, names, layout)
     on = None
     if held:
-        on = _surface_grid(held, parts) if surface_grid is None else surface_grid
+        on = (_surface_grid(held, parts, layout) if surface_grid is None
+              else surface_grid)
     path = Path(path)
     with written_whole(path) as partial:
         _write_file(nc, partial, model, parts, form, names, radial,
-                    interpolation, meta, held, on, source)
+                    interpolation, meta, held, on, source, layout)
     return path
 
 
-def _write_file(nc: ModuleType, path: Path, model: Model,
-                parts: list[tuple[list[int], AngularGrid]], form: str,
+def _write_file(nc: ModuleType, path: Path, model: ModelBase,
+                parts: list[tuple[list[int], Any]], form: str,
                 names: Sequence[str], radial: RadialMesh | None,
                 interpolation: Interpolation, meta: Mapping[str, Any],
                 held: Mapping[str, Mapping[int, Relief]],
-                surface_grid: AngularGrid | None,
-                source: str | None) -> None:
+                surface_grid: Any, source: str | None, layout: Layout) -> None:
     """The file of `write_model`, at a path of its own until it is whole."""
     from datetime import datetime, timezone
 
     from . import __version__
     plans = []
     for layers, g in parts:
-        rules = _part_rules(model, layers, g, names, interpolation)
-        mesh = (_part_mesh(model, layers, g, names, form, rules) if radial is None
-                else _restricted(radial, layers))
+        rules = _part_rules(model, layers, g, names, interpolation, layout)
+        mesh = (_part_mesh(model, layers, g, names, form, rules, layout)
+                if radial is None else _restricted(radial, layers))
         plans.append((layers, g, mesh, rules))
     logged = any(rule[0] in LOG_RULES for *_, rules in plans for rule in rules.values())
     with nc.Dataset(path, "w", format="NETCDF4") as root:
-        root.setncattr("schema", SCHEMA_WITH_LOG_RULES if logged else SCHEMA)
+        root.setncattr("schema", layout.schema(logged))
         root.setncattr("Conventions", CONVENTIONS)
         root.setncattr("title", f"planetmodel model {model.name or ''}".strip())
         root.setncattr("source", source or f"planetmodel {__version__}")
@@ -1146,6 +1669,7 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
             root.setncattr("citation", "\n".join(model.citation))
         for key, value in meta.items():
             root.setncattr(f"meta_{key}", value)
+        layout.write_root(root, model)
         root.createDimension("layer", model.nlayers)
         root.createDimension("interface", len(model.geometry.interfaces))
         root.createDimension("bound", 2)
@@ -1153,15 +1677,14 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
         length = scaled_unit(Dimensions(length=1), model.scales)
         put_variable(root, "layer_bounds", ("layer", "bound"),
                      np.stack([b[:-1], b[1:]], -1),
-                     {"long_name": "radii of the layer's inner and outer boundaries",
-                      "units": length})
+                     {"long_name": layout.bounds_meaning, "units": length})
         var = root.createVariable("layer_name", str, ("layer",))
         for i, layer in enumerate(model.geometry.layers):
             var[i] = layer.name or ""
         faces = model.geometry.interfaces
-        put_variable(root, "interface_radius", ("interface",),
+        put_variable(root, f"interface_{layout.coordinate}", ("interface",),
              np.array([f.radius for f in faces], dtype=float),
-             {"long_name": "radius of the interface", "units": length})
+             {"long_name": layout.interface_meaning, "units": length})
         var = root.createVariable("interface_name", str, ("interface",))
         for k, face in enumerate(faces):
             var[k] = face.name or ""
@@ -1173,11 +1696,11 @@ def _write_file(nc: ModuleType, path: Path, model: Model,
         var.long_name = "the part, part_<k>, holding the layer"
         for k, (layers, g, mesh, rules) in enumerate(plans):
             _write_part(root.createGroup(f"part_{k}"), model, k, layers, g, mesh,
-                        names, rules, interpolation, form)
+                        names, rules, interpolation, form, layout)
         if form == "stack":
-            _write_stack(root, model, parts, interpolation)
+            layout.write_stack(root, model, parts, interpolation)
         if held:
-            _write_surfaces(root, model, held, surface_grid, interpolation)
+            _write_surfaces(root, model, held, surface_grid, interpolation, layout)
 
 
 # -- reading --------------------------------------------------------------------
@@ -1217,20 +1740,26 @@ def grid_of_group(group: Any) -> AngularGrid:
                        lmax=None if lmax is None else int(lmax), weights=weights)
 
 
-def _fail(path: object, msg: str) -> NoReturn:
+def malformed(path: object, msg: str) -> NoReturn:
+    """Refuse a malformed model file, naming it and the first thing wrong."""
     raise ValueError(f"malformed model file {path}: {msg}")
+
+
+_fail = malformed
 
 
 def validate_structure(source: str | os.PathLike[str] | Any) -> None:
     """Check that a file, by path or as an open netCDF4 Dataset, has the
-    structure the module docstring defines, raising ValueError naming
-    the first thing wrong."""
+    structure its schema defines (the module docstring's for a spherical
+    file, `cartesian.modelfile`'s for a flat one), raising ValueError
+    naming the first thing wrong."""
     if isinstance(source, (str, os.PathLike)):
         nc = netcdf_module()
         with nc.Dataset(source, "r") as ds:
-            _validate(ds, source)
+            _validate(ds, source, _layouts())
     else:
-        _validate(source, getattr(source, "filepath", lambda: "<dataset>")())
+        _validate(source, getattr(source, "filepath", lambda: "<dataset>")(),
+                  _layouts())
 
 
 def schema_of(path: str | os.PathLike[str]) -> str:
@@ -1243,15 +1772,13 @@ def schema_of(path: str | os.PathLike[str]) -> str:
         return str(ds.getncattr("schema"))
 
 
-def _validate(ds: Any, path: object) -> None:
-    """The checks of `validate_structure` on an open dataset."""
+def _validate(ds: Any, path: object, layouts: Iterable[Layout]) -> tuple[Layout, Any]:
+    """The checks of `validate_structure` on an open dataset, by the layout
+    among `layouts` whose schema it states; that layout, and the context
+    of its reading."""
+    layout = _layout_of_file(ds, path, layouts)
     attrs = set(ds.ncattrs())
-    if "schema" not in attrs:
-        _fail(path, "no schema attribute: not a planetmodel model file")
     schema = ds.getncattr("schema")
-    if isinstance(schema, np.ndarray) or schema not in SCHEMAS:
-        _fail(path, f"schema is {schema!r}, this reader reads "
-                    f"{' and '.join(map(repr, SCHEMAS))}")
     for base in ("length", "mass", "time", "temperature"):
         key = f"scale_{base}"
         if key not in attrs or not float(ds.getncattr(key)) > 0.0:
@@ -1261,9 +1788,10 @@ def _validate(ds: Any, path: object) -> None:
         if (isinstance(rtol, str) or np.size(rtol) != 1
                 or not 0.0 < float(rtol) < 1.0):
             _fail(path, f"rtol is {rtol!r}, not a tolerance in (0, 1)")
+    context = layout.validate_root(ds, path)
     for name, dims in (("layer_bounds", ("layer", "bound")),
                        ("layer_name", ("layer",)),
-                       ("interface_radius", ("interface",)),
+                       (f"interface_{layout.coordinate}", ("interface",)),
                        ("interface_name", ("interface",)),
                        ("layer_part", ("layer",))):
         if name not in ds.variables:
@@ -1286,14 +1814,8 @@ def _validate(ds: Any, path: object) -> None:
     for k in np.unique(layer_part):
         layers = np.flatnonzero(layer_part == k)
         logged += _validate_part(ds.groups[f"part_{k}"], f"part_{k}", layers, bounds,
-                                 path)
-    if logged and schema != SCHEMA_WITH_LOG_RULES:
-        _fail(path, f"{logged[0]} states a rule in the logarithm, which a file of "
-                    f"schema {schema!r} does not hold: such a file is "
-                    f"{SCHEMA_WITH_LOG_RULES!r}")
-    if not logged and schema == SCHEMA_WITH_LOG_RULES:
-        _fail(path, f"schema is {schema!r}, a file in which a variable states a rule "
-                    "in the logarithm, and none does")
+                                 path, layout, context)
+    layout.check_schema(schema, logged, path)
     has_stack = "geometry" in ds.groups
     holding = [k for k in np.unique(layer_part)
                if "displacement" in ds.groups[f"part_{k}"].variables]
@@ -1305,31 +1827,31 @@ def _validate(ds: Any, path: object) -> None:
         _fail(path, "the mapping is held twice, as the geometry group and as a "
                     "displacement field")
     if has_stack:
-        _validate_stack(ds.groups["geometry"], path)
+        layout.validate_stack(ds.groups["geometry"], path, context)
     if "surfaces" in ds.groups:
         taken = {name for k in np.unique(layer_part)
                  for name in ds.groups[f"part_{k}"].variables}
         _validate_surfaces(ds.groups["surfaces"], path, len(ds.dimensions["interface"]),
-                           taken)
+                           taken, layout, context)
+    return layout, context
 
 
 def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
-                   path: object) -> list[str]:
+                   path: object, layout: Layout, context: Any) -> list[str]:
     """The checks on one part; the variables stating a rule in the
     logarithm, as `part_<k>/<name>`."""
     logged: list[str] = []
-    for dim in ("node", "element", "bound", "latitude", "longitude"):
+    axes = layout.axes(context)
+    for dim in ("node", "element", "bound") + axes:
         if dim not in g.dimensions:
             _fail(path, f"{where} has no dimension {dim!r}")
-    for name in ("radius", "element_layer", "element_bounds", "latitude",
-                 "longitude"):
+    for name in (layout.coordinate, "element_layer", "element_bounds") + axes:
         if name not in g.variables:
             _fail(path, f"{where} has no variable {name!r}")
-    if "ngll" not in g.ncattrs() or "grid_kind" not in g.ncattrs():
-        _fail(path, f"{where} lacks the attribute ngll or grid_kind")
-    if g.getncattr("grid_kind") not in GRID_KINDS:
-        _fail(path, f"{where}: grid_kind {g.getncattr('grid_kind')!r} is not one of "
-                    f"{GRID_KINDS}")
+    if not set(layout.part_attributes) <= set(g.ncattrs()):
+        _fail(path, f"{where} lacks the attribute "
+                    f"{' or '.join(layout.part_attributes)}")
+    layout.validate_grid(g, where, path, context)
     ngll = int(g.getncattr("ngll"))
     nelem, nnode = len(g.dimensions["element"]), len(g.dimensions["node"])
     if ngll < 2 or nelem * ngll != nnode:
@@ -1346,8 +1868,8 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
                            atol=1e-12 * span)):
         _fail(path, f"{where}: element_bounds do not tile its layers")
     lacks_pole = "pole" in g.dimensions
-    own = {"radius", "element_layer", "element_bounds", "latitude", "longitude",
-           "colatitude_weights"}
+    own = {layout.coordinate, "element_layer", "element_bounds",
+           *layout.grid_names(context)}
     for name, var in g.variables.items():
         if name in own or name.endswith("_poles"):
             continue
@@ -1355,20 +1877,20 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
         dims = tuple(var.dimensions)
         if dims[:1] != ("node",):
             _fail(path, f"{where}/{name} does not run over the nodes")
-        lateral = dims[1:3] == ("latitude", "longitude")
+        lateral = dims[1:1 + len(axes)] == axes
         need = ({"radial_interpolation"} if name == "displacement"
                 else {"radial_interpolation", "rank", "weight", "voigt"})
         if not need <= a:
             _fail(path, f"{where}/{name} lacks the attributes "
                         f"{sorted(need - a)}")
         if name == "displacement":
-            want: tuple[int, ...] = (3,)
+            want: tuple[int, ...] = layout.displacement_shape
         else:
             try:
                 want = stored_shape(_character(variable_attributes(var)))
             except (ValueError, TypeError) as error:
                 _fail(path, f"{where}/{name} states no character: {error}")
-        tail = var.shape[3 if lateral else 1:]
+        tail = var.shape[1 + len(axes) if lateral else 1:]
         if tuple(tail) != tuple(want):
             _fail(path, f"{where}/{name} has trailing axes {tuple(tail)}, but its "
                         f"character stores {tuple(want)}")
@@ -1395,7 +1917,7 @@ def _validate_part(g: Any, where: str, layers: np.ndarray, bounds: np.ndarray,
                             "variable holds")
         if lateral:
             if "lateral_interpolation" not in a or var.getncattr(
-                    "lateral_interpolation") not in LATERAL_METHODS:
+                    "lateral_interpolation") not in layout.methods:
                 _fail(path, f"{where}/{name} states no known lateral rule")
             if lacks_pole and f"{name}_poles" not in g.variables:
                 _fail(path, f"{where}/{name} varies with direction on a grid "
@@ -1430,21 +1952,17 @@ def _validate_stack(g: Any, path: object) -> None:
                     "surfaces")
 
 
-#: The variables of the surfaces group that are not fields.
-_SURFACE_OWN = ("surface_interface", "latitude", "longitude", "colatitude_weights")
-
-
-def _validate_surfaces(g: Any, path: object, ninterface: int, taken: set[str]) -> None:
+def _validate_surfaces(g: Any, path: object, ninterface: int, taken: set[str],
+                       layout: Layout, context: Any) -> None:
     """The checks on the surfaces group; `taken` holds the parts' names."""
-    for dim in ("surface", "latitude", "longitude"):
+    axes = layout.axes(context)
+    for dim in ("surface",) + axes:
         if dim not in g.dimensions:
             _fail(path, f"surfaces has no dimension {dim!r}")
-    for name in ("surface_interface", "latitude", "longitude"):
+    for name in ("surface_interface",) + axes:
         if name not in g.variables:
             _fail(path, f"surfaces has no variable {name!r}")
-    if "grid_kind" not in g.ncattrs() or g.getncattr("grid_kind") not in GRID_KINDS:
-        _fail(path, f"surfaces.grid_kind is missing or not a kind of grid, one of "
-                    f"{GRID_KINDS}")
+    layout.validate_grid(g, "surfaces", path, context)
     var = g.variables["surface_interface"]
     faces = np.asarray(var[:], dtype=float)
     if (tuple(var.dimensions) != ("surface",) or np.any(faces != np.round(faces))
@@ -1453,18 +1971,19 @@ def _validate_surfaces(g: Any, path: object, ninterface: int, taken: set[str]) -
         _fail(path, "surfaces/surface_interface is not interfaces of the file, "
                     "increasing")
     lacks_pole = "pole" in g.dimensions
+    own = ("surface_interface",) + layout.grid_names(context)
     for name, v in g.variables.items():
-        if name in _SURFACE_OWN or name.endswith("_poles"):
+        if name in own or name.endswith("_poles"):
             continue
         where = f"surfaces/{name}"
-        if tuple(v.dimensions) != ("surface", "latitude", "longitude"):
+        if tuple(v.dimensions) != ("surface",) + axes:
             _fail(path, f"{where} does not run over the surfaces and the grid")
         if name in taken:
             _fail(path, f"{where} is a layer field's name too; a name is a layer "
                         "field's or a surface field's, never both")
         a = set(v.ncattrs())
         if "lateral_interpolation" not in a or v.getncattr(
-                "lateral_interpolation") not in LATERAL_METHODS:
+                "lateral_interpolation") not in layout.methods:
             _fail(path, f"{where} states no known lateral rule")
         if "interfaces" in a and not {float(k) for k in np.atleast_1d(
                 v.getncattr("interfaces"))} <= set(faces.tolist()):
@@ -1476,10 +1995,20 @@ def _validate_surfaces(g: Any, path: object, ninterface: int, taken: set[str]) -
 
 
 def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
-    """A model file's numbers and metadata, its structure validated first."""
+    """A spherical model file's numbers and metadata, its structure
+    validated first; a flat file is refused by its schema, naming its
+    reader (`cartesian.modelfile.read_model_file`)."""
+    return read_file(path, (_SPHERICAL,))
+
+
+def read_file(path: str | os.PathLike[str], layouts: Iterable[Layout]) -> ModelFile:
+    """A model file's numbers and metadata, read by the layout among
+    `layouts` whose schema the file states, its structure validated
+    first; a file of any other schema is refused by it, naming the schemas
+    `layouts` read and the reader of the file's where there is one."""
     nc = netcdf_module()
     with nc.Dataset(path, "r") as ds:
-        _validate(ds, path)
+        layout, context = _validate(ds, path, layouts)
         attrs = {k: ds.getncattr(k) for k in ds.ncattrs()}
         scales = Scales(**{b: float(attrs[f"scale_{b}"])
                            for b in ("length", "mass", "time", "temperature")})
@@ -1512,38 +2041,31 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
             eb = np.asarray(g.variables["element_bounds"][:], dtype=float)
             mesh = RadialMesh(skeleton, ngll=int(g.getncattr("ngll")),
                               edges=np.append(eb[:, 0], eb[-1, 1]))
-            stored = np.asarray(g.variables["radius"][:], dtype=float)
+            coordinate = layout.coordinate
+            stored = np.asarray(g.variables[coordinate][:], dtype=float)
             if not np.allclose(stored, mesh.r.ravel(), rtol=1e-12, atol=0):
-                _fail(path, f"part_{k}: radius is not the GLL nodes of its elements")
+                _fail(path, f"part_{k}: {coordinate} is not the GLL nodes of its "
+                            "elements")
+            own = (coordinate, "element_layer", "element_bounds",
+                   *layout.grid_names(context))
             variables = {
                 name: FileVariable(variable_values(var), variable_attributes(var))
-                for name, var in g.variables.items()
-                if name not in ("radius", "element_layer", "element_bounds",
-                                "latitude", "longitude", "colatitude_weights")}
-            parts.append(FilePart(layers, mesh, grid_of_group(g),
+                for name, var in g.variables.items() if name not in own}
+            parts.append(FilePart(layers, mesh, layout.read_grid(g, context),
                                   MappingProxyType(variables)))
         geometry = None
         if "geometry" in ds.groups:
-            g = ds.groups["geometry"]
-            var = g.variables["boundary_displacement"]
-            poles = (np.asarray(g.variables["boundary_displacement_poles"][:],
-                                dtype=float)
-                     if "boundary_displacement_poles" in g.variables else None)
-            geometry = FileGeometry(
-                np.asarray(g.variables["boundary_radius"][:], dtype=float),
-                grid_of_group(g), np.asarray(var[:], dtype=float), poles,
-                str(var.getncattr("lateral_interpolation")),
-                str(var.getncattr("between")))
+            geometry = layout.read_stack(ds.groups["geometry"], context)
         surfaces = None
         if "surfaces" in ds.groups:
             g = ds.groups["surfaces"]
             faces = tuple(int(k) for k in
                           np.asarray(g.variables["surface_interface"][:]))
+            own = ("surface_interface", *layout.grid_names(context))
             variables = {name: FileVariable(variable_values(var),
                                             variable_attributes(var))
-                         for name, var in g.variables.items()
-                         if name not in _SURFACE_OWN}
-            surfaces = FileSurfaces(faces, grid_of_group(g),
+                         for name, var in g.variables.items() if name not in own}
+            surfaces = FileSurfaces(faces, layout.read_grid(g, context),
                                     MappingProxyType(variables))
     return ModelFile(schema=str(attrs["schema"]), name=attrs.get("name"),
                      scales=scales, constants=MappingProxyType(constants),
@@ -1554,7 +2076,15 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
                      rtol=float(attrs.get("rtol", DEFAULT_RTOL)), surfaces=surfaces,
                      citation=tuple(str(attrs.get("citation", "")).splitlines()),
                      source=str(attrs.get("source", "")),
-                     created=str(attrs.get("created", "")))
+                     created=str(attrs.get("created", "")), domain=context)
+
+
+def _layout_of_data(data: ModelFile) -> Layout:
+    """The layout of a file read, by its schema."""
+    for layout in _layouts():
+        if data.schema in layout.schemas:
+            return layout
+    raise ValueError(f"no layout reads schema {data.schema!r}")
 
 
 def _character(attrs: Mapping[str, Any]) -> Character:
@@ -1581,8 +2111,8 @@ def _layer_mesh(part: FilePart, layer: int) -> tuple[np.ndarray, np.ndarray, Mes
 
 
 def _radial_log_field(interval: tuple[float, float], nodal: np.ndarray, mesh: Mesh1D,
-                      method: str, character: Character, name: str | None
-                      ) -> RadialField:
+                      method: str, character: Character, name: str | None,
+                      layout: Layout) -> RadialField:
     """Nodal values (nelem, ngll) of a rank-0 variable read by a rule in
     the logarithm: the constant where they are one value, else the
     exponential layer y_e exp(P_e) on each element, y_e its first value
@@ -1595,49 +2125,39 @@ def _radial_log_field(interval: tuple[float, float], nodal: np.ndarray, mesh: Me
         raise ValueError(f"{name!r} is read by {method}, its logarithm interpolated, "
                          "and holds a value that is not positive and finite")
     if np.all(y == y.flat[0]):
-        return RadialField(interval, constant_layer(interval, float(y.flat[0])),
-                           character=character, name=name)
+        return layout.radial_field(interval, constant_layer(interval, float(y.flat[0])),
+                                   character=character, name=name)
     first = y[:, :1]
     exponent = mesh.to_ppoly(np.log(y / first), method=method.removeprefix("log-"))
     factor = PPoly(first.T.copy(), mesh.breakpoints)
-    return RadialField(interval, ExponentialLayer(interval, exponent, factor=factor),
-                       character=character, name=name)
+    return layout.radial_field(interval,
+                               ExponentialLayer(interval, exponent, factor=factor),
+                               character=character, name=name)
 
 
 def _radial_field(interval: tuple[float, float], nodal: np.ndarray, mesh: Mesh1D,
-                  method: str, character: Character, name: str | None) -> RadialField:
-    """Nodal values (nelem, ngll) + c as a radial field of exact pieces,
-    read by a rule in the logarithm by `_radial_log_field`."""
+                  method: str, character: Character, name: str | None,
+                  layout: Layout) -> RadialField:
+    """Nodal values (nelem, ngll) + c as a field of the layered coordinate
+    alone, of exact pieces, read by a rule in the logarithm by
+    `_radial_log_field`."""
     if method in LOG_RULES:
-        return _radial_log_field(interval, nodal, mesh, method, character, name)
+        return _radial_log_field(interval, nodal, mesh, method, character, name,
+                                 layout)
     pp = mesh.to_ppoly(nodal, method=method)
     c = nodal.shape[2:]
     if not c:
-        return RadialField(interval, PolynomialLayer(interval, pp),
-                           character=character, name=name)
+        return layout.radial_field(interval, PolynomialLayer(interval, pp),
+                                   character=character, name=name)
     functions = np.empty(c, dtype=object)
     for idx in np.ndindex(c):
         functions[idx] = PolynomialLayer(interval, type(pp)(pp.c[(...,) + idx], pp.x))
-    return RadialField(interval, functions, character=character, name=name)
-
-
-def _gridded_field(interval: tuple[float, float], part: FilePart, mask: np.ndarray,
-                   elems: np.ndarray, mesh: Mesh1D, var: FileVariable,
-                   poles: FileVariable | None, rules: tuple[str, str],
-                   character: Character, name: str | None) -> Field:
-    """A variable's values on one layer as a gridded field."""
-    from .gridded import GriddedField
-    grid = part.grid
-    v = var.values[mask].reshape((elems.size, mesh.ngll) + var.values.shape[1:])
-    p = None if poles is None else poles.values[mask].reshape(
-        (elems.size, mesh.ngll) + poles.values.shape[1:])
-    return GriddedField(interval, mesh.breakpoints, grid, v, character=character,
-                        name=name, radial=rules[0], lateral=rules[1], poles=p)
+    return layout.radial_field(interval, functions, character=character, name=name)
 
 
 def _variable_field(data: ModelFile, part: FilePart, layer: int, name: str,
-                    var: FileVariable, interpolation: Interpolation, *,
-                    character: Character | None = None) -> Field | None:
+                    var: FileVariable, interpolation: Interpolation, layout: Layout,
+                    *, character: Character | None = None) -> Field | None:
     """One variable on one layer as a field, or None where it is NaN there."""
     mask, elems, mesh = _layer_mesh(part, layer)
     values = var.values[mask]
@@ -1646,19 +2166,26 @@ def _variable_field(data: ModelFile, part: FilePart, layer: int, name: str,
     interval = tuple(float(x) for x in data.skeleton.boundaries[layer:layer + 2])
     char = _character(var.attributes) if character is None else character
     rules = _rules(name, var.attributes, interpolation)
-    radial = var.values.ndim == 1 + len(stored_shape(char))
+    c = stored_shape(char)
+    radial = var.values.ndim == 1 + len(c)
     if not radial and layer in _radial_layers(var.attributes):
-        values, radial = values[:, 0, 0], True      # every column is the same
+        # every column is the same: the first node of the grid's
+        lateral_axes = values.ndim - 1 - len(c)
+        values, radial = values[(slice(None),) + (0,) * lateral_axes], True
     if radial:
         nodal = values.reshape((elems.size, mesh.ngll) + values.shape[1:])
-        return _radial_field(interval, nodal, mesh, rules[0], char, name)
+        return _radial_field(interval, nodal, mesh, rules[0], char, name, layout)
     if rules[0] in LOG_RULES:
         raise ValueError(f"{name!r} varies with direction on layer {layer}, and "
                          f"{rules[0]} reads a variable of the radius alone")
     lateral = rules[1] or DEFAULT_INTERPOLATION[1]
     poles = part.variables.get(f"{name}_poles")
-    return _gridded_field(interval, part, mask, elems, mesh, var, poles,
-                          (rules[0], lateral), char, name)
+    v = values.reshape((elems.size, mesh.ngll) + values.shape[1:])
+    p = None if poles is None else poles.values[mask].reshape(
+        (elems.size, mesh.ngll) + poles.values.shape[1:])
+    return layout.gridded_field(interval, mesh.breakpoints, part.grid, v, p,
+                                character=char, name=name, radial=rules[0],
+                                lateral=lateral)
 
 
 def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
@@ -1667,8 +2194,10 @@ def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
     polynomial layers through the nodes (exponential layers under a rule
     in the logarithm), the others as gridded fields, and references with
     perturbations as perturbed fields, read by the stated rules unless
-    `interpolation` names others."""
+    `interpolation` names others; the fields of the file's coordinate
+    system, by its schema."""
     from .perturbation import PerturbedField
+    layout = _layout_of_data(data)
     interpolation = dict(interpolation or {})
     out: list[dict[str, Field]] = [{} for _ in range(data.skeleton.nlayers)]
     for part in data.parts:
@@ -1677,7 +2206,8 @@ def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
                 continue
             pert_name = var.attributes.get("perturbation")
             for layer in part.layers:
-                field = _variable_field(data, part, layer, name, var, interpolation)
+                field = _variable_field(data, part, layer, name, var, interpolation,
+                                        layout)
                 if field is None:
                     continue
                 if pert_name is not None:
@@ -1687,7 +2217,7 @@ def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
                     asked = ({pert_name: _in_values(interpolation, name)[name]}
                              if name in interpolation else {})
                     dp = _variable_field(data, part, layer, pert_name,
-                                         part.variables[pert_name], asked)
+                                         part.variables[pert_name], asked, layout)
                     if dp is not None:
                         field = PerturbedField(field, dp.renamed(None),
                                                kind=var.attributes["perturbation_kind"],
@@ -1697,66 +2227,53 @@ def file_layers(data: ModelFile, *, interpolation: Interpolation | None = None
 
 
 def file_geometry(data: ModelFile, *, interpolation: Interpolation | None = None
-                  ) -> Geometry:
+                  ) -> GeometryBase:
     """The geometry a file holds: its skeleton and names, and its mapping
     from the geometry group or the displacement field, read by the stated
-    rules unless `interpolation` names others."""
-    from .displacement import LayerLinear
-    from .geometry import Geometry
-    from .gridded import GriddedDisplacement, GriddedFunction
-    from .mapping import RadialStretch
-    interpolation = dict(interpolation or {})
-    sk = data.skeleton
-    mapping = None
-    if data.geometry is not None:
-        geo = data.geometry
-        lateral = interpolation.get("boundary_displacement", (None, geo.lateral))[1]
-        reliefs = []
-        for k in range(geo.radii.size):
-            v = geo.values[k]
-            p = None if geo.poles is None else geo.poles[k]
-            if not np.any(v) and (p is None or not np.any(p)):
-                reliefs.append(None)
-            else:
-                reliefs.append(GriddedFunction(geo.grid, v, lateral=lateral, poles=p))
-        mapping = RadialStretch(LayerLinear(Skeleton(geo.radii), reliefs),
-                                rmax=float(sk.boundaries[-1]))
-    elif any("displacement" in part.variables for part in data.parts):
-        fields = []
-        for layer in range(sk.nlayers):
-            part = data.part_of(layer)
-            var = part.variables["displacement"]
-            fields.append(_variable_field(data, part, layer, "displacement", var,
-                                          interpolation, character=VECTOR))
-        mapping = GriddedDisplacement(sk, fields)
-    return Geometry(sk, mapping=mapping, layer_names=list(data.layer_names),
-                    interface_names=list(data.interface_names), rtol=data.rtol)
+    rules unless `interpolation` names others; a spherical `Geometry` or
+    a `cartesian.Geometry` over the file's domain, by its schema."""
+    return _layout_of_data(data).geometry(data, dict(interpolation or {}))
+
+
+def displacement_fields(data: ModelFile, interpolation: Interpolation,
+                        layout: Layout, *, character: Character) -> list[Field]:
+    """The variable `displacement` of every part, a field of `character` on
+    each layer, read by its stated rules unless `interpolation` names
+    others: the mapping a file holds as a field, layer by layer."""
+    fields = []
+    for layer in range(data.skeleton.nlayers):
+        part = data.part_of(layer)
+        var = part.variables["displacement"]
+        fields.append(_variable_field(data, part, layer, "displacement", var,
+                                      interpolation, layout, character=character))
+    return fields
 
 
 def file_surfaces(data: ModelFile, *, interpolation: Interpolation | None = None
-                  ) -> dict[str, dict[int | str, GriddedFunction]]:
+                  ) -> dict[str, dict[int | str, Any]]:
     """The functions on interfaces a file holds, name -> {interface ->
-    `GriddedFunction`}, an interface keyed by its name, or by its index
+    gridded function} (`GriddedFunction`, or a `cartesian.GriddedFunction`
+    in a flat file), an interface keyed by its name, or by its index
     where it has none; each read by its stated lateral rule unless
     `interpolation` names another, and empty for a file without them."""
-    from .gridded import GriddedFunction
+    layout = _layout_of_data(data)
     interpolation = dict(interpolation or {})
     held = data.surfaces
     if held is None:
         return {}
-    out: dict[str, dict[int | str, GriddedFunction]] = {}
+    out: dict[str, dict[int | str, Any]] = {}
     for name, var in held.variables.items():
         if name.endswith("_poles"):
             continue
         lateral = (interpolation[name][1] if name in interpolation
                    else str(var.attributes["lateral_interpolation"]))
         poles = held.variables.get(f"{name}_poles")
-        on: dict[int | str, GriddedFunction] = {}
+        on: dict[int | str, Any] = {}
         for row, k in enumerate(held.interfaces):
             if np.all(np.isnan(var.values[row])):
                 continue
             key = data.interface_names[k]
-            on[k if key is None else key] = GriddedFunction(
+            on[k if key is None else key] = layout.gridded_function(
                 held.grid, var.values[row], lateral=lateral,
                 poles=None if poles is None else poles.values[row])
         out[name] = on
@@ -1808,22 +2325,23 @@ def _specs(data: ModelFile) -> dict[str, FieldSpec]:
 
 def read_model(path: str | os.PathLike[str], *,
                interpolation: Interpolation | None = None,
-               scales: Scales | None = None) -> Model:
+               scales: Scales | None = None) -> ModelBase:
     """The model a file holds, as a plain `Model` with the file's specs,
-    in the file's scales or, with `scales=`, converted to those."""
-    from .model import Model
-    data = read_model_file(path)
-    model = Model(file_geometry(data, interpolation=interpolation),
-                  file_layers(data, interpolation=interpolation),
-                  scales=data.scales, specs=_specs(data), name=data.name,
-                  constants=data.declared, citation=data.citation)
+    or a plain `cartesian.Model` from a flat file, by what its schema
+    states, in the file's scales or, with `scales=`, converted to those."""
+    data = read_file(path, _layouts())
+    layout = _layout_of_data(data)
+    model = layout.model(file_geometry(data, interpolation=interpolation),
+                         file_layers(data, interpolation=interpolation),
+                         data=data, specs=_specs(data))
     return model if scales is None else model.converted(scales)
 
 
 def read_surfaces(path: str | os.PathLike[str], *,
                   interpolation: Interpolation | None = None
-                  ) -> dict[str, dict[int | str, GriddedFunction]]:
+                  ) -> dict[str, dict[int | str, Any]]:
     """The functions on interfaces a file holds, as `file_surfaces` gives
-    them, in the file's scales (the model's specs, from `read_model`,
-    give their dimensions); empty for a file without them."""
-    return file_surfaces(read_model_file(path), interpolation=interpolation)
+    them, a spherical file's or a flat one's by its schema, in the file's
+    scales (the model's specs, from `read_model`, give their dimensions);
+    empty for a file without them."""
+    return file_surfaces(read_file(path, _layouts()), interpolation=interpolation)

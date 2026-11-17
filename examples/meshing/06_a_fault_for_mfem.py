@@ -33,9 +33,8 @@ from matplotlib.patches import Patch
 
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
 from planetmodel.fault import Fault, GeographicFrame, Plane, Slip
-from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
-                                UniformInterfaces, build_layered_mesh,
-                                export_mfem_mesh, manifest)
+from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                build_layered_mesh, export_mfem_mesh, manifest)
 from planetmodel.plotting import mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
@@ -67,8 +66,7 @@ thrust = Fault([plane])
 work = Path(tempfile.mkdtemp(prefix="planetmodel_mfem_fault_"))
 result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.3, 0.3), order=2,
-             faults=[EmbeddedFault(thrust, name="thrust",
-                                   sizing=InterfaceSizing(0.03, 0.15, 0.1))]),
+             faults=[EmbeddedFault(thrust, name="thrust", sizing=0.03)]),
     work / "built")
 export = export_mfem_mesh(result, work / "thrust", delivery="physical")
 card = manifest.read(export.manifest_path)

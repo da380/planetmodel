@@ -7,8 +7,12 @@ geometry, the mappings that place them, the fields and the model, the
 catalogue of named models, and the meshers that hand a model to a
 solver.  Every internal is numbers: the model alone carries units.
 
-Modules reached by name, one level down:
+Modules reached by name, one level down::
 
+  coordinates  coordinate systems: points, local frame and lattice of a
+               field's coordinates; SPHERICAL, the top level's
+  cartesian    flat-layered models in (depth, x, y): the box and its
+               section, their geometry, fields and model
   frames       the local spherical frame, tensors moved between frames, Voigt
   materials    velocity and moduli conversions, the elastic field, what a
                layer's fields imply (fluidity, moduli)
@@ -28,6 +32,8 @@ Modules reached by name, one level down:
                time, and their quadrature
   faultfile    the fault file: a fault in one netCDF file (netCDF4, optional)
   harmonics    real spherical harmonics, through ducc0
+  fourier      real Fourier series on a periodic box, a padded domain's
+               included: grids, and points through finufft
   slices       a field on a sphere, a section or a profile; spectra and
                correlations by degree
   plotting     profiles, sections, maps and spectra drawn (matplotlib and

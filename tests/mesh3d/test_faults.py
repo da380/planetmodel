@@ -17,12 +17,15 @@ import numpy as np
 import pytest
 
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton, testing
+from planetmodel.displacement import layer_linear
 from planetmodel.fault import (CartesianFrame, Fault, GeographicFrame, GreatCircle,
                                Plane, Slip, StructuredPatch)
 from planetmodel.mapping import MappingBase
 from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec, Shell,
                                 UniformInterfaces, build_layered_mesh,
                                 manifest as sc, read_mesh)
+from planetmodel.mesh3d.spec import (GRADIENT, OPTIMISE, OPTIMISE_WITH_FAULTS,
+                                     largest_size, optimise_methods)
 
 pytestmark = pytest.mark.gmsh
 
@@ -392,6 +395,127 @@ def _angles(x):
     return np.stack([np.arccos(x[:, 2] / r), np.arctan2(x[:, 1], x[:, 0])], axis=1)
 
 
+def _over(theta, phi, width):
+    """A bump over (30N, 40E) on the sphere, one at its top."""
+    c = (np.cos(theta) * np.cos(np.deg2rad(60.0)) + np.sin(theta)
+         * np.sin(np.deg2rad(60.0)) * np.cos(phi - np.deg2rad(40.0)))
+    return np.exp(-(1.0 - c) / width)
+
+
+def stacked():
+    """Topography as a stack of reliefs, each layer stretched linearly
+    between its own two: a bump of 0.05 on the surface over (30N, 40E)
+    and a root of 0.04 on the CMB under it, the centre held, so that the
+    stretch's radial derivative jumps at the CMB (a knot)."""
+    return RadialStretch(layer_linear(
+        Skeleton([0.0, 0.6, 1.0]),
+        [None, lambda t, p: -0.04 * _over(t, p, 0.08),
+         lambda t, p: 0.05 * _over(t, p, 0.05)]), rmax=1.0)
+
+
+def test_a_fault_across_a_knot_of_the_stretch_is_built_in_pieces(tmp_path):
+    """Across the CMB, where the stack's slope jumps, the preimage of a
+    plane is creased along the crossing: it is built in two pieces, one in
+    each layer, at the default rtol, joined along the crossing.  One fault
+    in the mesh, a collar in each layer, its tip the plane's edge alone,
+    the join inside it; mapped, its nodes lie on the plane on both sides,
+    the join's on the CMB's relief, and the slip read at them is the
+    plane's at the node's own place."""
+    m = stacked()
+    values = np.zeros((2, 2, 3))
+    values[..., 0] = [[0.0, 0.0], [1.0, 1.0]]
+    values[..., 1] = [[0.0, 2.0], [0.0, 2.0]]
+    patch = Plane.at_depth(UNIT, 30.0, 40.0, 0.4, strike=20.0, dip=60.0, length=0.3,
+                           width=0.35, slip=Slip(values, rule="linear"))
+    fault = Fault([patch])
+    res = build(tmp_path / "pieces", {"f": fault}, geometry=two_layers(m))
+    assert len(res.preimages["f"]) == 2
+    card = held(res, {"f": fault})
+    (record,) = card.faults
+    # built whole, it was refused at this rtol: 4.7e-5 off with 129 by 129
+    # control nodes; in pieces, 4.9e-9 and 2.2e-9 off, through 33 nodes
+    # down dip and 65 along strike, which lay their join on the CMB to
+    # 6e-10 (with 33, 9e-9)
+    assert record["controls"] == [[65, 33]]
+    assert record["layers"] == [1, 2] and record["hanging_wall"] == [3, 4]
+    assert [e["attributes"] for e in card.layers] == [[1, 3], [2, 4]]
+    assert record["junction"] is None and record["free_edge"] is None
+    mesh = read_mesh(res.msh_path)
+    tri = mesh.faces_with(record["attribute"])
+    layer = mesh.layers(card)[mesh.face_cells(tri[:, :3])[:, 0]]
+    sides = [np.unique(tri[layer == k]) for k in (1, 2)]
+    join = np.intersect1d(*sides)
+    tip = np.unique(mesh.curves[record["tip"]])
+    for nodes in sides:
+        found = fault.locate(res.mapping(mesh.points[nodes]))
+        # measured: 1.5e-10 above the CMB, 3.1e-10 below it
+        assert np.abs(found.distance).max() <= 2.0 * record["offset"]
+    # the join meets the tip at its two ends alone: no edge of the tip
+    # runs along it
+    assert join.size > 5 and np.count_nonzero(np.isin(join, tip)) == 2
+    assert not np.any(np.all(np.isin(mesh.curves[record["tip"]][:, :2], join),
+                             axis=1))
+    x = res.mapping(mesh.points[join])
+    theta, phi = _angles(x).T
+    cmb = 0.6 + m.h(0.6, theta, phi)
+    # measured: 3.2e-11 off the CMB's relief
+    assert np.abs(np.linalg.norm(x, axis=1) - cmb).max() < 1e-8
+    found = fault.locate(x)
+    assert np.all(found.inside) and np.abs(found.v).max() < 0.4
+    on = fault.locate(res.mapping(mesh.points[tip]))
+    assert np.allclose(np.maximum(np.abs(on.u), np.abs(on.v)), 0.5, atol=1e-6)
+    origin, (xu, xv) = patch.cartesian(0.0, 0.0), patch.tangents(0.0, 0.0)
+    for nodes in (*sides, join):
+        x = res.mapping(mesh.points[nodes])
+        u, v = np.clip([(x - origin) @ xu / (xu @ xu),
+                        (x - origin) @ xv / (xv @ xv)], -0.5, 0.5)
+        want = np.stack([0.5 + u, 1.0 + 2.0 * v, 0.0 * u], axis=-1)
+        got = fault.slip_at(x, max_distance=1e-6, basis="fault")
+        assert np.allclose(got, want, rtol=0, atol=1e-9)
+
+
+def test_pieces_whose_join_would_stray_off_the_knot_are_refused(tmp_path):
+    """Through 17 control nodes along u, given, the edge where the pieces
+    join lies 1.1e-7 off the CMB between them: beyond the CAD kernel's
+    tolerance, which would cut the pieces where they pass through the
+    CMB beside it."""
+    fault = Fault([plane(depth=0.4, dip=60.0, width=0.35)])
+    with pytest.raises(ValueError, match="their join lies 1.05e-07 off it, beyond "
+                                         "1e-09.*give more control nodes along u, "
+                                         "or none"):
+        build(tmp_path / "coarse", {"f": EmbeddedFault(fault, name="f", controls=17)},
+              geometry=two_layers(stacked()))
+
+
+def test_a_curved_fault_s_edge_is_carried_as_the_patch_continued(tmp_path):
+    """A swept patch steepening with depth whose up-dip edge is at the
+    reference surface, under a bump of 0.08 there: its edge is carried
+    across the surface by more than a third of its width, the part
+    carried the preimage of the patch's own continuation past its edge
+    (its bicubic's end pieces carried on), so that the mesh holds to the
+    contract there, which measures the carried nodes against that
+    continuation, as everywhere."""
+    patch = StructuredPatch.swept(UNIT, GreatCircle([25.0, 35.0], [35.0, 45.0]),
+                                  dip=lambda z: 45.0 + 100.0 * z, width=0.3, top=0.0,
+                                  n_u=7, n_v=6, slip=ZERO)
+    fault = Fault([patch])
+    res = build(tmp_path / "carried", {"f": fault}, geometry=two_layers(bump(0.08)))
+    # measured: the carried nodes 3.6e-9 at most off the patch continued
+    # (with the preimage itself extrapolated past the edge, refused, its
+    # edge not clear of the surface within the 0.34 of its width tried;
+    # tried to half its width, 3.9e-4 off against the contract's 2.3e-4)
+    card = held(res, {"f": fault})
+    (record,) = card.faults
+    assert record["free_edge"] == 2 and record["controls"] == [[33, 33]]
+    pos, tri = faces(res, record["attribute"])
+    x = res.mapping(pos[np.unique(tri)])
+    found = fault.locate(x, strict=False)
+    # carried 0.113 beyond the edge, more than 0.34 of the width of 0.3
+    assert np.abs(found.distance[~found.inside]).max() > 0.34 * 0.3
+    trace = curve_nodes(res, 2)
+    assert np.abs(np.linalg.norm(trace, axis=1) - 1.0).max() < 1e-7
+
+
 # ------------------------------------------------------------ orders and sizes
 
 @pytest.mark.parametrize("order", [1, 3])
@@ -422,6 +546,64 @@ def test_a_finer_mesh_is_asked_for_near_the_fault(tmp_path):
     assert mean_edge(fine) < 1.5 * 0.04
     assert sc.read(fine.manifest_path).faults[0]["sizing"] == {
         "size": 0.04, "far_size": 0.3, "decay_width": 0.2}
+
+
+def test_a_fault_sized_by_a_number_is_graded_and_relocated(tmp_path):
+    """The rule a fault is sized by (`EmbeddedFault`): a number is the size
+    on it, graded at `GRADIENT` to the largest size the interfaces' rule
+    gives (SIZING's far size, 0.3), and the linear mesh is relocated by
+    Relocate3D; the mesh is the one that sizing and that optimisation
+    spelled out give, and the manifest records the sizing resolved."""
+    fault = Fault([plane()])
+
+    def spec(sizing, **options):
+        return MeshSpec(two_layers(), SIZING, order=1, **options,
+                        faults=[EmbeddedFault(fault, name="f", sizing=sizing)])
+
+    by_rule = spec(0.06)
+    assert by_rule.optimise == OPTIMISE_WITH_FAULTS == ("Relocate3D",)
+    res = build_layered_mesh(by_rule, tmp_path / "rule")
+    held(res, {"f": fault})
+    assert res.validation.ok and res.validation.warnings == []
+    graded = InterfaceSizing.graded(0.06, 0.3)
+    assert sc.read(res.manifest_path).faults[0]["sizing"] == {
+        "size": 0.06, "far_size": 0.3, "decay_width": graded.decay_width}
+    spelt = build_layered_mesh(spec(graded, optimise="Relocate3D"), tmp_path / "spelt")
+    a, b = read_mesh(res.msh_path), read_mesh(spelt.msh_path)
+    assert np.array_equal(a.cells, b.cells) and np.array_equal(a.faces, b.faces)
+    assert np.allclose(a.points, b.points, rtol=0.0, atol=1e-12)
+
+
+def test_the_relocation_moves_no_node_of_a_fault_or_an_interface(tmp_path):
+    """The steep ramp without the relocation is the caller's to ask for
+    (an InterfaceSizing as it is, `optimise=None`); a Netgen pass named
+    for a mesh with a fault is skipped with a warning, leaving that same
+    mesh; and the relocation the default runs moves nodes inside the
+    layers only, the elements and every node of the faces, the fault's
+    and the interfaces', as they were, the worst element no worse."""
+    fault = Fault([plane()])
+
+    def built(label, **options):
+        return build_layered_mesh(
+            MeshSpec(two_layers(), SIZING, order=1, **options,
+                     faults=[EmbeddedFault(fault, name="f",
+                                           sizing=InterfaceSizing(0.06, 0.3, 0.1))]),
+            tmp_path / label)
+
+    steep, netgen, moved = built("steep", optimise=None), built(
+        "netgen", optimise="Netgen"), built("moved")
+    assert steep.validation.warnings == [] and moved.validation.warnings == []
+    assert netgen.validation.warnings == [
+        "the Netgen optimisation was skipped: it crashes on a solid with a fault "
+        "embedded in it"]
+    held(moved, {"f": fault})
+    a, b, c = (read_mesh(r.msh_path) for r in (steep, netgen, moved))
+    assert np.array_equal(a.points, b.points) and np.array_equal(a.cells, b.cells)
+    assert np.array_equal(a.cells, c.cells) and np.array_equal(a.faces, c.faces)
+    on_faces = np.unique(a.faces[:, :3])
+    assert np.array_equal(a.points[on_faces], c.points[on_faces])
+    assert np.any(a.points != c.points)
+    assert moved.validation.min_sicn >= steep.validation.min_sicn
 
 
 # ------------------------------------------------------------ the record
@@ -457,7 +639,7 @@ def test_what_the_spec_refuses():
     local = Fault([Plane(CartesianFrame(), [0.0, 0.0, -1.0], strike=0.0, dip=45.0,
                          length=1.0, width=1.0, slip=ZERO)])
     with pytest.raises(ValueError, match="Cartesian frame belongs in a regional"):
-        EmbeddedFault(local)
+        MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(local)])
     with pytest.raises(TypeError, match="Fault"):
         EmbeddedFault(plane())
     with pytest.raises(ValueError, match="2D mesh takes none"):
@@ -473,8 +655,48 @@ def test_what_the_spec_refuses():
         EmbeddedFault(fault, controls=3)
     with pytest.raises(ValueError, match="reach"):
         EmbeddedFault(fault, reach=-1.0)
+    for bad in (True, "0.1", (0.1, 0.3)):
+        with pytest.raises(TypeError, match="sizing must be a size"):
+            EmbeddedFault(fault, sizing=bad)
+    for bad in (0.0, -0.1, np.inf, np.nan):
+        with pytest.raises(ValueError, match="positive and finite"):
+            EmbeddedFault(fault, sizing=bad)
     assert MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(fault)]
                     ).fault_names == ["fault_1"]
+
+
+def test_a_fault_s_sizing_resolves_by_the_rule():
+    """A number is graded to the mesh's largest size (`largest_size`, the
+    interfaces' largest far size), held flat where it is not below it;
+    an InterfaceSizing is taken as it is; None is none.  A spec with a
+    fault takes Relocate3D for "auto", one without Netgen, and either
+    takes what it names."""
+    fault = Fault([plane()])
+    sizes = SIZING(two_layers().interfaces, 1.0)
+    assert largest_size(sizes) == 0.3
+    assert largest_size({0: InterfaceSizing(0.1, 0.2, 0.1),
+                         1: InterfaceSizing(0.05, 0.4, 0.1)}) == 0.4
+    with pytest.raises(ValueError, match="no sizing given"):
+        largest_size({})
+    by_rule = EmbeddedFault(fault, sizing=np.float64(0.06))
+    assert type(by_rule.sizing) is float
+    assert by_rule.resolved_sizing(0.3) == InterfaceSizing.graded(0.06, 0.3)
+    assert by_rule.resolved_sizing(0.3).decay_width == pytest.approx(0.24 / GRADIENT)
+    assert EmbeddedFault(fault, sizing=0.5).resolved_sizing(0.3) == \
+        InterfaceSizing(0.5, 0.5, 0.5)
+    steep = InterfaceSizing(0.06, 0.3, 0.1)
+    assert EmbeddedFault(fault, sizing=steep).resolved_sizing(0.3) is steep
+    assert EmbeddedFault(fault).resolved_sizing(0.3) is None
+    with_fault = MeshSpec(two_layers(), SIZING, faults=[EmbeddedFault(fault)])
+    assert with_fault.optimise == OPTIMISE_WITH_FAULTS
+    assert MeshSpec(two_layers(), SIZING).optimise == OPTIMISE == ("Netgen",)
+    assert MeshSpec(two_layers(), SIZING, optimise="auto").optimise == OPTIMISE
+    for named, held_as in ((None, ()), ("Netgen", ("Netgen",)),
+                           (["Relocate3D", "Netgen"], ("Relocate3D", "Netgen"))):
+        assert MeshSpec(two_layers(), SIZING, optimise=named,
+                        faults=[EmbeddedFault(fault)]).optimise == held_as
+    assert optimise_methods("auto", faults=True) == OPTIMISE_WITH_FAULTS
+    assert optimise_methods("auto") == OPTIMISE
 
 
 #: The depth of the centroid of `plane()` whose up-dip edge is `d` below

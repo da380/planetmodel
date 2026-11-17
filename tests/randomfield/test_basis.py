@@ -7,7 +7,7 @@ from scipy.interpolate import BarycentricInterpolator
 from planetmodel import testing
 from planetmodel.harmonics import packing
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.randomfield import (RadialOperatorFamily, SpectralBasis,
+from planetmodel.randomfield import (SeparableOperatorFamily, SpectralBasis,
                                      SphericalBasis, matern_reach, padded_mesh,
                                      restriction)
 
@@ -15,7 +15,7 @@ from planetmodel.randomfield import (RadialOperatorFamily, SpectralBasis,
 def _setup(r1, r2, weight, *, robin=None):
     """A padded mesh, its family and the restriction to [r1, r2]."""
     mesh = padded_mesh(r1, r2, pad=0.3, weight=weight, ngll=5, drmax=0.1)
-    fam = RadialOperatorFamily(mesh, kappa=lambda r: 0.02 + 0.01 * r ** 2,
+    fam = SeparableOperatorFamily(mesh, kappa=lambda r: 0.02 + 0.01 * r ** 2,
                                weight=weight, robin=robin)
     return fam, restriction(mesh, r1, r2)
 
@@ -129,7 +129,7 @@ def test_padding_insensitivity_of_the_pointwise_variance(a, b, weight):
     def variance(pad_factor):
         mesh = padded_mesh(a, b, pad=pad_factor * matern_reach(nu, lam),
                            weight=weight, drmax=lam / 2.0)
-        fam = RadialOperatorFamily(mesh, kappa=lam ** 2, weight=weight)
+        fam = SeparableOperatorFamily(mesh, kappa=lam ** 2, weight=weight)
         basis = SpectralBasis(fam, 0, restrict=restriction(mesh, a, b),
                               power=nu + 0.5, tol=1e-12)
         return basis.pointwise_variance(nu + 0.5)
@@ -199,13 +199,13 @@ def _bilinear_form(family, l, modes):
 @pytest.mark.parametrize("l", [0, 12])
 def test_the_galerkin_block_of_the_own_family_is_the_eigenvalues(bp, l):
     mesh = Mesh1D(bp, ngll=6, drmax=0.05)
-    fam = RadialOperatorFamily(mesh, kappa=0.03)
+    fam = SeparableOperatorFamily(mesh, kappa=0.03)
     b = SpectralBasis(fam, l, nmodes=15)
     B = b.galerkin(fam)
     assert B.shape == (15, 15) and np.array_equal(B, B.T)
     assert np.allclose(B, np.diag(b.theta), atol=1e-10 * b.theta[-1])
     # another constant kappa, isotropic, is a function of the same Laplacian
-    other = RadialOperatorFamily(mesh, kappa=0.07)
+    other = SeparableOperatorFamily(mesh, kappa=0.07)
     want = np.diag(1.0 + (0.07 / 0.03) * (b.theta - 1.0))
     assert np.allclose(b.galerkin(other), want, atol=1e-10 * want.max())
 
@@ -215,10 +215,10 @@ def test_the_galerkin_block_of_an_anisotropic_family_is_the_quadrature():
     the modes' derivatives on an annulus (measured at 4e-16 of the largest
     entry)."""
     mesh = Mesh1D([0.5, 1.0], ngll=6, drmax=0.05)
-    fam = RadialOperatorFamily(mesh, kappa=0.03)
+    fam = SeparableOperatorFamily(mesh, kappa=0.03)
     kr = lambda r: 0.02 + 0.03 * r
     kh = lambda r: 0.1 * r ** 2
-    other = RadialOperatorFamily(mesh, kappa=kr, kappa_h=kh)
+    other = SeparableOperatorFamily(mesh, kappa=kr, kappa_h=kh)
     other._kr_nodal, other._kh_nodal = kr(mesh.r), kh(mesh.r)
     for l in (0, 5):
         b = SpectralBasis(fam, l, nmodes=20)
@@ -228,10 +228,10 @@ def test_the_galerkin_block_of_an_anisotropic_family_is_the_quadrature():
         assert not np.allclose(B, np.diag(np.diag(B)), atol=1e-6 * np.abs(B).max())
     # refusals name what differs
     with pytest.raises(ValueError, match="weight"):
-        b.galerkin(RadialOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.05),
+        b.galerkin(SeparableOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.05),
                                         weight="one"))
     with pytest.raises(ValueError, match="mesh"):
-        b.galerkin(RadialOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.04)))
+        b.galerkin(SeparableOperatorFamily(Mesh1D([0.5, 1.0], ngll=6, drmax=0.04)))
     with pytest.raises(TypeError):
         b.galerkin(mesh)
 
@@ -248,7 +248,7 @@ def test_the_variance_of_a_dense_covariance():
     from planetmodel.randomfield import SphericalGRF
     g = SphericalGRF(0.5, 1.0, 1.0, 0.2, lam_h=0.1, lmax=4, drmax=0.05, tol=1e-10)
     p = 2.0 * g.beta
-    iso = RadialOperatorFamily(g.mesh, kappa=0.2 ** 2)
+    iso = SeparableOperatorFamily(g.mesh, kappa=0.2 ** 2)
     total, raw = np.zeros(g.r.size), np.zeros(g.r.size)
     for l in range(g.lmax + 1):
         b = SpectralBasis(iso, l, restrict=g.restriction)

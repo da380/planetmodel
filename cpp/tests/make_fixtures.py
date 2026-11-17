@@ -199,6 +199,50 @@ element; and `parameters <modulus> <w_1> <w_2> <tau_1> <tau_2>` and the
 viscosity, Kelvin viscosity and Kelvin modulus fraction
 `burgers_parameters` gives, for each pair of branches in both orders.
 
+**Flat fixtures** (`flat_*`), of `planetmodel.cartesian`, a body layered
+in depth over a box or a rectangle, each kind as its spherical counterpart
+above with these differences.  **Flat model files**
+(`flat_model_<case>.nc`, schema `planetmodel.model/3`): fields of depth
+alone over a box and over a rectangle (`layered`, `layered_rectangle`);
+lateral fields of ranks 0, 1 and 2 on the bilinear and the bicubic rule,
+a perturbed field, in two parts on two grids over a padded box
+(`lateral`), and over a rectangle, whose grid has the one axis (`rectangle`);
+a Fourier field, stating the rule the C++ refuses (`fourier`, without
+expectations); topography as a stack of reliefs over a box and over a
+rectangle (`stacked`, `stacked_rectangle`, the `geometry` group) and a
+vertical stretch that is no stack (`stretched`, the `displacement`
+variable); fields on interfaces (`surfaces`); a model padded below its
+base with its lowest properties held (`held`); and a viscosity read in
+its logarithm (`log`).  Their expectations have `domain <box|rectangle>
+<bounds> <padding>`, a point is `depth x y`, a frame `l` (local, up x y)
+or `c` (Cartesian, z up), a `gradient` the derivatives in depth, x and y,
+`displacement x y z` the stretch's u(X), and a field on an interface is
+of `x y`.  **Flat model files to refuse** (`flat_model_cases/`), listed
+in `bad.txt` as the model cases are.  **Flat interpolation cases**
+(`flat_case_lateral_<grid>_<rule>.nc`): the domain's `bounds` and
+`padding`, the grid's `x` (and `y`), the `values`, the query points
+`query_x` and `query_y` over several periods and at the seam, and the
+`expected` values with `expected_dx` and `expected_dy`.  **Flat surface
+files** (`flat_surface_box.nc` below the surface, `flat_surface_rectangle.nc`
+on it, schema `planetmodel.surface/2`), their expectations those of the
+surface file with `depth`, `domain`, `grid <shape>`, an index `i j` into
+(nx, ny) (`j` 0 over a rectangle), and `function <name> <date|-> x y value
+dx dy`, a field at a date read by its lateral rule; and the malformed
+copies (`flat_surface_cases/`).  **Decks of depths**
+(`flat_deck_<case>.txt`): an elastic deck of each set of columns, a
+Maxwell, a prony and a burgers deck, each with its expectations, the
+layers and interfaces named from the surface down.  **Flat manifests**
+(schema 7): `flat_manifest_cases/`, a base (a box exported with a model),
+accepted variants (a rectangle, a top below the surface, faults with a
+face edge) and malformed copies listed in `bad.txt`, none needing gmsh;
+`flat_manifests/<case>/`, the manifests the mesher and the MFEM export
+write for a box, a rectangle, a box with a fault leaving through a side,
+and flat models with their model files, each with its walk; and
+`flat_fault_meshes/<case>/`, a box with a fault reaching the surface and
+leaving through a side, and one with a thrust, a splay ending on it and
+a buried fault, each mesh as plain arrays with the answers of the
+Python's rules, an `edge` being also of the kind `face_edge`.
+
 **The facts the C++ restates** (`constants.txt`), one per line, a key
 and its value separated by spaces: the version, `G_SI`,
 `EARTH_MEAN_DENSITY`, and for each of a few scales, `scales <label>`
@@ -761,21 +805,31 @@ def _positive_columns(deck: Any) -> list[str]:
     return out
 
 
-def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
+def _expect_deck(path: Path, deck: Any, *, names: str | None,
+                 depth: bool = False) -> Path:
     """The expectation file of a deck, by the module docstring; `names` is
     the format whose header or labels name its layers, `mineos`, `maxwell`,
-    `prony`, `burgers` or `nd`."""
+    `prony`, `burgers` or `nd`, and `depth` says the knots are depths, a
+    flat model's deck, named from the surface down."""
     import warnings
 
     from planetmodel.deck import (BURGERS_KINDS, MAXWELL_KINDS, PRONY_KINDS,
                                   deck_layers, maxwell_names, mineos_names, nd_names)
+    of = {}
+    if depth:
+        from planetmodel.cartesian import DEPTH, depth_names
+        of = {"coordinate": DEPTH}
     own_kinds = {"maxwell": MAXWELL_KINDS, "prony": PRONY_KINDS,
                  "burgers": BURGERS_KINDS}
     lines = [f"knots {deck.nknots}",
              "boundaries " + " ".join(repr(float(b)) for b in deck.boundaries)]
     if names == "nd":
         lines += [f"label {float(r)!r} {label}" for r, label in deck.header["labels"]]
-    if names in ("nd", *own_kinds):
+    if depth:
+        layers, faces = depth_names(deck)
+        lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
+        lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
+    elif names in ("nd", *own_kinds):
         layers, faces = (nd_names if names == "nd" else maxwell_names)(deck)
         lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
         lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
@@ -799,7 +853,7 @@ def _expect_deck(path: Path, deck: Any, *, names: str | None) -> Path:
     joined += [(kind, "cubic", {n: kind for n in positive}, positive)
                for kind in _CPP_LOG_KINDS]
     for label, kind, kinds, columns in joined:
-        _, fields = deck_layers(deck, kind=kind, kinds=kinds)
+        _, fields = deck_layers(deck, kind=kind, kinds=kinds, **of)
         for i, s in enumerate(deck.layers()):
             r = deck.radius[s]
             between = np.sort(rng.uniform(r[0], r[-1], 3))
@@ -2155,8 +2209,1134 @@ def burgers(directory: Path) -> list[Path]:
     return [path]
 
 
+# -- the flat fixtures: planetmodel.cartesian ---------------------------------------
+
+def _flat_domains() -> dict[str, Any]:
+    """The lateral domains of the flat fixtures: a box padded along x, a
+    box that is its own period, and a rectangle padded on each side."""
+    from planetmodel import cartesian as flat
+    return {"padded": flat.Box([(0.0, 400e3), (0.0, 300e3)], padding=(50e3, 0.0)),
+            "box": flat.Box([(0.0, 400e3), (0.0, 300e3)]),
+            "rectangle": flat.Rectangle((0.0, 400e3), padding=25e3)}
+
+
+def _wave(grid: Any, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """A smooth function of (x, y) with the periods of a grid's domain, the
+    exponential of sines; of x alone over a rectangle."""
+    x0 = grid.domain.extent[0] if grid.dimension == 1 else grid.domain.extent[0][0]
+    lx = grid.lengths[0]
+    a = 2.0 * np.pi * (np.asarray(x, dtype=float) - x0) / lx
+    out = np.sin(a) + 0.3 * np.cos(2.0 * a + 0.4)
+    if grid.dimension == 2:
+        b = 2.0 * np.pi * (np.asarray(y, dtype=float) - grid.domain.extent[1][0]) \
+            / grid.lengths[1]
+        out = out + 0.5 * np.cos(b + 0.3) * (1.0 + 0.2 * np.sin(a))
+    return np.exp(0.5 * out)
+
+
+def flat_lateral_cases(directory: Path) -> list[Path]:
+    """The flat lateral rules, doubly periodic, on a box's grid and a
+    rectangle's, each on a grid of the fewest nodes the cubic rule takes
+    too: `flat_case_lateral_<grid>_<rule>.nc`."""
+    from planetmodel import cartesian as flat
+    from planetmodel.cartesian.lateral import LateralInterpolant
+    rng = np.random.default_rng(20261117)
+    box = flat.Box([(-1.0, 3.0), (2.0, 5.0)], padding=(0.5, 0.0))
+    rectangle = flat.Rectangle((10.0, 14.0), padding=0.25)
+    grids = {"box": flat.Grid(box, (9, 12)), "box_small": flat.Grid(box, (3, 4)),
+             "rectangle": flat.Grid(rectangle, (11,)),
+             "rectangle_small": flat.Grid(rectangle, (3,))}
+    out = []
+    for label, grid in grids.items():
+        gx, gy = grid.nodes
+        values = np.broadcast_to(_wave(grid, gx, gy), grid.shape)
+        two = grid.dimension == 2
+        (x0, x1) = grid.domain.extent[0] if two else grid.domain.extent
+        lx = grid.lengths[0]
+        y0, ly = (grid.domain.extent[1][0], grid.lengths[1]) if two else (0.0, 1.0)
+        # random points over three periods, the seam, the nodes, the far end
+        qx = list(rng.uniform(x0 - lx, x1 + lx, 40)) + [
+            x0 - 1e-9 * lx, x0 + 1e-9 * lx, float(grid.x[1]), float(grid.x[-1]),
+            x1, x0 + 0.37 * lx]
+        qy = list(rng.uniform(y0 - ly, y0 + 2.0 * ly, 40)) + [
+            y0 + 0.21 * ly, y0 + 0.83 * ly, y0 + 0.5 * ly, y0 - 1e-9 * ly,
+            y0 + 0.4 * ly, float(grid.y[2]) if two else 0.0]
+        qx, qy = np.array(qx), np.array(qy)
+        for method in ("linear", "cubic"):
+            f = LateralInterpolant(values, grid, method=method)
+            dx, dy = f.gradient(qx, qy)
+            arrays = {"x": grid.x, "values": values, "query_x": qx, "query_y": qy,
+                      "expected": f(qx, qy), "expected_dx": dx, "expected_dy": dy}
+            if two:
+                arrays["y"] = grid.y
+            out.append(_write_case(
+                directory / f"flat_case_lateral_{label}_{method}.nc", arrays,
+                {"domain": "box" if two else "rectangle",
+                 "bounds": np.ravel(np.asarray(grid.domain.bounds, dtype=float)),
+                 "padding": np.atleast_1d(np.asarray(grid.domain.padding,
+                                                     dtype=float)),
+                 "method": method, "mean": float(f.mean())}))
+    return out
+
+
+def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
+    """The flat models of the fixtures, each with the arguments it is
+    written with."""
+    from scipy.interpolate import PPoly as Pieces
+
+    from planetmodel import cartesian as flat
+    domains = _flat_domains()
+    box, padded = domains["box"], domains["padded"]
+    rectangle = domains["rectangle"]
+    out: dict[str, tuple[Any, dict[str, Any]]] = {}
+
+    # layered only: fields of depth alone, over a box and over a rectangle
+    layered = flat.CrustOverMantle(box, viscosity=1e21).with_uniform_gravity(9.8)
+    out["layered"] = (layered, {"grid": flat.Grid(box, (4, 3))})
+    out["layered_rectangle"] = (flat.CrustOverMantle(rectangle),
+                                {"grid": flat.Grid(rectangle, (5,))})
+
+    # lateral fields on each rule, of every rank, in two parts on two grids
+    base = flat.CrustOverMantle(padded)
+    coarse, fine = flat.Grid(padded, (10, 6)), flat.Grid(padded, (16, 12))
+
+    def rho3d(d: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return 3300.0 * (1.0 + 1e-7 * d * (_wave(fine, x, y) - 1.0))
+
+    def wind(d: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        d, x, y = np.broadcast_arrays(d, x, y)
+        w = _wave(fine, x, y)
+        return np.stack([1e-5 * d * w, 2.0 - w, 0.5 * w + 1e-5 * d], axis=-1)
+
+    def stress(d: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        d, x, y = np.broadcast_arrays(d, x, y)
+        w = _wave(coarse, x, y)
+        return np.stack([1.0 + w, 2.0 + 1e-5 * d, 3.0 - w, 0.5 * w, 0.2 + 1e-6 * d * w,
+                         0.1 * w], axis=-1)
+
+    lateral = base.with_field(1, "rho", flat.GriddedField.sampled(
+        flat.AnalyticField((30e3, 100e3), rho3d, character=pm.DENSITY), fine,
+        breaks=[30e3, 60e3, 100e3], ngll=4, lateral="cubic"), replace=True)
+    lateral = lateral.with_field(1, "flow", flat.GriddedField.sampled(
+        flat.AnalyticField((30e3, 100e3), wind, character=pm.VECTOR), fine, ngll=3,
+        lateral="linear"))
+    lateral = lateral.with_field(0, "stress", flat.DepthField((0.0, 30e3), [
+        lambda d: 1.0 + 1e-5 * d, lambda d: 2.0 - 1e-5 * d,
+        lambda d: 3.0 + 1e-10 * d ** 2, lambda d: 1e-6 * d, lambda d: 2e-6 * d,
+        lambda d: 3e-6 * d],
+        character=pm.STRESS, name="stress"))
+    lateral = lateral.with_field(2, "stress", flat.GriddedField.sampled(
+        flat.AnalyticField((100e3, 200e3), stress, character=pm.STRESS,
+                           frame="cartesian"), coarse, ngll=3, lateral="cubic"))
+    lateral = pm.perturbed(lateral, "vs", flat.AnalyticField(
+        (100e3, 200e3), lambda d, x, y: 0.02 * (_wave(coarse, x, y) - 1.0)
+        * (200e3 - d) / 100e3), kind="relative")
+    lateral = lateral.with_geometry(lateral.geometry.renamed(
+        interfaces=["surface", "moho", None]))
+    out["lateral"] = (lateral, {"grid": {0: fine, 1: fine, 2: coarse},
+                                "interpolation": {"vs": ("polynomial", "cubic")}})
+
+    # the same kinds over a rectangle, whose grid has the one axis
+    line = flat.Grid(rectangle, (14,))
+    two = flat.CrustOverMantle(rectangle)
+    cut = two.with_field(1, "rho", flat.GriddedField.sampled(
+        flat.AnalyticField((30e3, 100e3), lambda d, x, y: 3300.0 * (
+            1.0 + 1e-7 * d * (_wave(line, x, y) - 1.0)), character=pm.DENSITY),
+        line, breaks=[30e3, 60e3, 100e3], ngll=4, lateral="cubic"), replace=True)
+
+    def drift(d: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        d, x, y = np.broadcast_arrays(d, x, y)
+        w = _wave(line, x, y)
+        return np.stack([1e-5 * d * w, 2.0 - w, 0.5 * w + 1e-5 * d], axis=-1)
+
+    cut = cut.with_field(2, "flow", flat.GriddedField.sampled(
+        flat.AnalyticField((100e3, 200e3), drift, character=pm.VECTOR,
+                           frame="cartesian"), line, ngll=3, lateral="linear"))
+    cut = pm.perturbed(cut, "vs", flat.AnalyticField(
+        (0.0, 30e3), lambda d, x, y: 0.01 * _wave(line, x, y) * d / 30e3),
+        kind="absolute")
+    out["rectangle"] = (cut, {"grid": line,
+                              "interpolation": {"vs": ("polynomial", "cubic")}})
+
+    # a Fourier field, which states the rule the C++ refuses by name
+    grid = flat.Grid(box, (8, 6))
+    gx, gy = grid.nodes
+    c = grid.transform.analyse_grid(0.03 * (np.broadcast_to(_wave(grid, gx, gy),
+                                                            grid.shape) - 1.0))
+    fade = Pieces(np.stack([-c / 200e3, c])[:, None], [0.0, 200e3])
+    fourier = pm.perturbed(flat.CrustOverMantle(box), "vs",
+                           flat.FourierField((0.0, 200e3), grid, fade),
+                           kind="relative")
+    out["fourier"] = (fourier, {"grid": grid, "fields": ["rho", "vs"]})
+
+    # topography as a stack of reliefs, over a box and over a rectangle
+    def hill(g: Any) -> Any:
+        return flat.GriddedFunction.sampled(
+            lambda x, y: 2e3 * (_wave(g, x, y) - 1.0), g)
+
+    def root(g: Any) -> Any:
+        return flat.GriddedFunction.sampled(
+            lambda x, y: -6e3 * (_wave(g, x, y) - 1.0), g, lateral="linear")
+
+    reliefs = flat.Grid(padded, (20, 12))
+    stacked = base.stretched(flat.layer_linear(
+        base.skeleton, [hill(reliefs), root(reliefs), None, None]))
+    out["stacked"] = (stacked, {"grid": coarse, "fields": ["rho", "vp"]})
+    out["stacked_rectangle"] = (two.stretched(flat.layer_linear(
+        two.skeleton, [hill(line), hill(line), None, None])),
+        {"grid": line, "fields": ["rho"]})
+
+    # a vertical stretch that is no stack: held as its displacement
+    def w(d: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return 1.5e3 * (_wave(coarse, x, y) - 1.0) * (1.0 - d / 200e3) ** 2
+
+    smooth_stretch = base.stretched(flat.CallableDisplacement(w, name="taper"))
+    out["stretched"] = (smooth_stretch, {"grid": coarse, "fields": ["rho"]})
+
+    # fields on interfaces
+    kernel = base.replaced(specs={**base.specs, "K_shape": pm.FieldSpec(
+        pm.SCALAR, pm.Dimensions(length=-2), meaning="a shape kernel")})
+    on_faces = {"K_shape": {0: lambda x, y: _wave(coarse, x, y),
+                            "moho": lambda x, y: 2.0 - _wave(coarse, x, y)},
+                "shift": {1: flat.GriddedFunction.sampled(
+                    lambda x, y: 30.0 * _wave(fine, x, y), fine)}}
+    out["surfaces"] = (kernel, {"grid": coarse, "fields": ["rho", "vp"],
+                                "surfaces": on_faces})
+
+    # padded below the base, the lowest properties held
+    held = lateral.extended([260e3, 400e3], fields="hold",
+                            names=["padding", "deep_padding"])
+    out["held"] = (held, {"grid": coarse, "fields": ["rho", "vs", "stress"],
+                          "interpolation": {"vs": ("polynomial", "cubic")}})
+
+    # a viscosity joined in its logarithm, 1e21 at 100 km and three decades
+    # less at the base, and a constant above it
+    logged = base.with_field(2, "viscosity", flat.DepthField(
+        (100e3, 200e3), pm.layerfunction.ExponentialLayer(
+            (100e3, 200e3), Pieces(np.array([[-3.0 * np.log(10.0) / 100e3],
+                                             [np.log(1e21)]]), [100e3, 200e3])),
+        name="viscosity"))
+    logged = logged.with_field(1, "viscosity", flat.constant_field(
+        (30e3, 100e3), 1e23, name="viscosity"))
+    out["log"] = (logged, {"grid": flat.Grid(padded, (3, 3)),
+                           "fields": ["rho", "viscosity"],
+                           "interpolation": {"viscosity": ("log-polynomial",
+                                                           "linear")}})
+    return out
+
+
+def _flat_gradient(f: Any, d: float, x: float, y: float) -> np.ndarray:
+    """(d/d depth, d/dx, d/dy) of a scalar field the flat reader builds,
+    from the exact derivatives of its parts."""
+    from planetmodel.cartesian import GriddedField
+    if getattr(f, "reference", None) is not None:
+        ref, dp = f.reference, f.perturbation
+        v0, g0 = float(ref.evaluate(d, x, y)), _flat_gradient(ref, d, x, y)
+        v1, g1 = float(dp.evaluate(d, x, y)), _flat_gradient(dp, d, x, y)
+        if f.kind == "absolute":
+            return g0 + g1
+        if f.kind == "relative":
+            return g0 * (1.0 + v1) + v0 * g1
+        return np.exp(v1) * (g0 + v0 * g1)
+    if isinstance(f, GriddedField):
+        _, dd, dx, dy = f.derivatives(d, x, y)
+        return np.array([dd.item(), dx.item(), dy.item()])
+    return np.array([float(f.derivative().evaluate(d, x, y)), 0.0, 0.0])
+
+
+def _expect_flat_model(path: Path) -> Path:
+    """The expectations of a flat model file: the lines of
+    `_expect_model`, a point being (depth, x, y) and a frame `l` (local)
+    or `c` (Cartesian), and `domain <kind> <bounds> <padding>`."""
+    from planetmodel.cartesian import FLAT
+    from planetmodel.cartesian.modelfile import read_model_file
+    from planetmodel.modelfile import read_model, read_surfaces
+    data, model = read_model_file(path), read_model(path)
+    hexed = (lambda x: "-" if not x else x.encode("utf-8").hex())
+    s = data.scales
+    domain = data.domain
+    two = len(domain.axes) == 2
+    lines = [f"scales {s.length!r} {s.mass!r} {s.time!r} {s.temperature!r}",
+             f"rtol {data.rtol!r}", f"name {hexed(data.name)}",
+             f"citation {hexed(chr(10).join(data.citation))}",
+             f"domain {'box' if two else 'rectangle'} "
+             + " ".join(repr(float(v)) for v in (
+                 *np.ravel(np.asarray(domain.bounds, dtype=float)),
+                 *np.atleast_1d(np.asarray(domain.padding, dtype=float))))]
+    lines += [f"layer_name {i} {hexed(n)}" for i, n in enumerate(data.layer_names)]
+    lines += [f"interface_name {i} {hexed(n)}"
+              for i, n in enumerate(data.interface_names)]
+    for cname, value in data.constants.items():
+        c = data.declared.get(cname)
+        dims = "" if c is None else " " + " ".join(
+            str(getattr(c.dimensions, b))
+            for b in ("mass", "length", "time", "temperature"))
+        lines.append(f"constant {cname} {value!r}{dims}")
+    names = sorted({n for part in data.parts for n in part.variables
+                    if not n.endswith("_perturbation") and n != "displacement"})
+    extent = domain.extent if two else (domain.extent, (0.0, 1.0))
+    (x0, x1), (y0, y1) = extent
+    lx, ly = x1 - x0, y1 - y0
+    for i, layer in enumerate(model.layers):
+        lo, hi = layer.interval
+        ds = (lo, lo + 0.3 * (hi - lo), lo + 0.77 * (hi - lo), hi)
+        xs = (x0 - 0.2 * lx, x0 + 0.31 * lx, x1, x0 + 1.9 * lx)
+        ys = (y0 + 0.1 * ly, y0 - 0.45 * ly, y0 + 0.62 * ly, y0 + 2.2 * ly)
+        for name in names:
+            if name not in layer:
+                lines.append(f"absent {i} {name}")
+                continue
+            f = layer[name]
+            for d, x, y in zip(ds, xs, ys):
+                for frame, tag in (("local", "l"), ("cartesian", "c")):
+                    v = np.asarray(f.evaluate(d, x, y, frame=frame),
+                                   dtype=float).ravel()
+                    lines.append(f"value {i} {name} {tag} {d!r} {x!r} {y!r} "
+                                 + " ".join(repr(float(a)) for a in v))
+                if f.character.rank == 0:
+                    g = _flat_gradient(f, d, x, y)
+                    lines.append(f"gradient {i} {name} {d!r} {x!r} {y!r} "
+                                 + " ".join(repr(float(a)) for a in g))
+    mapping = model.geometry.mapping
+    if not model.geometry.is_identity:
+        rng = np.random.default_rng(11)
+        b = model.skeleton.boundaries
+        depths = np.concatenate((rng.uniform(b[0], b[-1], 8), b))
+        X = FLAT.points(depths, rng.uniform(x0 - lx, x1 + lx, depths.size),
+                        rng.uniform(y0 - ly, y1 + ly, depths.size))
+        U = mapping.displacement(X)
+        for x, u in zip(X, U):
+            lines.append("displacement " + " ".join(repr(float(a)) for a in (*x, *u)))
+    for name, on in sorted(read_surfaces(path).items()):
+        for face in model.geometry.interfaces:
+            k = face.index
+            f = on.get(k if face.name is None else face.name)
+            if f is None:
+                lines.append(f"surface_absent {k} {name}")
+                continue
+            points = ((x0 - 0.2 * lx, y0 + 0.1 * ly), (x0 + 0.31 * lx, y0 - 0.45 * ly),
+                      (x1, y0 + 0.62 * ly), (x0 + 1.9 * lx, y0 + 2.2 * ly),
+                      (x0, y0), (x0 + 0.5 * lx, y1))
+            for x, y in points:
+                lines.append(f"surface {k} {name} {x!r} {y!r} {float(f(x, y))!r}")
+            for x, y in points[:3]:
+                dx, dy = (float(v) for v in f.lateral_gradient(x, y))
+                lines.append(f"surface_gradient {k} {name} {x!r} {y!r} {dx!r} {dy!r}")
+    out = path.with_name(path.name.removesuffix(".nc") + ".expect")
+    out.write_text("\n".join(lines) + "\n")
+    return out
+
+
+def flat_model_files(directory: Path) -> list[Path]:
+    """The flat model files of the module docstring, `flat_model_<case>.nc`,
+    each validated, and for every one but the Fourier one its
+    expectations."""
+    out = []
+    for label, (model, arguments) in _flat_models().items():
+        path = write_model(directory / f"flat_model_{label}.nc", model, **arguments)
+        validate_structure(path)
+        out.append(path)
+        if label != "fourier":
+            out.append(_expect_flat_model(path))
+    return out
+
+
+def _creating(name: str, dims: tuple[str, ...], *, group: str | None = None,
+              attributes: dict[str, Any] | None = None,
+              sizes: dict[str, int] | None = None) -> Any:
+    """An edit creating a real variable of zeros over dimensions of the
+    root or a group, those of `sizes` created first."""
+    def edit(ds: Any) -> None:
+        g = ds if group is None else ds.groups[group]
+        for dim, n in (sizes or {}).items():
+            g.createDimension(dim, n)
+        var = g.createVariable(name, "f8", dims)
+        var[...] = 0.0
+        for key, value in (attributes or {}).items():
+            var.setncattr(key, value)
+    return edit
+
+
+_FLAT_RHO = {"group": "part_0", "variable": "rho"}
+_FLAT_VS = {"group": "part_1", "variable": "vs"}
+_FLAT_STACK = {"group": "geometry", "variable": "boundary_displacement"}
+
+#: The malformed flat model files: (the file copied, an edit by netCDF4,
+#: where the fault lies, what the refusal says).
+_BAD_FLAT_MODELS: dict[str, tuple[str, Any, str, str]] = {
+    "schema_spherical": ("flat_model_lateral.nc",
+                         _setting("schema", "planetmodel.model/1"), "schema",
+                         "read by planetmodel::ReadModelFile"),
+    "schema": ("flat_model_lateral.nc", _setting("schema", "planetmodel.model/9"),
+               "schema", "this reader reads planetmodel.model/3"),
+    "no_schema": ("flat_model_lateral.nc", _deleting("schema"), "schema",
+                  "not a planetmodel model file"),
+    "rtol_negative": ("flat_model_lateral.nc", _setting("rtol", -1.0), "rtol",
+                      "not a tolerance"),
+    "no_scale_mass": ("flat_model_lateral.nc", _deleting("scale_mass"), "scale_mass",
+                      "missing or not positive"),
+    "coordinate_system": ("flat_model_lateral.nc",
+                          _setting("coordinate_system", "spherical"),
+                          "coordinate_system", "a flat model file states flat"),
+    "no_local_frame": ("flat_model_lateral.nc", _deleting("local_frame"),
+                       "local_frame", "a flat model file states up x y"),
+    "local_frame": ("flat_model_lateral.nc", _setting("local_frame", "x y up"),
+                    "local_frame", "a flat model file states up x y"),
+    "no_domain": ("flat_model_lateral.nc", _deleting("domain"), "domain",
+                  "states its lateral domain"),
+    "domain_kind": ("flat_model_lateral.nc", _setting("domain", "disc"), "domain",
+                    "not box or rectangle"),
+    "domain_bounds": ("flat_model_lateral.nc",
+                      _setting("domain_bounds", np.array([0.0, 400e3])),
+                      "domain_bounds", "a box states 4 bounds"),
+    "domain_inverted": ("flat_model_lateral.nc",
+                        _setting("domain_bounds",
+                                 np.array([400e3, 0.0, 0.0, 300e3])),
+                        "domain", "malformed"),
+    "spherical_attribute": ("flat_model_lateral.nc",
+                            _setting("grid_kind", "custom", group="part_0"),
+                            "part_0/grid_kind", "a spherical file's"),
+    "spherical_variable": ("flat_model_lateral.nc",
+                           _creating("interface_radius", ("interface",)),
+                           "interface_radius", "a spherical file's"),
+    "poles": ("flat_model_lateral.nc",
+              _creating("rho_poles", ("node", "pole"), group="part_0",
+                        sizes={"pole": 2}),
+              "part_0/pole", "a spherical file's"),
+    "polar_values": ("flat_model_lateral.nc",
+                     _creating("rho_poles", ("node",), group="part_0"),
+                     "part_0/rho_poles", "polar values"),
+    "grid_nodes": ("flat_model_lateral.nc",
+                   _storing((1,), 1.01, variable="x", group="part_0", relative=True),
+                   "part_0/x", "not the nodes of a grid"),
+    "rectangle_y": ("flat_model_rectangle.nc",
+                    _creating("y", ("y",), group="part_0", sizes={"y": 3}),
+                    "part_0/y", "the one axis x"),
+    "layer_bounds": ("flat_model_lateral.nc",
+                     _storing((1, 0), 31e3, variable="layer_bounds"),
+                     "layer_bounds", "contiguous"),
+    "layer_part": ("flat_model_lateral.nc", _storing((0,), 3, variable="layer_part"),
+                   "layer_part", "which the file lacks"),
+    "ngll": ("flat_model_lateral.nc", _setting("ngll", np.int32(1), group="part_0"),
+             "part_0.ngll", "two or more"),
+    "element_bounds": ("flat_model_lateral.nc",
+                       _storing((0, 1), 0.9, variable="element_bounds",
+                                group="part_0", relative=True),
+                       "part_0", "do not tile"),
+    "depth_nodes": ("flat_model_lateral.nc",
+                    _storing((1,), 1.001, variable="depth", group="part_0",
+                             relative=True),
+                    "part_0/depth", "Gauss-Lobatto-Legendre"),
+    "radial_rule": ("flat_model_lateral.nc",
+                    _setting("radial_interpolation", "spline", **_FLAT_RHO),
+                    "part_0/rho", "unknown radial rule"),
+    "lateral_rule": ("flat_model_lateral.nc",
+                     _setting("lateral_interpolation", "harmonic", **_FLAT_RHO),
+                     "part_0/rho", "no known lateral rule"),
+    "no_rank": ("flat_model_lateral.nc", _deleting("rank", **_FLAT_RHO),
+                "part_0/rho", "lacks the attribute rank"),
+    "log_lateral": ("flat_model_lateral.nc",
+                    _setting("radial_interpolation", "log-polynomial", **_FLAT_RHO),
+                    "part_0/rho", "a rule in the logarithm"),
+    "radial_layers": ("flat_model_lateral.nc",
+                      _setting("radial_layers", np.array([1], dtype=np.int32),
+                               group="part_0", variable="vp"),
+                      "part_0/vp", "names radial_layers"),
+    "perturbation": ("flat_model_lateral.nc",
+                     _setting("perturbation", "nonesuch", **_FLAT_VS),
+                     "part_1/vs", "which the part lacks"),
+    "perturbation_kind": ("flat_model_lateral.nc",
+                          _setting("perturbation_kind", "odd", **_FLAT_VS),
+                          "part_1/vs", "no known perturbation_kind"),
+    "stack_between": ("flat_model_stacked.nc",
+                      _setting("between", "cubic", **_FLAT_STACK),
+                      "geometry/boundary_displacement", "rule between surfaces"),
+    "stack_positive": ("flat_model_stacked.nc",
+                       _setting("positive", "down", **_FLAT_STACK),
+                       "geometry/boundary_displacement", "positive up"),
+    "stack_rule": ("flat_model_stacked.nc",
+                   _setting("lateral_interpolation", "harmonic", **_FLAT_STACK),
+                   "geometry/boundary_displacement", "no known lateral rule"),
+    "stack_depth": ("flat_model_stacked.nc",
+                    _renaming("boundary_depth", "boundary_radius", group="geometry"),
+                    "geometry/boundary_radius", "a spherical file's"),
+    "mapping_twice": ("flat_model_stacked.nc",
+                      _creating("displacement", ("node",), group="part_0",
+                                attributes={"radial_interpolation": "polynomial"}),
+                      "geometry", "held twice"),
+    "surface_interface": ("flat_model_surfaces.nc",
+                          _storing((1,), 7, variable="surface_interface",
+                                   group="surfaces"),
+                          "surfaces/surface_interface", "interfaces of the file"),
+    "surface_name": ("flat_model_surfaces.nc",
+                     _renaming("K_shape", "rho", group="surfaces"),
+                     "surfaces/rho", "a layer field's name too"),
+    "surface_rule": ("flat_model_surfaces.nc",
+                     _setting("lateral_interpolation", "harmonic", group="surfaces",
+                              variable="shift"),
+                     "surfaces/shift", "no known lateral rule"),
+}
+
+
+def flat_model_cases(directory: Path) -> list[Path]:
+    """The malformed copies of the flat model files already in `directory`,
+    `flat_model_cases/bad_*.nc`, listed in `bad.txt` as the model cases
+    are."""
+    import netCDF4
+    root = directory / "flat_model_cases"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+    out, lines = [], []
+    for label, (base, edit, where, phrase) in _BAD_FLAT_MODELS.items():
+        path = root / f"bad_{label}.nc"
+        shutil.copyfile(directory / base, path)
+        with netCDF4.Dataset(path, "a") as ds:
+            edit(ds)
+        out.append(path)
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
+
+
+def _flat_surface(directory: Path, label: str, grid: Any, *,
+                  depth: float | None) -> list[Path]:
+    """One flat surface file on `grid`, a field of every time support on
+    it, and its expectations."""
+    from planetmodel import surfacefile
+    from planetmodel.cartesian.surfacefile import read_surface_file, write_surface
+
+    rng = np.random.default_rng(11 + grid.dimension)
+    time = np.array([0.0, 1.0, 2.5, 4.0])
+    instant = np.array([2.5, 4.0])
+    shape = grid.shape
+    gx, gy = grid.nodes
+    topography = rng.normal(size=shape)
+    topography.flat[0] = np.nan
+    fields = {
+        "topography": surfacefile.SurfaceVariable(
+            topography, dimensions=units.LENGTH, meaning="present-day topography"),
+        "relief": surfacefile.SurfaceVariable(
+            np.broadcast_to(2e3 * (_wave(grid, gx, gy) - 1.0), shape),
+            dimensions=units.LENGTH, lateral_interpolation="cubic"),
+        "ice_thickness": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="linear", dimensions=units.LENGTH),
+        "load_previous": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="previous"),
+        "load_nodes": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node"),
+        "rate": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size - 1,) + shape), support="interval"),
+        "instantaneous": surfacefile.SurfaceVariable(
+            rng.normal(size=(instant.size,) + shape), support="instant",
+            lateral_interpolation="cubic"),
+    }
+    scales = pm.Scales(length=1e3, mass=1e12, time=3.15576e10)
+    path = directory / f"flat_surface_{label}.nc"
+    write_surface(path, grid, fields=fields, source="planetmodel fixtures", time=time,
+                  instant=instant, depth=depth, scales=scales,
+                  meta={"epoch": "present"}, citation=("a work",))
+    surfacefile.validate_structure(path)
+    data = read_surface_file(path)
+    domain = grid.domain
+    two = grid.dimension == 2
+    lines = [f"scales {scales.length!r} {scales.mass!r} {scales.time!r} "
+             f"{scales.temperature!r}",
+             f"depth {'-' if data.depth is None else repr(data.depth)}",
+             f"domain {'box' if two else 'rectangle'} "
+             + " ".join(repr(float(v)) for v in (
+                 *np.ravel(np.asarray(domain.bounds, dtype=float)),
+                 *np.atleast_1d(np.asarray(domain.padding, dtype=float)))),
+             "grid " + " ".join(str(n) for n in shape)]
+    lines += [f"time {k} {float(t)!r}" for k, t in enumerate(data.time)]
+    lines += [f"instant {k} {float(t)!r}" for k, t in enumerate(data.instant)]
+    ny = shape[1] if two else 1
+    samples = ((0, 1 % ny), (shape[0] // 2, ny // 3), (shape[0] - 1, ny - 1), (0, 0))
+
+    def at(v: np.ndarray, i: int, j: int) -> float:
+        return float(v[i, j] if two else v[i])
+
+    for name in fields:
+        a = data.variables[name].attributes
+        exps = ("-" if "dimensions" not in a else
+                " ".join(str(int(e)) for e in np.atleast_1d(a["dimensions"])))
+        lines.append(f"variable {name} {a['time_support']} "
+                     f"{a['time_interpolation']} {a['lateral_interpolation']} "
+                     f"{exps}")
+        values = data.variables[name].values
+        leading = [None] if values.ndim == len(shape) else [0, values.shape[0] - 1]
+        for k in leading:
+            v = values if k is None else values[k]
+            tag = "-" if k is None else str(k)
+            for i, j in samples:
+                if np.isnan(at(v, i, j)):
+                    lines.append(f"absent {name} {tag} {i} {j}")
+                else:
+                    lines.append(f"value {name} {tag} {i} {j} {at(v, i, j)!r}")
+    history = surfacefile.read_surface(path)
+    dated = (("topography", None, "refuse"), ("ice_thickness", 1.75, "refuse"),
+             ("ice_thickness", 2.5, "refuse"), ("ice_thickness", 9.0, "hold"),
+             ("load_previous", 1.75, "refuse"), ("load_previous", -3.0, "hold"),
+             ("load_nodes", 2.5, "refuse"), ("rate", 3.0, "refuse"),
+             ("rate", 4.0, "refuse"), ("instantaneous", 2.5, "refuse"))
+    for name, date, extrapolation in dated:
+        got = history.values(name, date=date, extrapolation=extrapolation)
+        tag = "-" if date is None else repr(float(date))
+        for i, j in samples:
+            if np.isfinite(at(got, i, j)):
+                lines.append(f"sample {name} {tag} {extrapolation} {i} {j} "
+                             f"{at(got, i, j)!r}")
+    # the fields as functions of (x, y), by their lateral rules
+    x0, lx = float(grid.x[0]), grid.lengths[0]
+    y0, ly = (float(grid.y[0]), grid.lengths[1]) if two else (0.0, 1.0)
+    points = ((x0 + 0.31 * lx, y0 + 0.62 * ly), (x0 - 0.4 * lx, y0 + 1.7 * ly),
+              (x0 + lx, y0), (float(grid.x[2]), y0 + 0.25 * ly))
+    for name, date in (("relief", None), ("ice_thickness", 1.75),
+                       ("instantaneous", 4.0)):
+        f = history.function(name, date=date)
+        tag = "-" if date is None else repr(float(date))
+        for x, y in points:
+            dx, dy = (float(v) for v in f.lateral_gradient(x, y))
+            lines.append(f"function {name} {tag} {x!r} {y!r} {float(f(x, y))!r} "
+                         f"{dx!r} {dy!r}")
+    expect = directory / f"flat_surface_{label}.expect"
+    expect.write_text("\n".join(lines) + "\n")
+    return [path, expect]
+
+
+#: The malformed flat surface files: (an edit by netCDF4, where the fault
+#: lies, what the refusal says), each of a copy of `flat_surface_box.nc`.
+_BAD_FLAT_SURFACES: dict[str, tuple[Any, str, str]] = {
+    "schema_spherical": (_setting("schema", "planetmodel.surface/1"), "schema",
+                         "read by planetmodel::ReadSurfaceFile"),
+    "schema": (_setting("schema", "planetmodel.surface/9"), "schema",
+               "this reader reads planetmodel.surface/2"),
+    "no_source": (_deleting("source"), "source", "missing or empty"),
+    "coordinate_system": (_setting("coordinate_system", "spherical"),
+                          "coordinate_system", "a flat surface file states flat"),
+    "no_domain_bounds": (_deleting("domain_bounds"), "domain_bounds",
+                         "states its lateral domain"),
+    "depth_negative": (_setting("depth", -1.0), "depth", "not a depth"),
+    "radius": (_setting("radius", 1.0), "radius", "a spherical file's"),
+    "polar_values": (_creating("relief_poles", ("x",)), "relief_poles",
+                     "polar values"),
+    "grid_nodes": (_storing((2,), 1.02, variable="y", relative=True), "y",
+                   "not the nodes of a grid"),
+    "time_axis": (_storing((1,), 9.0, variable="time"), "time",
+                  "strictly increasing"),
+    "support": (_setting("time_support", "sometimes", variable="rate"), "rate",
+                "states no time support"),
+    "time_rule": (_setting("time_interpolation", "linear", variable="rate"), "rate",
+                  "states the time rule"),
+    "lateral_rule": (_setting("lateral_interpolation", "harmonic",
+                              variable="relief"), "relief",
+                     "no known lateral rule"),
+    "dimensions": (_setting("time_support", "node", variable="relief"), "relief",
+                   "does not run over"),
+}
+
+
+def flat_surface_files(directory: Path) -> list[Path]:
+    """The flat surface files of the module docstring, a box's below the
+    surface and a rectangle's on it, each with its expectations, and the
+    malformed copies of the box's (`flat_surface_cases/`)."""
+    import netCDF4
+
+    from planetmodel import cartesian as flat
+    domains = _flat_domains()
+    out = _flat_surface(directory, "box", flat.Grid(domains["padded"], (10, 6)),
+                        depth=2.5)
+    out += _flat_surface(directory, "rectangle", flat.Grid(domains["rectangle"], (9,)),
+                         depth=None)
+    root = directory / "flat_surface_cases"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+    lines = []
+    for label, (edit, where, phrase) in _BAD_FLAT_SURFACES.items():
+        path = root / f"bad_{label}.nc"
+        shutil.copyfile(directory / "flat_surface_box.nc", path)
+        with netCDF4.Dataset(path, "a") as ds:
+            edit(ds)
+        out.append(path)
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
+
+
+def flat_decks(directory: Path) -> list[Path]:
+    """The decks of depths of the module docstring, `flat_deck_<case>.txt`,
+    each with its expectations."""
+    from planetmodel import cartesian as flat
+    from planetmodel.deck import Deck, read_deck, write_deck
+    nan = np.nan
+    depth = np.array([0.0, 10e3, 30e3, 30e3, 60e3, 100e3, 100e3, 130e3, 160e3, 200e3,
+                      200e3, 400e3])
+    n = depth.size
+    grade = 1.0 + depth / 1e6
+    elastic = {"rho": np.where(depth < 30e3 + (np.arange(n) > 2), 2800.0, 3300.0)
+               * grade,
+               "vpv": np.where(np.arange(n) < 3, 6400.0, 8000.0) * grade,
+               "vsv": np.where(np.arange(n) < 3, 3700.0, 4500.0) * grade,
+               "vph": np.where(np.arange(n) < 3, 6500.0, 8100.0) * grade,
+               "vsh": np.where(np.arange(n) < 3, 3750.0, 4550.0) * grade,
+               "eta": np.where(np.arange(n) < 3, 1.0, 0.97) + 0.0 * depth}
+    quality = {"qkappa": np.where(np.arange(n) < 3, nan, 57823.0),
+               "qmu": np.where(np.arange(n) < 3, nan, 600.0 - depth / 1e3)}
+    named = {"layers": ("crust", "lithosphere", None, "padding"),
+             "interfaces": ("surface", "moho", "lab", None)}
+    out = []
+
+    def written(label: str, deck: Any, fmt: Any, names: str | None) -> None:
+        path = write_deck(directory / f"flat_deck_{label}.txt", deck, fmt)
+        out.extend([path, _expect_deck(path, read_deck(path, fmt), names=names,
+                                       depth=True)])
+
+    ti = {k: {**elastic, **quality}[k] for k in
+          ("rho", "vpv", "vsv", "qkappa", "qmu", "vph", "vsh", "eta")}
+    written("elastic", Deck(depth, ti, header={"name": "an elastic deck of depths",
+                                               **named}), flat.ELASTIC, None)
+    # the isotropic columns, unnamed, starting below the surface
+    written("isotropic", Deck(
+        depth[3:] , {"rho": elastic["rho"][3:], "vp": elastic["vpv"][3:],
+                     "vs": elastic["vsv"][3:], "qkappa": quality["qkappa"][3:],
+                     "qmu": quality["qmu"][3:]},
+        header={"name": "a mantle from 30 km down"}), flat.ELASTIC, None)
+    viscosity = np.full(n, nan)
+    viscosity[3:6] = 10.0 ** (23.0 - 2.0 * (depth[3:6] - 30e3) / 70e3)
+    viscosity[6:10] = [1e21, 3e20, 1e20, 5e20]
+    viscosity[10:] = 1e21
+    written("maxwell", Deck(depth, {**elastic, "viscosity": viscosity},
+                            header={"name": "a Maxwell deck of depths", **named}),
+            flat.MAXWELL, "maxwell")
+    w1, t1, w2, t2 = (np.full(n, nan) for _ in range(4))
+    w1[3:6], t1[3:6] = 1.0, [3e12, 1e12, 3e11]            # one branch: completed
+    w1[6:10], t1[6:10] = [0.4, 0.45, 0.5, 0.5], [1e9, 2e9, 4e9, 4e9]
+    w2[6:10], t2[6:10] = [0.5, 0.45, 0.3, 0.3], [1e12, 3e12, 1e13, 1e13]
+    w1[10:], t1[10:], w2[10:], t2[10:] = 0.6, 1e10, 0.4, 1e13
+    written("prony", Deck(depth, {**elastic, "relaxation_strength_1": w1,
+                                  "relaxation_time_1": t1, "relaxation_strength_2": w2,
+                                  "relaxation_time_2": t2},
+                          header={"name": "a prony deck of depths", **named}),
+            flat.PRONY, "prony")
+    kelvin, fraction = np.full(n, nan), np.full(n, nan)
+    kelvin[6:10], fraction[6:10] = [1e19, 2e19, 5e19, 5e19], [0.5, 0.7, 1.5, 1.5]
+    written("burgers", Deck(depth, {**elastic, "viscosity": viscosity,
+                                    "kelvin_viscosity": kelvin,
+                                    "kelvin_modulus_fraction": fraction},
+                            header={"name": "a burgers deck of depths",
+                                    "layers": named["layers"]}),
+            flat.BURGERS, "burgers")
+    return out
+
+
+#: The valid flat manifest the flat refusal cases are made from: a box of
+#: two layers exported for MFEM with a model, its model file beside it.
+_FLAT_BASE_MANIFEST: dict[str, Any] = {
+    "mesh": {"file": "box.mesh", "format": "mfem", "nodes": "reference",
+             "read_options": {"generate_edges": 1, "refine": 0,
+                              "fix_orientation": False},
+             "displacement": "displacement"},
+    "coordinates": ["x", "y", "z"],
+    "layers": [
+        {"attribute": 1, "name": "crust", "depth_top": 0.0, "depth_bottom": 30.0,
+         "in_geometry": True, "fluid": False},
+        {"attribute": 2, "name": "mantle", "depth_top": 30.0, "depth_bottom": 200.0,
+         "in_geometry": True, "fluid": False}],
+    "interfaces": [
+        {"attribute": 1, "name": "surface", "depth": 0.0, "between_layers": [0, -1],
+         "kind": "free", "values": {"rho": [2800.0, None]}},
+        {"attribute": 2, "name": "moho", "depth": 30.0, "between_layers": [1, 0],
+         "kind": "solid-solid", "values": {"rho": [3300.0, 2800.0]}}],
+    "faces": [
+        {"attribute": 3, "name": "base", "axis": "z", "value": -200.0, "outward": -1},
+        {"attribute": 4, "name": "x_min", "axis": "x", "value": -50.0, "outward": -1},
+        {"attribute": 5, "name": "x_max", "axis": "x", "value": 450.0, "outward": 1},
+        {"attribute": 6, "name": "y_min", "axis": "y", "value": 0.0, "outward": -1},
+        {"attribute": 7, "name": "y_max", "axis": "y", "value": 300.0, "outward": 1}],
+    "refinements": [
+        {"name": "NearPoints", "size": 5.0, "far_size": 30.0, "decay_width": 20.0,
+         "points": 12, "digest": "3f2a"}],
+    "fields": [
+        {"name": "displacement", "file": "box.displacement.gf",
+         "fe_space": "H1_3D_P2", "vdim": 3, "ordering": "byNODES", "rank": 1,
+         "weight": 0, "voigt": False, "unit": "km", "layers": [1, 2],
+         "radial_degree": None},
+        {"name": "rho", "file": "box.rho.gf", "fe_space": "L2_3D_P2", "vdim": 1,
+         "ordering": "byNODES", "rank": 0, "weight": 1, "voigt": False,
+         "unit": "kg km-3", "layers": [1, 2], "radial_degree": 0}],
+    "scales": {"length": 1000.0, "mass": 1.0, "time": 1.0, "temperature": 1.0},
+    "constants": {"g": 9.8e-3},
+    "model": {"file": "box.model.nc", "schema": "planetmodel.model/3"},
+    "meta": {"kind": "test"},
+    "schema": "planetmodel.mesh.manifest/7",
+}
+
+#: Two faults of the flat base manifest, meeting along a junction: a thrust
+#: reaching the surface and leaving through a side, and a splay ending on
+#: it; fault k's curve groups are 4k - 3 to 4k.
+_FLAT_FAULTS: list[dict[str, Any]] = [
+    {"name": "thrust", "attribute": 8, "layers": [1, 2], "hanging_wall": [3, 4, 5],
+     "tip": 1, "free_edge": 2, "junction": 3, "meets": ["splay"], "ends_on": [],
+     "controls": [[17, 17]], "offset": 3.3e-08,
+     "sizing": {"size": 5.0, "far_size": 30.0, "decay_width": 20.0},
+     "face_edge": 4},
+    {"name": "splay", "attribute": 9, "layers": [1], "hanging_wall": [4],
+     "tip": 5, "free_edge": None, "junction": 7, "meets": ["thrust"],
+     "ends_on": ["thrust"], "controls": None, "offset": 0, "sizing": None,
+     "face_edge": None}]
+
+#: The element attributes the flat base's layers carry beside
+#: `_FLAT_FAULTS`: in the crust the thrust's collar (3) and both's (4), in
+#: the mantle the thrust's (5).
+_FLAT_COLLARS = [[1, 3, 4], [2, 5]]
+
+
+def _flat_faulted(*edits: Any) -> Any:
+    """An edit adding `_FLAT_FAULTS` and their collars to the flat base,
+    then doing `edits` in turn."""
+    def edit(card: dict[str, Any]) -> None:
+        card["faults"] = json.loads(json.dumps(_FLAT_FAULTS))
+        for layer, attributes in zip(card["layers"], _FLAT_COLLARS):
+            layer["attributes"] = list(attributes)
+        for e in edits:
+            e(card)
+    return edit
+
+
+def _flat_rectangle(*edits: Any) -> Any:
+    """An edit making the flat base the manifest of a rectangle: its
+    coordinates (x, z), no y faces, a mesh of two coordinates."""
+    def edit(card: dict[str, Any]) -> None:
+        card["coordinates"] = ["x", "z"]
+        del card["faces"][3:]
+        card["fields"][0].update(fe_space="H1_2D_P2", vdim=2)
+        card["fields"][1]["fe_space"] = "L2_2D_P2"
+        for e in edits:
+            e(card)
+    return edit
+
+
+#: The variants of the flat base the reader accepts.
+_ACCEPTED_FLAT_MANIFESTS = {
+    "optional_keys_absent": _both(_drop("refinements"), _drop("model"),
+                                  _drop("scales", "temperature"), _drop("meta"),
+                                  _drop("constants")),
+    "unknown_key": _set("extra", value={"anything": [1, 2]}),
+    "no_model_said": _both(*(_set("layers", i, "fluid", value=None)
+                             for i in range(2)),
+                           *(_set("interfaces", i, "kind", value=None)
+                             for i in range(2)),
+                           *(_set("interfaces", i, "values", value=None)
+                             for i in range(2)),
+                           _set("scales", value=None), _set("constants", value={})),
+    "rectangle": _flat_rectangle(),
+    "buried_top": _both(_set("layers", 0, "depth_top", value=5.0),
+                        _set("interfaces", 0, "depth", value=5.0)),
+    "faults": _flat_faulted(),
+}
+
+#: The malformed variants of the flat base: (edit, where the fault lies,
+#: what the refusal says).
+_BAD_FLAT_MANIFESTS = {
+    "schema_5": (_set("schema", value="planetmodel.mesh.manifest/5"), "schema",
+                 "read it with planetmodel::MeshManifest"),
+    "schema_6": (_set("schema", value="planetmodel.mesh.manifest/6"), "schema",
+                 "a spherical mesh's"),
+    "schema_8": (_set("schema", value="planetmodel.mesh.manifest/8"), "schema",
+                 "regenerate the manifest"),
+    "schema_other": (_set("schema", value="something/1"), "schema",
+                     "not a mesh manifest"),
+    "format": (_set("mesh", "format", value="vtk"), "mesh.format", "not msh or mfem"),
+    "no_coordinates": (_drop("coordinates"), "", 'no member "coordinates"'),
+    "coordinates": (_set("coordinates", value=["x", "y"]), "coordinates",
+                    "not [x, y, z] or [x, z]"),
+    "no_layers": (_set("layers", value=[]), "layers", "lists no layers"),
+    "layer_attribute": (_set("layers", 1, "attribute", value=3),
+                        "layers[1].attribute", "expected 2"),
+    "layer_radii": (_both(_drop("layers", 0, "depth_top"),
+                          _set("layers", 0, "r_inner", value=0.0)),
+                    "layers[0]", 'no member "depth_top"'),
+    "layer_upside_down": (_set("layers", 0, "depth_bottom", value=-30.0),
+                          "layers[0]", "not 0 <= depth_top < depth_bottom"),
+    "layer_gap": (_set("layers", 1, "depth_top", value=31.0), "layers[1]",
+                  "the layer above ends at 30"),
+    "layer_shell": (_set("layers", 1, "in_geometry", value=False),
+                    "layers[1].in_geometry", "every layer of a flat mesh"),
+    "interface_count": (_drop("interfaces", 1), "interfaces",
+                        "one per layer, its top"),
+    "interface_depth": (_set("interfaces", 1, "depth", value=31.0),
+                        "interfaces[1].depth", "not the top of layers[1]"),
+    "interface_between": (_set("interfaces", 1, "between_layers", value=[0, 1]),
+                          "interfaces[1].between_layers", "expected [1, 0]"),
+    "interface_kind": (_set("interfaces", 0, "kind", value="rigid"),
+                       "interfaces[0].kind", "not a kind of interface"),
+    "no_faces": (_drop("faces"), "", 'no member "faces"'),
+    "faces_missing": (_drop("faces", 4), "faces",
+                      "not [base, x_min, x_max, y_min, y_max]"),
+    "faces_of_a_box_over_a_rectangle": (_set("coordinates", value=["x", "z"]),
+                                        "faces", "not [base, x_min, x_max]"),
+    "face_attribute": (_set("faces", 2, "attribute", value=9), "faces[2].attribute",
+                       "expected 5, after the 2 interfaces"),
+    "face_outward": (_set("faces", 1, "outward", value=1), "faces[1]",
+                     "not x with -1"),
+    "face_base": (_set("faces", 0, "value", value=-150.0), "faces[0].value",
+                  "not the last layer's bottom"),
+    "face_sides": (_set("faces", 3, "value", value=400.0), "faces[3].value",
+                   "not the first below the second"),
+    "face_name": (_set("interfaces", 1, "name", value="x_min"), "faces[1].name",
+                  "shares its name with an interface"),
+    "refinement_size": (_set("refinements", 0, "size", value=0.0), "refinements[0]",
+                        "not 0 < size <= far_size"),
+    "field_layers": (_set("fields", 1, "layers", value=[1, 3]), "fields[1].layers",
+                     "not an attribute in 1..2"),
+    "displacement": (_set("mesh", "displacement", value="shift"),
+                     "mesh.displacement", "which fields holds no record for"),
+    "attributes_without_faults": (_set("layers", 0, "attributes", value=[1]),
+                                  "layers[0].attributes", "with its faults or neither"),
+    "faults_without_attributes": (_flat_faulted(_drop("layers", 1, "attributes")),
+                                  "layers[1]", 'no member "attributes"'),
+    "fault_attribute": (_flat_faulted(_set("faults", 0, "attribute", value=3)),
+                        "faults[0].attribute",
+                        "expected 8, after the 2 interfaces and the 5 faces"),
+    "fault_face_name": (_flat_faulted(_set("faults", 1, "name", value="base"),
+                                      _set("faults", 0, "meets", value=["base"])),
+                        "faults[1].name", "shares its name with a face of the box"),
+    "fault_no_face_edge": (_flat_faulted(_drop("faults", 0, "face_edge")),
+                           "faults[0]", 'no member "face_edge"'),
+    "fault_tip_group": (_flat_faulted(_set("faults", 1, "tip", value=4)),
+                        "faults[1].tip", "expected 5 or null"),
+    "fault_junction_group": (_flat_faulted(_set("faults", 1, "junction", value=6)),
+                             "faults[1].junction", "expected 7 or null"),
+    "fault_face_edge_group": (_flat_faulted(_set("faults", 0, "face_edge", value=5)),
+                              "faults[0].face_edge", "expected 4 or null"),
+    "fault_layers": (_flat_faulted(_set("faults", 0, "layers", value=[3])),
+                     "faults[0].layers", "not attributes of layers of the geometry"),
+    "fault_meets": (_flat_faulted(_set("faults", 1, "meets", value=[])),
+                    "faults[0].meets", "not every one of them meets thrust"),
+    "collar_order": (_flat_faulted(_set("layers", 0, "attributes", value=[1, 4, 3])),
+                     "layers[0].attributes", "in increasing order"),
+    "collar_unowned": (_flat_faulted(_set("faults", 0, "hanging_wall", value=[3, 4]),
+                                     _set("faults", 1, "hanging_wall", value=[4])),
+                       "layers[1].attributes", "in no fault's hanging wall"),
+}
+
+
+def flat_manifest_cases(directory: Path) -> list[Path]:
+    """The flat manifests of the module docstring, under
+    `flat_manifest_cases/`: the base, the accepted variants and the
+    malformed ones, with `bad.txt`.  None needs gmsh."""
+    root = directory / "flat_manifest_cases"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+
+    def edited(edit: Any) -> dict[str, Any]:
+        card = json.loads(json.dumps(_FLAT_BASE_MANIFEST))
+        edit(card)
+        return card
+
+    def dump(name: str, card: dict[str, Any]) -> Path:
+        path = root / f"{name}.json"
+        path.write_text(json.dumps(card, indent=2, allow_nan=False) + "\n")
+        return path
+
+    out = [dump("base", _FLAT_BASE_MANIFEST)]
+    out += [dump(f"accept_{label}", edited(edit))
+            for label, edit in _ACCEPTED_FLAT_MANIFESTS.items()]
+    lines = []
+    for label, (edit, where, phrase) in _BAD_FLAT_MANIFESTS.items():
+        out.append(dump(f"bad_{label}", edited(edit)))
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
+
+
+def _flat_fault_cases() -> dict[str, dict[str, Any]]:
+    """The faults of the flat meshes with faults, by case and name, in the
+    unit box of `_flat_mesh_geometry`: a plane reaching the free surface
+    and leaving through the side x = 1 (a tip, a free edge and a face
+    edge), and a thrust with a splay ending on it and a buried fault
+    beside them (junctions, on the splay's boundary and inside the
+    thrust; a fault of a tip alone)."""
+    from planetmodel.fault import CartesianFrame, Fault, Plane, Slip
+    local, zero = CartesianFrame(), Slip(np.zeros((1, 1, 3)))
+    dip, width = 50.0, 0.25
+    side = Plane.at_depth(local, 0.9, 0.0, 0.5 * width * np.sin(np.deg2rad(dip)),
+                          strike=90.0, dip=dip, length=0.4, width=width, slip=zero)
+    dip, width = 45.0, 0.3
+    thrust = Plane.at_depth(local, 0.3 + 0.5 * width * np.cos(np.deg2rad(dip)), 0.35,
+                            0.5 * width * np.sin(np.deg2rad(dip)), strike=0.0, dip=dip,
+                            length=0.5, width=width, slip=zero)
+    foot = thrust.cartesian(-0.1, 0.1)
+    splay = Plane(local, foot, strike=180.0, dip=60.0, length=0.25, width=0.1,
+                  slip=zero)
+    splay = Plane(local, 2.0 * foot - splay.cartesian(0.0, 0.5), strike=180.0,
+                  dip=60.0, length=0.25, width=0.1, slip=zero)
+    buried = Plane.at_depth(local, 0.7, -0.25, 0.6, strike=60.0, dip=75.0, length=0.25,
+                            width=0.2, slip=zero)
+    return {"side": {"fault": Fault([side])},
+            "several": {"thrust": Fault([thrust]), "splay": Fault([splay]),
+                        "buried": Fault([buried])}}
+
+
+def _flat_mesh_geometry(kind: str = "box") -> Any:
+    """The unit box of the flat meshes, a crust over a mantle, or its
+    rectangle."""
+    from planetmodel import cartesian as flat
+    domain = (flat.Box([(0.0, 1.0), (-0.5, 0.5)]) if kind == "box"
+              else flat.Rectangle((0.0, 1.0)))
+    return flat.Geometry(pm.Skeleton([0.0, 0.4, 1.0]), domain,
+                         layer_names=["crust", "mantle"],
+                         interface_names=["surface", "moho"])
+
+
+def flat_manifests(directory: Path) -> list[Path]:
+    """The flat manifests the Python writes (schema 7), each with its walk,
+    under `flat_manifests/`: the mesher's of a box and of a rectangle, of a
+    box with a fault leaving through a side, and `export_mfem`'s of a flat
+    model under topography with its model file beside it (referential) and
+    of a rectangle's (physical).  None without gmsh and PyMFEM."""
+    try:
+        import mfem.ser  # noqa: F401
+
+        from planetmodel.mesh3d import (EmbeddedFault, MeshSpec, UniformInterfaces,
+                                        build_layered_mesh, export_mfem)
+    except ImportError as error:
+        print(f"no flat manifests without gmsh and PyMFEM: {error}", file=sys.stderr)
+        return []
+    from planetmodel import cartesian as flat
+    root = directory / "flat_manifests"
+    shutil.rmtree(root, ignore_errors=True)
+    box, cut = _flat_mesh_geometry("box"), _flat_mesh_geometry("rectangle")
+    coarse = UniformInterfaces(0.3, 0.5, 0.5)
+
+    def model_on(geometry: Any) -> Any:
+        layers = []
+        for lay, rho, vs in zip(geometry.layers, (2.8, 3.3), (3.7, 4.5)):
+            iv = lay.interval
+            layers.append({"rho": flat.constant_field(iv, rho, character=pm.DENSITY),
+                           "vs": flat.constant_field(iv, vs)})
+        return flat.Model(geometry, layers)
+
+    def ridge(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return 0.025 * (1.0 + np.cos(2.0 * np.pi * (x - 0.6))) * (
+            1.0 + 0.25 * np.cos(2.0 * np.pi * y))
+
+    raised = box.stretched(flat.layer_linear(box.skeleton, [
+        flat.GriddedFunction.sampled(ridge, flat.Grid(box.domain, (16, 16))), None,
+        None]))
+    written = []
+    with tempfile.TemporaryDirectory() as scratch:
+        work = Path(scratch)
+
+        def built(label: str, spec: MeshSpec) -> Any:
+            return build_layered_mesh(spec, work / label / label)
+
+        plain = built("box", MeshSpec(box, coarse, order=1))
+        rectangle = built("rectangle", MeshSpec(cut, coarse, order=2))
+        relief = built("relief", MeshSpec(raised, coarse, order=2))
+        faulted = built("faulted", MeshSpec(
+            box, UniformInterfaces(0.2, 0.4, 0.4), order=1,
+            faults=[EmbeddedFault(f, name=n, sizing=0.08)
+                    for n, f in _flat_fault_cases()["side"].items()]))
+        cases = {
+            "box": plain.manifest_path,
+            "rectangle": rectangle.manifest_path,
+            "faulted": faulted.manifest_path,
+            "referential": export_mfem(
+                relief, work / "referential" / "referential", model=model_on(raised),
+                delivery="referential",
+                model_file=flat.Grid(raised.domain, (8, 8))).manifest_path,
+            "physical_rectangle": export_mfem(
+                rectangle, work / "physical_rectangle" / "physical_rectangle",
+                model=model_on(cut), delivery="physical",
+                model_file=True).manifest_path,
+        }
+        for label, manifest in cases.items():
+            target = root / label
+            shutil.copytree(manifest.parent, target)
+            path = target / manifest.name
+            written += [path, _write_walk(path)]
+    return written
+
+
+def flat_fault_meshes(directory: Path) -> list[Path]:
+    """The flat meshes with faults of the module docstring, under
+    `flat_fault_meshes/`, each held to `testing.check_fault_mesh` and the
+    answers of the Python's rules written beside it, the box's faces
+    given.  None without gmsh."""
+    from planetmodel.mesh3d import EmbeddedFault, MeshSpec, UniformInterfaces, read_mesh
+    from planetmodel.mesh3d import manifest as mf
+    try:
+        from planetmodel.mesh3d import build_layered_mesh
+    except ImportError as error:
+        print(f"no flat meshes with faults without gmsh: {error}", file=sys.stderr)
+        return []
+    from planetmodel import testing
+
+    geometry = _flat_mesh_geometry("box")
+    root = directory / "flat_fault_meshes"
+    shutil.rmtree(root, ignore_errors=True)
+    written = []
+    with tempfile.TemporaryDirectory() as scratch:
+        for label, faults in _flat_fault_cases().items():
+            spec = MeshSpec(geometry, UniformInterfaces(0.2, 0.4, 0.4), order=1,
+                            faults=[EmbeddedFault(f, name=n, sizing=0.08)
+                                    for n, f in faults.items()])
+            res = build_layered_mesh(spec, Path(scratch) / label / label)
+            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+                                     distance=1e-9)
+            card = mf.read(res.manifest_path)
+            mesh = read_mesh(res.msh_path)
+            cells, layers = mesh.cells, mesh.cell_attributes
+            boundary, attributes = mesh.faces, mesh.face_attributes
+            x = np.asarray(mesh.points, dtype=float)
+            faces = np.flatnonzero(np.isin(attributes, [f["attribute"]
+                                                         for f in card.faults]))
+            pairs = mesh.face_cells(boundary[faces])
+            plus = mf.plus_cell(x, boundary[faces], cells[pairs])
+            curves = mf.fault_curves([boundary[attributes == f["attribute"]]
+                                      for f in card.faults],
+                                     boundary[attributes == card.surface_attribute],
+                                     faces=mesh.boundary_of(card.face_attributes))
+            walls = mesh.walls(card)
+
+            target = root / label
+            target.mkdir(parents=True)
+            manifest_path = target / f"{label}.json"
+            shutil.copyfile(res.manifest_path, manifest_path)
+            lines = [f"vertex {a!r} {b!r} {c!r}" for a, b, c in x.tolist()]
+            lines += [f"cell {a} {b} {c} {d} {g}"
+                      for (a, b, c, d), g in zip(cells.tolist(), layers.tolist())]
+            lines += [f"boundary {a} {b} {c} {g}"
+                      for (a, b, c), g in zip(boundary.tolist(), attributes.tolist())]
+            mesh_path = target / f"{label}.mesh.txt"
+            mesh_path.write_text("\n".join(lines) + "\n")
+            expect = [f"pair {b} {p} {q} {k}"
+                      for b, (p, q), k in zip(faces.tolist(), pairs.tolist(),
+                                              plus.tolist())]
+            for record, edges, wall in zip(card.faults, curves, walls):
+                for key in ("tip", "free_edge", "junction", "junction_end",
+                            "face_edge"):
+                    expect += [f"edge {record['name']} {key} {a} {b}"
+                               for a, b in getattr(edges, key).tolist()]
+                expect += [f"ends {record['name']} {card.faults[j]['name']}"
+                           for j in edges.ends_on]
+                expect += [f"wall {record['name']} {c} {w}"
+                           for c, w in zip(np.flatnonzero(wall).tolist(),
+                                           wall[wall != 0].tolist())]
+            expect_path = target / f"{label}.expect"
+            expect_path.write_text("\n".join(expect) + "\n")
+            written += [manifest_path, mesh_path, expect_path]
+    return written
+
+
 def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
-    """Every fixture into `directory`, each model file validated; the
+    """Every fixture into `directory`, each model file validated, the
+    spherical ones and then the flat ones (`planetmodel.cartesian`); the
     manifests and the meshes with faults, which build meshes, only where
     `meshes` is true."""
     directory = Path(directory)
@@ -2170,7 +3350,12 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
             + manifest_cases(directory) + decks(directory)
-            + (manifests(directory) + fault_meshes(directory) if meshes else []))
+            + flat_model_files(directory) + flat_model_cases(directory)
+            + flat_lateral_cases(directory) + flat_surface_files(directory)
+            + flat_decks(directory) + flat_manifest_cases(directory)
+            + (manifests(directory) + fault_meshes(directory)
+               + flat_manifests(directory) + flat_fault_meshes(directory)
+               if meshes else []))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Spherical means: a field reduced to a function of radius.
 
-The spherical mean of a scalar field f on its layer is
+The spherical mean of a scalar field f on its layer is ::
 
     fbar(r) = (1 / 4 pi) integral over S^2 of f(r, theta, phi) dOmega,
 
@@ -23,6 +23,12 @@ order, so that a model type's own rule runs: on an `Elastic` model the
 mean of a velocity re-derives the Love moduli, rather than each modulus
 being averaged apart.  The mean and the reference of a perturbed field
 differ in general; `unperturbed` gives the second.
+
+A mean over the sphere is defined in `SPHERICAL` alone: a field or a
+model of another system (a flat one, `planetmodel.cartesian`) is
+refused by name.  Its counterpart in a box, the mean over the box's
+period at each depth, is `cartesian.horizontal_mean`, by the same rule
+of asking the field.
 """
 from __future__ import annotations
 
@@ -30,6 +36,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .coordinates import SPHERICAL, require_coordinates
 from .fields import Field, RadialField
 from .layerfunction import NumericLayer
 
@@ -46,6 +53,7 @@ _BLOCK_VALUES = 1 << 22
 def quadrature_mean(field: Field, grid: AngularGrid) -> RadialField:
     """The mean of a scalar field by `grid`'s quadrature at every radius it
     is asked at: a `RadialField` over a `NumericLayer`."""
+    require_coordinates(field, SPHERICAL, "a spherical mean")
     theta = grid.colatitudes[None, :, None]
     phi = grid.longitudes[None, None, :]
 
@@ -72,6 +80,7 @@ def quadrature_mean(field: Field, grid: AngularGrid) -> RadialField:
 def spherical_mean(field: Field, *, grid: AngularGrid | None = None) -> RadialField:
     """The spherical mean of a scalar field, by the rule of the module
     docstring: the field's own when it has one, else quadrature on `grid`."""
+    require_coordinates(field, SPHERICAL, "a spherical mean")
     if field.character.rank:
         raise ValueError(f"a spherical mean is taken of a field of rank 0, not "
                          f"{field.character}")
@@ -95,6 +104,7 @@ def spherically_averaged(model: Model, *, grid: AngularGrid | None = None) -> Mo
     its place, through `with_field(replace=True)`, layer by layer in each
     layer's order of names; a field made radial by an earlier
     replacement is left as it now is."""
+    require_coordinates(model, SPHERICAL, "a spherical mean")
     out = model
     for layer in model.layers:
         for name in layer.names:

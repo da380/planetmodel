@@ -7,21 +7,21 @@ medium is a second elasticity tensor, character ELASTIC, which a layer
 may hold directly under the name `elastic_moduli`; what this module
 builds and reads is the spherically symmetric case, where the tensor is
 at most transversely isotropic about e_r.  A transversely isotropic
-medium with its symmetry axis along e_r is described by the five moduli
+medium with its symmetry axis along e_r is described by the five moduli ::
 
     A = rho vph^2      C = rho vpv^2      L = rho vsv^2
     N = rho vsh^2      F = eta (A - 2 L)
 
 which collapse to the isotropic case at vph = vpv, vsh = vsv, eta = 1,
 where A = C = kappa + 4 mu / 3, L = N = mu and F = kappa - 2 mu / 3.
-The Voigt average of a transversely isotropic medium is
+The Voigt average of a transversely isotropic medium is ::
 
     kappa = (4 A + C + 4 F - 4 N) / 9
     mu    = (A + C - 2 F + 5 N + 6 L) / 15
 
 and reduces to (kappa, mu) exactly where the medium is isotropic.
 Seismic models state an isotropic velocity relative to a transversely
-isotropic one by the Voigt average of the velocities instead,
+isotropic one by the Voigt average of the velocities instead::
 
     vs^2 = (2 vsv^2 + vsh^2) / 3,      vp^2 = (vpv^2 + 4 vph^2) / 5,
 
@@ -36,7 +36,7 @@ takes square roots and is numbers only.
 
 `voigt_matrix` builds the Voigt form (the order and the absence of
 engineering factors are stated in frames.py) in the spherical frame,
-where (1, 2, 3) = (r, theta, phi) and the symmetry axis is index 1:
+where (1, 2, 3) = (r, theta, phi) and the symmetry axis is index 1::
 
     [ C     F     F     .  .  . ]
     [ F     A     A-2N  .  .  . ]      rows and columns in the order
@@ -69,6 +69,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import ELASTIC, Symmetry
+from .coordinates import common_coordinates
 from .fields import Field, FieldBase, RadialField
 from .frames import voigt_to_tensor
 from .layerfunction import same_interval
@@ -250,12 +251,14 @@ class ElasticField(FieldBase):
     """A second elasticity tensor, character ELASTIC, stored by its moduli.
 
     `moduli` maps the independent moduli of `symmetry` to rank-0 fields
-    on one interval: kappa and mu for ISOTROPIC, A, C, F, L and N for
-    VTI.  The Voigt matrix in the spherical frame is built at each
-    evaluation from the moduli there; `evaluate(voigt=False)` expands it
-    to the full (3, 3, 3, 3) components.  The angles are always
-    required: the Cartesian components depend on direction even where
-    the moduli do not, because the frame carrying the symmetry axis does.
+    on one interval and in one coordinate system, which is the field's:
+    kappa and mu for ISOTROPIC, A, C, F, L and N for VTI.  The Voigt
+    matrix in the local frame (the spherical frame on the sphere), the
+    symmetry axis along its first vector, is built at each evaluation
+    from the moduli there; `evaluate(voigt=False)` expands it to the
+    full (3, 3, 3, 3) components.  The angles are always required: the
+    Cartesian components depend on direction even where the moduli do
+    not, because the frame carrying the symmetry axis does.
     """
 
     _character = ELASTIC
@@ -286,6 +289,7 @@ class ElasticField(FieldBase):
                 raise ValueError(
                     f"moduli on different intervals: {expected[0]!r} on "
                     f"{first.interval} and {k!r} on {f.interval}")
+        self._coordinates = common_coordinates(fields.values())
         self._symmetry = symmetry
         self._moduli = fields
         self._interval = tuple(float(x) for x in first.interval)
@@ -313,9 +317,10 @@ class ElasticField(FieldBase):
         return voigt_matrix(self._symmetry, vals)
 
     def evaluate(self, r: ArrayLike, theta: ArrayLike | None, phi: ArrayLike | None,
-                 *, frame: str = "spherical", voigt: bool = True) -> np.ndarray:
-        """The tensor at (r, theta, phi) in `frame`: Voigt (..., 6, 6), or
-        the full (..., 3, 3, 3, 3) components with `voigt=False`."""
+                 *, frame: str | None = None, voigt: bool = True) -> np.ndarray:
+        """The tensor at (r, theta, phi) in `frame`, the local one by
+        default: Voigt (..., 6, 6), or the full (..., 3, 3, 3, 3)
+        components with `voigt=False`."""
         v = super().evaluate(r, theta, phi, frame=frame)
         return v if voigt else voigt_to_tensor(v, rank=4)
 

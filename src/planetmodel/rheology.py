@@ -18,7 +18,7 @@ manner of `is_fluid` and `moduli`:
   (`branches`);
 - `stress_exponent` n and `transition_stress` sigma_t: power-law creep
   beside the linear rheology, which a code that steps in time reads (a
-  relaxation time divided by 1 + gamma (|dev sigma| / 2 mu_0)^(n - 1),
+  relaxation time divided by `1 + gamma (|dev sigma| / 2 mu_0)^(n - 1)`,
   gamma = (2 mu_0 / sigma_t)^(n - 1), so that power-law creep strains as
   fast as linear creep at sigma_t); being nonlinear they are no part of
   a frozen model, and freezing ignores them;

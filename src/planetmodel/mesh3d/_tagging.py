@@ -13,11 +13,18 @@ order, and sorting by radius always produces a plausible answer,
 including when the CAD kernel dropped or duplicated a shell.  Matching
 each measured radius against the radius that was asked for turns that
 into a loud failure.
+
+A tagging answers for what the sizing, the orientation and the checks
+need of each entity: the distance to an interface as an expression gmsh
+evaluates (`distance`), the measured place of an interface (`measure`),
+and, where a boundary has one, its outward direction (`directions`); a
+box's (`_box.PlanarTagging`) answers with planes where a concentric
+domain's answers with spheres.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, field
 
 import gmsh
 import numpy as np
@@ -26,17 +33,39 @@ from numpy.typing import ArrayLike
 from ._geometry import ConcentricGeometry, default_atol, entity_radius, outer_face_of
 
 __all__ = ["Tagging", "identify", "apply_physical_groups",
-           "mean_radius_of_entity", "default_atol"]
+           "mean_radius_of_entity", "default_atol", "distance_to_sphere",
+           "FaceGroups"]
+
+#: Boundary groups beyond the interfaces, in the order of their
+#: attributes: (name, the entities the group holds).
+type FaceGroups = tuple[tuple[str, tuple[int, ...]], ...]
+
+
+def distance_to_sphere(centre: ArrayLike, radius: float) -> str:
+    """The distance | |x - c| - R | as an expression gmsh evaluates.
+
+    Each number is written with the digits that round-trip and in
+    brackets, so a sign or an exponent is read as part of it.
+    """
+    cx, cy, cz = (float(c) for c in np.asarray(centre, dtype=float))
+    return (f"Fabs(Sqrt((x-({cx!r}))^2+(y-({cy!r}))^2+(z-({cz!r}))^2)"
+            f"-({float(radius)!r}))")
 
 
 @dataclass(frozen=True)
 class Tagging:
     """Which CAD entity is which layer, and which interface.
 
-    Both lists run centre outwards: `cells[i]` is layer i and `faces[k]`
-    interface k, the ordering the physical groups will carry.  For a
-    hollow domain `faces[0]` is the inner boundary and layer i's outer
-    boundary is `faces[i + 1]`; for a full one it is `faces[i]`.
+    Both lists run in the skeleton's order, centre outwards here:
+    `cells[i]` is layer i and `faces[k]` interface k, the ordering the
+    physical groups will carry.  For a hollow domain `faces[0]` is the
+    inner boundary and layer i's outer boundary is `faces[i + 1]`; for a
+    full one it is `faces[i]`.  `groups` are boundary groups beyond the
+    interfaces, numbered after them (a box's base and sides), and
+    `directions` the outward direction of every boundary entity that has
+    one in its own right, in the mesh's coordinates; a concentric domain
+    has neither, its boundaries facing away from the centre they
+    enclose.
     """
 
     dimension: int
@@ -45,6 +74,21 @@ class Tagging:
     radii: tuple[float, ...]        # interface k -> requested radius
     _: KW_ONLY
     hollow: bool = False
+    groups: FaceGroups = ()
+    directions: Mapping[int, tuple[float, float, float]] = field(default_factory=dict)
+
+    #: The name of the layered coordinate an interface is placed by.
+    coordinate = "radius"
+
+    def distance(self, k: int, *, centre: ArrayLike = (0.0, 0.0, 0.0)) -> str:
+        """The distance to interface k, an expression gmsh evaluates: to
+        the sphere of its radius about `centre`."""
+        return distance_to_sphere(centre, self.radii[k])
+
+    def measure(self, tag: int) -> float:
+        """The measured place of an interface's entity: its nodes' mean
+        radius (`mean_radius_of_entity`)."""
+        return mean_radius_of_entity(self.dimension - 1, tag)
 
     def __repr__(self) -> str:
         return (f"Tagging({len(self.cells)} layers, "
@@ -143,12 +187,15 @@ def apply_physical_groups(tagging: Tagging, *,
                           layer_names: Sequence[str | None] = (),
                           interface_names: Sequence[str | None] = ()
                           ) -> dict[str, dict[int, int]]:
-    """Number the layers and interfaces 1..N from the centre outward.
+    """Number the layers and interfaces 1..N in the skeleton's order.
 
-    Physical group i of the mesh dimension is layer i counting out from
-    the centre, and physical group k of the next dimension down is
-    interface k.  Names are set where given and default to
-    `layer_<i>` and `interface_<k>`; the numbering is the contract.
+    Physical group i of the mesh dimension is layer i, counting out from
+    the centre on a sphere and down from the surface in a box, and
+    physical group k of the next dimension down is interface k.  Names
+    are set where given and default to `layer_<i>` and `interface_<k>`;
+    the numbering is the contract.  The tagging's other boundary groups
+    (a box's faces) follow the interfaces, under their own names, and
+    are returned under "faces" where there are any.
     """
     d = tagging.dimension
     gmsh.model.removePhysicalGroups()
@@ -168,6 +215,14 @@ def apply_physical_groups(tagging: Tagging, *,
                 if i < len(interface_names) and interface_names[i] else None)
         gmsh.model.setPhysicalName(d - 1, attr, name or f"interface_{attr}")
         out["interfaces"][attr] = face
+
+    if tagging.groups:
+        out["faces"] = {}
+    for j, (name, entities) in enumerate(tagging.groups):
+        attr = len(tagging.faces) + j + 1
+        gmsh.model.addPhysicalGroup(d - 1, list(entities), attr)
+        gmsh.model.setPhysicalName(d - 1, attr, name)
+        out["faces"][attr] = entities[0]
     return out
 
 

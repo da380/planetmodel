@@ -11,11 +11,17 @@ xarray, Panoply and ncview open it as it stands.  The Python module is
 the definition of the format, and ``validate_structure`` there checks a
 file against it.  In C++, planetmodel's own library (:doc:`../cpp`)
 reads a surface file whole, held to the structure, and writes one from
-a code's own fields.
+a code's own fields.  Fields on a horizontal plane of a flat body
+(``planetmodel.cartesian``) are a file of their own schema, described
+under `Flat surfaces`_ below.
 
 **Schema string**: the global attribute ``schema``,
 ``planetmodel.surface/1``.  Readers check it; it is bumped only for an
-incompatible change.
+incompatible change.  A flat surface's file is ``planetmodel.surface/2``,
+which a reader of ``/1`` refuses by its schema; ``read_surface`` reads
+both, ``read_surface_file`` the numbers of a spherical file and
+``cartesian.surfacefile.read_surface_file`` those of a flat one, each
+refusing the other kind by name.
 
 **Units.**  As for the :doc:`model file <model_file>`: values are
 stored in the writer's own units under ``scale_length``,
@@ -166,4 +172,67 @@ axis of span 1, reached as -998.99999999999511, is read as -999).  ``function(na
 field as a ``GriddedFunction`` by its stated lateral rule, stored
 polar values carried along.  The C++ ``SurfaceHistory`` reads a file
 by the same arithmetic (``TimeRowsAt``, its tolerance ``TIME_RTOL``),
-so the two languages serve identical values.
+so the two languages serve identical values.  A flat surface's file is
+read and written in C++ by ``planetmodel::cartesian``'s
+``ReadSurfaceFile`` and ``WriteSurfaceFile``
+(``planetmodel/cartesian/surfacefile.hpp``), whose ``SurfaceHistory``
+serves a field's values by the same arithmetic and the field at a date
+as a function of ``(x, y)`` by the ``linear`` or the ``cubic`` rule;
+each of the two readers refuses the other's files by their schema.
+
+Flat surfaces
+-------------
+
+A flat surface file holds fields on one horizontal plane of a body of
+``planetmodel.cartesian`` (a topography, an ice-thickness history, the
+kernels of a measurement on the free surface), written by
+``cartesian.surfacefile.write_surface`` and read by
+``cartesian.surfacefile.read_surface_file`` and ``read_surface``.  Its
+schema is ``planetmodel.surface/2``, and everything above holds for it
+(the attributes ``source``, ``created``, ``title``, the scales,
+``citation`` and ``meta_<key>``; the axes ``time``, ``instant`` and
+``interval``; each field's supports, time rules, ``dimensions``,
+``long_name`` and ``units``; the history's dates, tolerance and
+extrapolation, by the same code) except where the surface differs:
+
+- ``coordinate_system`` is ``flat``; ``depth``, where the writer states
+  it, is the depth of the plane in the reference body in the file's
+  units, and absent, the fields lie on the free surface;
+- the lateral domain is stated as a flat model file states it
+  (``domain``, ``domain_bounds``, ``domain_padding``;
+  :doc:`model_file`, its flat models), and the grid is the CF
+  coordinate variables ``x(x)`` and, over a box, ``y(y)``, its nodes
+  over the domain's extent;
+- a field is ``name(x, y)`` (``name(x)`` over a rectangle) after its
+  support's leading dimension, and states one of the flat lateral rules,
+  ``linear``, ``cubic`` or ``fourier``;
+- a flat grid has no poles: polar values, ``grid_kind``, ``grid_lmax``,
+  colatitude weights, ``latitude``, ``longitude`` and ``radius`` are a
+  spherical file's, refused on writing and on reading.
+
+``read_surface`` gives a flat file's history, whose ``function(name,
+date)`` is a ``cartesian.GriddedFunction`` on the file's grid by the
+field's lateral rule.  An ice history over a box padded along x
+(abbreviated from ``ncdump -h``):
+
+.. code-block:: text
+
+   netcdf flat_surface {
+   dimensions: x = 10 ; y = 6 ; time = 3 ;
+   variables:
+       double x(x) ;   :units = "m" ; :axis = "X" ;
+       double y(y) ;   :units = "m" ; :axis = "Y" ;
+       double time(time) ;
+       double topography(x, y) ;
+           :units = "m" ; :time_support = "static" ;
+           :time_interpolation = "none" ; :lateral_interpolation = "cubic" ;
+       double ice_thickness(time, x, y) ;
+           :units = "m" ; :time_support = "node" ;
+           :time_interpolation = "linear" ; :lateral_interpolation = "linear" ;
+   // global attributes:
+       :schema = "planetmodel.surface/2" ; :Conventions = "CF-1.8" ;
+       :source = "planetmodel 1.6.0" ; :created = "2026-11-15T20:09:54+00:00" ;
+       :scale_length = 1. ; ... ;
+       :coordinate_system = "flat" ; :domain = "box" ;
+       :domain_bounds = 0., 400000., 0., 300000. ; :domain_padding = 50000., 0. ;
+   }

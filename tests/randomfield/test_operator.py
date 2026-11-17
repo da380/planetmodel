@@ -7,7 +7,7 @@ from scipy.special import spherical_jn
 
 from planetmodel import RadialMesh, PREM
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.randomfield import RadialOperatorFamily
+from planetmodel.randomfield import SeparableOperatorFamily
 
 
 def _dense_from_band(band):
@@ -33,7 +33,7 @@ def _neumann_wavenumbers(l, R, xmax=28.0):
 def test_ball_neumann_bessel_spectrum():
     """Discrete eigenvalues on a ball match 1 + kappa (x_nl / R)^2."""
     R, kap = 1.0, 0.04
-    fam = RadialOperatorFamily(Mesh1D([0.0, R], ngll=6, drmax=0.05), kappa=kap)
+    fam = SeparableOperatorFamily(Mesh1D([0.0, R], ngll=6, drmax=0.05), kappa=kap)
     assert fam.is_ball
     for l in (0, 1, 5):
         k = _neumann_wavenumbers(l, R)
@@ -54,7 +54,7 @@ def test_interval_neumann_cosine_spectrum():
     kap = 0.04
     for a, b in ((-1.0, 1.0), (0.0, 2.0), (0.5, 2.5)):
         mesh = Mesh1D([a, b], ngll=6, drmax=0.05)
-        fam = RadialOperatorFamily(mesh, kappa=kap, weight="one")
+        fam = SeparableOperatorFamily(mesh, kappa=kap, weight="one")
         assert not fam.is_ball and fam.ndof(0) == mesh.nglob
         n = np.arange(12)                     # the modes the mesh resolves
         exact = 1.0 + kap * (n * np.pi / (b - a)) ** 2
@@ -77,7 +77,7 @@ def test_family_algebra():
     mesh = Mesh1D([0.4, 0.55, 1.0], ngll=5, drmax=0.06)
     kap = lambda r: (0.05 + 0.02 * r) ** 2
     kap_h = lambda r: (0.08 + 0.01 * r) ** 2
-    fam = RadialOperatorFamily(mesh, kappa=kap, kappa_h=kap_h, robin=(1.0, 2.0))
+    fam = SeparableOperatorFamily(mesh, kappa=kap, kappa_h=kap_h, robin=(1.0, 2.0))
     assert not fam.is_ball
     for l in (0, 3):
         theta, Phi = fam.eig(l)
@@ -106,7 +106,7 @@ def test_family_algebra():
 
 def test_apply_solve_and_white_noise():
     mesh = Mesh1D([0.0, 1.0], ngll=5, drmax=0.1)
-    fam = RadialOperatorFamily(mesh, kappa=0.01)
+    fam = SeparableOperatorFamily(mesh, kappa=0.01)
     for l in (0, 4):
         rng = np.random.default_rng(l)
         v = rng.standard_normal(fam.ndof(l))
@@ -130,23 +130,23 @@ def test_apply_solve_and_white_noise():
 def test_refusals():
     mesh = Mesh1D([0.0, 1.0], ngll=4, drmax=0.5)
     with pytest.raises(ValueError, match="weight"):
-        RadialOperatorFamily(mesh, weight="r")
+        SeparableOperatorFamily(mesh, weight="r")
     with pytest.raises(ValueError, match="r >= 0"):
-        RadialOperatorFamily(Mesh1D([-1.0, 1.0]), weight="r2")
+        SeparableOperatorFamily(Mesh1D([-1.0, 1.0]), weight="r2")
     with pytest.raises(ValueError):
-        RadialOperatorFamily(mesh, kappa=-1.0)
+        SeparableOperatorFamily(mesh, kappa=-1.0)
     with pytest.raises(ValueError):
-        RadialOperatorFamily(mesh, robin=-1.0)
+        SeparableOperatorFamily(mesh, robin=-1.0)
     with pytest.raises(TypeError):
-        RadialOperatorFamily(np.linspace(0, 1, 5))
+        SeparableOperatorFamily(np.linspace(0, 1, 5))
     with pytest.raises(ValueError):
-        RadialOperatorFamily(mesh, kappa=np.ones(3))
+        SeparableOperatorFamily(mesh, kappa=np.ones(3))
 
 
 def test_family_on_radialmesh():
     """The family composes with a model's RadialMesh."""
     mesh = RadialMesh(PREM(ocean=False), ngll=5, lmax=4)
-    fam = RadialOperatorFamily(mesh, kappa=(2.0e5) ** 2)   # 200 km scale
+    fam = SeparableOperatorFamily(mesh, kappa=(2.0e5) ** 2)   # 200 km scale
     th = fam.eigvalsh(2)
     assert th[0] > 1.0 - 1e-8 and np.all(np.diff(th) >= -1e-6)
     v = np.ones(fam.ndof(2))
@@ -158,7 +158,7 @@ def test_interval_robin_spectrum():
     """f' = +-gamma f at the ends of [0, L] under weight one: the
     eigenvalues 1 + kappa w^2 with (w^2 - g^2) sin(wL) = 2 g w cos(wL)."""
     L, kap, gam = 1.0, 0.04, 2.0
-    fam = RadialOperatorFamily(Mesh1D([0.0, L], ngll=6, drmax=0.05), kappa=kap,
+    fam = SeparableOperatorFamily(Mesh1D([0.0, L], ngll=6, drmax=0.05), kappa=kap,
                                weight="one", robin=gam)
 
     def f(w):
@@ -175,7 +175,7 @@ def test_interval_robin_spectrum():
 def test_eig_by_count_keeps_every_mode_asked_for():
     from planetmodel.randomfield import SpectralBasis
 
-    fam = RadialOperatorFamily(Mesh1D([0.0, 1.0], ngll=10, drmax=0.01), kappa=1.0)
+    fam = SeparableOperatorFamily(Mesh1D([0.0, 1.0], ngll=10, drmax=0.01), kappa=1.0)
     for k in (1, 2, 3, 5):
         assert SpectralBasis(fam, 0, nmodes=k).nmodes == k
         theta, Phi = fam.eig(0, count=k)
@@ -194,7 +194,7 @@ def test_eigenvectors_keep_their_sign_across_meshes():
         m1 = Mesh1D(bp, ngll=6, drmax=0.05)
         m2 = Mesh1D(bp, ngll=6, drmax=0.05 * m1.nspec / (m1.nspec + 1))
         assert m2.nspec == m1.nspec + 1
-        f1, f2 = (RadialOperatorFamily(m, kappa=0.04) for m in (m1, m2))
+        f1, f2 = (SeparableOperatorFamily(m, kappa=0.04) for m in (m1, m2))
         r = np.linspace(bp[0] + 0.05, 0.95, 7)
         for l in (0, 3):
             b1, b2 = (SpectralBasis(f, l, nmodes=12) for f in (f1, f2))

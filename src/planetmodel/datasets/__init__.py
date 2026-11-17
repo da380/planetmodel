@@ -3,12 +3,14 @@
 A data set is a model published elsewhere: a tomographic model, a crust
 or lithosphere model, a radial reference, a surface of some body.  The
 library keeps an entry for it, never its data: a `Dataset` names its
-files (`Source`s, each with its URL, sha256 and mirrors, and for an
+files (each a `Source`, with its URL, sha256 and mirrors, and for an
 archive the members wanted), the reader that turns them into the object
 the data set is, the model its perturbations are relative to, and its
 title, citation and licence as the source states them.  `REGISTRY`
 holds the shipped entries by name; a caller's own `Dataset` is used
 exactly as a shipped one, passed where a name would go.
+
+::
 
     fetch("S40RTS")              # paths of its files, cached and checked
     load("S40RTS")               # the data set as the object it is: a model
@@ -39,7 +41,7 @@ from a grid (`GridSurfaceReader`); a crustal or lithospheric model is
 processing that fits them to a model of one's own (`rereferenced`,
 `spread`, `filtered`, `merged`, one taper `raised_cosine`) is in
 `planetmodel.datasets.processing`, and `transplanted` takes them in their
-order to put a data set's perturbations on a model of one's own:
+order to put a data set's perturbations on a model of one's own::
 
     transplanted(PREM(), "S40RTS", lmax=20)    # vsv, vsh perturbed; L, N with them
 

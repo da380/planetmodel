@@ -485,6 +485,12 @@ struct DeckFormat {
    * is.
    */
   std::function<Deck(const Deck& deck)> complete{};
+  /**
+   * @brief What the knots' coordinate, the first column, is called in a
+   * message: `radius`, or `depth` for a deck of depths
+   * (cartesian/deck.hpp).
+   */
+  std::string coordinate = "radius";
 
   /**
    * @brief The column names of a row of a width.
@@ -501,9 +507,9 @@ struct DeckFormat {
         auto stems = std::vector<std::string>{};
         for (const auto& stem : families) stems.push_back(stem + "_k");
         throw Error(source, "",
-                    std::format("a {} deck has {} columns after the radius, {}, then {} for "
+                    std::format("a {} deck has {} columns after the {}, {}, then {} for "
                                 "each index k = 1 to N, {}, N at least one; the table has {}",
-                                name, lead.size(), detail::ListRepr(lead), size,
+                                name, lead.size(), coordinate, detail::ListRepr(lead), size,
                                 detail::ListRepr(stems), width));
       }
       auto out = lead;
@@ -517,8 +523,8 @@ struct DeckFormat {
     for (const auto& [w, names] : columns) widths += (widths.empty() ? "" : " or ") +
                                                      std::to_string(w);
     throw Error(source, "",
-                std::format("a {} deck has {} columns after the radius, not {}", name,
-                            widths, width));
+                std::format("a {} deck has {} columns after the {}, not {}", name, widths,
+                            coordinate, width));
   }
 
   /**
@@ -789,24 +795,45 @@ inline bool AnyNamed(const std::vector<std::optional<std::string>>& names) {
   return std::ranges::any_of(names, [](const auto& name) { return name.has_value(); });
 }
 
-/// The line naming `r` and the columns.
-inline std::string ColumnLine(const std::vector<std::string>& columns) {
-  auto out = std::string{"r"};
+/// The line naming the knots' coordinate by its `word`, `r` for a radius,
+/// and the columns.
+inline std::string ColumnLine(const std::vector<std::string>& columns,
+                              std::string_view word = "r") {
+  auto out = std::string{word};
   for (const auto& name : columns) out += " " + name;
   return out;
 }
 
-/// The line naming a Maxwell deck's columns.
-inline std::string MaxwellColumnLine() { return ColumnLine(MAXWELL_COLUMNS); }
+/// Refuse a column line (the header's second, a `#` comment after it
+/// allowed) other than the coordinate's `word` and one of the `choices` of
+/// columns, spelling them; `what` is the deck, "a Maxwell deck" say.
+inline void CheckColumnLine(const std::vector<std::string>& lines, const std::string& source,
+                            std::string_view what,
+                            const std::vector<std::vector<std::string>>& choices,
+                            std::string_view word = "r") {
+  const auto line = std::string_view{lines.at(1)};
+  const auto named = Tokens(line.substr(0, line.find('#')));
+  auto spelled = std::string{};
+  for (const auto& columns : choices) {
+    const auto want = ColumnLine(columns, word);
+    if (named == Tokens(want)) return;
+    spelled += (spelled.empty() ? "" : " or ") + want;
+  }
+  throw Error(source, "header",
+              std::format("{}'s second line names its columns, {}; got '{}'", what, spelled,
+                          Trimmed(lines.at(1))));
+}
 
 /// The header lines of a deck of a title, a column line and naming lines:
-/// the title, the line naming `r` and `columns`, and a naming line for the
-/// layers and one for the interfaces where any of them is named.
+/// the title, the line naming the coordinate's `word` and `columns`, and a
+/// naming line for the layers and one for the interfaces where any of them
+/// is named.
 inline std::vector<std::string> NamedHeader(
     std::string_view title, const std::vector<std::string>& columns,
     const std::vector<std::optional<std::string>>& layers,
-    const std::vector<std::optional<std::string>>& interfaces, std::string_view what) {
-  auto out = std::vector<std::string>{std::string{title}, ColumnLine(columns)};
+    const std::vector<std::optional<std::string>>& interfaces, std::string_view what,
+    std::string_view word = "r") {
+  auto out = std::vector<std::string>{std::string{title}, ColumnLine(columns, word)};
   if (AnyNamed(layers)) out.push_back(NameLine("layers", layers, what));
   if (AnyNamed(interfaces)) out.push_back(NameLine("interfaces", interfaces, what));
   return out;
@@ -881,16 +908,17 @@ inline void OneNamingLineEach(const std::vector<std::string>& lines, const std::
 namespace detail {
 
 /// The header lines a deck of a title, a column line and naming lines is
-/// written with: its title, the line naming `r` and `columns`, and the
-/// naming lines its header has where any of their names is given, their
-/// counts checked against the deck's (`MaxwellNames`).
+/// written with: its title, the line naming the coordinate's `word` and
+/// `columns`, and the naming lines its header has where any of their names
+/// is given, `names` the deck's, their counts checked against it
+/// (`MaxwellNames` for a deck of radii).
 inline std::vector<std::string> NamedHeaderLines(const Deck& deck,
                                                  const std::vector<std::string>& columns,
-                                                 std::string_view what) {
-  const auto names = MaxwellNames(deck);
+                                                 std::string_view what, const DeckNames& names,
+                                                 std::string_view word = "r") {
   const auto& header = deck.Header();
   auto out = std::vector<std::string>{header.empty() ? std::string{} : Trimmed(header.front()),
-                                      ColumnLine(columns)};
+                                      ColumnLine(columns, word)};
   if (NamesOn(header, "layers") && AnyNamed(names.layers)) {
     out.push_back(NameLine("layers", names.layers, what));
   }
@@ -968,20 +996,13 @@ inline std::vector<std::string> MineosHeaderLines(const Deck& deck) {
       .header_comments = {"layers", "interfaces"},
       .check_header =
           [](const std::vector<std::string>& lines, const std::string& source) {
-            const auto line = std::string_view{lines.at(1)};
-            if (detail::Tokens(line.substr(0, line.find('#'))) !=
-                detail::Tokens(detail::MaxwellColumnLine())) {
-              throw Error(source, "header",
-                          std::format("a Maxwell deck's second line names its columns, "
-                                      "{}; got '{}'",
-                                      detail::MaxwellColumnLine(),
-                                      detail::Trimmed(lines.at(1))));
-            }
+            detail::CheckColumnLine(lines, source, "a Maxwell deck", {MAXWELL_COLUMNS});
             detail::OneNamingLineEach(lines, source, "a Maxwell deck");
           },
       .write_header =
           [](const Deck& deck) {
-            return detail::NamedHeaderLines(deck, MAXWELL_COLUMNS, "a Maxwell deck");
+            return detail::NamedHeaderLines(deck, MAXWELL_COLUMNS, "a Maxwell deck",
+                                            MaxwellNames(deck));
           }};
   return format;
 }
@@ -1053,12 +1074,13 @@ inline std::vector<std::string> MineosHeaderLines(const Deck& deck) {
 
 namespace detail {
 
-/// Refuse a prony column line other than `r`, `PRONY_COLUMNS` and the pairs
-/// of branch columns for k = 1 to N in order, N at least one, saying what is
-/// wrong, as the Python does.
-inline void CheckPronyColumnLine(std::string_view line, const std::string& source) {
+/// Refuse a prony column line other than the coordinate's `word` (`r` for a
+/// radius), `PRONY_COLUMNS` and the pairs of branch columns for k = 1 to N
+/// in order, N at least one, saying what is wrong, as the Python does.
+inline void CheckPronyColumnLine(std::string_view line, const std::string& source,
+                                 std::string_view word = "r") {
   const auto named = Tokens(line.substr(0, line.find('#')));
-  auto lead = std::vector<std::string>{"r"};
+  auto lead = std::vector<std::string>{std::string{word}};
   lead.insert(lead.end(), PRONY_COLUMNS.begin(), PRONY_COLUMNS.end());
   if (named.size() < lead.size() || !std::equal(lead.begin(), lead.end(), named.begin())) {
     throw Error(source, "header",
@@ -1101,8 +1123,10 @@ inline std::vector<double> Rows(const std::vector<double>& values, std::size_t b
 /// branches'; a layer neither NaN in every branch
 /// column (elastic) nor a number in each; a strength outside [0, 1], or
 /// strengths summing to more than one past `STRENGTH_ROUNDING`; a time not
-/// positive and finite.  Naming the layer, the column and the radius.
-inline void CheckPronyTable(const Deck& deck) {
+/// positive and finite.  Naming the layer, the column and the knot, by the
+/// coordinate's `word` and, in prose, its `label`.
+inline void CheckPronyTable(const Deck& deck, std::string_view word = "r",
+                            std::string_view label = "radius") {
   const auto n = PronyBranches(deck);
   const auto& source = deck.Source();
   if (const auto& header = deck.Header(); header.size() >= 2) {
@@ -1111,9 +1135,9 @@ inline void CheckPronyTable(const Deck& deck) {
     const auto columns = PronyColumns(n);
     if (named.empty() || !std::ranges::equal(named | std::views::drop(1), columns)) {
       throw Error(source, "",
-                  std::format("the column line names {} columns after the radius; the rows "
+                  std::format("the column line names {} columns after the {}; the rows "
                               "have {}",
-                              named.empty() ? 0 : named.size() - 1, columns.size()));
+                              named.empty() ? 0 : named.size() - 1, label, columns.size()));
     }
   }
   const auto& r = deck.Radius();
@@ -1143,8 +1167,8 @@ inline void CheckPronyTable(const Deck& deck) {
       for (auto j = std::size_t{0}; j < end - begin; ++j) {
         if (!(w[k][j] >= 0.0 && w[k][j] <= 1.0)) {
           throw Error(source, where,
-                      std::format("{}_{} is {:g} at r = {:g}; a strength lies in [0, 1]",
-                                  BRANCH_STEMS[0], k + 1, w[k][j], r[begin + j]));
+                      std::format("{}_{} is {:g} at {} = {:g}; a strength lies in [0, 1]",
+                                  BRANCH_STEMS[0], k + 1, w[k][j], word, r[begin + j]));
         }
       }
     }
@@ -1152,8 +1176,8 @@ inline void CheckPronyTable(const Deck& deck) {
       for (auto j = std::size_t{0}; j < end - begin; ++j) {
         if (!(std::isfinite(t[k][j]) && t[k][j] > 0.0)) {
           throw Error(source, where,
-                      std::format("{}_{} is {:g} at r = {:g}; a time is positive and finite",
-                                  BRANCH_STEMS[1], k + 1, t[k][j], r[begin + j]));
+                      std::format("{}_{} is {:g} at {} = {:g}; a time is positive and finite",
+                                  BRANCH_STEMS[1], k + 1, t[k][j], word, r[begin + j]));
         }
       }
     }
@@ -1162,8 +1186,8 @@ inline void CheckPronyTable(const Deck& deck) {
       for (auto k = std::size_t{0}; k < n; ++k) total += w[k][j];
       if (total > 1.0 + static_cast<double>(n) * STRENGTH_ROUNDING) {
         throw Error(source, where,
-                    std::format("the strengths sum to {:.9g} at r = {:g}, more than one", total,
-                                r[begin + j]));
+                    std::format("the strengths sum to {:.9g} at {} = {:g}, more than one",
+                                total, word, r[begin + j]));
       }
     }
   }
@@ -1220,8 +1244,9 @@ inline Deck CompletePronyDeck(const Deck& deck) {
 /// other than none of the viscosity and the Kelvin columns (elastic), the
 /// viscosity alone (a Maxwell body) or all three (a Burgers body), each NaN
 /// throughout the layer or nowhere in it, or holding one that is not
-/// positive and finite.  Naming the layer, the column and the radius.
-inline void CheckBurgersTable(const Deck& deck) {
+/// positive and finite.  Naming the layer, the column and the knot, by the
+/// coordinate's `word`.
+inline void CheckBurgersTable(const Deck& deck, std::string_view word = "r") {
   const auto& source = deck.Source();
   const auto& r = deck.Radius();
   const auto names = std::vector<std::string>(BURGERS_COLUMNS.end() - 3, BURGERS_COLUMNS.end());
@@ -1253,8 +1278,8 @@ inline void CheckBurgersTable(const Deck& deck) {
       for (auto j = begin; j < end; ++j) {
         if (!(std::isfinite(values[j]) && values[j] > 0.0)) {
           throw Error(source, where,
-                      std::format("{} is {:g} at r = {:g}; it is positive and finite", name,
-                                  values[j], r[j]));
+                      std::format("{} is {:g} at {} = {:g}; it is positive and finite", name,
+                                  values[j], word, r[j]));
         }
       }
     }
@@ -1289,10 +1314,11 @@ inline void CheckBurgersTable(const Deck& deck) {
           },
       .write_header =
           [](const Deck& deck) {
-            return detail::NamedHeaderLines(deck, PronyColumns(PronyBranches(deck)),
-                                            "a prony deck");
+            const auto columns = PronyColumns(PronyBranches(deck));
+            return detail::NamedHeaderLines(deck, columns, "a prony deck",
+                                            MaxwellNames(deck));
           },
-      .check_table = detail::CheckPronyTable,
+      .check_table = [](const Deck& deck) { detail::CheckPronyTable(deck); },
       .complete = detail::CompletePronyDeck};
   return format;
 }
@@ -1312,22 +1338,15 @@ inline void CheckBurgersTable(const Deck& deck) {
       .header_comments = {"layers", "interfaces"},
       .check_header =
           [](const std::vector<std::string>& lines, const std::string& source) {
-            const auto line = std::string_view{lines.at(1)};
-            if (detail::Tokens(line.substr(0, line.find('#'))) !=
-                detail::Tokens(detail::ColumnLine(BURGERS_COLUMNS))) {
-              throw Error(source, "header",
-                          std::format("a burgers deck's second line names its columns, {}; "
-                                      "got '{}'",
-                                      detail::ColumnLine(BURGERS_COLUMNS),
-                                      detail::Trimmed(lines.at(1))));
-            }
+            detail::CheckColumnLine(lines, source, "a burgers deck", {BURGERS_COLUMNS});
             detail::OneNamingLineEach(lines, source, "a burgers deck");
           },
       .write_header =
           [](const Deck& deck) {
-            return detail::NamedHeaderLines(deck, BURGERS_COLUMNS, "a burgers deck");
+            return detail::NamedHeaderLines(deck, BURGERS_COLUMNS, "a burgers deck",
+                                            MaxwellNames(deck));
           },
-      .check_table = detail::CheckBurgersTable};
+      .check_table = [](const Deck& deck) { detail::CheckBurgersTable(deck); }};
   return format;
 }
 
@@ -1700,28 +1719,13 @@ struct DeckFunctions {
   throw Error("DeckLayers", "kind", std::format("{} is not a kind; they are {}", kind, kinds));
 }
 
-/**
- * @brief The skeleton of a deck and every layer's columns, each the
- * function through the layer's knots of the kind `kinds` gives the column,
- * or else the stem of its family (`Member`), or else of `kind`, on its
- * layer with the skeleton's default tolerance: a piecewise polynomial, or
- * for a kind after `log-` the exponential of one through the logarithms
- * (`ThroughKnots`).
- * @param deck The deck.
- * @param kind How the knots are joined: `cubic`, `natural` or `linear`, or
- *        one of them after `log-`.
- * @param kinds The kind of a column joined otherwise, by its name or by
- *        its family's stem; `MAXWELL_KINDS` for a Maxwell deck,
- *        `PRONY_KINDS` for a prony deck, `BURGERS_KINDS` for a burgers deck.
- * @throws planetmodel::Error if a kind is refused, `kinds` names neither a
- *         column of the deck nor the stem of a family it holds a member of,
- *         a column is NaN on part of a layer, or a column joined after
- *         `log-` is not positive and finite at every knot of a layer
- *         holding it.
- */
-[[nodiscard]] inline DeckFunctions DeckLayers(
-    const Deck& deck, std::string_view kind = "cubic",
-    const std::map<std::string, std::string, std::less<>>& kinds = {}) {
+namespace detail {
+
+/// `DeckLayers`, a message naming a knot by its coordinate's `word`: `r`
+/// for a radius.
+inline DeckFunctions DeckLayersOf(const Deck& deck, std::string_view kind,
+                                  const std::map<std::string, std::string, std::less<>>& kinds,
+                                  std::string_view word) {
   const auto knot_kind = KnotKindNamed(kind);
   auto column_kinds = std::map<std::string, KnotKind, std::less<>>{};
   const auto names = deck.Names();
@@ -1776,10 +1780,10 @@ struct DeckFunctions {
         if (off != y.end()) {
           const auto j = static_cast<std::size_t>(std::distance(y.begin(), off));
           throw Error(deck.Source(), name,
-                      std::format("is {:g} at r = {:g} on layer {}; a column joined by {}, its "
+                      std::format("is {:g} at {} = {:g} on layer {}; a column joined by {}, its "
                                   "logarithm interpolated, is positive and finite at every "
                                   "knot of a layer holding it",
-                                  *off, knots[j], i, joined_name));
+                                  *off, word, knots[j], i, joined_name));
         }
       }
       fields.emplace(name, ThroughKnots(std::move(knots), std::move(y), joined, tolerance));
@@ -1787,6 +1791,33 @@ struct DeckFunctions {
     out.layers.push_back(std::move(fields));
   }
   return out;
+}
+
+}  // namespace detail
+
+/**
+ * @brief The skeleton of a deck and every layer's columns, each the
+ * function through the layer's knots of the kind `kinds` gives the column,
+ * or else the stem of its family (`Member`), or else of `kind`, on its
+ * layer with the skeleton's default tolerance: a piecewise polynomial, or
+ * for a kind after `log-` the exponential of one through the logarithms
+ * (`ThroughKnots`).
+ * @param deck The deck.
+ * @param kind How the knots are joined: `cubic`, `natural` or `linear`, or
+ *        one of them after `log-`.
+ * @param kinds The kind of a column joined otherwise, by its name or by
+ *        its family's stem; `MAXWELL_KINDS` for a Maxwell deck,
+ *        `PRONY_KINDS` for a prony deck, `BURGERS_KINDS` for a burgers deck.
+ * @throws planetmodel::Error if a kind is refused, `kinds` names neither a
+ *         column of the deck nor the stem of a family it holds a member of,
+ *         a column is NaN on part of a layer, or a column joined after
+ *         `log-` is not positive and finite at every knot of a layer
+ *         holding it.
+ */
+[[nodiscard]] inline DeckFunctions DeckLayers(
+    const Deck& deck, std::string_view kind = "cubic",
+    const std::map<std::string, std::string, std::less<>>& kinds = {}) {
+  return detail::DeckLayersOf(deck, kind, kinds, "r");
 }
 
 }  // namespace planetmodel

@@ -206,11 +206,11 @@ def test_a_product_on_the_ball_through_the_bases():
     functions on the full mesh, values on a grid, the product, and back.
     Multiplying by the constant one returns the field, and the product of
     two fields is the projection of the product of their values."""
-    from planetmodel.randomfield import (RadialOperatorFamily, SpectralBasis,
+    from planetmodel.randomfield import (SeparableOperatorFamily, SpectralBasis,
                                          SphericalBasis, padded_mesh, restriction)
     L = 3
     mesh = padded_mesh(0.0, 1.0, pad=0.3, ngll=5, drmax=0.2)
-    fam = RadialOperatorFamily(mesh, kappa=0.05)
+    fam = SeparableOperatorFamily(mesh, kappa=0.05)
     R = restriction(mesh, 0.0, 1.0)
     sph = SphericalBasis([SpectralBasis(fam, l, restrict=R, nmodes=6)
                           for l in range(L + 1)])

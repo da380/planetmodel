@@ -2,7 +2,7 @@
 
 The basis is real and orthonormal on the unit sphere: with theta the
 colatitude, phi the longitude and P_l^m the associated Legendre
-functions without the Condon-Shortley phase,
+functions without the Condon-Shortley phase::
 
     Y_l0        = N_l0 P_l(cos theta),
     Y_lm^cos    = sqrt 2 N_lm P_l^m(cos theta) cos(m phi),   m > 0,
@@ -32,7 +32,7 @@ without the poles, from `planetmodel.sampling` -- exactly for a field
 band-limited to the grid's band.  The longitudes may start anywhere and
 number anything from 2 lmax + 1 up, provided they are equally spaced.
 ducc0 holds complex coefficients a_lm for m >= 0 in healpy's order,
-with the Condon-Shortley phase; the real ones here are
+with the Condon-Shortley phase; the real ones here are ::
 
     a_l0 = c[0, l, 0],    a_lm = (-1)^m (c[0, l, m] - i c[1, l, m]) / sqrt 2,
 
@@ -53,7 +53,7 @@ not fit.
 normalisations and with or without the Condon-Shortley phase;
 `from_convention` gives the library's coefficients from them and
 `to_convention` the reverse, in the layout above and in pyshtools'
-terms where they have one.  `normalization` is one of `NORMALIZATIONS`:
+terms where they have one.  `normalization` is one of `NORMALIZATIONS`::
 
     "ortho"      the library's own: int Y^2 dOmega = 1
     "4pi"        geodesy's: int Y^2 dOmega = 4 pi, so c = sqrt(4 pi) C
