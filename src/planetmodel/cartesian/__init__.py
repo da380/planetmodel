@@ -114,6 +114,15 @@ inside a radius, a mean over the sphere and whatever else is the
 sphere's alone refuse a flat object by name, a flat model's gravity
 being prescribed (`Model.with_uniform_gravity`).
 
+Matern random fields of flat layers are drawn in coefficients
+(`cartesian.randomfield`, the counterpart of `planetmodel.randomfield`'s
+samplers): `LayerBasis` holds the eigenbases in depth of every lateral
+eigenvalue of a grid's Fourier transform and fixes the order of the
+coefficient vector, and `DepthGRF`, `BoxGRF` and `LayeredGRF` sample a
+field of depth, of a box or a rectangle, and of a model's layers, with
+an exact marginal standard deviation, the mesh in depth padded above
+the surface and below the base and the lateral period the grid's.
+
   FLAT, FlatCoordinates    the system (depth, x, y)          (coordinates)
   Box, Rectangle           lateral domains                    (domains)
   Geometry                 a skeleton of depths over a domain (geometry)
@@ -143,6 +152,10 @@ being prescribed (`Model.with_uniform_gravity`).
   CrustOverMantle          the reference flat model           (catalogue)
   ElasticDeckModel, MaxwellDeckModel, PronyDeckModel, BurgersDeckModel
                            the models of the decks of depths  (catalogue)
+  LayerBasis               the coefficient vector of a field
+                           over a grid and a mesh in depth    (randomfield)
+  DepthGRF, BoxGRF,        Matern random fields of depth, of a
+  LayeredGRF               box and of the layers              (randomfield)
 """
 from .catalogue import (BurgersDeckModel, CrustOverMantle, ElasticDeckModel,
                         LayeredIsotropicElastic, MaxwellDeckModel, PronyDeckModel)
@@ -159,6 +172,7 @@ from .gridded import GriddedDisplacement, GriddedField, GriddedFunction
 from .mapping import VerticalStretch
 from .means import horizontal_mean, horizontally_averaged
 from .model import Model
+from .randomfield import BoxGRF, DepthGRF, LayerBasis, LayeredGRF
 from .sampling import Sample, sample
 
 __all__ = ["FLAT", "FlatCoordinates", "Box", "Rectangle", "Geometry", "Model",
@@ -169,4 +183,5 @@ __all__ = ["FLAT", "FlatCoordinates", "Box", "Rectangle", "Geometry", "Model",
            "ZeroDisplacement", "CallableDisplacement", "as_displacement",
            "layer_linear", "Grid", "FourierField", "FourierFunction", "GriddedField",
            "GriddedFunction", "GriddedDisplacement", "Sample", "sample",
-           "horizontal_mean", "horizontally_averaged"]
+           "horizontal_mean", "horizontally_averaged", "LayerBasis", "DepthGRF",
+           "BoxGRF", "LayeredGRF"]

@@ -25,6 +25,9 @@ fields are expanded in the real orthonormal harmonics of
 `planetmodel.harmonics`, synthesised through ducc0; everything else
 here is numpy and scipy.  `fields`
 states the construction of the samplers, `basis` that of the bases.
+The samplers of flat layers, Fourier series over a box with the family
+in depth, are in `planetmodel.cartesian.randomfield`, on the same
+family, bases and helpers.
 
     grf = RadialGRF(r1, r2, nu, lam, sigma=sigma)
     grf.to_field(grf.sample(rng=rng))              # a RadialField

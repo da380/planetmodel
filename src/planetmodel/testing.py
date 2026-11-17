@@ -18,6 +18,7 @@ from numpy.typing import ArrayLike
 if TYPE_CHECKING:
     from .cartesian.displacement import VerticalDisplacement
     from .cartesian.grid import Grid
+    from .cartesian.randomfield import LayerBasis
     from .datasets import Dataset, RegionalGrid, Strata, Surface
     from .displacement import RadialDisplacement
     from .fault import Fault, Location, Patch
@@ -37,8 +38,8 @@ if TYPE_CHECKING:
 __all__ = ["check_displacement", "check_vertical_displacement", "check_mapping",
            "check_geometry", "check_layer_function", "check_field", "check_model",
            "check_refinement", "check_sample", "check_spectral_basis",
-           "check_spherical_basis", "check_model_file", "check_dataset",
-           "check_surface", "check_strata", "check_regional",
+           "check_spherical_basis", "check_layer_basis", "check_model_file",
+           "check_dataset", "check_surface", "check_strata", "check_regional",
            "check_surface_file", "check_patch", "check_fault_file",
            "check_fault_mesh", "check_slice", "check_spectrum"]
 
@@ -1369,6 +1370,96 @@ def check_spherical_basis(basis: SphericalBasis, *,
     junk[~seen] = 1.0
     assert np.array_equal(basis.analyse(junk), basis.analyse(full)), (
         "analyse reads entries that belong to no harmonic")
+
+
+def check_layer_basis(basis: LayerBasis, *,
+                      rng: np.random.Generator | None = None,
+                      rtol: float = 1e-10) -> None:
+    """Hold a LayerBasis to the order it fixes and to its lateral
+    eigenvalues.
+
+    The bases are those of the distinct lateral eigenvalues of the
+    transform, ascending, each labelled by its eigenvalue, on one family
+    indexed by value and one restriction; `member` sends every packed
+    component to the basis of its own |k|^2 (to `rtol` of the largest),
+    `multiplicity` counts the components of each and `components` lists
+    them, and `nmodes` and `size` count the coefficients.  The blocks of
+    the components, taken in the transform's order, tile `range(size)`
+    without gap or overlap, each as long as its basis has modes, and
+    `theta` on each block is its basis's.  `synthesise` gives each
+    component its basis's synthesis of its block, physical values being
+    the full ones on the restriction's nodes; `analyse` inverts the full
+    synthesis and is idempotent on arbitrary functions of depth.
+    """
+    from .cartesian.randomfield import LayerBasis
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    assert isinstance(basis, LayerBasis), (
+        f"not a LayerBasis: {type(basis).__name__}")
+    transform, values = basis.transform, basis.eigenvalues
+    N = transform.size
+    assert len(basis) == values.size and np.all(np.diff(values) > 0.0), (
+        "the eigenvalues are not one for each basis, ascending")
+    assert basis.family.index == "value", "the family is not indexed by value"
+    for i, b in enumerate(basis):
+        assert b is basis[i], "iteration is not in the order of the eigenvalues"
+        assert b.degree == values[i] and b.lateral_eigenvalue == values[i], (
+            f"basis {i} is not labelled by its eigenvalue")
+        assert b.family is basis.family, "the bases do not share one family"
+        assert b.restriction.nodes == basis.restriction.nodes, (
+            "the bases do not share one restriction")
+        assert basis.nmodes[i] == b.nmodes, f"nmodes[{i}] is not the basis's"
+    member = basis.member
+    assert member.shape == (N,), "member is not one index for each component"
+    lam = transform.laplacian_eigenvalues
+    assert _rel(values[member], lam, rtol=rtol, floor=float(lam.max())), (
+        "a component's basis is not that of its lateral eigenvalue")
+    assert np.array_equal(basis.multiplicity,
+                          np.bincount(member, minlength=len(basis))), (
+        "multiplicity does not count the components of each basis")
+    for i in range(len(basis)):
+        assert np.array_equal(basis.components(i), np.flatnonzero(member == i)), (
+            f"components({i}) are not the components of basis {i}, ascending")
+    assert basis.size == int(np.sum(basis.multiplicity * basis.nmodes)), (
+        "size is not sum multiplicity * nmodes")
+    for a in (basis.theta, values, member, basis.multiplicity, basis.nmodes):
+        assert not a.flags.writeable, "an array of the basis is writeable"
+    assert basis.theta.shape == (basis.size,), "theta is not a vector of length size"
+
+    at = 0
+    for c in range(N):
+        blk, b = basis.block(c), basis.basis_of(c)
+        assert b is basis[int(member[c])], "basis_of is not the member's basis"
+        assert (blk.start, blk.stop) == (at, at + b.nmodes), (
+            f"the block of component {c} does not follow its predecessor in the "
+            f"transform's order")
+        assert np.array_equal(basis.theta[blk], b.theta), (
+            f"theta on the block of component {c} is not its basis's")
+        at = blk.stop
+    assert at == basis.size, "the blocks do not tile the vector"
+    for bad in (-1, N):
+        try:
+            basis.block(bad)
+        except IndexError:
+            continue
+        raise AssertionError(f"block accepted component {bad}")
+
+    v = rng.standard_normal(basis.size)
+    full = basis.synthesise(v, physical=False)
+    nglob = basis.family.mesh.nglob
+    assert full.shape == (N, nglob), "full synthesis has the wrong shape"
+    assert _rel(basis.synthesise(v), full[:, basis.restriction.nodes], rtol=rtol,
+                floor=np.max(np.abs(full))), (
+        "the physical synthesis is not the full one on the restriction")
+    for c in rng.choice(N, size=min(N, 12), replace=False):
+        want = basis.basis_of(c).synthesise(v[basis.block(c)], physical=False)
+        assert _rel(full[c], want, rtol=rtol, floor=np.max(np.abs(want))), (
+            f"component {c} is not its basis's synthesis of its block")
+    assert _rel(basis.analyse(full), v, rtol=rtol), (
+        "analyse does not invert the full synthesis")
+    w = basis.analyse(rng.standard_normal((N, nglob)))
+    assert _rel(basis.analyse(basis.synthesise(w, physical=False)), w, rtol=rtol,
+                floor=np.max(np.abs(w))), "analyse is not idempotent"
 
 
 def _check_file_root(data: Any, model: ModelBase) -> None:

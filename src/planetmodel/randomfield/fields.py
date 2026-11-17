@@ -75,17 +75,20 @@ if TYPE_CHECKING:
     from ..model import Model
     from ..sampling import AngularGrid
 
-__all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF", "Profile"]
+__all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF", "Profile",
+           "profile_function", "sampler_mesh", "robin_spec", "matern_exponent",
+           "marginal_scale", "layer_indices", "per_layer"]
 
 #: A parameter of a field that may vary with radius: a number, or a
 #: callable of the radius.
 type Profile = float | Callable[[np.ndarray], ArrayLike]
 
 
-# -- helpers ------------------------------------------------------------------
+# -- what every sampler shares ------------------------------------------------
 
-def _as_fun(x: Profile) -> Callable[[np.ndarray], np.ndarray]:
-    """A scalar or callable of radius as a vectorised callable."""
+def profile_function(x: Profile) -> Callable[[np.ndarray], np.ndarray]:
+    """A `Profile`, a number or a callable of the layered coordinate, as a
+    vectorised callable returning floats of its argument's shape."""
     if callable(x):
         return lambda r: np.broadcast_to(np.asarray(x(r), dtype=float),
                                          np.shape(r)).copy()
@@ -103,31 +106,79 @@ def _length_scale(lam_fun: Callable[[np.ndarray], np.ndarray], r1: float,
     return float(lam_s[0]), float(lam_s[-1]), float(lam_s.min())
 
 
-def _sampler_mesh(r1: float, r2: float, nu: float,
-                  lam_fun: Callable[[np.ndarray], np.ndarray], ngll: int,
-                  drmax: float | None, pad_factor: float
-                  ) -> tuple[Mesh1D, float, Restriction]:
+def sampler_mesh(r1: float, r2: float, nu: float,
+                 lam_fun: Callable[[np.ndarray], np.ndarray], ngll: int,
+                 drmax: float | None, pad_factor: float, *, weight: str = "r2"
+                 ) -> tuple[Mesh1D, float, Restriction]:
     """The samplers' computational mesh for a physical interval [r1, r2]:
     each side padded by `pad_factor` Matern reaches of the length scale at
     that boundary, elements no wider than `drmax`, by default half the
-    smallest length scale.  Returns the mesh, the drmax used and the
-    restriction to [r1, r2]."""
+    smallest length scale.  `weight` is the measure the mesh is for, as
+    `padded_mesh` takes it: under "r2" and "r" the lower pad stops at
+    r = 0, under "one" it runs below r1 wherever that is.  Returns the
+    mesh, the drmax used and the restriction to [r1, r2]."""
     lam1, lam2, lam_min = _length_scale(lam_fun, r1, r2)
     if drmax is None:
         drmax = lam_min / 2.0
     pad = (pad_factor * matern_reach(nu, lam1), pad_factor * matern_reach(nu, lam2))
-    mesh = padded_mesh(r1, r2, pad=pad, weight="r2", ngll=ngll, drmax=drmax)
+    mesh = padded_mesh(r1, r2, pad=pad, weight=weight, ngll=ngll, drmax=drmax)
     return mesh, float(drmax), restriction(mesh, r1, r2)
 
 
-def _parse_robin_spec(robin: Robin | str, lam_fun: Callable[[np.ndarray], np.ndarray],
-                      r1: float, r2: float) -> Robin:
-    """robin="auto" resolved into gamma = 1 / lambda at each boundary."""
+def robin_spec(robin: Robin | str, lam_fun: Callable[[np.ndarray], np.ndarray],
+               r1: float, r2: float) -> Robin:
+    """A sampler's `robin` as a family takes it: "auto" resolved into
+    gamma = 1 / lambda at each boundary, anything else as it stands."""
     if isinstance(robin, str):
         if robin != "auto":
             raise ValueError("robin must be None, 'auto', a number or a pair")
         return (1.0 / float(lam_fun(r1)), 1.0 / float(lam_fun(r2)))
     return robin
+
+
+def matern_exponent(nu: float, d: int) -> float:
+    """The beta of A^beta u = white noise that gives a field of `d`
+    dimensions the Matern smoothness `nu`: 2 beta = nu + d / 2."""
+    return 0.5 * (float(nu) + 0.5 * d)
+
+
+def marginal_scale(sigma: Profile, r: np.ndarray, var_raw: np.ndarray
+                   ) -> tuple[np.ndarray, np.ndarray]:
+    """The exact normalisation of the marginal standard deviation: the
+    wanted `sigma` at the nodes `r`, read-only, and the factor
+    sigma / sqrt(var_raw) by which the nodal values of the truncated
+    expansion, of raw pointwise variance `var_raw` there, are scaled so
+    that their standard deviation is sigma to rounding.  Refuses a raw
+    variance that vanishes at a node and a negative sigma."""
+    if np.any(var_raw <= 0.0):
+        raise RuntimeError("vanishing raw variance at a physical node")
+    sig = profile_function(sigma)(r)
+    if np.any(sig < 0.0):
+        raise ValueError("sigma must be non-negative")
+    sig.setflags(write=False)
+    return sig, sig / np.sqrt(var_raw)
+
+
+def layer_indices(layers: Iterable[int] | None, nlayers: int) -> tuple[int, ...]:
+    """The layers a layered sampler includes, ascending and without
+    repeats: every one of `nlayers` when `layers` is None, a negative
+    index counting from the last; one out of range is refused."""
+    idx = range(nlayers) if layers is None else layers
+    idx = tuple(sorted({i if i >= 0 else i + nlayers for i in idx}))
+    if idx and not 0 <= idx[0] <= idx[-1] < nlayers:
+        raise IndexError("layer index out of range")
+    return idx
+
+
+def per_layer(spec: Any, i: int, nlayers: int) -> Any:
+    """A layered sampler's parameter for layer `i`: the entry of a list or
+    tuple, which must have one for each of `nlayers`, or the parameter
+    itself, shared by the layers."""
+    if isinstance(spec, (list, tuple)):
+        if len(spec) != nlayers:
+            raise ValueError(f"per-layer sequences must have length {nlayers}")
+        return spec[i]
+    return spec
 
 
 # -- fields of radius alone -------------------------------------------------
@@ -155,13 +206,13 @@ class RadialGRF:
             raise ValueError("nu must be positive")
         self.interval = (r1, r2)
         self.nu = float(nu)
-        self.beta = 0.5 * (self.nu + 0.5)
+        self.beta = matern_exponent(self.nu, 1)
 
-        lam_f = _as_fun(lam)
+        lam_f = profile_function(lam)
         clipped = lambda r: lam_f(np.clip(r, r1, r2))
-        self.mesh, self.drmax, self.restriction = _sampler_mesh(
+        self.mesh, self.drmax, self.restriction = sampler_mesh(
             r1, r2, self.nu, clipped, ngll, drmax, pad_factor)
-        robin = _parse_robin_spec(robin, clipped, r1, r2)
+        robin = robin_spec(robin, clipped, r1, r2)
         self.family = SeparableOperatorFamily(
             self.mesh, kappa=lambda r: clipped(r) ** 2, weight="r2", robin=robin)
 
@@ -172,15 +223,7 @@ class RadialGRF:
         theta = self.basis.theta
         Phi = self.basis.modes()[self.restriction.nodes]
         var_raw = self.basis.pointwise_variance(2.0 * self.beta)
-        if np.any(var_raw <= 0.0):
-            raise RuntimeError("vanishing raw variance at a physical node")
-
-        sig = _as_fun(sigma)(self.r)
-        if np.any(sig < 0.0):
-            raise ValueError("sigma must be non-negative")
-        self.sigma = sig
-        self.sigma.setflags(write=False)
-        scale = sig / np.sqrt(var_raw)
+        self.sigma, scale = marginal_scale(sigma, self.r, var_raw)
         self._B = scale[:, None] * Phi * theta[None, :] ** (-self.beta)
 
     @property
@@ -266,16 +309,16 @@ class SphericalGRF:
             raise ValueError("nu must be positive")
         self.interval = (r1, r2)
         self.nu = float(nu)
-        self.beta = 0.5 * (self.nu + 1.5)
+        self.beta = matern_exponent(self.nu, 3)
         p = 2.0 * self.beta
 
-        lam_f = _as_fun(lam)
+        lam_f = profile_function(lam)
         clip_r = lambda r: lam_f(np.clip(r, r1, r2))
         lamh_f = clip_r if lam_h is None else (
-            lambda r, f=_as_fun(lam_h): f(np.clip(r, r1, r2)))
-        self.mesh, self.drmax, self.restriction = _sampler_mesh(
+            lambda r, f=profile_function(lam_h): f(np.clip(r, r1, r2)))
+        self.mesh, self.drmax, self.restriction = sampler_mesh(
             r1, r2, self.nu, clip_r, ngll, drmax, pad_factor)
-        robin = _parse_robin_spec(robin, clip_r, r1, r2)
+        robin = robin_spec(robin, clip_r, r1, r2)
         self.family = SeparableOperatorFamily(
             self.mesh, kappa=lambda r: clip_r(r) ** 2,
             kappa_h=lambda r: lamh_f(r) ** 2, weight="r2", robin=robin)
@@ -315,15 +358,7 @@ class SphericalGRF:
             B = Phi * theta[None, :] ** (-self.beta)
             var_raw += (2 * l + 1) / (4.0 * np.pi) * (B ** 2).sum(axis=1)
             self._B.append(B)
-        if np.any(var_raw <= 0.0):
-            raise RuntimeError("vanishing raw variance at a physical node")
-
-        sig = _as_fun(sigma)(self.r)
-        if np.any(sig < 0.0):
-            raise ValueError("sigma must be non-negative")
-        self.sigma = sig
-        self.sigma.setflags(write=False)
-        self._scale = sig / np.sqrt(var_raw)
+        self.sigma, self._scale = marginal_scale(sigma, self.r, var_raw)
         self.nmodes = self.basis.nmodes
 
     @property
@@ -422,23 +457,12 @@ class LayeredGRF:
         self.skeleton = sk
         self.name = name
         nl = sk.nlayers
-        idx = range(nl) if layers is None else layers
-        idx = tuple(sorted({i if i >= 0 else i + nl for i in idx}))
-        if idx and not 0 <= idx[0] <= idx[-1] < nl:
-            raise IndexError("layer index out of range")
+        idx = layer_indices(layers, nl)
         self.layers = idx
-
-        def per_layer(spec: Any, i: int) -> Any:
-            if isinstance(spec, (list, tuple)):
-                if len(spec) != nl:
-                    raise ValueError(f"per-layer sequences must have length {nl}")
-                return spec[i]
-            return spec
-
         self._grfs = {
-            i: RadialGRF(*sk.interval(i), per_layer(nu, i), per_layer(lam, i),
-                         sigma=per_layer(sigma, i), ngll=ngll,
-                         drmax=per_layer(drmax, i), pad_factor=pad_factor,
+            i: RadialGRF(*sk.interval(i), per_layer(nu, i, nl), per_layer(lam, i, nl),
+                         sigma=per_layer(sigma, i, nl), ngll=ngll,
+                         drmax=per_layer(drmax, i, nl), pad_factor=pad_factor,
                          robin=robin, tol=tol)
             for i in idx}
 

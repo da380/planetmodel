@@ -13,7 +13,8 @@ it with ellipticity or surface topography, and mesh it: a
 spectral-element mesh along the radius, or a 2D or 3D finite-element
 mesh for `MFEM <https://mfem.org>`_, refined where you need it.  A
 sub-package, `planetmodel.randomfield`, draws Matérn random fields on
-balls, annuli and layers.
+balls, annuli and layers, and `planetmodel.cartesian.randomfield` on
+the boxes and layers of flat models.
 
 A model is three things:
 
