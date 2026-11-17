@@ -698,4 +698,3 @@ class SeparableOperatorFamily:
         return (f"SeparableOperatorFamily({kind}, {self.mesh.nglob} nodes, "
                 f"weight={self.weight!r}, lateral={self.lateral!r}, "
                 f"index={self.index!r}, cached {self.index}s: {self.cached()})")
-

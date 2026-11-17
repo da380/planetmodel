@@ -6,10 +6,12 @@ and the interfaces' one-sided values those of the deck."""
 import numpy as np
 import pytest
 
-from planetmodel import Deck, cartesian, write_deck
-from planetmodel.mesh3d import (MeshSpec, UniformInterfaces, build_layered_mesh,
-                                export_mfem, manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array
+pytest.importorskip("gmsh", reason="needs the planetmodel[meshing] extra")
+
+from planetmodel import Deck, cartesian, write_deck  # noqa: E402
+from planetmodel.mesh3d import (MeshSpec, UniformInterfaces,  # noqa: E402
+                                build_layered_mesh, export_mfem, manifest as sc)
+from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array  # noqa: E402
 
 mfem = pytest.importorskip("mfem.ser", reason="needs the planetmodel[mfem] extra")
 

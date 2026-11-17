@@ -9,10 +9,12 @@ sides' on their planes; a rectangle under a gridded relief likewise.
 import numpy as np
 import pytest
 
-from planetmodel import Skeleton
-from planetmodel import cartesian as flat
-from planetmodel.mesh3d import (MeshSpec, UniformInterfaces, build_layered_mesh,
-                                manifest as sc, read_mesh)
+pytest.importorskip("gmsh", reason="needs the planetmodel[meshing] extra")
+
+from planetmodel import Skeleton  # noqa: E402
+from planetmodel import cartesian as flat  # noqa: E402
+from planetmodel.mesh3d import (MeshSpec, UniformInterfaces,  # noqa: E402
+                                build_layered_mesh, manifest as sc, read_mesh)
 
 pytestmark = pytest.mark.gmsh
 
