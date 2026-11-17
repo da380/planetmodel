@@ -2,7 +2,7 @@
 
 A field that varies laterally in a box is stored at the nodes of a
 `cartesian.Grid` and read between them by one of three rules, the
-doubly periodic counterparts of the sphere's (`planetmodel.lateral`):
+doubly periodic counterparts of the sphere's (`planetmodel.lateral`)::
 
     linear     bilinear on the grid closed by its period (linear along
                the one axis of a rectangle's grid)
@@ -33,8 +33,8 @@ frame that is single-valued, as there is on the sphere.
 **Accuracy.**  On equally spaced nodes the bilinear rule converges as
 h^2 and the bicubic as h^4 in the node spacing h; the Fourier rule is
 exact once the grid holds the field's band.  For a field of band 8 along
-each axis of a box (wavenumbers |k_i| <= 8 over the period, coefficients
-N(0, 1) / (1 + |k|)), the largest error at 4000 random points relative
+each axis of a box (wavenumbers `|k_i| <= 8` over the period, coefficients
+`N(0, 1) / (1 + |k|)`), the largest error at 4000 random points relative
 to the field's largest value, on grids of 32, 64, 128 and 256 nodes a
 side (bands 2, 4, 8 and 16 times the field's), is 1.6e-1, 4.5e-2,
 1.1e-2 and 3.0e-3 for the bilinear rule and 8.1e-3, 4.0e-4, 2.3e-5 and

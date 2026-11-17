@@ -6,7 +6,7 @@ disk or of a lateral eigenvalue on a flat layer), M-orthonormal on the
 mesh, are an orthonormal basis of the discrete weighted space
 L^2(w dr), and the leading ones a finite-dimensional subspace of it.
 A `SpectralBasis` is that subspace made usable: a function is its
-vector of coefficients c, and
+vector of coefficients c, and::
 
     synthesis      u = Phi c            nodal values from coefficients,
     analysis       c = Phi^T M u        the M-orthogonal projection back,

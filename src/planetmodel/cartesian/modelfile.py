@@ -71,8 +71,8 @@ y)` of every part, its upward displacement w at the node, read back as a
 `cartesian.GriddedDisplacement`.
 
 **The surfaces group** holds functions of (x, y) on interfaces, as on
-the sphere, on a grid of its own over the domain, read back as
-`cartesian.GriddedFunction`s.
+the sphere, on a grid of its own over the domain, each read back as
+a `cartesian.GriddedFunction`.
 
 `read_model_file` gives a flat file's numbers and metadata as a
 `modelfile.ModelFile`, its `domain` the file's, and refuses a spherical

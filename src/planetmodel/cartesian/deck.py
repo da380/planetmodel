@@ -18,7 +18,7 @@ coordinate (`deck.elastic_format`, `maxwell_format`, `prony_format`,
 times in their logarithm), and the completion and rules of the prony
 and burgers decks are theirs.  What differs is said by `DEPTH`: the
 column line names the knots `depth`, a message names a knot's depth,
-the columns become `DepthField`s (`deck_layers(deck,
+the columns become fields, each a `DepthField` (`deck_layers(deck,
 coordinate=DEPTH)`), and the naming lines name one interface per layer
 from the surface down, the top first (`depth_names`), where a deck of
 radii names one more for a hollow body's inner boundary.  A deck holds
@@ -26,7 +26,7 @@ no lateral extent: the box a deck's model is built over is given
 beside the deck (`cartesian.catalogue`).  An elastic deck of a crust
 over a mantle, its quality factors absent (rows read as whitespace-
 separated numbers; written with the knot as `%14.3f` and each value as
-`%16.8g`):
+`%16.8g`)::
 
     a crust over a mantle
     depth rho vp vs qkappa qmu
@@ -36,6 +36,8 @@ separated numbers; written with the knot as `%14.3f` and each value as
     30000   2800  6400  3700  nan  nan
     30000   3300  8000  4500  nan  nan
     200000  3300  8000  4500  nan  nan
+
+::
 
   DEPTH        the depth from the free surface down
   ELASTIC      depth rho vpv vsv qkappa qmu vph vsh eta, or
@@ -69,7 +71,7 @@ def depth_names(deck: Deck) -> HeaderNames:
 
 
 #: The depth from the free surface down: `depth` in a column line, the
-#: layered coordinate of `FLAT`, the fields `DepthField`s, one interface
+#: layered coordinate of `FLAT`, the fields each a `DepthField`, one interface
 #: per layer, the top first.
 DEPTH = DeckCoordinate("depth", FLAT, DepthField, depth_names)
 

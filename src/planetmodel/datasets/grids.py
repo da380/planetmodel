@@ -64,7 +64,7 @@ unit string (`units.parse_unit`; a mislabel corrected by `units=`), as
 values (kind None) or as a perturbation of one of `perturbation.KINDS`
 over a reference; depth slices missing everywhere dropped from the ends
 of the support and refused inside it, scattered missing values refused
-unless `fill=` gives them; `GriddedField`s with `ngll = 2` between the
+unless `fill=` gives them; gridded fields (`GriddedField`) with `ngll = 2` between the
 slices, radially linear, laterally `lateral` (linear by default), one
 per segment between discontinuities; at a pole the grid lacks, the mean
 of its nearest ring, the reader's rule, right to second order in the

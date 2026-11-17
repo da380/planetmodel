@@ -660,7 +660,7 @@ class SeparableOperatorFamily:
         """White noise of L^2(w dx) on the active dofs: M^-1/2 z with z
         standard normal, of shape (n,) or (n, size), column j of a batch
         being the j-th of `size` successive draws from the generator.  Its
-        covariance is M^-1, so <f, white> is N(0, |f|^2) for every nodal
+        covariance is M^-1, so <f, white> is `N(0, |f|^2)` for every nodal
         f.  `rng` is anything `np.random.default_rng` accepts."""
         rng = np.random.default_rng(rng)
         s = 1.0 / np.sqrt(self.mass(l))

@@ -116,6 +116,60 @@ def _run_doxygen(_app: object) -> None:
                    cwd=os.path.join(_REPO_ROOT, "cpp"), env=env, check=True)
 
 
+# -- Names imported for annotations alone ------------------------------------
+# A module imports the names that only its annotations use under
+# `typing.TYPE_CHECKING`, so they are absent when autodoc reads a signature,
+# which is then printed as written: a bare `Model` that the spherical class
+# and the flat one both answer to.  Making those imports in a module before
+# its signatures are read gives every annotation the object it names.
+
+_ANNOTATION_NAMES_IMPORTED: set[str] = set()
+
+
+def _import_annotation_names(obj: object) -> None:
+    """Make the `TYPE_CHECKING` imports of the module `obj` is defined in."""
+    import ast
+    import inspect
+
+    name = obj.__name__ if inspect.ismodule(obj) else getattr(obj, "__module__", None)
+    module = sys.modules.get(name) if isinstance(name, str) else None
+    if (module is None or name in _ANNOTATION_NAMES_IMPORTED
+            or name.split(".")[0] != project):
+        return
+    _ANNOTATION_NAMES_IMPORTED.add(name)
+    try:
+        tree = ast.parse(inspect.getsource(module))
+    except (OSError, TypeError):
+        return
+    for node in tree.body:
+        if not (isinstance(node, ast.If)
+                and ast.unparse(node.test).endswith("TYPE_CHECKING")):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, (ast.Import, ast.ImportFrom)):
+                continue
+            names = {"__name__": name, "__package__": module.__package__}
+            code = compile(ast.Module([statement], []), module.__file__, "exec")
+            try:
+                exec(code, names)
+            except ImportError:
+                continue
+            for key, value in names.items():
+                if not key.startswith("__") and not hasattr(module, key):
+                    setattr(module, key, value)
+
+
+def _before_signature(_app: object, obj: object, _bound_method: bool) -> None:
+    _import_annotation_names(obj)
+
+
+def _before_docstring(_app: object, _what: str, _name: str, obj: object,
+                      _options: object, _lines: list[str]) -> None:
+    _import_annotation_names(obj)
+
+
 def setup(app: object) -> None:
     app.connect("builder-inited", _run_apidoc)
     app.connect("builder-inited", _run_doxygen)
+    app.connect("autodoc-before-process-signature", _before_signature)
+    app.connect("autodoc-process-docstring", _before_docstring)

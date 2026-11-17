@@ -123,6 +123,8 @@ field of depth, of a box or a rectangle, and of a model's layers, with
 an exact marginal standard deviation, the mesh in depth padded above
 the surface and below the base and the lateral period the grid's.
 
+::
+
   FLAT, FlatCoordinates    the system (depth, x, y)          (coordinates)
   Box, Rectangle           lateral domains                    (domains)
   Geometry                 a skeleton of depths over a domain (geometry)

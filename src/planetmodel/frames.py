@@ -152,7 +152,7 @@ def rotation_subscripts(rank: int) -> str:
 
     Each factor is written [out, contracted], so the same string serves
     a rotation R (new components from old), a deformation gradient F
-    (physical from reference) and their inverses without transposing:
+    (physical from reference) and their inverses without transposing::
 
         rank 1   ...iA,...A->...i
         rank 2   ...iA,...jB,...AB->...ij

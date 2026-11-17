@@ -52,7 +52,7 @@ may carry `name_poles`, north then south, on its leading time shape;
 a reader without it falls back to its lateral rule.  Values are real;
 complex fields are refused.
 
-`write_surface` writes a file from `SurfaceVariable`s and
+`write_surface` writes a file from variables (`SurfaceVariable`) and
 `read_surface_file` gives one back as a `SurfaceFile` of numbers and
 metadata, nothing interpolated or converted, refusing a flat file by its
 schema; `validate_structure` checks a file of either kind's structure

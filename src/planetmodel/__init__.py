@@ -7,7 +7,7 @@ geometry, the mappings that place them, the fields and the model, the
 catalogue of named models, and the meshers that hand a model to a
 solver.  Every internal is numbers: the model alone carries units.
 
-Modules reached by name, one level down:
+Modules reached by name, one level down::
 
   coordinates  coordinate systems: points, local frame and lattice of a
                field's coordinates; SPHERICAL, the top level's

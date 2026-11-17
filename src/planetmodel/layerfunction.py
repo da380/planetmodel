@@ -658,7 +658,7 @@ class NumericLayer:
 
     def integrate(self, a: float, b: float) -> float | complex:
         """The signed integral from a to b by adaptive quadrature, to a
-        relative tolerance of 1e-10 of the integral of |f| as a few
+        relative tolerance of 1e-10 of the integral of `|f|` as a few
         samples estimate it; the real and imaginary parts of a complex
         function separately."""
         a, b = float(a), float(b)

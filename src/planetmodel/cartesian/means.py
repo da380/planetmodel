@@ -53,7 +53,7 @@ _BLOCK_VALUES = 1 << 22
 
 def quadrature_mean(field: Field, grid: Grid) -> DepthField:
     """The mean of a flat field by `grid`'s quadrature at every depth it is
-    asked at: a `DepthField` over `NumericLayer`s, one per stored
+    asked at: a `DepthField` over layer functions (`NumericLayer`), one per stored
     component."""
     require_coordinates(field, FLAT, "a horizontal mean")
     if not isinstance(grid, Grid):

@@ -36,7 +36,7 @@ takes square roots and is numbers only.
 
 `voigt_matrix` builds the Voigt form (the order and the absence of
 engineering factors are stated in frames.py) in the spherical frame,
-where (1, 2, 3) = (r, theta, phi) and the symmetry axis is index 1:
+where (1, 2, 3) = (r, theta, phi) and the symmetry axis is index 1::
 
     [ C     F     F     .  .  . ]
     [ F     A     A-2N  .  .  . ]      rows and columns in the order

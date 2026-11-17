@@ -12,9 +12,9 @@ profile.
 The spectra and correlations of a flat model
 (`cartesian.slices.Spectrum`, `Correlation`) are drawn by the same
 functions, which ask the object: one that has `wavenumbers` is drawn
-against its bins' horizontal wavenumber |k| (lengths multiplied by
-`scale`, so |k| divided by it), a spectrum on logarithmic axes, the mean
-(k = 0) left out, with the wavelength 2 pi / |k| on a second axis along
+against its bins' horizontal wavenumber `|k|` (lengths multiplied by
+`scale`, so `|k|` divided by it), a spectrum on logarithmic axes, the mean
+(k = 0) left out, with the wavelength `2 pi / |k|` on a second axis along
 the top; and one whose layered coordinate is a depth (its
 `coordinates`) is drawn depth downward.
 """
@@ -39,7 +39,7 @@ _WAVELENGTHS = "planetmodel wavelengths"
 
 
 def _wavelength_axis(ax: Any, label: str) -> None:
-    """The wavelength 2 pi / |k| along the top of axes of |k|, once, under
+    """The wavelength `2 pi / |k|` along the top of axes of `|k|`, once, under
     `label`."""
     held = [child for child in ax.child_axes if child.get_gid() == _WAVELENGTHS]
     if held:
@@ -63,7 +63,7 @@ def spectrum(ax: Any, spectrum_: Spectrum | flat.Spectrum, *, amplitude: bool = 
              wavelengths: str | None = "wavelength", **style: Any) -> Any:
     """Draw a spectrum on `ax`: the power by degree, or the amplitude with
     `amplitude=True`, from degree `first`, the vertical scale logarithmic;
-    a flat spectrum against |k| by the module docstring, from bin `first`,
+    a flat spectrum against `|k|` by the module docstring, from bin `first`,
     lengths multiplied by `scale`, the wavelength along the top under the
     label `wavelengths` (None for no such axis); `label` for a legend;
     `style` to `plot`.  Returns the line drawn."""
@@ -111,7 +111,7 @@ def correlation(ax: Any, correlation_: Correlation | flat.Correlation, *,
                 colorbar: bool = False, **style: Any) -> Any:
     """Draw a correlation by degree and radius on `ax` as an image, from
     degree `first` (1 by default, the mean left out); radii multiplied by
-    `scale`; a flat correlation by |k| and depth, depth downward, |k|
+    `scale`; a flat correlation by `|k|` and depth, depth downward, `|k|`
     divided by `scale`; `cmap` in place of the diverging one; `colorbar`
     a colour bar; `style` to `pcolormesh`.  Returns the mesh drawn."""
     degrees = correlation_.degrees

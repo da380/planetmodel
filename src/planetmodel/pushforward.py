@@ -88,7 +88,7 @@ def push_forward(values: ArrayLike, F: ArrayLike, J: ArrayLike,
     `values` has shape broadcast + (3,) * rank in full Cartesian
     components at reference points X; `F` (..., 3, 3) and `J` (...) are
     the mapping's deformation gradient and Jacobian there.  Every slot
-    receives one factor of F and a weight-1 field is divided by J:
+    receives one factor of F and a weight-1 field is divided by J::
 
         T_ij.. = J^-w F_iA F_jB ... T_AB..
 

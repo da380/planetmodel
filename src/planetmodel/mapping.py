@@ -6,7 +6,7 @@ the physical body.  With
     F = (grad m)^T,  F[i, j] = d m_i / d X_j,      J = det F,
 
 the committed interface is three methods on Cartesian points of shape
-(..., 3):
+(..., 3)::
 
     class Mapping(Protocol):
         def __call__(self, X)              -> m(X),  (..., 3)

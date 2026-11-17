@@ -69,7 +69,7 @@ lies on an interface and of no effect elsewhere.
 **Spectra.**  `spectrum` analyses a plane slice into the real basis of
 its grid, orthonormal over the period (`fourier.Transform.analyse_grid`,
 the components c_i), and gives the power in bins of horizontal
-wavenumber |k|,
+wavenumber `|k|`,
 
     P_j = sum over the components i of bin j of c_i^2 / A,
 
@@ -79,7 +79,7 @@ the bins is the mean square of the slice over the grid's nodes
 quadrature.  For a field the grid resolves, its Nyquist components
 zero, that is the mean square over the period.  It is the counterpart
 of the sphere's P_l = sum_m c_lm^2 / (4 pi).  Bin j holds the components
-with j <= |k| / dk < j + 1, dk = 2 pi / L the fundamental wavenumber of
+with `j <= |k| / dk < j + 1`, dk = 2 pi / L the fundamental wavenumber of
 the longest period L (`wavenumber_bins`): over equal periods, the
 integer wavevector's length rounded down, `Packing.degrees`.  Its
 `wavenumbers` are j dk, and its wavelength 2 pi / (j dk).  A field not
@@ -93,7 +93,7 @@ amplitude).
 **Blocks.**  `block` is the box from its top at the depth its span
 starts at (the free surface by default) to the depth it ends at, seen
 from the `corner` toward the viewer: the top and the two sides meeting
-at that corner, each a set of `SliceLayer`s, the sides layer by layer
+at that corner, each a set of layers (`SliceLayer`), the sides layer by layer
 so that a jump at an interface is a sharp edge.  It is taken at
 reference points and gives their physical positions, so that under
 topography it is drawn in the body's shape.
@@ -276,7 +276,7 @@ class BlockSlice:
 class Spectrum:
     """A field's power by bin of horizontal wavenumber on a plane.
 
-    `degrees` are the bins 0 .. J, and `wavenumbers` their |k|, j dk;
+    `degrees` are the bins 0 .. J, and `wavenumbers` their `|k|`, j dk;
     `power` P_j, summing to the mean square over the grid's nodes;
     `coefficients` the slice's components on `grid` (N,), the real
     orthonormal ones of `grid.transform`; `depth`, `side` and `at` as the
@@ -309,7 +309,7 @@ class Spectrum:
 
     @property
     def wavelengths(self) -> np.ndarray:
-        """2 pi / |k| of each bin, infinite for the mean's."""
+        """`2 pi / |k|` of each bin, infinite for the mean's."""
         with np.errstate(divide="ignore"):
             return np.where(self.wavenumbers > 0.0, 2.0 * np.pi / self.wavenumbers,
                             np.inf)
@@ -324,7 +324,7 @@ class Spectrum:
 class Correlation:
     """Two fields' correlation by bin of horizontal wavenumber and by depth.
 
-    `depths` (k,), `degrees` the bins and `wavenumbers` their |k|;
+    `depths` (k,), `degrees` the bins and `wavenumbers` their `|k|`;
     `by_degree` (k, J + 1), r_j at each depth; `total` (k,), over the
     bins from 1 up; `first` and `second` the two fields' spectra at each
     depth.
@@ -806,7 +806,7 @@ def evaluate(model: Model, fields: Fields, layer: int, depth: ArrayLike, x: Arra
 def wavenumber_bins(grid: Grid) -> tuple[np.ndarray, float]:
     """The bin of horizontal wavenumber of each of a grid's components, (N,),
     and the bins' width dk = 2 pi / L, L the longest period: bin j holds
-    j <= |k| / dk < j + 1, the integer wavevector's length rounded down
+    `j <= |k| / dk < j + 1`, the integer wavevector's length rounded down
     over equal periods (`fourier.Packing.degrees`)."""
     if not isinstance(grid, Grid):
         raise TypeError(f"grid must be a cartesian.Grid, got {type(grid).__name__}")

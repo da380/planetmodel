@@ -1015,8 +1015,8 @@ def check_slice(slice_: Any, model: ModelBase, *,
     Protocol: `coordinates` is the model's system; `shown` is a
     `slices.Shown` and `label` its label; `at` is one of `slices.AT`.  A
     slice has `values` with `reference` and `physical` points of their
-    shape followed by 3 (a sphere, a plane, a cutaway), or `layers` of
-    `slices.SliceLayer`s, each of a layer of the model, its `radius` and
+    shape followed by 3 (a sphere, a plane, a cutaway), or `layers`, each a
+    `slices.SliceLayer` of a layer of the model, its `radius` and
     `values` of one shape and its points of that shape followed by 3 (a
     section, a profile, a block).  Points: where finite, `physical` is
     the mapping of `reference` (but for a mean profile, whose points
@@ -1381,7 +1381,7 @@ def check_layer_basis(basis: LayerBasis, *,
     The bases are those of the distinct lateral eigenvalues of the
     transform, ascending, each labelled by its eigenvalue, on one family
     indexed by value and one restriction; `member` sends every packed
-    component to the basis of its own |k|^2 (to `rtol` of the largest),
+    component to the basis of its own `|k|^2` (to `rtol` of the largest),
     `multiplicity` counts the components of each and `components` lists
     them, and `nmodes` and `size` count the coefficients.  The blocks of
     the components, taken in the transform's order, tile `range(size)`

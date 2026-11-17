@@ -238,7 +238,7 @@ def maxwell_names(deck: Deck) -> HeaderNames:
 
 
 #: The radius from the centre outward: `r` in a column line, the layered
-#: coordinate of `SPHERICAL`, the fields `RadialField`s, the interfaces
+#: coordinate of `SPHERICAL`, the fields each a `RadialField`, the interfaces
 #: one per layer and one more at the inner boundary of a hollow body.
 RADIUS = DeckCoordinate("r", SPHERICAL, RadialField, maxwell_names)
 

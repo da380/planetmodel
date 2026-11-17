@@ -16,7 +16,7 @@ Fourier series on it are one source.  The last node of an axis is one
 step short of the far end, the period closing it on the first.
 
 **The band** is the shape: the grid holds exactly the components of its
-packing (`fourier.Packing`), wavenumbers |k_i| <= n_i / 2 along each
+packing (`fourier.Packing`), wavenumbers `|k_i| <= n_i / 2` along each
 axis, the Nyquist cosine of an even axis once.  A series of that band is
 recovered exactly by analysis on the grid, and a Fourier field is read
 on another grid's nodes through the fast transform where the other grid

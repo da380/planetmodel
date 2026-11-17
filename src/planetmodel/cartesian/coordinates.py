@@ -3,7 +3,7 @@
 Points are right-handed Cartesian (x, y, z), z up and z = 0 the free
 surface of the reference body; the layered coordinate is the depth
 d = -z, positive downward, and (x, y) are the lateral ones, lengths
-like it:
+like it::
 
     points(d, x, y) = (x, y, -d),     split(X) = (-X_z, X_x, X_y, R).
 

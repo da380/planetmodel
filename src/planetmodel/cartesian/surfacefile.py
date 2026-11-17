@@ -31,7 +31,7 @@ lateral rule is one of the flat rules (`cartesian.lateral`: `linear`,
 kind, band and weights, `latitude`, `longitude` and `radius` are a
 spherical file's, refused on writing and on reading.
 
-`write_surface` writes a file from `surfacefile.SurfaceVariable`s;
+`write_surface` writes a file from variables (`surfacefile.SurfaceVariable`);
 `read_surface_file` gives one back as a `SurfaceFile` of numbers and
 metadata, and refuses a spherical file by its schema;
 `surfacefile.read_surface` gives either kind as a function of time, a

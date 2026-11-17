@@ -53,7 +53,7 @@ not fit.
 normalisations and with or without the Condon-Shortley phase;
 `from_convention` gives the library's coefficients from them and
 `to_convention` the reverse, in the layout above and in pyshtools'
-terms where they have one.  `normalization` is one of `NORMALIZATIONS`:
+terms where they have one.  `normalization` is one of `NORMALIZATIONS`::
 
     "ortho"      the library's own: int Y^2 dOmega = 1
     "4pi"        geodesy's: int Y^2 dOmega = 4 pi, so c = sqrt(4 pi) C

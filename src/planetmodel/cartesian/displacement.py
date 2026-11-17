@@ -20,7 +20,7 @@ interface,
     class VerticalDisplacement(Protocol):
         def __call__(self, depth, x, y) -> array
 
-and everything else is an optional enrichment discovered by attribute:
+and everything else is an optional enrichment discovered by attribute::
 
     depth_derivative(depth, x, y)    -> dw/d depth
     lateral_gradient(depth, x, y)    -> (dw/dx, dw/dy)

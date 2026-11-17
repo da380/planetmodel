@@ -6,7 +6,7 @@ moves along its own radius.  The callable is the interface,
     class RadialDisplacement(Protocol):
         def __call__(self, r, theta, phi) -> array
 
-and everything else is an optional enrichment discovered by attribute:
+and everything else is an optional enrichment discovered by attribute::
 
     radial_derivative(r, theta, phi)   -> dh/dr
     angular_gradient(r, theta, phi)    -> (dh/dtheta, dh/dphi)

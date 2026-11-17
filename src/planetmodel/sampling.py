@@ -33,7 +33,7 @@ family the nodes came from and what band the grid resolves; the arrays
 are the truth, and a consumer with its own grid hands its nodes over as
 a `custom` grid.  Colatitudes lie in [0, pi], so either pole may be a
 node, and longitudes in [0, 2 pi).  Three families are shipped, each
-with its colatitude weights:
+with its colatitude weights::
 
     gauss_legendre(lmax)       lmax + 1 Gauss-Legendre colatitudes, no pole
     driscoll_healy(lmax)       2 lmax + 2 equally spaced from the north

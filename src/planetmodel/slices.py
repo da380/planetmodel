@@ -26,7 +26,7 @@ ref)).  Every slice records what it shows (`Shown`) and labels itself.
 **Reference or physical.**  A slice is taken at reference points, where
 the fields live (`at="reference"`), and gives besides where the mapping
 takes each of them, so that it can be drawn as the body is.  At physical
-points (`at="physical"`: a true sphere |x| = r, a true plane, a true
+points (`at="physical"`: a true sphere `|x| = r`, a true plane, a true
 radius) each point is pulled back through the mapping's inverse and the
 field evaluated there, which is offered where the mapping inverts
 itself and refused by name where it does not; a physical section or
@@ -228,7 +228,7 @@ class Shown:
     @property
     def label(self) -> str:
         """A label for an axis or a colour bar: "vs, percent from the mean
-        [%]", "rho [kg m-3]", "|u| [m]", "K, normalised"."""
+        [%]", "rho [kg m-3]", `"|u| [m]"`, "K, normalised"."""
         base = self.name or "field"
         if self.component == "norm":
             base = f"|{base}|"
@@ -1560,7 +1560,7 @@ def discs(model: Model, fields: Fields, *, poles: Sequence[tuple[float, float]],
 def normalised(slice_: Slice) -> Slice:
     """The slice divided by its largest absolute finite value, its label
     saying so; a slice whose values are all zero is refused.  Any slice
-    with `values`, or with `layers` of `SliceLayer`s, of either system."""
+    with `values`, or with `layers`, each a `SliceLayer`, of either system."""
     from dataclasses import replace
     layered = getattr(slice_, "layers", None)
     parts = ([slice_.values] if layered is None

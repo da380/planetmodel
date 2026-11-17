@@ -161,7 +161,7 @@ direction of travel there, the surface descends from depth `top` in
 the vertical plane through the point normal to t, on the right of the
 direction of travel (the dip to the right of the strike), along the
 curve that makes the angle dip(z) with the local horizontal at depth z
-below the reference surface:
+below the reference surface::
 
     dX/dw = cos dip(z) (t x up(X)) - sin dip(z) up(X),
 

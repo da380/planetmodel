@@ -3,7 +3,7 @@
 A field, a geometry's checks and the contracts speak three coordinates
 (c, a, b): c the layered coordinate, the one a skeleton's boundaries
 and a field's interval are values of, and (a, b) the lateral ones.  A
-`Coordinates` object says what they mean:
+`Coordinates` object says what they mean::
 
     points(c, a, b)      the Cartesian points X, of shape broadcast + (3,)
     split(X)             (c, a, b, R), the inverse, with the local frame there

@@ -2,7 +2,7 @@
 
 A field that varies with direction is stored at the nodes of an
 `AngularGrid` and read between them by one of three rules, the same
-here and in every reader of the library's files:
+here and in every reader of the library's files::
 
     linear     bilinear in (theta, phi) on the padded grid
     cubic      the tensor-product cubic spline on the padded grid,

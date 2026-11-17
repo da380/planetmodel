@@ -5,19 +5,19 @@ Matern-type field solves A^beta u = white noise with
 A = 1 - div(lambda^2 grad), so that its covariance is C = A^-2 beta
 with 2 beta = nu + d / 2.  Over a periodic lateral box A separates in
 the real Fourier basis of a `fourier.Transform`: on the component of
-wavevector k it is the member of lateral eigenvalue |k|^2 of the flat
+wavevector k it is the member of lateral eigenvalue `|k|^2` of the flat
 `SeparableOperatorFamily` (the plain measure in depth, the lateral
 profile one, indexed by value),
 
-    A_k f = f - (kappa f')' + |k|^2 kappa_h f,
+    `A_k f = f - (kappa f')' + |k|^2 kappa_h f`,
 
 with kappa = lambda^2 along depth and kappa_h = lambda_h^2 across it,
 each a function of depth alone.  Depth is the layered coordinate,
 positive downward.
 
 **The basis.**  `LayerBasis` holds one `SpectralBasis` for each
-distinct |k|^2 of the transform and the map from every packed Fourier
-component to its own: components of equal |k|^2 share one member of
+distinct `|k|^2` of the transform and the map from every packed Fourier
+component to its own: components of equal `|k|^2` share one member of
 the family, hence one eigenproblem and one entry of its cache.  The
 coordinates of a field are the coefficients of each component's
 function of depth in the eigenfunctions of its member, as one vector:
@@ -33,7 +33,7 @@ box, 1 / V, so the fewest coefficients for a given share of the
 variance are those of smallest theta over the whole basis.
 `LayerBasis.of` keeps them: the fewest whose omitted share of
 sum theta^-p over every component and mode is at most `tol`, and never
-fewer than one mode of a member.  Since theta >= 1 + |k|^2 min kappa_h,
+fewer than one mode of a member.  Since `theta >= 1 + |k|^2 min kappa_h`,
 the members of short wavelength keep few modes, and only the kept
 eigenvectors are computed and held.
 
@@ -112,17 +112,17 @@ __all__ = ["LayerBasis", "DepthGRF", "BoxGRF", "LayeredGRF", "distinct_eigenvalu
 
 #: How closely, relative to the larger, two lateral eigenvalues of a
 #: transform must agree to be one: wavevectors of equal length reach
-#: their |k|^2 by different sums, which differ in rounding.
+#: their `|k|^2` by different sums, which differ in rounding.
 EIGENVALUE_RTOL = 1e-12
 
 
 def distinct_eigenvalues(transform: Transform, *, rtol: float = EIGENVALUE_RTOL
                          ) -> tuple[np.ndarray, np.ndarray]:
-    """The distinct lateral eigenvalues |k|^2 of a transform's components,
+    """The distinct lateral eigenvalues `|k|^2` of a transform's components,
     ascending, and the index into them of each packed component.
 
     Values within `rtol` of one another are one, represented by the
-    smallest of them, so that every component of one |k|^2 names its
+    smallest of them, so that every component of one `|k|^2` names its
     member of a family by the same float.
     """
     lam = transform.laplacian_eigenvalues
@@ -154,7 +154,7 @@ class LayerBasis:
     order, and within a component over the modes of its basis in
     ascending theta.
 
-    Attributes: `transform`; `eigenvalues` (the distinct |k|^2,
+    Attributes: `transform`; `eigenvalues` (the distinct `|k|^2`,
     ascending); `member` (for each packed component the index of its
     basis); `multiplicity` (the components sharing each basis); `nmodes`
     (the modes kept by each basis); `size` (the length of the vector,

@@ -5,7 +5,7 @@ reference and a perturbation of it, a tomographic model as relative
 perturbations of a reference's velocities, a viscosity as the logarithm
 of its departure from a radial profile.  `PerturbedField(reference,
 perturbation, *, kind)` is such a field, and the kind is how the two
-combine:
+combine::
 
     absolute   reference + perturbation
     relative   reference (1 + perturbation)

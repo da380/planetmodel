@@ -44,14 +44,14 @@ wavenumbers above n_i / 2 taken as k_i - n_i so that a Nyquist wavenumber
 is +n_i / 2, and its phase, 0 for a cosine or a self-conjugate mode and 1
 for a sine; `component_of` finds one, modulo the grid.  The
 representative's wavevector is the one the basis is evaluated with off
-the grid.  `degrees` is |k| rounded down in grid units, which group
+the grid.  `degrees` is `|k|` rounded down in grid units, which group
 modes of one spatial scale only where the periods are equal;
 `laplacian_eigenvalues` are the physical sum_i (2 pi k_i / L_i)^2.  A
 grid holds exactly its packing's components: its band is its shape.
 
 **Transforms** (`Transform`).  Leading axes are batches throughout: grid
-values (..., *shape), components (..., N), rfftn arrays (...,
-*rfft_shape), and points (..., D), whose values have the batch axes and
+values `(..., *shape)`, components `(..., N)`, rfftn arrays
+`(..., *rfft_shape)`, and points `(..., D)`, whose values have the batch axes and
 then the points' own.  `analyse_grid` and `synthesise_grid` go between
 grid values and components through scipy's rfftn and irfftn, each the
 other's inverse to rounding; `from_rfft` and `to_rfft` are the same
@@ -248,7 +248,7 @@ class Packing:
 
     @cached_property
     def degrees(self) -> np.ndarray:
-        """|k| of each component's integer wavevector, rounded down."""
+        """`|k|` of each component's integer wavevector, rounded down."""
         k = self._wavevectors.astype(float)
         return _readonly(np.floor(np.sqrt(np.sum(k ** 2, axis=0))).astype(int))
 
@@ -602,7 +602,7 @@ class Transform:
 
     @property
     def degrees(self) -> np.ndarray:
-        """|k| of each component's integer wavevector, rounded down."""
+        """`|k|` of each component's integer wavevector, rounded down."""
         return self._packing.degrees
 
     @cached_property
@@ -637,7 +637,7 @@ class Transform:
 
     @property
     def grid_points(self) -> np.ndarray:
-        """The grid's points, shape (*shape, D)."""
+        """The grid's points, shape `(*shape, D)`."""
         return np.stack(np.meshgrid(*self.grid_axes, indexing="ij"), axis=-1)
 
     @cached_property
@@ -668,7 +668,7 @@ class Transform:
         return c
 
     def from_rfft(self, coefficients: ArrayLike) -> np.ndarray:
-        """Components from an rfftn array of shape (..., *rfft_shape), on the
+        """Components from an rfftn array of shape `(..., *rfft_shape)`, on the
         unnormalised scale numpy and scipy share.  A self-conjugate entry's
         imaginary part, zero for a real field, is not read, nor is a pair's
         entry other than its representative."""
@@ -688,7 +688,7 @@ class Transform:
         return out
 
     def to_rfft(self, components: ArrayLike) -> np.ndarray:
-        """The rfftn array, of shape (..., *rfft_shape), of the field with
+        """The rfftn array, of shape `(..., *rfft_shape)`, of the field with
         these components: the inverse of `from_rfft`, a pair's partners in
         the half spectrum written as its conjugate."""
         p = self._packing
@@ -705,8 +705,8 @@ class Transform:
         return out.reshape(batch + p.rfft_shape)
 
     def analyse_grid(self, values: ArrayLike) -> np.ndarray:
-        """Components, shape (..., N), of values on the grid, shape (...,
-        *shape), through scipy's rfftn: the inverse of `synthesise_grid`."""
+        """Components, shape `(..., N)`, of values on the grid, shape
+        `(..., *shape)`, through scipy's rfftn: the inverse of `synthesise_grid`."""
         v = np.asarray(values, dtype=float)
         d = self.dimension
         if v.ndim < d or v.shape[v.ndim - d:] != self.shape:
@@ -715,8 +715,8 @@ class Transform:
         return self.from_rfft(rfftn(v, s=self.shape, axes=tuple(range(-d, 0))))
 
     def synthesise_grid(self, components: ArrayLike) -> np.ndarray:
-        """Values on the grid, shape (..., *shape), of components, shape
-        (..., N), through scipy's irfftn."""
+        """Values on the grid, shape `(..., *shape)`, of components, shape
+        `(..., N)`, through scipy's irfftn."""
         d = self.dimension
         return irfftn(self.to_rfft(components), s=self.shape, axes=tuple(range(-d, 0)))
 
@@ -907,8 +907,8 @@ class Transform:
                    route: str = "nufft", epsilon: float = POINT_EPSILON,
                    nthreads: int = NUFFT_THREADS) -> np.ndarray:
         """sum_j w_j phi(x_j) for every basis function phi: the adjoint of
-        `synthesise`, components of shape (..., N) from `weights` of shape
-        (..., *P) at points of shape (*P, D).
+        `synthesise`, components of shape `(..., N)` from `weights` of shape
+        `(..., *P)` at points of shape `(*P, D)`.
 
         By finufft's type-1 transform, the adjoint of the type 2 that
         `synthesise` makes, to about `epsilon`, or by the direct sum.

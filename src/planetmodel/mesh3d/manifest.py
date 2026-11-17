@@ -13,7 +13,7 @@ The schema is `planetmodel.mesh.manifest/5` for a mesh of a spherical
 geometry without faults, `planetmodel.mesh.manifest/6` for one with
 them, and `planetmodel.mesh.manifest/7` for a mesh of a flat-layered
 geometry (`planetmodel.cartesian`), with faults or without, with these
-blocks:
+blocks::
 
   mesh          file, format ("msh" or "mfem"), nodes ("reference" or
                 "physical"), read_options, displacement
@@ -808,7 +808,7 @@ class MeshManifest:
 
     def layered_coordinate(self, points: ArrayLike) -> np.ndarray:
         """The layered coordinate of physical points (..., 3): the radius
-        |X|, or in a flat mesh the depth -z."""
+        `|X|`, or in a flat mesh the depth -z."""
         X = np.asarray(points, dtype=float)
         if self.is_flat:
             return -X[..., 2]

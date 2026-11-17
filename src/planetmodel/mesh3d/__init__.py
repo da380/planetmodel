@@ -11,7 +11,7 @@ that box's cross-section in the (x, z) plane, its base and sides labelled
 faces of their own; the spec, the sizing, the tagging, the orientation,
 the checks, the manifest and the export are the same code for both,
 which asks the geometry's layout where the shapes differ.
-Faults given to a MeshSpec as `EmbeddedFault`s are built into the mesh
+Faults given to a MeshSpec, each an `EmbeddedFault`, are built into the mesh
 from the start, pulled back through the mapping and fragmented in, each
 an oriented interior surface with its curves labelled, the cells of its
 hanging wall that touch its slip carrying element attributes of their
