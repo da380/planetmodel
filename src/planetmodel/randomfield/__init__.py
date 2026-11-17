@@ -1,10 +1,14 @@
 """Gaussian random fields of Matern type on balls, annuli and layers.
 
 The core numerics of the SPDE construction on a radial spectral-element
-mesh, in three tiers.  `RadialOperatorFamily` discretises the
-degree-indexed radial operators A_l of A = 1 - div(kappa grad) with
-their spectra, powers, inverses and white noise, under the r^2 dr
-measure of a ball or annulus or the plain measure of an interval.
+mesh, in three tiers.  `SeparableOperatorFamily` discretises the
+operators A = 1 - div(kappa grad) separates into, one per lateral
+eigenvalue, with their spectra, powers, inverses and white noise: the
+degree-indexed radial operators A_l under the r^2 dr measure of a ball
+or annulus by default, those of a disk, of a flat layer or of an
+interval of the line by its `weight`, `lateral` and `index`
+(`RadialOperatorFamily` is another name for the class, kept for
+callers of that name).
 `padded_mesh` and `restriction` build the mesh such a family is put on,
 longer than the physical interval so that its boundary conditions act
 at a distance, and `SpectralBasis` is the truncated eigenbasis of one
@@ -30,17 +34,17 @@ states the construction of the samplers, `basis` that of the bases.
     LayeredGRF(model, nu, lam, layers=mantle).sample(rng=rng)
 
     mesh = padded_mesh(a, b, pad=2 * matern_reach(nu, lam), weight="one")
-    family = RadialOperatorFamily(mesh, kappa=lam ** 2, weight="one")
+    family = SeparableOperatorFamily(mesh, kappa=lam ** 2, weight="one")
     basis = SpectralBasis(family, 0, restrict=restriction(mesh, a, b), nmodes=64)
     u = basis.synthesise(basis.theta ** -beta * basis.white_noise(rng=rng))
 """
 from .basis import SpectralBasis, SphericalBasis
 from .fields import LayeredGRF, RadialGRF, SphericalGRF
 from .mesh import Restriction, matern_reach, padded_mesh, restriction
-from .operator import RadialOperatorFamily
+from .operator import RadialOperatorFamily, SeparableOperatorFamily
 
 __all__ = [
-    "RadialOperatorFamily",
+    "SeparableOperatorFamily", "RadialOperatorFamily",
     "matern_reach", "padded_mesh", "Restriction", "restriction",
     "SpectralBasis", "SphericalBasis",
     "RadialGRF", "SphericalGRF", "LayeredGRF",

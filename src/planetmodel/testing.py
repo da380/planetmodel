@@ -1160,8 +1160,8 @@ def check_spectrum(spectrum_: Any) -> None:
 
 
 def _full_mass(basis: SpectralBasis) -> np.ndarray:
-    """The family's diagonal mass at every node of the mesh, the massless
-    centre of a ball included."""
+    """The family's diagonal mass at every node of the mesh, a massless
+    centre included."""
     mass = basis.family.mass(basis.degree)
     full = np.zeros(basis.family.mesh.nglob)
     full[full.size - mass.size:] = mass
@@ -1171,12 +1171,16 @@ def _full_mass(basis: SpectralBasis) -> np.ndarray:
 def check_spectral_basis(basis: SpectralBasis, *,
                          rng: np.random.Generator | None = None,
                          rtol: float = 1e-10) -> None:
-    """Hold a SpectralBasis to what it promises of one degree's eigenbasis.
+    """Hold a SpectralBasis to what it promises of one member's eigenbasis,
+    whatever the family's weight, lateral profile and index.
 
     The spectrum: `theta` read-only, ascending, at least 1, `nmodes` of
     them.  The modes: read-only, of shape (nglob, nmodes), M-orthonormal
     on the full mesh, each an eigenfunction of the family's operator with
-    its theta, and zero at the centre of a ball when l >= 1.  The
+    its theta, and zero at a centre (of a ball or a disk) when the
+    member's lateral eigenvalue is positive under the inverse-square
+    profile; `degree` is the label as the family holds it and
+    `lateral_eigenvalue` the family's lambda for it.  The
     transforms: the physical synthesis is the full one read on the
     restriction's nodes; `analyse` inverts the full synthesis and is
     idempotent on arbitrary nodal values, for one vector and for a stack.
@@ -1186,11 +1190,12 @@ def check_spectral_basis(basis: SpectralBasis, *,
     mass inside the physical interval and no more than it at the two
     ends (where the mass counts the pad elements too), and, on a mesh of
     at least three GLL nodes, sum to the measure of the physical
-    interval, (r2^3 - r1^3) / 3 or r2 - r1.  `pointwise_variance` is the
-    diagonal of the synthesised covariance.  `white_noise` has the shapes
-    it promises and unit covariance on the leading modes to six standard
-    errors.  `rtol` is relative to the largest kept eigenvalue where an
-    operator is applied and to one elsewhere.
+    interval, (r2^3 - r1^3) / 3, (r2^2 - r1^2) / 2 or r2 - r1.
+    `pointwise_variance` is the diagonal of the synthesised covariance.
+    `white_noise` has the shapes it promises and unit covariance on the
+    leading modes to six standard errors.  `rtol` is relative to the
+    largest kept eigenvalue where an operator is applied and to one
+    elsewhere.
     """
     from .randomfield.basis import SpectralBasis
 
@@ -1218,8 +1223,14 @@ def check_spectral_basis(basis: SpectralBasis, *,
     scale = theta[-1] * np.max(np.abs(Phi))
     assert np.max(np.abs(resid)) <= 1e3 * rtol * scale, (
         "a mode is not an eigenfunction of the family's operator")
-    if fam.is_ball and l >= 1:
-        assert np.all(Phi[0] == 0.0), "a mode of degree l >= 1 is non-zero at r = 0"
+    assert l == fam.label(l) and type(l) is type(fam.label(l)), (
+        f"degree is not the label as the family holds it: {l!r}")
+    lam = basis.lateral_eigenvalue
+    assert lam == fam.lateral_eigenvalue(l), (
+        "lateral_eigenvalue is not the family's for the label")
+    if fam.has_centre and fam.lateral == "inverse_square" and lam > 0.0:
+        assert np.all(Phi[0] == 0.0), (
+            "a mode of a member with lambda > 0 is non-zero at the centre")
 
     assert np.array_equal(basis.r, mesh.rglob[R.nodes]), (
         "r is not the mesh's nodes on the restriction")
@@ -1262,7 +1273,8 @@ def check_spectral_basis(basis: SpectralBasis, *,
     assert np.all(w <= M[R.nodes] * (1.0 + rtol)), (
         "a weight exceeds the family's mass at its node")
     if mesh.ngll >= 3:
-        measure = (r2 ** 3 - r1 ** 3) / 3.0 if fam.weight == "r2" else r2 - r1
+        measure = {"r2": (r2 ** 3 - r1 ** 3) / 3.0, "r": (r2 ** 2 - r1 ** 2) / 2.0,
+                   "one": r2 - r1}[fam.weight]
         assert abs(w.sum() - measure) <= rtol * abs(measure), (
             f"weights sum to {w.sum()!r}, the interval measures {measure!r}")
 

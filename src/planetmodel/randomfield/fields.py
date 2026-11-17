@@ -68,7 +68,7 @@ from ..mesh1d import Mesh1D
 from ..skeleton import Skeleton
 from .basis import SpectralBasis, SphericalBasis
 from .mesh import Restriction, matern_reach, padded_mesh, restriction
-from .operator import RadialOperatorFamily, Robin
+from .operator import Robin, SeparableOperatorFamily
 
 if TYPE_CHECKING:
     from ..geometry import Geometry
@@ -162,7 +162,7 @@ class RadialGRF:
         self.mesh, self.drmax, self.restriction = _sampler_mesh(
             r1, r2, self.nu, clipped, ngll, drmax, pad_factor)
         robin = _parse_robin_spec(robin, clipped, r1, r2)
-        self.family = RadialOperatorFamily(
+        self.family = SeparableOperatorFamily(
             self.mesh, kappa=lambda r: clipped(r) ** 2, weight="r2", robin=robin)
 
         self.r = self.restriction.r
@@ -276,7 +276,7 @@ class SphericalGRF:
         self.mesh, self.drmax, self.restriction = _sampler_mesh(
             r1, r2, self.nu, clip_r, ngll, drmax, pad_factor)
         robin = _parse_robin_spec(robin, clip_r, r1, r2)
-        self.family = RadialOperatorFamily(
+        self.family = SeparableOperatorFamily(
             self.mesh, kappa=lambda r: clip_r(r) ** 2,
             kappa_h=lambda r: lamh_f(r) ** 2, weight="r2", robin=robin)
 
