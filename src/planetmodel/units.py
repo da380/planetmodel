@@ -14,7 +14,7 @@ invariant, yet one is dimensionless and the other is seconds.
 
 **Scales** say what one unit of each base dimension is, in SI.  A
 quantity of dimensions d stored under scales s relates to its SI value
-by
+by ::
 
     stored = SI / s.factor(d),   s.factor(d) = mass^d.mass length^d.length
                                               time^d.time

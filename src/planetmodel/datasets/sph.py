@@ -11,7 +11,7 @@ read with `lmax=` given, its blocks taken as the mantle's splines.  The
 24 slots are three of the crust, absent from these files, and the 21
 radial splines of the mantle, from the Moho down to the CMB.
 
-The model is
+The model is ::
 
     f(r, theta, phi) = sum_k S_k(x) sum_lm X_lm(theta)
                                       (a_klm cos(m phi) + b_klm sin(m phi)),

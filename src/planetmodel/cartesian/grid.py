@@ -3,7 +3,7 @@ sphere's angular grid.
 
 A `Grid` is the product of equally spaced nodes over the period of a
 lateral domain: over a `Box` of extent [x0, x0 + Lx] x [y0, y0 + Ly] and
-`shape` (nx, ny) the nodes
+`shape` (nx, ny) the nodes ::
 
     x_i = x0 + i Lx / nx,    y_j = y0 + j Ly / ny,
 

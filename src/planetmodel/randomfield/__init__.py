@@ -6,9 +6,7 @@ operators A = 1 - div(kappa grad) separates into, one per lateral
 eigenvalue, with their spectra, powers, inverses and white noise: the
 degree-indexed radial operators A_l under the r^2 dr measure of a ball
 or annulus by default, those of a disk, of a flat layer or of an
-interval of the line by its `weight`, `lateral` and `index`
-(`RadialOperatorFamily` is another name for the class, kept for
-callers of that name).
+interval of the line by its `weight`, `lateral` and `index`.
 `padded_mesh` and `restriction` build the mesh such a family is put on,
 longer than the physical interval so that its boundary conditions act
 at a distance, and `SpectralBasis` is the truncated eigenbasis of one
@@ -29,6 +27,8 @@ The samplers of flat layers, Fourier series over a box with the family
 in depth, are in `planetmodel.cartesian.randomfield`, on the same
 family, bases and helpers.
 
+::
+
     grf = RadialGRF(r1, r2, nu, lam, sigma=sigma)
     grf.to_field(grf.sample(rng=rng))              # a RadialField
     shell = SphericalGRF(r1, r2, nu, lam, lmax=24)
@@ -44,10 +44,10 @@ family, bases and helpers.
 from .basis import SpectralBasis, SphericalBasis
 from .fields import LayeredGRF, RadialGRF, SphericalGRF
 from .mesh import Restriction, matern_reach, padded_mesh, restriction
-from .operator import RadialOperatorFamily, SeparableOperatorFamily
+from .operator import SeparableOperatorFamily
 
 __all__ = [
-    "SeparableOperatorFamily", "RadialOperatorFamily",
+    "SeparableOperatorFamily",
     "matern_reach", "padded_mesh", "Restriction", "restriction",
     "SpectralBasis", "SphericalBasis",
     "RadialGRF", "SphericalGRF", "LayeredGRF",

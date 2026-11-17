@@ -1,7 +1,7 @@
 """Mappings from the reference body to the physical one.
 
 A mapping m takes points of the spherical reference body to points of
-the physical body.  With
+the physical body.  With ::
 
     F = (grad m)^T,  F[i, j] = d m_i / d X_j,      J = det F,
 
@@ -340,7 +340,7 @@ class RadialStretch(MappingBase):
     """m(X) = (r + h) e_r: every point moves along its own radius.
 
     In the local frame (e_r, e_theta, e_phi), which is the same at X and
-    at m(X) because direction is preserved,
+    at m(X) because direction is preserved::
 
         F_rr    = 1 + dh/dr
         F_r,th  = (1/r) dh/dtheta
@@ -540,7 +540,7 @@ class RadialStretch(MappingBase):
 
     def linearise(self, delta: RadialDisplacement | SphericalFunction, *,
                   X: ArrayLike) -> MappingPerturbation:
-        """dF and dJ at X for a perturbation `delta` of the displacement.
+        """dF and dJ at X for a perturbation `delta` of the displacement::
 
             dF_rr    = d(dh)/dr
             dF_r,th  = (1/r) d(dh)/dtheta

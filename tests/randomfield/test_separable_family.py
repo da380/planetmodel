@@ -11,7 +11,6 @@ from scipy.special import jnp_zeros, jv, jvp, yvp
 from planetmodel import testing
 from planetmodel.mesh1d import Mesh1D
 from planetmodel.randomfield import (
-    RadialOperatorFamily,
     SeparableOperatorFamily,
     SpectralBasis,
     padded_mesh,
@@ -59,9 +58,8 @@ def _disk_exact(m, count, a, kappa):
 
 # -- the class and its names ----------------------------------------------------
 
-def test_radial_operator_family_is_the_separable_family():
-    assert RadialOperatorFamily is SeparableOperatorFamily
-    fam = RadialOperatorFamily(Mesh1D([0.0, 1.0], ngll=4, drmax=0.5))
+def test_the_defaults_are_the_balls():
+    fam = SeparableOperatorFamily(Mesh1D([0.0, 1.0], ngll=4, drmax=0.5))
     assert isinstance(fam, SeparableOperatorFamily)
     assert (fam.weight, fam.lateral, fam.index) == ("r2", "inverse_square", "degree")
     assert fam.cache_bytes == CACHE_BYTES == 2 ** 30

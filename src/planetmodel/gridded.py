@@ -3,7 +3,7 @@
 A `GriddedField` is a field on one interval held as numbers: the
 interval is cut into radial elements at `breaks`, each element carries
 `ngll` Gauss-Lobatto-Legendre nodes, and at every node the field is
-given on one `AngularGrid`, so that `values` has shape
+given on one `AngularGrid`, so that `values` has shape ::
 
     (nelem, ngll, ntheta, nphi) + stored shape,
 

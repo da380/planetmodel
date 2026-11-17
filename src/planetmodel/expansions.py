@@ -1,6 +1,6 @@
 """Fields and surface functions given by spherical-harmonic expansions.
 
-A `HarmonicField` is a scalar field on one interval written as
+A `HarmonicField` is a scalar field on one interval written as ::
 
     f(r, theta, phi) = sum_lm c_lm(r) Y_lm(theta, phi),
 

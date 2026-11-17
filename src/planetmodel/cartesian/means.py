@@ -1,6 +1,6 @@
 """Horizontal means: a flat field reduced to a function of depth.
 
-The horizontal mean of a field f on its layer of a box is
+The horizontal mean of a field f on its layer of a box is ::
 
     fbar(depth) = (1 / A) integral over the period of f(depth, x, y) dx dy,
 

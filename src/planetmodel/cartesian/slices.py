@@ -69,7 +69,7 @@ lies on an interface and of no effect elsewhere.
 **Spectra.**  `spectrum` analyses a plane slice into the real basis of
 its grid, orthonormal over the period (`fourier.Transform.analyse_grid`,
 the components c_i), and gives the power in bins of horizontal
-wavenumber `|k|`,
+wavenumber `|k|`::
 
     P_j = sum over the components i of bin j of c_i^2 / A,
 

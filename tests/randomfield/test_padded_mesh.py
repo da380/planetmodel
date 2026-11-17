@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from planetmodel.mesh1d import Mesh1D
-from planetmodel.randomfield import (RadialOperatorFamily, Restriction,
+from planetmodel.randomfield import (SeparableOperatorFamily, Restriction,
                                      matern_reach, padded_mesh, restriction)
 
 
@@ -77,7 +77,7 @@ def test_padding_insensitivity_of_the_restricted_covariance(a, b, weight):
         mesh = padded_mesh(a, b, pad=pad_factor * matern_reach(nu, lam),
                            weight=weight, drmax=lam / 2.0)
         R = restriction(mesh, a, b)
-        theta, Phi = RadialOperatorFamily(mesh, kappa=lam ** 2, weight=weight).eig(0)
+        theta, Phi = SeparableOperatorFamily(mesh, kappa=lam ** 2, weight=weight).eig(0)
         Phi = Phi[R.nodes]
         C = (Phi * theta ** -p) @ Phi.T
         d = np.sqrt(np.diag(C))

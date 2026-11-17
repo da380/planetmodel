@@ -2,7 +2,7 @@
 
 A generalised Maxwell body in shear is a sum of branches, each a
 fraction w_k of the unrelaxed shear modulus mu_U relaxing with time
-tau_k, its complex modulus at angular frequency omega
+tau_k, its complex modulus at angular frequency omega ::
 
     mu(omega) / mu_U = 1 - sum_k w_k / (1 + i omega tau_k),
 

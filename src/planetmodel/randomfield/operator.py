@@ -5,7 +5,7 @@ function of one coordinate x alone (optionally anisotropic, with
 distinct coefficients along x and across it), separates wherever the
 other coordinates carry a complete set of eigenfunctions of their own
 Laplacian: it block-diagonalises into a family of ordinary operators
-in x,
+in x::
 
     A_lambda f = f - w^-1 (kappa w f')' + lambda kappa_h p f,
 
@@ -95,7 +95,7 @@ from scipy.linalg import eig_banded, eigvals_banded, solveh_banded
 
 from ..mesh1d import Mesh1D
 
-__all__ = ["SeparableOperatorFamily", "RadialOperatorFamily", "Coefficient",
+__all__ = ["SeparableOperatorFamily", "Coefficient",
            "Robin", "Label", "WEIGHTS", "LATERALS", "INDICES", "CACHE_BYTES",
            "SIGN_RTOL"]
 
@@ -215,8 +215,7 @@ class _Member:
 
 class SeparableOperatorFamily:
     """The operators A_lambda = M + K_r + lambda K_h on a 1-D GLL mesh,
-    spectrally.  `RadialOperatorFamily` is another name for this class,
-    kept for callers of that name.
+    spectrally.
 
     Construction assembles, once, the diagonal mass M, the diagonal
     lateral factor K_h and the banded stiffness K_r on the given `Mesh1D`
@@ -700,7 +699,3 @@ class SeparableOperatorFamily:
                 f"weight={self.weight!r}, lateral={self.lateral!r}, "
                 f"index={self.index!r}, cached {self.index}s: {self.cached()})")
 
-
-#: Another name for `SeparableOperatorFamily`, kept for callers of that
-#: name: the same class, whose defaults are a ball's or an annulus's.
-RadialOperatorFamily = SeparableOperatorFamily

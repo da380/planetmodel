@@ -1,6 +1,6 @@
 """Spherical means: a field reduced to a function of radius.
 
-The spherical mean of a scalar field f on its layer is
+The spherical mean of a scalar field f on its layer is ::
 
     fbar(r) = (1 / 4 pi) integral over S^2 of f(r, theta, phi) dOmega,
 

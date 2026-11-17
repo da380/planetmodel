@@ -24,7 +24,7 @@ down.
 
 `CrustOverMantle` is the reference flat model of the tests and
 examples: round values typical of a continental crust over the
-uppermost mantle, in SI,
+uppermost mantle, in SI::
 
     layer                 depth (km)   rho (kg/m^3)   vp (m/s)   vs (m/s)
     crust                 0 - 30       2800           6400       3700

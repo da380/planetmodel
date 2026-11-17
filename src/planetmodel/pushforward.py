@@ -2,7 +2,7 @@
 
 For a mapping m taking the reference body to the physical one, with
 F[i, j] = d m_i / d X_j and J = det F, a field of rank n and weight w
-transforms as
+transforms as ::
 
     T_phys[i1..in](x) = J^-w F[i1, A1] ... F[in, An] T_ref[A1..An](X)
 
@@ -106,7 +106,7 @@ def pull_back(values: ArrayLike, F: ArrayLike, J: ArrayLike,
               character: Character) -> np.ndarray:
     """The referential values from the physical ones at the same (F, J).
 
-    The inverse of `push_forward`: F^-1 on every slot and J^+w,
+    The inverse of `push_forward`: F^-1 on every slot and J^+w::
 
         T_AB.. = J^w (F^-1)_Ai (F^-1)_Bj ... T_ij..
 

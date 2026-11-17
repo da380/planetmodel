@@ -10,6 +10,8 @@ title, citation and licence as the source states them.  `REGISTRY`
 holds the shipped entries by name; a caller's own `Dataset` is used
 exactly as a shipped one, passed where a name would go.
 
+::
+
     fetch("S40RTS")              # paths of its files, cached and checked
     load("S40RTS")               # the data set as the object it is: a model
     describe("S40RTS"), cite("S40RTS")

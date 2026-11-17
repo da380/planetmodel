@@ -2,7 +2,7 @@
 
 The SPDE construction: a Matern-type field solves A^beta u = white
 noise with A = 1 - div(lambda^2 grad), so its covariance is
-C = A^-2 beta, and matching the Matern smoothness nu requires
+C = A^-2 beta, and matching the Matern smoothness nu requires ::
 
     2 beta = nu + d / 2,
 
@@ -23,7 +23,7 @@ z ~ N(0, I), so u_lm(r) = Phi_l Theta_l^-beta z_lm with z_lm iid over
 variance falls below a relative tolerance, and for `SphericalGRF` with
 `lmax=None` the degree sum is truncated the same way.  The marginal
 standard deviation is then normalised exactly: the raw pointwise
-variance of the truncated expansion,
+variance of the truncated expansion ::
 
     sigma_raw^2(r) = sum_l (2l+1)/(4 pi) sum_j theta_lj^-2 beta phi_lj(r)^2,
 

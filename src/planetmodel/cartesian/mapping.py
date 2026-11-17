@@ -3,12 +3,12 @@
 The flat counterpart of the radial stretch (`mapping.RadialStretch`):
 driven by one scalar function w(depth, x, y), the upward displacement
 (`cartesian.displacement`, which states the sign once: heights, positive
-up),
+up)::
 
     m(X) = X + w(-Z, X_x, X_y) e_z,
 
 so that x and y are kept and the point at depth d goes to the physical
-depth d - w.  With d/d depth = -d/dz,
+depth d - w.  With d/d depth = -d/dz::
 
     F = I + e_z (grad w)^T:  F_zx = dw/dx,  F_zy = dw/dy,  F_zz = 1 - dw/d depth,
     J = 1 - dw/d depth,
@@ -232,7 +232,7 @@ class VerticalStretch(MappingBase):
 
     def linearise(self, delta: VerticalDisplacement | SphericalFunction, *,
                   X: ArrayLike) -> MappingPerturbation:
-        """dF and dJ at X for a perturbation `delta` of the displacement.
+        """dF and dJ at X for a perturbation `delta` of the displacement::
 
             dF_zx = d(dw)/dx,  dF_zy = d(dw)/dy,  dF_zz = -d(dw)/d depth,
             dJ = -d(dw)/d depth,

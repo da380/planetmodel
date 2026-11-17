@@ -9,13 +9,13 @@ and its origin their lower corner.  A `cartesian.Box` or `Rectangle` is
 read as one through its own `bounds` and `padding`, and the lengths of a
 torus give the box itself from the origin, with no padding.
 
-**The basis** is real and orthonormal in L2 over the box.  With
+**The basis** is real and orthonormal in L2 over the box.  With ::
 
     theta_k(x) = sum_i 2 pi k_i (x_i - origin_i) / L_i
 
 for an integer wavevector k, a mode and its conjugate -k form a pair
 unless they coincide modulo the shape.  A pair contributes two
-components,
+components::
 
     sqrt(2 / V) cos theta_k   and   -sqrt(2 / V) sin theta_k,
 

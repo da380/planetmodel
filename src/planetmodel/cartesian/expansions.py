@@ -1,6 +1,6 @@
 """Fields and surface functions given by Fourier series over a box.
 
-A `FourierField` is a field on one interval of depth written as
+A `FourierField` is a field on one interval of depth written as ::
 
     f(depth, x, y) = sum_j c_j(depth) phi_j(x, y),
 

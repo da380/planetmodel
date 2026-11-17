@@ -35,7 +35,7 @@ topography on it.
 With x_u and x_v the tangents, the area element is the length of
 x_u x x_v, the unit normal n is x_v x x_u over that length, pointing
 from the footwall into the hanging wall, and the fault basis at (u, v)
-is
+is ::
 
     strike  s = x_u / norm(x_u),   up dip  a = n x s,   normal  n,
 
@@ -49,7 +49,7 @@ Fig. 4.13): not a surface following the sphere, so its points away
 from the centroid lie at other radii.  With (east, north, up) the
 frame's basis at the centroid c, the strike phi measured clockwise
 from north (in a Cartesian frame from +y towards +x) and the dip delta
-from the horizontal, down to the right of the strike, 0 to 90 degrees,
+from the horizontal, down to the right of the strike, 0 to 90 degrees::
 
     s = sin phi east + cos phi north      r = cos phi east - sin phi north
     d = cos delta r - sin delta up        n = sin delta r + cos delta up
@@ -1651,7 +1651,7 @@ class Region(PatchBase):
     [a, b], at least four, read by the not-a-knot cubic through them; the
     upper bound lies above the lower (checked at 257 points of u).  Its
     own square maps
-    onto it by
+    onto it by ::
 
         U = a + (s + 1/2)(b - a),   V = lower(U) + (t + 1/2)(upper(U) - lower(U)),
 

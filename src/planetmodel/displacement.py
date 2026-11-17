@@ -1,7 +1,7 @@
 """The radial displacement h(r, theta, phi) that drives a radial stretch.
 
 A radial mapping is driven by one scalar function: how far each point
-moves along its own radius.  The callable is the interface,
+moves along its own radius.  The callable is the interface::
 
     class RadialDisplacement(Protocol):
         def __call__(self, r, theta, phi) -> array

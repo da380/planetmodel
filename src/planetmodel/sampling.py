@@ -43,7 +43,7 @@ with its colatitude weights::
                                first rule), or both poles with poles=True
                                (Clenshaw-Curtis)
 
-The weight convention is
+The weight convention is ::
 
     integral over S^2 of f dOmega  ~=  sum_i w_i sum_j (2 pi / nphi) f_ij,
 

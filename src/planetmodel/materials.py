@@ -7,21 +7,21 @@ medium is a second elasticity tensor, character ELASTIC, which a layer
 may hold directly under the name `elastic_moduli`; what this module
 builds and reads is the spherically symmetric case, where the tensor is
 at most transversely isotropic about e_r.  A transversely isotropic
-medium with its symmetry axis along e_r is described by the five moduli
+medium with its symmetry axis along e_r is described by the five moduli ::
 
     A = rho vph^2      C = rho vpv^2      L = rho vsv^2
     N = rho vsh^2      F = eta (A - 2 L)
 
 which collapse to the isotropic case at vph = vpv, vsh = vsv, eta = 1,
 where A = C = kappa + 4 mu / 3, L = N = mu and F = kappa - 2 mu / 3.
-The Voigt average of a transversely isotropic medium is
+The Voigt average of a transversely isotropic medium is ::
 
     kappa = (4 A + C + 4 F - 4 N) / 9
     mu    = (A + C - 2 F + 5 N + 6 L) / 15
 
 and reduces to (kappa, mu) exactly where the medium is isotropic.
 Seismic models state an isotropic velocity relative to a transversely
-isotropic one by the Voigt average of the velocities instead,
+isotropic one by the Voigt average of the velocities instead::
 
     vs^2 = (2 vsv^2 + vsh^2) / 3,      vp^2 = (vpv^2 + 4 vph^2) / 5,
 

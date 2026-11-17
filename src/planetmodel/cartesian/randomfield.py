@@ -7,9 +7,9 @@ with 2 beta = nu + d / 2.  Over a periodic lateral box A separates in
 the real Fourier basis of a `fourier.Transform`: on the component of
 wavevector k it is the member of lateral eigenvalue `|k|^2` of the flat
 `SeparableOperatorFamily` (the plain measure in depth, the lateral
-profile one, indexed by value),
+profile one, indexed by value)::
 
-    `A_k f = f - (kappa f')' + |k|^2 kappa_h f`,
+    A_k f = f - (kappa f')' + |k|^2 kappa_h f,
 
 with kappa = lambda^2 along depth and kappa_h = lambda_h^2 across it,
 each a function of depth alone.  Depth is the layered coordinate,
@@ -42,7 +42,7 @@ coefficient vector, in the order of its basis, with independent
 entries of standard deviation `coefficient_std`, theta^-beta.  The
 field of a vector is its synthesis times a factor of depth, `scale`,
 that makes the marginal standard deviation exact: the raw pointwise
-variance of the truncated expansion at a node of the lateral grid,
+variance of the truncated expansion at a node of the lateral grid::
 
     sigma_raw^2(depth) = 1 / V sum_k sum_j theta_kj^-2 beta phi_kj(depth)^2,
 
@@ -71,6 +71,8 @@ box (d = 3) or of a rectangle (d = 2: one lateral axis, the same at
 every y), and `LayeredGRF` independent fields on the layers of a flat
 skeleton.  The horizontal scale is one, `lam_h`; distinct scales along
 x and y are not built.  All fields are real and zero-mean.
+
+::
 
     grf = cartesian.BoxGRF(0.0, 50.0, grid, 1.5, 4.0, sigma=0.02)
     c = grf.sample(rng=rng)                  # the coefficient vector

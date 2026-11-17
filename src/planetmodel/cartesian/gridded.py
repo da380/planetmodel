@@ -4,7 +4,7 @@ A flat `GriddedField` is the sphere's (`planetmodel.gridded`) on a
 horizontal grid: the interval of depth is cut into elements at `breaks`,
 each element carries `ngll` Gauss-Lobatto-Legendre nodes, and at every
 node the field is given on one `cartesian.Grid`, so that `values` has
-shape
+shape ::
 
     (nelem, ngll) + grid.shape + stored shape,
 

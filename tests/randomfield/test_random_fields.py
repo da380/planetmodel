@@ -44,9 +44,10 @@ def test_a_batch_is_successive_draws():
     successive single draws from one generator: the same normals, so the
     same samples to the rounding of the matrix product, which differs
     between a product with a vector and one with a matrix."""
-    from planetmodel.randomfield import RadialOperatorFamily, SpectralBasis, padded_mesh
+    from planetmodel.randomfield import (SeparableOperatorFamily, SpectralBasis,
+                                         padded_mesh)
     g = RadialGRF(0.5, 1.0, 1.0, 0.1)
-    fam = RadialOperatorFamily(padded_mesh(0.5, 1.0, pad=0.3, weight="r2", ngll=5,
+    fam = SeparableOperatorFamily(padded_mesh(0.5, 1.0, pad=0.3, weight="r2", ngll=5,
                                            drmax=0.1), kappa=0.02, weight="r2")
     basis = SpectralBasis(fam, 2, nmodes=5)
     cases = ((lambda rng: g.sample(rng=rng), lambda rng: g.sample(rng=rng, size=3)),

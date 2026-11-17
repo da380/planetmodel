@@ -15,7 +15,7 @@ layer keeps a positive thickness exactly where 1 - dw/d depth > 0.
 A vertical stretch (`cartesian.VerticalStretch`) is driven by one
 scalar function, the flat counterpart of the sphere's radial
 displacement (`planetmodel.displacement`).  The callable is the
-interface,
+interface::
 
     class VerticalDisplacement(Protocol):
         def __call__(self, depth, x, y) -> array

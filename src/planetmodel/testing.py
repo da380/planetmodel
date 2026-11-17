@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .fields import Field
     from .geometry import GeometryBase
     from .layerfunction import LayerFunction
-    from .mapping import Mapping
+    from .mapping import Mapping as BodyMapping
     from .mesh3d.spec import Refinement
     from .model import ModelBase
     from .modelfile import Surfaces
@@ -269,7 +269,7 @@ def check_vertical_displacement(w: VerticalDisplacement, skeleton: Skeleton, *,
                     "scaled(k).lateral_gradient is not w's at the point / k")
 
 
-def check_mapping(m: Mapping, points: ArrayLike, *, rtol: float = 1e-6,
+def check_mapping(m: BodyMapping, points: ArrayLike, *, rtol: float = 1e-6,
                   step: float | None = None) -> None:
     """Hold a Mapping to its protocol on the given Cartesian points.
 
@@ -2558,7 +2558,7 @@ def _check_fault_nodes(name: str, fault: Fault, x: np.ndarray, nodes: np.ndarray
 
 
 def check_fault_mesh(msh_path: str | os.PathLike[str], faults: Mapping[str, Fault], *,
-                     mapping: Mapping | None = None, distance: float) -> None:
+                     mapping: BodyMapping | None = None, distance: float) -> None:
     """Hold a mesh with faults built in to what its manifest promises of
     them (the format page of the mesh manifest).
 
