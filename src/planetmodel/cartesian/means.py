@@ -4,7 +4,7 @@ The horizontal mean of a field f on its layer of a box is
 
     fbar(depth) = (1 / A) integral over the period of f(depth, x, y) dx dy,
 
-A the area of the period (its length over a section), a `DepthField` of
+A the area of the period (its length over a rectangle), a `DepthField` of
 the field's character: the counterpart of the sphere's spherical mean
 (`planetmodel.means`).  The frame (e_up, e_x, e_y) is the same at every
 point of a box, so a field of any rank has one, its components averaged

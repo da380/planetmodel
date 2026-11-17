@@ -33,7 +33,7 @@ segments.  matplotlib is imported where a section is drawn.
 A mesh that lies in a plane is its own section: `in_plane` takes its
 triangles whole, as polygons, and its line elements whole, as
 segments, into the same `PlaneCut`, so that `mesh_section` draws a
-two-dimensional mesh (a disc, or a box's section in the (x, z) plane)
+two-dimensional mesh (a disc, or a box's cross-section in the (x, z) plane)
 and the curves of its interfaces and faces as it draws a cut of a
 three-dimensional one, and the faces of a surface of a volume mesh (a
 box's top) seen square on.

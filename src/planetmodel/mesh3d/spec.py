@@ -11,14 +11,14 @@ geometry's own mapping, and is what the builder meshes.
 
 A flat geometry (`planetmodel.cartesian.Geometry`) is meshed as the
 box over its lateral domain, cut by the planes of its interfaces, or,
-over a `Rectangle`, as its section in the (x, z) plane: three or two
+over a `Rectangle`, as its cross-section in the (x, z) plane: three or two
 dimensions, which the geometry decides.  Its layers and interfaces are
 numbered from the surface down, as the geometry numbers them, and its
 base and sides are faces of their own (the manifest's `faces[]`).  A
 box approximates an unbounded body, so it takes no shells and no
 spherical outer boundary.  Faults in a box are built under any
 mapping that inverts itself (topography, a `cartesian.VerticalStretch`),
-pulled back through it as on the sphere; in a section they are not
+pulled back through it as on the sphere; over a rectangle they are not
 built.
 
 Sizing is a callable, not a class hierarchy: a rule takes the
@@ -35,7 +35,7 @@ field over the reference domain composed into the sizing by minimum,
 so it can only refine, never coarsen; NearPoints and near_curve are
 the shipped kinds, and anything with the Refinement protocol's two
 attributes serves.  Its points are in the mesh's coordinates: (x, z)
-for a section.
+over a rectangle.
 
 Faults are built into the mesh from the start (`EmbeddedFault`): each
 is pulled back through the geometry's mapping, fragmented into the
@@ -742,7 +742,7 @@ class MeshSpec:
     #: The rule giving every interface of the computational domain its sizing.
     sizing: SizingRule
     _: KW_ONLY
-    #: 3 for balls and boxes, 2 for discs and sections; None for the
+    #: 3 for balls and boxes, 2 for discs and rectangles; None for the
     #: geometry's own: 3, but 2 over a `Rectangle`.
     dimension: int | None = None
     #: The element order, 1..3.

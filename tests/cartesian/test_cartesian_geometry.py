@@ -206,10 +206,10 @@ def test_domains_refuse_what_is_no_domain():
         flat.Geometry(Skeleton(DEPTHS), ((0, 1), (0, 1)))
 
 
-def test_a_section_holds_its_mapping_to_invariance_along_y():
+def test_a_rectangle_holds_its_mapping_to_invariance_along_y():
     sk = Skeleton(DEPTHS)
     rect = flat.Rectangle((0.0, 60.0))
-    # shears in the (x, z) plane, keeping y: a section's mapping
+    # shears in the (x, z) plane, keeping y: a rectangle's mapping
     plane = Linear([[1.0, 0.0, 0.1], [0.0, 1.0, 0.0], [0.05, 0.0, 1.1]],
                    (2.0, 0.0, 1.0))
     check_geometry(flat.Geometry(sk, rect, mapping=plane))

@@ -13,7 +13,7 @@ element at its quadrature and nodal points, refused if any is not
 positive; `delivery="referential"` leaves the mesh as built and writes
 `m(X) - X` beside it as a GridFunction in the mesh's own nodal space,
 from which the consumer forms the physical mesh in one call.  A 2D mesh
-has two coordinates per node, a disc's x and y and a section's x and z
+has two coordinates per node, a disc's x and y and a rectangle's x and z
 (the manifest's `mesh_axes`); they are lifted to the physical point,
 the third coordinate zero, for the mapping and dropped again.
 
@@ -243,7 +243,7 @@ def _write_vector(gf: Any, values: ArrayLike) -> None:
 def _lifted(X: ArrayLike, card: manifest.MeshManifest) -> np.ndarray:
     """Points of a mesh's coordinates, (n, 2) or (n, 3), as the physical
     points (n, 3) they stand for (`MeshManifest.mesh_axes`): a disc's in
-    z = 0, a section's in y = 0."""
+    z = 0, a rectangle's in y = 0."""
     X = np.asarray(X, dtype=float)
     n, sdim = X.shape
     X3 = np.zeros((n, 3))

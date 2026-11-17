@@ -1,5 +1,5 @@
 // The flat model file's writer: every flat fixture read and written back
-// to the same numbers; models built here, over a box and over a section,
+// to the same numbers; models built here, over a box and over a rectangle,
 // with fields of every rank from sources of every kind in either frame,
 // perturbed fields, a viscosity in its logarithm, the vertical stretch as
 // a stack of reliefs and as a displacement, and fields on interfaces, each
@@ -283,14 +283,14 @@ std::vector<Known> BoxKnown() {
            })}};
 }
 
-/// The section model: a rectangle's, in kilometres, one part, the mapping
-/// its upward displacement at the nodes.
-flat::ModelFile SectionModel() {
+/// The rectangle's model, in kilometres, one part, the mapping its upward
+/// displacement at the nodes.
+flat::ModelFile RectangleModel() {
   const auto domain = flat::Domain::Rectangle({0.0, 400.0}, 50.0);
   auto file = flat::ModelFile(pm::Skeleton({5.0, 30.0, 200.0}), domain,
                               pm::Scales({.length = 1e3, .mass = 1e12, .time = 3.15576e7}), 1e-8);
   const auto& sk = file.GetSkeleton();
-  file.SetName("a section built in C++");
+  file.SetName("a rectangle built in C++");
   file.AddPart(0, 1, pm::ElementEdges(sk, 0, 1, 40.0), 5, flat::Grid(domain, 14));
   file.AddField("rho", {{0, LayerSource::Depth([](double d) { return 2.8 + 1e-3 * d; })},
                         {1, LayerSource::Lateral([](double d, double x, double) {
@@ -457,8 +457,8 @@ TEST(CartesianWriter, WritesABoxOfEveryKindOfFieldThatReadsBackToItsSources) {
   EXPECT_THROW(static_cast<void>(file.SurfaceFieldOn(1, "K_shape")), Error);
 }
 
-TEST(CartesianWriter, WritesASectionWithItsDisplacementInItsOwnUnits) {
-  const auto path = Written("flat_written_section.nc", SectionModel());
+TEST(CartesianWriter, WritesARectangleWithItsDisplacementInItsOwnUnits) {
+  const auto path = Written("flat_written_rectangle.nc", RectangleModel());
   const auto file = flat::ReadModelFile(path);
   EXPECT_EQ(file.GetDomain(), flat::Domain::Rectangle({0.0, 400.0}, 50.0));
   EXPECT_EQ(file.GetScales().Length(), 1e3);
@@ -490,7 +490,7 @@ TEST(CartesianWriter, WritesASectionWithItsDisplacementInItsOwnUnits) {
     for (auto i = std::size_t{0}; i < points.Size(); ++i) {
       const auto at = points.At(i);
       const auto want = 0.8 * std::sin(2.0 * pi * at.x / 500.0) * (200.0 - at.depth) / 195.0;
-      // the same at every y, the section's body being invariant along it
+      // the same at every y, the rectangle's body being invariant along it
       EXPECT_NEAR(mapping.Displacement({at.x, 1e6, -at.depth})[2], want, 1e-13);
     }
   }
@@ -543,18 +543,18 @@ TEST(CartesianWriter, PointsComeInTheOrderTheValuesFollow) {
   EXPECT_EQ(points.At(6).x, grid.X()[1]);
   EXPECT_EQ(points.At(6).y, grid.Y()[0]);
   EXPECT_EQ(points.At(54).depth, part.depth[1]);
-  // a section's points have y = 0
-  const auto section = SectionModel();
-  const auto line = section.PointsOf(0);
+  // a rectangle's points have y = 0
+  const auto rectangle = RectangleModel();
+  const auto line = rectangle.PointsOf(0);
   EXPECT_EQ(line.Size(), line.depths.size() * 14);
   EXPECT_EQ(line.At(15).y, 0.0);
-  EXPECT_EQ(line.At(15).x, section.PartOf(0).grid->X()[1]);
+  EXPECT_EQ(line.At(15).x, rectangle.PartOf(0).grid->X()[1]);
   // an interface's points lie at its depth on the surface grid
   const auto on = file.SurfacePointsOf(1);
   EXPECT_EQ(on.depths, (std::vector{30e3}));
   EXPECT_EQ(on.Size(), 60u);
   EXPECT_THROW(static_cast<void>(file.SurfacePointsOf(3)), Error);
-  EXPECT_THROW(static_cast<void>(section.SurfacePointsOf(0)), Error);
+  EXPECT_THROW(static_cast<void>(rectangle.SurfacePointsOf(0)), Error);
 }
 
 TEST(CartesianWriter, RefusesSourcesThatDoNotFitTheirLayers) {

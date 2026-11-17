@@ -59,7 +59,7 @@ The units, scales and vocabulary are the Python's, restated in C++. Tests
 hold the two sides equal, against fixtures that the Python writes.
 
 **Flat models.**  The files of ``planetmodel.cartesian``, a body layered
-in depth over a box or a section, are read and written by the headers
+in depth over a box or a rectangle, are read and written by the headers
 under ``planetmodel/cartesian/``, in the namespace
 ``planetmodel::cartesian``, beside the spherical library, which they
 leave as it is; each reader refuses the other's files by their schema,
@@ -72,7 +72,7 @@ are in the local frame (up, x, y) or the Cartesian one:
   field evaluated at ``(depth, x, y)`` or at a point ``(x, y, z)`` by the
   doubly periodic ``linear`` and ``cubic`` rules (``fourier``, a Fourier
   series, is the Python's alone and refused by name, as ``harmonic`` is
-  on the sphere), over a box and over a section; the mapping, the
+  on the sphere), over a box and over a rectangle; the mapping, the
   vertical stretch, as the height a point rises by; the fields on
   interfaces; and ``WriteModelFile`` from a code's own fields, as on the
   sphere;

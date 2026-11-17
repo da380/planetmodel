@@ -14,7 +14,7 @@ from planetmodel.cartesian import slices  # noqa: E402
 
 def test_a_map_and_a_section_of_a_flat_model(tmp_path):
     """A map on a box's grid fills each node's cell, the period tiled; a
-    section runs depth downward, layer by layer; a section's grid makes no
+    section runs depth downward, layer by layer; a rectangle's grid makes no
     map."""
     from planetmodel.plotting import grid_cell_edges, plane_map, vertical_section
     box = flat.Box([(0.0, 2.0), (-1.0, 1.0)])
@@ -42,6 +42,6 @@ def test_a_map_and_a_section_of_a_flat_model(tmp_path):
     plt.close(fig)
     rect = flat.LayeredIsotropicElastic([0.0, 1.0], flat.Rectangle((0.0, 1.0)),
                                         rho=[1.0], vp=[2.0], vs=[1.0])
-    with pytest.raises(ValueError, match="section's plane is a line"):
+    with pytest.raises(ValueError, match="rectangle's plane is a line"):
         plane_map(a, slices.plane(rect, "rho", depth=0.5,
                                   grid=flat.Grid(rect.geometry.domain, 4)))

@@ -122,7 +122,7 @@ inline constexpr std::string_view MODEL_SCHEMA_WITH_LOG_RULES = "planetmodel.mod
 
 /**
  * @brief The schema of a flat model file, a model of `planetmodel.cartesian`
- * layered in depth over a box or a section, which `ReadModelFile` refuses
+ * layered in depth over a box or a rectangle, which `ReadModelFile` refuses
  * by name: `planetmodel::cartesian::ReadModelFile`
  * (`planetmodel/cartesian/modelfile.hpp`) reads it.
  */
@@ -233,10 +233,15 @@ struct FileVariable {
     return detail::NumbersOf(attributes, key);
   }
 
-  /** @brief Whether the variable varies with direction. */
+  /**
+   * @brief Whether the variable varies laterally: its dimensions after the
+   * first are a grid's, (latitude, longitude) in a spherical file, and in a
+   * flat one (x, y) over a box or (x) over a rectangle.
+   */
   [[nodiscard]] bool IsLateral() const {
-    return dimensions.size() >= 3 && dimensions[1] == "latitude" &&
-           dimensions[2] == "longitude";
+    return (dimensions.size() >= 3 && dimensions[1] == "latitude" &&
+            dimensions[2] == "longitude") ||
+           (dimensions.size() >= 2 && dimensions[1] == "x");
   }
 };
 

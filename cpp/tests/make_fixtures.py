@@ -200,20 +200,20 @@ viscosity, Kelvin viscosity and Kelvin modulus fraction
 `burgers_parameters` gives, for each pair of branches in both orders.
 
 **Flat fixtures** (`flat_*`), of `planetmodel.cartesian`, a body layered
-in depth over a box or a section, each kind as its spherical counterpart
+in depth over a box or a rectangle, each kind as its spherical counterpart
 above with these differences.  **Flat model files**
 (`flat_model_<case>.nc`, schema `planetmodel.model/3`): fields of depth
-alone over a box and over a section (`layered`, `layered_section`);
+alone over a box and over a rectangle (`layered`, `layered_rectangle`);
 lateral fields of ranks 0, 1 and 2 on the bilinear and the bicubic rule,
 a perturbed field, in two parts on two grids over a padded box
-(`lateral`), and over a section, whose grid has the one axis (`section`);
+(`lateral`), and over a rectangle, whose grid has the one axis (`rectangle`);
 a Fourier field, stating the rule the C++ refuses (`fourier`, without
 expectations); topography as a stack of reliefs over a box and over a
-section (`stacked`, `stacked_section`, the `geometry` group) and a
+rectangle (`stacked`, `stacked_rectangle`, the `geometry` group) and a
 vertical stretch that is no stack (`stretched`, the `displacement`
 variable); fields on interfaces (`surfaces`); a model padded below its
 base with its lowest properties held (`held`); and a viscosity read in
-its logarithm (`log`).  Their expectations have `domain <box|section>
+its logarithm (`log`).  Their expectations have `domain <box|rectangle>
 <bounds> <padding>`, a point is `depth x y`, a frame `l` (local, up x y)
 or `c` (Cartesian, z up), a `gradient` the derivatives in depth, x and y,
 `displacement x y z` the stretch's u(X), and a field on an interface is
@@ -223,20 +223,20 @@ in `bad.txt` as the model cases are.  **Flat interpolation cases**
 `padding`, the grid's `x` (and `y`), the `values`, the query points
 `query_x` and `query_y` over several periods and at the seam, and the
 `expected` values with `expected_dx` and `expected_dy`.  **Flat surface
-files** (`flat_surface_box.nc` below the surface, `flat_surface_section.nc`
+files** (`flat_surface_box.nc` below the surface, `flat_surface_rectangle.nc`
 on it, schema `planetmodel.surface/2`), their expectations those of the
 surface file with `depth`, `domain`, `grid <shape>`, an index `i j` into
-(nx, ny) (`j` 0 over a section), and `function <name> <date|-> x y value
+(nx, ny) (`j` 0 over a rectangle), and `function <name> <date|-> x y value
 dx dy`, a field at a date read by its lateral rule; and the malformed
 copies (`flat_surface_cases/`).  **Decks of depths**
 (`flat_deck_<case>.txt`): an elastic deck of each set of columns, a
 Maxwell, a prony and a burgers deck, each with its expectations, the
 layers and interfaces named from the surface down.  **Flat manifests**
 (schema 7): `flat_manifest_cases/`, a base (a box exported with a model),
-accepted variants (a section, a top below the surface, faults with a
+accepted variants (a rectangle, a top below the surface, faults with a
 face edge) and malformed copies listed in `bad.txt`, none needing gmsh;
 `flat_manifests/<case>/`, the manifests the mesher and the MFEM export
-write for a box, a section, a box with a fault leaving through a side,
+write for a box, a rectangle, a box with a fault leaving through a side,
 and flat models with their model files, each with its walk; and
 `flat_fault_meshes/<case>/`, a box with a fault reaching the surface and
 leaving through a side, and one with a thrust, a splay ending on it and
@@ -2213,16 +2213,16 @@ def burgers(directory: Path) -> list[Path]:
 
 def _flat_domains() -> dict[str, Any]:
     """The lateral domains of the flat fixtures: a box padded along x, a
-    box that is its own period, and a section padded on each side."""
+    box that is its own period, and a rectangle padded on each side."""
     from planetmodel import cartesian as flat
     return {"padded": flat.Box([(0.0, 400e3), (0.0, 300e3)], padding=(50e3, 0.0)),
             "box": flat.Box([(0.0, 400e3), (0.0, 300e3)]),
-            "section": flat.Rectangle((0.0, 400e3), padding=25e3)}
+            "rectangle": flat.Rectangle((0.0, 400e3), padding=25e3)}
 
 
 def _wave(grid: Any, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """A smooth function of (x, y) with the periods of a grid's domain, the
-    exponential of sines; of x alone over a section."""
+    exponential of sines; of x alone over a rectangle."""
     x0 = grid.domain.extent[0] if grid.dimension == 1 else grid.domain.extent[0][0]
     lx = grid.lengths[0]
     a = 2.0 * np.pi * (np.asarray(x, dtype=float) - x0) / lx
@@ -2236,16 +2236,16 @@ def _wave(grid: Any, x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 def flat_lateral_cases(directory: Path) -> list[Path]:
     """The flat lateral rules, doubly periodic, on a box's grid and a
-    section's, each on a grid of the fewest nodes the cubic rule takes
+    rectangle's, each on a grid of the fewest nodes the cubic rule takes
     too: `flat_case_lateral_<grid>_<rule>.nc`."""
     from planetmodel import cartesian as flat
     from planetmodel.cartesian.lateral import LateralInterpolant
     rng = np.random.default_rng(20261117)
     box = flat.Box([(-1.0, 3.0), (2.0, 5.0)], padding=(0.5, 0.0))
-    section = flat.Rectangle((10.0, 14.0), padding=0.25)
+    rectangle = flat.Rectangle((10.0, 14.0), padding=0.25)
     grids = {"box": flat.Grid(box, (9, 12)), "box_small": flat.Grid(box, (3, 4)),
-             "section": flat.Grid(section, (11,)),
-             "section_small": flat.Grid(section, (3,))}
+             "rectangle": flat.Grid(rectangle, (11,)),
+             "rectangle_small": flat.Grid(rectangle, (3,))}
     out = []
     for label, grid in grids.items():
         gx, gy = grid.nodes
@@ -2271,7 +2271,7 @@ def flat_lateral_cases(directory: Path) -> list[Path]:
                 arrays["y"] = grid.y
             out.append(_write_case(
                 directory / f"flat_case_lateral_{label}_{method}.nc", arrays,
-                {"domain": "box" if two else "section",
+                {"domain": "box" if two else "rectangle",
                  "bounds": np.ravel(np.asarray(grid.domain.bounds, dtype=float)),
                  "padding": np.atleast_1d(np.asarray(grid.domain.padding,
                                                      dtype=float)),
@@ -2286,14 +2286,15 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
 
     from planetmodel import cartesian as flat
     domains = _flat_domains()
-    box, padded, section = domains["box"], domains["padded"], domains["section"]
+    box, padded = domains["box"], domains["padded"]
+    rectangle = domains["rectangle"]
     out: dict[str, tuple[Any, dict[str, Any]]] = {}
 
-    # layered only: fields of depth alone, over a box and over a section
+    # layered only: fields of depth alone, over a box and over a rectangle
     layered = flat.CrustOverMantle(box, viscosity=1e21).with_uniform_gravity(9.8)
     out["layered"] = (layered, {"grid": flat.Grid(box, (4, 3))})
-    out["layered_section"] = (flat.CrustOverMantle(section),
-                              {"grid": flat.Grid(section, (5,))})
+    out["layered_rectangle"] = (flat.CrustOverMantle(rectangle),
+                                {"grid": flat.Grid(rectangle, (5,))})
 
     # lateral fields on each rule, of every rank, in two parts on two grids
     base = flat.CrustOverMantle(padded)
@@ -2335,9 +2336,9 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
     out["lateral"] = (lateral, {"grid": {0: fine, 1: fine, 2: coarse},
                                 "interpolation": {"vs": ("polynomial", "cubic")}})
 
-    # the same kinds over a section, whose grid has the one axis
-    line = flat.Grid(section, (14,))
-    two = flat.CrustOverMantle(section)
+    # the same kinds over a rectangle, whose grid has the one axis
+    line = flat.Grid(rectangle, (14,))
+    two = flat.CrustOverMantle(rectangle)
     cut = two.with_field(1, "rho", flat.GriddedField.sampled(
         flat.AnalyticField((30e3, 100e3), lambda d, x, y: 3300.0 * (
             1.0 + 1e-7 * d * (_wave(line, x, y) - 1.0)), character=pm.DENSITY),
@@ -2354,8 +2355,8 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
     cut = pm.perturbed(cut, "vs", flat.AnalyticField(
         (0.0, 30e3), lambda d, x, y: 0.01 * _wave(line, x, y) * d / 30e3),
         kind="absolute")
-    out["section"] = (cut, {"grid": line,
-                            "interpolation": {"vs": ("polynomial", "cubic")}})
+    out["rectangle"] = (cut, {"grid": line,
+                              "interpolation": {"vs": ("polynomial", "cubic")}})
 
     # a Fourier field, which states the rule the C++ refuses by name
     grid = flat.Grid(box, (8, 6))
@@ -2368,7 +2369,7 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
                            kind="relative")
     out["fourier"] = (fourier, {"grid": grid, "fields": ["rho", "vs"]})
 
-    # topography as a stack of reliefs, over a box and over a section
+    # topography as a stack of reliefs, over a box and over a rectangle
     def hill(g: Any) -> Any:
         return flat.GriddedFunction.sampled(
             lambda x, y: 2e3 * (_wave(g, x, y) - 1.0), g)
@@ -2381,7 +2382,7 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
     stacked = base.stretched(flat.layer_linear(
         base.skeleton, [hill(reliefs), root(reliefs), None, None]))
     out["stacked"] = (stacked, {"grid": coarse, "fields": ["rho", "vp"]})
-    out["stacked_section"] = (two.stretched(flat.layer_linear(
+    out["stacked_rectangle"] = (two.stretched(flat.layer_linear(
         two.skeleton, [hill(line), hill(line), None, None])),
         {"grid": line, "fields": ["rho"]})
 
@@ -2458,7 +2459,7 @@ def _expect_flat_model(path: Path) -> Path:
     lines = [f"scales {s.length!r} {s.mass!r} {s.time!r} {s.temperature!r}",
              f"rtol {data.rtol!r}", f"name {hexed(data.name)}",
              f"citation {hexed(chr(10).join(data.citation))}",
-             f"domain {'box' if two else 'section'} "
+             f"domain {'box' if two else 'rectangle'} "
              + " ".join(repr(float(v)) for v in (
                  *np.ravel(np.asarray(domain.bounds, dtype=float)),
                  *np.atleast_1d(np.asarray(domain.padding, dtype=float))))]
@@ -2584,7 +2585,7 @@ _BAD_FLAT_MODELS: dict[str, tuple[str, Any, str, str]] = {
     "no_domain": ("flat_model_lateral.nc", _deleting("domain"), "domain",
                   "states its lateral domain"),
     "domain_kind": ("flat_model_lateral.nc", _setting("domain", "disc"), "domain",
-                    "not box or section"),
+                    "not box or rectangle"),
     "domain_bounds": ("flat_model_lateral.nc",
                       _setting("domain_bounds", np.array([0.0, 400e3])),
                       "domain_bounds", "a box states 4 bounds"),
@@ -2608,9 +2609,9 @@ _BAD_FLAT_MODELS: dict[str, tuple[str, Any, str, str]] = {
     "grid_nodes": ("flat_model_lateral.nc",
                    _storing((1,), 1.01, variable="x", group="part_0", relative=True),
                    "part_0/x", "not the nodes of a grid"),
-    "section_y": ("flat_model_section.nc",
-                  _creating("y", ("y",), group="part_0", sizes={"y": 3}),
-                  "part_0/y", "the one axis x"),
+    "rectangle_y": ("flat_model_rectangle.nc",
+                    _creating("y", ("y",), group="part_0", sizes={"y": 3}),
+                    "part_0/y", "the one axis x"),
     "layer_bounds": ("flat_model_lateral.nc",
                      _storing((1, 0), 31e3, variable="layer_bounds"),
                      "layer_bounds", "contiguous"),
@@ -2744,7 +2745,7 @@ def _flat_surface(directory: Path, label: str, grid: Any, *,
     lines = [f"scales {scales.length!r} {scales.mass!r} {scales.time!r} "
              f"{scales.temperature!r}",
              f"depth {'-' if data.depth is None else repr(data.depth)}",
-             f"domain {'box' if two else 'section'} "
+             f"domain {'box' if two else 'rectangle'} "
              + " ".join(repr(float(v)) for v in (
                  *np.ravel(np.asarray(domain.bounds, dtype=float)),
                  *np.atleast_1d(np.asarray(domain.padding, dtype=float)))),
@@ -2839,7 +2840,7 @@ _BAD_FLAT_SURFACES: dict[str, tuple[Any, str, str]] = {
 
 def flat_surface_files(directory: Path) -> list[Path]:
     """The flat surface files of the module docstring, a box's below the
-    surface and a section's on it, each with its expectations, and the
+    surface and a rectangle's on it, each with its expectations, and the
     malformed copies of the box's (`flat_surface_cases/`)."""
     import netCDF4
 
@@ -2847,7 +2848,7 @@ def flat_surface_files(directory: Path) -> list[Path]:
     domains = _flat_domains()
     out = _flat_surface(directory, "box", flat.Grid(domains["padded"], (10, 6)),
                         depth=2.5)
-    out += _flat_surface(directory, "section", flat.Grid(domains["section"], (9,)),
+    out += _flat_surface(directory, "rectangle", flat.Grid(domains["rectangle"], (9,)),
                          depth=None)
     root = directory / "flat_surface_cases"
     shutil.rmtree(root, ignore_errors=True)
@@ -3005,8 +3006,8 @@ def _flat_faulted(*edits: Any) -> Any:
     return edit
 
 
-def _flat_section(*edits: Any) -> Any:
-    """An edit making the flat base the manifest of a section: its
+def _flat_rectangle(*edits: Any) -> Any:
+    """An edit making the flat base the manifest of a rectangle: its
     coordinates (x, z), no y faces, a mesh of two coordinates."""
     def edit(card: dict[str, Any]) -> None:
         card["coordinates"] = ["x", "z"]
@@ -3031,7 +3032,7 @@ _ACCEPTED_FLAT_MANIFESTS = {
                            *(_set("interfaces", i, "values", value=None)
                              for i in range(2)),
                            _set("scales", value=None), _set("constants", value={})),
-    "section": _flat_section(),
+    "rectangle": _flat_rectangle(),
     "buried_top": _both(_set("layers", 0, "depth_top", value=5.0),
                         _set("interfaces", 0, "depth", value=5.0)),
     "faults": _flat_faulted(),
@@ -3075,8 +3076,8 @@ _BAD_FLAT_MANIFESTS = {
     "no_faces": (_drop("faces"), "", 'no member "faces"'),
     "faces_missing": (_drop("faces", 4), "faces",
                       "not [base, x_min, x_max, y_min, y_max]"),
-    "faces_of_a_box_in_a_section": (_set("coordinates", value=["x", "z"]), "faces",
-                                    "not [base, x_min, x_max]"),
+    "faces_of_a_box_over_a_rectangle": (_set("coordinates", value=["x", "z"]),
+                                        "faces", "not [base, x_min, x_max]"),
     "face_attribute": (_set("faces", 2, "attribute", value=9), "faces[2].attribute",
                        "expected 5, after the 2 interfaces"),
     "face_outward": (_set("faces", 1, "outward", value=1), "faces[1]",
@@ -3183,7 +3184,7 @@ def _flat_fault_cases() -> dict[str, dict[str, Any]]:
 
 def _flat_mesh_geometry(kind: str = "box") -> Any:
     """The unit box of the flat meshes, a crust over a mantle, or its
-    section."""
+    rectangle."""
     from planetmodel import cartesian as flat
     domain = (flat.Box([(0.0, 1.0), (-0.5, 0.5)]) if kind == "box"
               else flat.Rectangle((0.0, 1.0)))
@@ -3194,10 +3195,10 @@ def _flat_mesh_geometry(kind: str = "box") -> Any:
 
 def flat_manifests(directory: Path) -> list[Path]:
     """The flat manifests the Python writes (schema 7), each with its walk,
-    under `flat_manifests/`: the mesher's of a box and of a section, of a
+    under `flat_manifests/`: the mesher's of a box and of a rectangle, of a
     box with a fault leaving through a side, and `export_mfem`'s of a flat
     model under topography with its model file beside it (referential) and
-    of a section's (physical).  None without gmsh and PyMFEM."""
+    of a rectangle's (physical).  None without gmsh and PyMFEM."""
     try:
         import mfem.ser  # noqa: F401
 
@@ -3209,7 +3210,7 @@ def flat_manifests(directory: Path) -> list[Path]:
     from planetmodel import cartesian as flat
     root = directory / "flat_manifests"
     shutil.rmtree(root, ignore_errors=True)
-    box, cut = _flat_mesh_geometry("box"), _flat_mesh_geometry("section")
+    box, cut = _flat_mesh_geometry("box"), _flat_mesh_geometry("rectangle")
     coarse = UniformInterfaces(0.3, 0.5, 0.5)
 
     def model_on(geometry: Any) -> Any:
@@ -3235,7 +3236,7 @@ def flat_manifests(directory: Path) -> list[Path]:
             return build_layered_mesh(spec, work / label / label)
 
         plain = built("box", MeshSpec(box, coarse, order=1))
-        section = built("section", MeshSpec(cut, coarse, order=2))
+        rectangle = built("rectangle", MeshSpec(cut, coarse, order=2))
         relief = built("relief", MeshSpec(raised, coarse, order=2))
         faulted = built("faulted", MeshSpec(
             box, UniformInterfaces(0.2, 0.4, 0.4), order=1,
@@ -3243,14 +3244,14 @@ def flat_manifests(directory: Path) -> list[Path]:
                     for n, f in _flat_fault_cases()["side"].items()]))
         cases = {
             "box": plain.manifest_path,
-            "section": section.manifest_path,
+            "rectangle": rectangle.manifest_path,
             "faulted": faulted.manifest_path,
             "referential": export_mfem(
                 relief, work / "referential" / "referential", model=model_on(raised),
                 delivery="referential",
                 model_file=flat.Grid(raised.domain, (8, 8))).manifest_path,
-            "physical_section": export_mfem(
-                section, work / "physical_section" / "physical_section",
+            "physical_rectangle": export_mfem(
+                rectangle, work / "physical_rectangle" / "physical_rectangle",
                 model=model_on(cut), delivery="physical",
                 model_file=True).manifest_path,
         }

@@ -1,4 +1,4 @@
-// The flat surface file: the fixtures of a box and of a section read and
+// The flat surface file: the fixtures of a box and of a rectangle read and
 // held to their expectations, the fields as functions of (x, y) among
 // them; files built from known fields written, read back and left for the
 // Python to read; each reader refusing the other's files by their schema;
@@ -160,7 +160,7 @@ void ExpectAsThePython(const std::string& label, double& worst_function) {
 
 /// The file the writer's test leaves for the Python, from formulaic
 /// fields `test_cpp_written_cartesian.py` rebuilds: over a box, or over a
-/// section.
+/// rectangle.
 flat::SurfaceFile WrittenSurface(bool box = true) {
   auto file = flat::SurfaceFile{};
   file.scales = pm::Scales({.length = 2.0, .mass = 3.0, .time = 5.0});
@@ -216,7 +216,7 @@ flat::SurfaceFile WrittenSurface(bool box = true) {
 TEST(CartesianSurfaceFile, ReadsTheFixturesToTheirExpectations) {
   auto worst = 0.0;
   ExpectAsThePython("box", worst);
-  ExpectAsThePython("section", worst);
+  ExpectAsThePython("rectangle", worst);
   RecordProperty("worst_relative_function", std::format("{:.3e}", worst));
 }
 
@@ -245,10 +245,10 @@ TEST(CartesianSurfaceFile, EachReaderRefusesTheOthersFilesByTheirSchema) {
 
 TEST(CartesianSurfaceFile, WritesReadsBackAndLeavesTheFilesForThePython) {
   for (const auto box : {true, false}) {
-    SCOPED_TRACE(box ? "box" : "section");
+    SCOPED_TRACE(box ? "box" : "rectangle");
     const auto file = WrittenSurface(box);
     const auto path = pm::testing::WrittenDir() /
-                      (box ? "flat_surface_written.nc" : "flat_surface_written_section.nc");
+                      (box ? "flat_surface_written.nc" : "flat_surface_written_rectangle.nc");
     flat::WriteSurfaceFile(path, file);
     const auto read = flat::ReadSurfaceFile(path);
     EXPECT_EQ(read.schema, flat::SURFACE_SCHEMA);

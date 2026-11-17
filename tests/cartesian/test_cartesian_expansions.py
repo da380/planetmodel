@@ -1,14 +1,14 @@
-"""Fields and functions given by Fourier series over a box or a section.
+"""Fields and functions given by Fourier series over a box or a rectangle.
 
 A Fourier field passes the field contract for ranks 0 to 2 over a box and
-over a section; its values are the sum over the basis point by point (the
+over a rectangle; its values are the sum over the basis point by point (the
 direct sum the oracle, finufft to its accuracy), exact in depth on its
 pieces, on a grid by the fast transform or by synthesis alike, by depth or
 by term alike; its mean is its constant term, exact; it is rescaled as a
 field is.  A Fourier function's gradient is the series differentiated,
 against differences and the closed form; it is a relief whose
 displacement, stretch and geometry pass their contracts, over a box and a
-section.
+rectangle.
 """
 import numpy as np
 import pytest
@@ -241,7 +241,7 @@ def ridge_closed(x, y, grid):
     return h, gx, gy
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 def test_a_fourier_function_and_its_gradient(domain):
     g = flat.Grid(domain, 8)
     f = ridge_series(g)
@@ -284,13 +284,13 @@ def test_a_fourier_relief_drives_a_stretch_whose_contracts_hold():
     assert np.allclose(top[:, 2], surface(g.x, 0.1), rtol=0, atol=1e-15)
 
 
-def test_a_section_s_relief_is_the_same_at_every_y():
+def test_a_rectangle_s_relief_is_the_same_at_every_y():
     sk = Skeleton([0.0, 0.4, 1.0])
     rect = flat.Rectangle((0.0, 1.0))
     g = flat.Grid(rect, 10)
     w = flat.layer_linear(sk, [ridge_series(g), None, None])
-    section = flat.Geometry(sk, rect).stretched(w)
-    check_geometry(section)
+    geometry = flat.Geometry(sk, rect).stretched(w)
+    check_geometry(geometry)
 
 
 def test_import_is_light_and_finufft_waits_for_a_transform_at_points():

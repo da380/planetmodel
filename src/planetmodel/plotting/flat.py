@@ -89,13 +89,13 @@ def plane_map(ax: Any, slice_: PlaneSlice, *, scale: float = 1.0,
     `clip` choose it, `normalised` divides by the largest absolute value;
     `colorbar` adds a colour bar labelled with what the slice shows, with
     arrows at the ends the values run beyond; `style` goes to
-    `pcolormesh`.  A slice over a section's grid, which has one axis, is
+    `pcolormesh`.  A slice over a rectangle's grid, which has one axis, is
     refused.  Returns the mesh drawn.
     """
     grid = slice_.grid
     if grid.dimension != 2:
         raise ValueError("a map is of a plane over a box, whose grid has two axes; a "
-                         "section's plane is a line: draw a vertical section instead")
+                         "rectangle's plane is a line: draw a vertical section instead")
     if normalised:
         slice_ = _normalised(slice_)
     v = np.asarray(slice_.values, dtype=float)

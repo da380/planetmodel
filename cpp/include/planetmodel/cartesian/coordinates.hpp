@@ -44,7 +44,7 @@ inline constexpr auto LOCAL_FRAME_TRANSPOSE =
 struct Point {
   double depth = 0.0; /**< The depth below the reference free surface, positive down. */
   double x = 0.0;     /**< The first lateral coordinate. */
-  double y = 0.0;     /**< The second lateral coordinate; not read in a section. */
+  double y = 0.0;     /**< The second lateral coordinate; not read over a rectangle. */
 };
 
 /**

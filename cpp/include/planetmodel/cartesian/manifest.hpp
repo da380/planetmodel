@@ -4,15 +4,15 @@
 /**
  * @file
  * @brief The manifest of a flat mesh: the JSON beside a mesh of a
- * flat-layered geometry, a box or the section of a body invariant along y,
- * of schema `planetmodel.mesh.manifest/7`, as
+ * flat-layered geometry, a box or a rectangle (the cross-section of a body
+ * invariant along y), of schema `planetmodel.mesh.manifest/7`, as
  * `planetmodel/mesh3d/manifest.py` defines it and the format page describes
  * it.
  *
  * A flat mesh is layered in depth below its free surface: points are
  * (x, y, z) with z up, the free surface z = 0, and the layered coordinate
  * is the depth -z.  `coordinates` names the physical axes of the mesh's
- * own coordinates, (x, y, z) for a box and (x, z) for a section, whose
+ * own coordinates, (x, y, z) for a box and (x, z) for a rectangle, whose
  * mesh is two-dimensional with z its second coordinate.  The layers run
  * from the surface down, attribute 1 the top one; the interfaces are the
  * tops of the layers, numbered the same way, interface k (from one)
@@ -90,7 +90,7 @@ struct FaceKind {
  * @brief The faces of a flat mesh, in the order their boundary attributes
  * take after the interfaces': the base, then x_min, x_max, y_min and
  * y_max.  A mesh has those whose axis is among its coordinates: a box all
- * five, a section the base and the x faces.
+ * five, a rectangle the base and the x faces.
  */
 inline constexpr auto FACES = std::array<FaceKind, 5>{{{"base", "z", -1},
                                                        {"x_min", "x", -1},
@@ -257,15 +257,15 @@ class MeshManifest {
 
   /**
    * @brief The physical axes of the mesh's own coordinates, in order:
-   * (x, y, z) for a box, (x, z) for a section.
+   * (x, y, z) for a box, (x, z) for a rectangle.
    */
   [[nodiscard]] const std::vector<std::string>& Coordinates() const noexcept {
     return coordinates_;
   }
-  /** @brief The number of coordinates of the mesh: three for a box, two for a section. */
+  /** @brief The number of coordinates of the mesh: three for a box, two for a rectangle. */
   [[nodiscard]] int Dimension() const noexcept { return static_cast<int>(coordinates_.size()); }
-  /** @brief Whether the mesh is a section, two-dimensional with z its second coordinate. */
-  [[nodiscard]] bool IsSection() const noexcept { return coordinates_.size() == 2; }
+  /** @brief Whether the mesh is a rectangle's, two-dimensional with z its second coordinate. */
+  [[nodiscard]] bool IsRectangle() const noexcept { return coordinates_.size() == 2; }
 
   /** @brief The layers, from the surface down. */
   [[nodiscard]] const std::vector<Layer>& Layers() const noexcept { return layers_; }

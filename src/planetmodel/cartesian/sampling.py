@@ -9,7 +9,7 @@ a flat `Sample`.
 
 **Layout.**  Every sampled array is `(node,) + grid.shape +
 components`: `(node, x, y, ...)` over a box, y fastest, and `(node, x,
-...)` over a section, whose body is the same at every y (its fields are
+...)` over a rectangle, whose body is the same at every y (its fields are
 read at y = 0).  The nodes in depth are the per-element GLL nodes of a
 `RadialMesh` over the model's skeleton of depths, flattened element by
 element from the surface down, so an interface is two nodes at one

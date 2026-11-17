@@ -7,7 +7,7 @@ The geometry may be spherical, meshed as concentric spheres (a ball, a
 shell, or their disc in two dimensions), or flat
 (`planetmodel.cartesian.Geometry`), meshed as the box over its lateral
 domain cut by the planes of its interfaces, or over a `Rectangle` as
-that box's section in the (x, z) plane, its base and sides labelled
+that box's cross-section in the (x, z) plane, its base and sides labelled
 faces of their own; the spec, the sizing, the tagging, the orientation,
 the checks, the manifest and the export are the same code for both,
 which asks the geometry's layout where the shapes differ.

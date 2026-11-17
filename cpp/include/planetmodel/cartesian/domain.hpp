@@ -11,8 +11,9 @@
  * of each axis, zero by default; the domain with its padding, its extent,
  * is the period of the lateral directions.  A box bounds x and y, the
  * lateral domain of a three-dimensional body; a rectangle bounds x alone,
- * the lateral domain of the section of a body invariant along y, every y
- * inside it.  The files state a box as `box` and a rectangle as `section`.
+ * the lateral domain of the cross-section of a body invariant along y,
+ * every y inside it.  The files state a box as `box` and a rectangle as
+ * `rectangle`.
  */
 
 #include <array>
@@ -28,9 +29,9 @@ namespace planetmodel::cartesian {
 
 /**
  * @brief The kinds of lateral domain a flat file states by `domain`: a box,
- * and a section, the rectangle of a body invariant along y.
+ * and a rectangle, the cross-section of a body invariant along y.
  */
-inline constexpr auto DOMAIN_KINDS = std::array<std::string_view, 2>{"box", "section"};
+inline constexpr auto DOMAIN_KINDS = std::array<std::string_view, 2>{"box", "rectangle"};
 
 /** @brief The lateral domain of a flat body: a box or a rectangle. */
 class Domain {
@@ -64,7 +65,7 @@ class Domain {
   [[nodiscard]] bool IsBox() const noexcept { return dimension_ == 2; }
   /** @brief The number of lateral axes it bounds: two for a box, one for a rectangle. */
   [[nodiscard]] std::size_t Dimension() const noexcept { return dimension_; }
-  /** @brief What a file states it as: `box`, or `section` for a rectangle. */
+  /** @brief What a file states it as: `box` or `rectangle`. */
   [[nodiscard]] std::string_view Kind() const noexcept {
     return DOMAIN_KINDS[IsBox() ? 0 : 1];
   }

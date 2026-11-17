@@ -1,7 +1,7 @@
 """The flat surface file: fields on a horizontal plane of a flat body,
 written, validated and read back.
 
-Fields of every time support round-trip on a box's grid and a section's,
+Fields of every time support round-trip on a box's grid and a rectangle's,
 padded, NaN kept, held to the file by `check_surface_file`; the history
 serves them at dates by the surface file's own time rules, and as flat
 gridded functions by their lateral rules, which `cartesian.slices.surface`
@@ -157,7 +157,7 @@ def test_writing_refuses_what_a_flat_file_cannot_hold(tmp_path):
     (lambda ds: ds.delncattr("coordinate_system"), "coordinate_system is None"),
     (lambda ds: ds.setncattr("domain", "box"), "a box states 4 bounds"),
     (lambda ds: ds.setncattr("domain_padding", np.array([5.0, 1.0])),
-     "a section states 2 bounds and 1 padding"),
+     "a rectangle states 2 bounds and 1 padding"),
     (lambda ds: ds["x"].__setitem__(2, 0.0), "x is not the nodes"),
     (lambda ds: ds.setncattr("grid_kind", "custom"), "grid_kind is a spherical"),
     (lambda ds: ds.setncattr("radius", 1.0), "radius is a spherical"),

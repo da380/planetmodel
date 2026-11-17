@@ -25,7 +25,7 @@ surface.  The lateral domain is stated as the flat model file states it
 (`domain`, `domain_bounds`, `domain_padding`; `cartesian.modelfile`),
 and the grid is `cartesian.Grid` over it, its nodes the CF coordinate
 variables `x(x)` and, over a box, `y(y)`.  A field is `name(x, y)`
-(`name(x)` over a section) after its support's leading dimension; its
+(`name(x)` over a rectangle) after its support's leading dimension; its
 lateral rule is one of the flat rules (`cartesian.lateral`: `linear`,
 `cubic`, `fourier`).  A flat grid has no poles: polar values, a grid's
 kind, band and weights, `latitude`, `longitude` and `radius` are a
@@ -116,7 +116,7 @@ class FlatSurfaceLayout:
         raise ValueError(f"{name!r} gives polar values, and a flat grid has no poles")
 
     def lateral_dims(self, grid: Grid) -> tuple[str, ...]:
-        """(x, y) over a box, (x,) over a section."""
+        """(x, y) over a box, (x,) over a rectangle."""
         return axes_of(grid.domain)
 
     def lateral_shape(self, grid: Grid) -> tuple[int, ...]:

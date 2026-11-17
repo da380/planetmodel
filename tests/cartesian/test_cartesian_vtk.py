@@ -79,7 +79,7 @@ def test_a_flat_model_is_written_layer_by_layer_on_its_closed_grid(model, tmp_pa
     assert "vs_percent_from_mean" in upper and "flow" not in upper
 
 
-def test_the_points_are_physical_by_default_and_a_section_is_a_sheet(model, tmp_path):
+def test_the_points_are_physical_by_default_and_a_rectangle_is_a_sheet(model, tmp_path):
     g = flat.Grid(BOX, (8, 6))
     xg, yg = g.nodes
     top = flat.FourierFunction(g, g.transform.analyse_grid(

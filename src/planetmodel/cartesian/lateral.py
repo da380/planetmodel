@@ -5,7 +5,7 @@ A field that varies laterally in a box is stored at the nodes of a
 doubly periodic counterparts of the sphere's (`planetmodel.lateral`):
 
     linear     bilinear on the grid closed by its period (linear along
-               the one axis of a section's grid)
+               the one axis of a rectangle's grid)
     cubic      the tensor-product cubic spline, periodic along every axis
     fourier    analysis on the grid and synthesis at the point
                (`fourier.Transform`), exact for a field band-limited to
@@ -21,7 +21,7 @@ the nodes (`lateral.periodic_cubic_spline`), continuous with their first
 two derivatives across the seam.  A point is read at its coordinates
 reduced into the period from the grid's first node, so every rule is
 periodic, as a Fourier series is; there are no poles, and nothing at
-the edge of the domain needs to be given.  A section's grid has one
+the edge of the domain needs to be given.  A rectangle's grid has one
 axis, and y is never read.
 
 **Components.**  The rules act on any array whose trailing axes are the
@@ -42,7 +42,7 @@ side (bands 2, 4, 8 and 16 times the field's), is 1.6e-1, 4.5e-2,
 spacing falls; the Fourier rule's is 5e-13 on all four, finufft's
 accuracy, and 0.25 on 16 nodes, a grid that lacks the sines of the
 field's highest wavenumber (the cases of
-`tests/cartesian/test_cartesian_lateral.py`; along a section's one axis
+`tests/cartesian/test_cartesian_lateral.py`; along a rectangle's one axis
 the orders are the same).  A local rule wants an oversampled grid, as
 on the sphere.  The bicubic rule is twice continuously differentiable
 everywhere, the bilinear one continuous with a gradient piecewise
@@ -188,7 +188,7 @@ class LateralInterpolant:
         """(d/dx, d/dy) of the interpolant at the points, each of the shape
         `__call__` gives: the derivatives of the spline, piecewise constant
         between the nodes for the bilinear rule, or of the series; d/dy is
-        zero on a section's grid."""
+        zero on a rectangle's grid."""
         P, points = self._points(x, y)
         d = self._grid.dimension
         if self._method == "fourier":

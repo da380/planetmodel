@@ -3,7 +3,7 @@
 
 /**
  * @file
- * @brief The horizontal grid of a box or a section, as
+ * @brief The horizontal grid of a box or a rectangle, as
  * `planetmodel.cartesian.grid` defines it: the flat counterpart of the
  * sphere's angular grid.
  *
@@ -11,7 +11,7 @@
  * lateral domain: over a box of extent [x0, x0 + Lx] by [y0, y0 + Ly] and
  * shape (nx, ny) the nodes x_i = x0 + i Lx / nx and y_j = y0 + j Ly / ny,
  * and over a rectangle of extent [x0, x0 + Lx] and shape (nx) the x_i
- * alone, the section's one lateral coordinate.  The extent is the domain's
+ * alone, the rectangle's one lateral coordinate.  The extent is the domain's
  * bounds widened by its padding; the last node of an axis is one step short
  * of the far end, the period closing it on the first.  A grid has no poles,
  * no kind and no weights: the mean over the period of values at the nodes

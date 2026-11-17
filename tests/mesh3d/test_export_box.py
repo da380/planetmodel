@@ -1,4 +1,4 @@
-"""A box and a section to MFEM: read back as a consumer reads them, the
+"""A box and a rectangle to MFEM: read back as a consumer reads them, the
 attributes by layer and by face, every element and boundary element
 where its attribute says, positive Jacobians at every order, the fields
 of a flat model by layer, the mapping applied with the identity's
@@ -79,7 +79,7 @@ def test_mfem_reads_the_export_with_attributes_by_layer_and_face(built, kind,
     res = built(kind)
     export = export_mfem_mesh(res, tmp_path / kind, delivery=delivery)
     mesh = load(export.mesh_path)
-    d = {"box": 3, "section": 2}[kind]
+    d = {"box": 3, "rectangle": 2}[kind]
     assert mesh.Dimension() == mesh.SpaceDimension() == d
     assert mesh.CheckElementOrientation(False) == 0
     assert mesh.CheckBdrElementOrientation(False) == 0
@@ -91,7 +91,7 @@ def test_mfem_reads_the_export_with_attributes_by_layer_and_face(built, kind,
         list(range(1, len(card.interfaces) + len(card.faces) + 1))
     assert [e["name"] for e in card.faces] == \
         {"box": ["base", "x_min", "x_max", "y_min", "y_max"],
-         "section": ["base", "x_min", "x_max"]}[kind]
+         "rectangle": ["base", "x_min", "x_max"]}[kind]
     if delivery == "referential":
         (entry,) = card.fields
         assert entry["vdim"] == d and export.displacement_path.exists()
@@ -159,11 +159,11 @@ def test_the_fields_of_a_flat_model_are_written_by_layer(built, kind, tmp_path):
     values = {name: np.array(_node_array(g), dtype=float) for name, g in gf.items()}
     assert np.array_equal(values["rho"][:, 0], attributes.astype(float))
     assert np.abs(values["q"][:, 0] - 2.0 * depth).max() < 1e-12
-    # Cartesian components (x, y, z) of w = (depth, x, y), in a section too
+    # Cartesian components (x, y, z) of w = (depth, x, y), over a rectangle too
     want = np.stack([depth, X[:, 0], X[:, 1]], axis=1)
     assert values["w"].shape == (len(X), 3)
     assert np.abs(values["w"] - want).max() < 1e-12
-    if kind == "section":
+    if kind == "rectangle":
         assert np.all(X[:, 1] == 0.0)
     entries = {e["name"]: e for e in card.fields}
     assert entries["rho"]["unit"] == "kg m-3" and entries["rho"]["radial_degree"] == 0
@@ -202,7 +202,7 @@ def test_the_mapping_is_applied_at_the_export(built, kind, tmp_path):
 
 
 class ShiftedAlongY(MappingBase):
-    """A translation along y: invariant along y, but out of a section's plane."""
+    """A translation along y: invariant along y, but out of a rectangle's plane."""
 
     def __call__(self, X):
         return np.asarray(X, dtype=float) + [0.0, 0.1, 0.0]
@@ -263,7 +263,7 @@ def test_what_the_export_of_a_flat_mesh_refuses(built, tmp_path):
                        for iv in zip(DEPTHS[:-1], DEPTHS[1:])])
     with pytest.raises(ValueError, match="in the coordinates 'spherical' and the mesh"):
         export_mfem(res, tmp_path / "sphere", model=spherical)
-    shifted = GEOMETRIES["section"](mapping=ShiftedAlongY())
+    shifted = GEOMETRIES["rectangle"](mapping=ShiftedAlongY())
     off = build_layered_mesh(MeshSpec(shifted, SIZING, order=1), tmp_path / "shifted")
     with pytest.raises(ValueError, match="keeps y = 0"):
         export_mfem_mesh(off, tmp_path / "off")

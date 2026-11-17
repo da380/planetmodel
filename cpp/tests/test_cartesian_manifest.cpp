@@ -1,5 +1,5 @@
 // The flat manifest reader (schema 7): every flat manifest the Python
-// writes read into the values it wrote, a box's and a section's, with
+// writes read into the values it wrote, a box's and a rectangle's, with
 // faults and without; the layers and interfaces by depth, the faces of the
 // box, a fault's face edge and its four curve groups; each reader refusing
 // the other's manifests by their schema; every fault the Python's
@@ -83,7 +83,7 @@ void ExpectAsWritten(const MeshManifest& m, const Json& doc, bool files = true) 
     EXPECT_EQ(m.Coordinates()[i], coordinates.At(i).AsString());
   }
   EXPECT_EQ(m.Dimension(), static_cast<int>(coordinates.Size()));
-  EXPECT_EQ(m.IsSection(), coordinates.Size() == 2);
+  EXPECT_EQ(m.IsRectangle(), coordinates.Size() == 2);
 
   const auto faulted = doc.Find("faults") != nullptr && doc.At("faults").Size() > 0;
   const auto& layers = doc.At("layers");
@@ -144,7 +144,7 @@ void ExpectAsWritten(const MeshManifest& m, const Json& doc, bool files = true) 
   // the faces: the base, then the sides the mesh has, after the interfaces
   const auto& faces = doc.At("faces");
   ASSERT_EQ(m.Faces().size(), faces.Size());
-  ASSERT_EQ(m.Faces().size(), m.IsSection() ? 3u : 5u);
+  ASSERT_EQ(m.Faces().size(), m.IsRectangle() ? 3u : 5u);
   auto attributes = std::vector<int>{};
   for (auto i = std::size_t{0}; i < faces.Size(); ++i) {
     const auto& f = m.Faces()[i];
@@ -315,11 +315,11 @@ TEST(CartesianManifest, ReadsEveryFlatManifestThePythonWrites) {
   EXPECT_EQ(box.FaceNamed("base").axis, "z");
   EXPECT_THROW(static_cast<void>(box.FaceNamed("top")), Error);
 
-  const auto& section = read.at("section");
-  EXPECT_TRUE(section.IsSection());
-  EXPECT_EQ(section.Dimension(), 2);
-  EXPECT_EQ(section.FaceAttributes(), (std::vector<int>{3, 4, 5}));
-  EXPECT_THROW(static_cast<void>(section.FaceNamed("y_min")), Error);
+  const auto& rectangle = read.at("rectangle");
+  EXPECT_TRUE(rectangle.IsRectangle());
+  EXPECT_EQ(rectangle.Dimension(), 2);
+  EXPECT_EQ(rectangle.FaceAttributes(), (std::vector<int>{3, 4, 5}));
+  EXPECT_THROW(static_cast<void>(rectangle.FaceNamed("y_min")), Error);
 
   const auto& faulted = read.at("faulted");
   ASSERT_EQ(faulted.Faults().size(), 1u);
@@ -350,8 +350,8 @@ TEST(CartesianManifest, ReadsEveryFlatManifestThePythonWrites) {
   EXPECT_EQ(referential.FieldNamed("displacement").vdim, 3);
   EXPECT_TRUE(referential.GetScales().IsSI());
 
-  const auto& cut = read.at("physical_section");
-  EXPECT_TRUE(cut.IsSection());
+  const auto& cut = read.at("physical_rectangle");
+  EXPECT_TRUE(cut.IsRectangle());
   EXPECT_EQ(cut.Model()->schema, "planetmodel.model/3");
   EXPECT_EQ(cut.FieldNamed("rho").fe_space, "L2_2D_P2");
 }
@@ -374,8 +374,8 @@ TEST(CartesianManifest, ReadsTheBaseCaseAndItsVariants) {
   EXPECT_THROW(static_cast<void>(m.LayerOf(3)), Error);
   EXPECT_THROW(static_cast<void>(m.ElementAttributes({3})), Error);
 
-  for (const auto* label : {"optional_keys_absent", "unknown_key", "no_model_said", "section",
-                            "buried_top", "faults"}) {
+  for (const auto* label : {"optional_keys_absent", "unknown_key", "no_model_said",
+                            "rectangle", "buried_top", "faults"}) {
     SCOPED_TRACE(label);
     PLANETMODEL_FIXTURE(variant, std::format("flat_manifest_cases/accept_{}.json", label));
     ExpectAsWritten(MeshManifest(variant), planetmodel::ReadJsonFile(variant), false);

@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
                              domain.Length(0) * file.GetScales().Length());
     const auto mapping = file.Mapping();
     const auto& skeleton = file.GetSkeleton();
-    // a lateral place inside the domain; y is not read in a section
+    // a lateral place inside the domain; y is not read over a rectangle
     const auto x = 0.5 * (domain.Bounds(0)[0] + domain.Bounds(0)[1]) + 0.1 * domain.Length(0);
     const auto y = domain.IsBox() ? domain.Bounds(1)[0] + 0.3 * domain.Length(1) : 0.0;
     for (auto layer = 0; layer < static_cast<int>(skeleton.NLayers()); ++layer) {

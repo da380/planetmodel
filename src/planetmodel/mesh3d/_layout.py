@@ -16,7 +16,7 @@ reach (`check_reach`).
 
 A geometry over a lateral domain (`planetmodel.cartesian.Geometry`,
 whose `domain` is a `Box` or a `Rectangle`) is meshed as the box over
-the domain's extent and the skeleton's depths, or as its section, by
+the domain's extent and the skeleton's depths, or as its cross-section, by
 `Planar`: points (x, y, z) with z up, layer k between the planes
 z = -depth of its top and bottom, the mesh three-dimensional over a
 box and two-dimensional over a rectangle, whose coordinates are then
@@ -298,7 +298,7 @@ class Concentric:
 
 
 class Planar:
-    """A box cut by horizontal planes, or the section of one: the mesh of a
+    """A box cut by horizontal planes, or the cross-section of one: the mesh of a
     flat geometry over its lateral domain (module docstring).
 
     Its coordinates are the domain's lateral axes and then z, (x, y, z)
@@ -330,7 +330,7 @@ class Planar:
     def what(self) -> str:
         """What the body is, for messages."""
         return ("a flat geometry over a Box" if len(self.coordinates) == 3
-                else "a flat geometry over a Rectangle, a section")
+                else "a flat geometry over a Rectangle")
 
     def bounds(self) -> dict[str, tuple[float, float]]:
         """The extent of the domain along each lateral axis: the period,
@@ -359,7 +359,7 @@ class Planar:
     def check(self, spec: MeshSpec) -> None:
         """Refuse shells (concentric layers outside a sphere: a box is
         padded below its base by its model), a spherical outer boundary,
-        faults in a section (not built), and an interface named as a
+        faults over a rectangle (not built), and an interface named as a
         face."""
         if spec.shells:
             raise ValueError(
@@ -372,12 +372,12 @@ class Planar:
                 "labelled, and carry no conditions; leave outer_boundary 'free'")
         if spec.faults and len(self.coordinates) != 3:
             raise ValueError(
-                "faults in a section (a flat geometry over a Rectangle) are not "
+                "faults in a flat geometry over a Rectangle are not "
                 "built: a fault there is a segment "
                 "of the (x, z) plane, which needs a fault of one parameter, the "
                 "manifest's rules of a fault's faces in two dimensions (its sides "
                 "by a segment's direction, its tips points, its walls of "
-                "triangles) and the segment fragmented into the section; mesh "
+                "triangles) and the segment fragmented into the rectangle; mesh "
                 "the box over a Box instead")
         names = {f.name for f in spec.geometry.interfaces if f.name}
         clash = sorted(names.intersection(name for name, _, _ in manifest.FACES))
@@ -468,7 +468,7 @@ class Planar:
 
 def layout_of(geometry: GeometryBase) -> Layout:
     """The layout of a geometry's mesh: over the lateral domain of a
-    geometry that has one (`cartesian.Geometry`), the box or section
+    geometry that has one (`cartesian.Geometry`), the box or rectangle
     `Planar`; of any other, the concentric spheres `Concentric`."""
     domain = getattr(geometry, "domain", None)
     return Concentric() if domain is None else Planar(domain)

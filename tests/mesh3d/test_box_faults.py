@@ -424,9 +424,8 @@ class Stretch(MappingBase):
 
 def test_what_a_box_does_not_take_is_refused_by_name():
     fault = Fault([plane(0.5, 0.0, 0.7)])
-    with pytest.raises(ValueError, match=r"faults in a section \(a flat geometry over "
-                                         r"a Rectangle\) are not built: a fault there "
-                                         "is a segment"):
+    with pytest.raises(ValueError, match="faults in a flat geometry over a Rectangle "
+                                         "are not built: a fault there is a segment"):
         MeshSpec(cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0))),
                  SIZING, faults=[EmbeddedFault(fault)])
     # under a mapping the fault is pulled back at the build, as on the sphere

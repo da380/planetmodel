@@ -9,7 +9,7 @@ shape
     (nelem, ngll) + grid.shape + stored shape,
 
 (nelem, ngll, nx, ny) + stored over a box and (nelem, ngll, nx) + stored
-over a section, which is a flat `Sample`'s layout cut to one layer.  The
+over a rectangle, which is a flat `Sample`'s layout cut to one layer.  The
 radial half is shared with the sphere (`gridded.GriddedBase`): between
 the nodes it is read along depth by one of `mesh1d.RADIAL_METHODS`
 within the element holding the depth, the end elements continuing
@@ -179,7 +179,7 @@ class GriddedFunction:
     `values` has the grid's shape; `lateral` is one of
     `cartesian.lateral.METHODS`, the bicubic one by default.  Calling it
     gives the values at points, read periodically; `lateral_gradient`
-    gives (d/dx, d/dy), d/dy zero on a section's grid, so that it is a
+    gives (d/dx, d/dy), d/dy zero on a rectangle's grid, so that it is a
     relief of `cartesian.layer_linear`.
     """
 

@@ -1,5 +1,5 @@
 // The flat lateral rules against the Python's: every case on a box's grid
-// and a section's, values and derivatives, over several periods and at the
+// and a rectangle's, values and derivatives, over several periods and at the
 // seam; the domain and the grid as the Python lays them; the local frame;
 // and the refusals.
 #include "planetmodel/cartesian/rules.hpp"
@@ -122,9 +122,9 @@ TEST(CartesianRules, TheRulesArePeriodicAndReadTheNodes) {
     }
     EXPECT_NEAR(f.Value(0.7, 0.3), f.Value(0.7 - 12.0, 0.3 + 9.0), 1e-13);
   }
-  // a section's y is never read
-  const auto section = flat::Grid(flat::Domain::Rectangle({0.0, 1.0}), 4);
-  const auto g = flat::LateralInterpolant(section, std::vector{1.0, 2.0, 4.0, 3.0},
+  // a rectangle's y is never read
+  const auto rectangle = flat::Grid(flat::Domain::Rectangle({0.0, 1.0}), 4);
+  const auto g = flat::LateralInterpolant(rectangle, std::vector{1.0, 2.0, 4.0, 3.0},
                                           LateralRule::Cubic);
   EXPECT_EQ(g.Value(0.3, 0.0), g.Value(0.3, 1e9));
   EXPECT_EQ(g.Gradient(0.3, -5.0)[1], 0.0);
@@ -143,13 +143,13 @@ TEST(CartesianRules, TheDomainAndTheGridAreAsThePythonLaysThem) {
   EXPECT_EQ(box.PaddingList(), (std::vector{50e3, 0.0}));
   EXPECT_TRUE(box.Contains(400e3, 150e3));
   EXPECT_FALSE(box.Contains(-10e3, 150e3));  // the padding is outside
-  const auto section = flat::Domain::Rectangle({0.0, 2.0}, 0.3);
-  EXPECT_FALSE(section.IsBox());
-  EXPECT_EQ(section.Kind(), "section");
-  EXPECT_EQ(section.BoundsList(), (std::vector{0.0, 2.0}));
-  EXPECT_EQ(section.PaddingList(), (std::vector{0.3}));
-  EXPECT_TRUE(section.Contains(1.0, 1e12));  // every y is inside
-  EXPECT_THROW(static_cast<void>(section.Bounds(1)), Error);
+  const auto rectangle = flat::Domain::Rectangle({0.0, 2.0}, 0.3);
+  EXPECT_FALSE(rectangle.IsBox());
+  EXPECT_EQ(rectangle.Kind(), "rectangle");
+  EXPECT_EQ(rectangle.BoundsList(), (std::vector{0.0, 2.0}));
+  EXPECT_EQ(rectangle.PaddingList(), (std::vector{0.3}));
+  EXPECT_TRUE(rectangle.Contains(1.0, 1e12));  // every y is inside
+  EXPECT_THROW(static_cast<void>(rectangle.Bounds(1)), Error);
   EXPECT_NE(box, flat::Domain::Box({0.0, 400e3}, {0.0, 300e3}));
   EXPECT_THROW(static_cast<void>(flat::Domain::Box({1.0, 1.0}, {0.0, 1.0})), Error);
   EXPECT_THROW(static_cast<void>(flat::Domain::Rectangle({0.0, 1.0}, -0.1)), Error);
@@ -161,13 +161,13 @@ TEST(CartesianRules, TheDomainAndTheGridAreAsThePythonLaysThem) {
   EXPECT_EQ(grid.Spacing(1), 50e3);
   EXPECT_EQ(grid.Area(), 500e3 * 300e3);
   EXPECT_EQ(grid.Node(7), (std::array{grid.X()[1], grid.Y()[1]}));
-  const auto line = flat::Grid(section, 5);
+  const auto line = flat::Grid(rectangle, 5);
   EXPECT_EQ(line.NY(), 1u);
   EXPECT_TRUE(line.Y().empty());
   EXPECT_EQ(line.Node(3), (std::array{line.X()[3], 0.0}));
   EXPECT_THROW(static_cast<void>(flat::Grid(box, 4)), Error);
-  EXPECT_THROW(static_cast<void>(flat::Grid(section, 4, 4)), Error);
-  EXPECT_THROW(static_cast<void>(flat::Grid(section, 0)), Error);
+  EXPECT_THROW(static_cast<void>(flat::Grid(rectangle, 4, 4)), Error);
+  EXPECT_THROW(static_cast<void>(flat::Grid(rectangle, 0)), Error);
   EXPECT_THROW(static_cast<void>(grid.Mean(std::vector{1.0, 2.0})), Error);
 }
 

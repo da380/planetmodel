@@ -1,10 +1,10 @@
 // The flat model file: every file the Python writes read as the Python
 // reads it (its metadata and domain, every variable on every layer in both
 // frames, the scalars' gradients, the vertical stretch, the fields on
-// interfaces with their gradients), over a box and over a section; the
-// fourier rule refused with the numbers still readable; each reader
-// refusing the other's files by their schema; and every malformed copy
-// refused at its place.
+// interfaces with their gradients), over a box and over a rectangle;
+// which variables are lateral; the fourier rule refused with the numbers
+// still readable; each reader refusing the other's files by their schema;
+// and every malformed copy refused at its place.
 #include "planetmodel/cartesian/modelfile.hpp"
 
 #include <gtest/gtest.h>
@@ -20,6 +20,7 @@
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fixtures.hpp"
@@ -298,21 +299,66 @@ TEST(CartesianModelFile, HoldsTheDomainTheSkeletonAndTheGrids) {
   EXPECT_EQ(file.PartOf(2).depth.back(), 200e3);
   EXPECT_FALSE(file.Geometry());
   EXPECT_FALSE(file.Surfaces());
-  // a section's file states the one axis
-  PLANETMODEL_FIXTURE(cut, "flat_model_section.nc");
-  const auto section = flat::ReadModelFile(cut);
-  EXPECT_FALSE(section.GetDomain().IsBox());
-  EXPECT_EQ(section.GetDomain(), flat::Domain::Rectangle({0.0, 400e3}, 25e3));
-  EXPECT_EQ(section.Parts().front().grid->Shape(), (std::vector<std::size_t>{14}));
-  const auto& rho = section.PartOf(1).variables.at("rho");
+  // a rectangle's file states the one axis
+  PLANETMODEL_FIXTURE(cut, "flat_model_rectangle.nc");
+  const auto rectangle = flat::ReadModelFile(cut);
+  EXPECT_FALSE(rectangle.GetDomain().IsBox());
+  EXPECT_EQ(rectangle.GetDomain(), flat::Domain::Rectangle({0.0, 400e3}, 25e3));
+  EXPECT_EQ(rectangle.Parts().front().grid->Shape(), (std::vector<std::size_t>{14}));
+  const auto& rho = rectangle.PartOf(1).variables.at("rho");
   EXPECT_EQ(rho.dimensions, (std::vector<std::string>{"node", "x"}));
-  EXPECT_TRUE(flat::VariesLaterally(rho));
-  EXPECT_FALSE(flat::VariesLaterally(section.PartOf(1).variables.at("vp")));
-  EXPECT_TRUE(flat::VariesLaterally(file.PartOf(1).variables.at("flow")));
   // y is never read
-  const auto field = section.FieldOn(1, "rho").AsScalar();
+  const auto field = rectangle.FieldOn(1, "rho").AsScalar();
   EXPECT_EQ(field.Value(50e3, 123e3, 0.0), field.Value(50e3, 123e3, 7e8));
   EXPECT_EQ(field.Gradient(50e3, 123e3, 0.0)[2], 0.0);
+}
+
+TEST(CartesianModelFile, AVariableOnTheGridIsLateral) {
+  // a flat variable is lateral by its grid's dimensions after the node, x
+  // and y over a box and x over a rectangle, as a spherical one is by its
+  // latitude and longitude; its components' axes follow either way
+  const auto of = [](std::vector<std::string> dimensions) {
+    auto var = planetmodel::FileVariable{};
+    var.dimensions = std::move(dimensions);
+    return var;
+  };
+  EXPECT_TRUE(of({"node", "x", "y"}).IsLateral());
+  EXPECT_TRUE(of({"node", "x", "y", "component"}).IsLateral());
+  EXPECT_TRUE(of({"node", "x"}).IsLateral());
+  EXPECT_TRUE(of({"node", "x", "voigt_row", "voigt_column"}).IsLateral());
+  EXPECT_FALSE(of({"node"}).IsLateral());
+  EXPECT_FALSE(of({"node", "component"}).IsLateral());
+  EXPECT_FALSE(of({"node", "voigt"}).IsLateral());
+  EXPECT_TRUE(of({"node", "latitude", "longitude"}).IsLateral());
+  EXPECT_FALSE(of({"node", "latitude"}).IsLateral());
+
+  // over a box: gridded fields of ranks 0 to 2, and fields of depth alone
+  PLANETMODEL_FIXTURE(lateral, "flat_model_lateral.nc");
+  const auto box = flat::ReadModelFile(lateral);
+  EXPECT_TRUE(box.PartOf(1).variables.at("rho").IsLateral());
+  const auto& flow = box.PartOf(1).variables.at("flow");
+  EXPECT_EQ(flow.dimensions, (std::vector<std::string>{"node", "x", "y", "component"}));
+  EXPECT_TRUE(flow.IsLateral());
+  EXPECT_TRUE(box.PartOf(2).variables.at("stress").IsLateral());
+  EXPECT_FALSE(box.PartOf(1).variables.at("stress").IsLateral());
+  EXPECT_FALSE(box.PartOf(1).variables.at("vp").IsLateral());
+  PLANETMODEL_FIXTURE(layered, "flat_model_layered.nc");
+  const auto plain = flat::ReadModelFile(layered);
+  for (const auto& part : plain.Parts()) {
+    for (const auto& [name, var] : part.variables) {
+      SCOPED_TRACE(name);
+      EXPECT_FALSE(var.IsLateral());
+    }
+  }
+  // over a rectangle: a gridded scalar and a gridded vector on the one
+  // axis, and a field of depth alone
+  PLANETMODEL_FIXTURE(cut, "flat_model_rectangle.nc");
+  const auto rectangle = flat::ReadModelFile(cut);
+  EXPECT_TRUE(rectangle.PartOf(1).variables.at("rho").IsLateral());
+  const auto& drift = rectangle.PartOf(2).variables.at("flow");
+  EXPECT_EQ(drift.dimensions, (std::vector<std::string>{"node", "x", "component"}));
+  EXPECT_TRUE(drift.IsLateral());
+  EXPECT_FALSE(rectangle.PartOf(1).variables.at("vp").IsLateral());
 }
 
 TEST(CartesianModelFile, HoldsTheFormsOfTheVerticalStretch) {

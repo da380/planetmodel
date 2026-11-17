@@ -1,7 +1,7 @@
 """Topography as a mapping: the vertical displacement, its stack of reliefs
 and the vertical stretch, held to the contracts the spherical mappings
 are held to, their closed forms against finite differences, the sign
-(heights, positive up), folds refused by name, sections held to
+(heights, positive up), folds refused by name, rectangles held to
 invariance along y, fields carried across by the shared machinery, and
 a fault pulled back through the stretch."""
 import numpy as np
@@ -202,7 +202,7 @@ def test_linearise_against_differences_of_the_stretch():
 # ------------------------------------------------------------ the geometry
 
 def test_a_stretched_geometry_holds_to_the_geometry_contract():
-    """A box, a hollowed box and a section under reliefs; the knots are the
+    """A box, a hollowed box and a rectangle under reliefs; the knots are the
     interior boundaries; scaling keeps the stretch a stretch."""
     g = box().stretched(stack(), name="topography")
     assert isinstance(g.mapping, VerticalStretch) and g.mapping.base == 1.0
@@ -215,25 +215,26 @@ def test_a_stretched_geometry_holds_to_the_geometry_contract():
     assert not isinstance(big.mapping, ScaledMapping)
     X = lattice_points(box())
     assert np.allclose(big.mapping(1e4 * X), 1e4 * g.mapping(X), rtol=0.0, atol=1e-10)
-    section = cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0)))
-    testing.check_geometry(section.stretched(stack(surface=lambda x, y: ridge(x, 0.0),
-                                                   moho=lambda x, y: root(x, 0.0))))
+    rectangle = cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0)))
+    testing.check_geometry(rectangle.stretched(stack(surface=lambda x, y: ridge(x, 0.0),
+                                                     moho=lambda x, y: root(x, 0.0))))
     assert repr(g).startswith("cartesian.Geometry(Skeleton(2 layers, depth in [0, 1])")
 
 
-def test_a_section_takes_a_stretch_the_same_at_every_y_and_never_moves_y():
+def test_a_rectangle_takes_a_stretch_the_same_at_every_y_and_never_moves_y():
     """Over a Rectangle the stretch moves nothing along y, and a relief that
     varies along y is refused by name."""
-    section = cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0)))
-    flat_y = section.stretched(stack(surface=lambda x, y: ridge(x, 0.0) + 0.0 * y,
-                                     moho=None))
+    rectangle = cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0)))
+    flat_y = rectangle.stretched(stack(surface=lambda x, y: ridge(x, 0.0) + 0.0 * y,
+                                       moho=None))
     X = FLAT.points(*flat_y.lattice(n_c=3, n_a=7, n_b=4)).reshape(-1, 3)
     x = flat_y.mapping(X)
     assert np.array_equal(x[:, 1], X[:, 1])
     shifted = X + [0.0, 0.37, 0.0]
     assert np.array_equal(flat_y.mapping(shifted)[:, 2], x[:, 2])
-    with pytest.raises(ValueError, match="mapping of a section must not vary along y"):
-        section.stretched(stack())
+    with pytest.raises(ValueError,
+                       match="mapping over a rectangle must not vary along y"):
+        rectangle.stretched(stack())
 
 
 def test_a_folding_stack_is_refused_by_name():

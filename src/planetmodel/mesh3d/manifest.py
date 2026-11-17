@@ -74,32 +74,32 @@ are reference coordinates or already carry it.  Flat and boring on
 purpose: a C++ reader will parse it, nested objects only where the
 nesting carries meaning, no polymorphism, every number a number.
 
-A flat mesh (schema 7) is a box, or the section of a body invariant
-along y, layered in depth below its free surface: points are (x, y, z)
-with z up, the free surface z = 0, and the layered coordinate is the
-depth -z (`layered_coordinate`).  `coordinates` names the physical axes
-of the mesh's own coordinates: ["x", "y", "z"] for a box, ["x", "z"]
-for a section, whose mesh is two-dimensional with z its second
-coordinate.  Its layers run from the surface down, `depth_top` and
-`depth_bottom` their ends, attribute 1 the top one; its interfaces are
-the tops of the layers, numbered the same way, interface k (from one)
-at the top of layer k with `between_layers` [k - 1, k - 2], the deeper
-layer first, the first the free surface (or a hollow box's top) with
-[0, -1].  The base and the sides are no interfaces: they are the box's
-faces (`faces[]`), whose boundary attributes follow the interfaces' in
-the order of `FACES` (the base, then x_min, x_max, y_min and y_max; a
-section has no y faces), each the plane of constant `axis` at `value`
-with the body on the side opposite `outward`, the sign of its outward
-normal along the axis.  A box approximates an unbounded body and its
-faces carry no physics: they are labelled for a solver to put its own
-conditions on.  A field's components are those of (x, y, z) in a
-section too.  A flat mesh with faults is schema 7 as well: its manifest
-has the records of the faults and of their collars as schema 6 has
-them, and one more curve of a fault, `face_edge`, where it leaves the
-body through one of its faces (below); a flat mesh without faults has
-neither `faults` nor its layers' `attributes`, as schema 5 has neither,
-and a manifest listing one without the other is refused.  A section
-takes no faults.
+A flat mesh (schema 7) is a box, or a rectangle, the cross-section of a
+body invariant along y, layered in depth below its free surface: points
+are (x, y, z) with z up, the free surface z = 0, and the layered
+coordinate is the depth -z (`layered_coordinate`).  `coordinates` names
+the physical axes of the mesh's own coordinates: ["x", "y", "z"] for a
+box, ["x", "z"] for a rectangle, whose mesh is two-dimensional with z
+its second coordinate.  Its layers run from the surface down,
+`depth_top` and `depth_bottom` their ends, attribute 1 the top one; its
+interfaces are the tops of the layers, numbered the same way, interface
+k (from one) at the top of layer k with `between_layers` [k - 1, k - 2],
+the deeper layer first, the first the free surface (or a hollow box's
+top) with [0, -1].  The base and the sides are no interfaces: they are
+the box's faces (`faces[]`), whose boundary attributes follow the
+interfaces' in the order of `FACES` (the base, then x_min, x_max, y_min
+and y_max; a rectangle has no y faces), each the plane of constant
+`axis` at `value` with the body on the side opposite `outward`, the sign
+of its outward normal along the axis.  A box approximates an unbounded
+body and its faces carry no physics: they are labelled for a solver to
+put its own conditions on.  A field's components are those of (x, y, z)
+over a rectangle too.  A flat mesh with faults is schema 7 as well: its
+manifest has the records of the faults and of their collars as schema 6
+has them, and one more curve of a fault, `face_edge`, where it leaves
+the body through one of its faces (below); a flat mesh without faults
+has neither `faults` nor its layers' `attributes`, as schema 5 has
+neither, and a manifest listing one without the other is refused.  A
+rectangle takes no faults.
 
 A fault is an interior surface of the mesh, one conforming sheet of
 faces with no nodes split, labelled by local sides.  Its faces are the
@@ -215,7 +215,7 @@ SCHEMA = "planetmodel.mesh.manifest/5"
 SCHEMA_WITH_FAULTS = "planetmodel.mesh.manifest/6"
 
 #: The schema of a manifest whose mesh is flat-layered, a box or a
-#: section, with faults or without: its layers and interfaces by depth
+#: rectangle, with faults or without: its layers and interfaces by depth
 #: from the surface down, its `coordinates` and its `faces[]` (module
 #: docstring), which a reader of `SCHEMA` would take for radii and its
 #: top for its centre; and where it has faults the faults' and the
@@ -241,7 +241,7 @@ FLAT_FAULT_CURVES = FAULT_CURVES + ("face_edge",)
 #: them.
 AXES = ("x", "y", "z")
 
-#: The `coordinates` of a flat mesh: a box's, and a section's, whose mesh
+#: The `coordinates` of a flat mesh: a box's, and a rectangle's, whose mesh
 #: is two-dimensional with z its second coordinate.
 FLAT_COORDINATES = (("x", "y", "z"), ("x", "z"))
 
@@ -249,7 +249,7 @@ FLAT_COORDINATES = (("x", "y", "z"), ("x", "z"))
 #: boundary attributes take after the interfaces': each is the plane of
 #: constant `axis` with the body on the side opposite `outward`, the sign
 #: of its outward normal along the axis.  A mesh has those whose axis is
-#: among its `coordinates`: a box all five, a section the base and the x
+#: among its `coordinates`: a box all five, a rectangle the base and the x
 #: faces.  The names are the faces' physical groups in the mesh file.
 FACES = (("base", "z", -1), ("x_min", "x", -1), ("x_max", "x", 1),
          ("y_min", "y", -1), ("y_max", "y", 1))
@@ -736,7 +736,7 @@ class MeshManifest:
 
     @property
     def is_flat(self) -> bool:
-        """Whether the mesh is flat-layered (schema 7): a box or a section,
+        """Whether the mesh is flat-layered (schema 7): a box or a rectangle,
         layered in depth."""
         return self.schema == SCHEMA_FLAT
 
@@ -796,7 +796,7 @@ class MeshManifest:
     def mesh_axes(self, dimension: int) -> tuple[int, ...]:
         """The physical axes (0 for x, 1 for y, 2 for z) of the coordinates
         of the mesh, of `dimension` coordinates, in order: a flat mesh's
-        `coordinates`, a section's x and z; any other's x, y and z, a
+        `coordinates`, a rectangle's x and z; any other's x, y and z, a
         disc's x and y.  Refused where a flat mesh has another number."""
         if not self.is_flat:
             return tuple(range(int(dimension)))
@@ -1334,7 +1334,7 @@ def _check_skeleton(manifest: MeshManifest, fail: Fail) -> None:
 
 def _check_flat_skeleton(manifest: MeshManifest, fail: Fail) -> None:
     """The coordinates, layers, interfaces and faces of a flat mesh
-    (schema 7, module docstring): a box's or a section's
+    (schema 7, module docstring): a box's or a rectangle's
     coordinates; layers numbered 1..N from the surface down, contiguous
     in depth from a top at or below the surface; one interface per
     layer, its top,

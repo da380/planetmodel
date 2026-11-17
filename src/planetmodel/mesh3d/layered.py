@@ -24,7 +24,7 @@ a buffer added so that a far-field condition can be applied on a sphere.
 What depends on the body's shape the builder asks of the geometry's
 layout (`_layout`): concentric spheres for a spherical geometry, and
 for a flat one the box over its lateral domain cut by the planes of its
-interfaces, or that box's section in the (x, z) plane, whose base and
+interfaces, or that box's cross-section in the (x, z) plane, whose base and
 sides are faces of their own, boundary groups after the interfaces'
 (`manifest.FACES`).  Everything else, the sizing, the meshing, the
 optimisation, the orientation, the curving, the validation and the

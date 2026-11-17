@@ -1,4 +1,4 @@
-"""The horizontal grid of a box or a section: the flat counterpart of the
+"""The horizontal grid of a box or a rectangle: the flat counterpart of the
 sphere's angular grid.
 
 A `Grid` is the product of equally spaced nodes over the period of a
@@ -8,7 +8,7 @@ lateral domain: over a `Box` of extent [x0, x0 + Lx] x [y0, y0 + Ly] and
     x_i = x0 + i Lx / nx,    y_j = y0 + j Ly / ny,
 
 and over a `Rectangle` of extent [x0, x0 + Lx] and `shape` (nx,) the x_i
-alone, the section's one lateral coordinate.  The extent is the domain's
+alone, the rectangle's one lateral coordinate.  The extent is the domain's
 bounds widened by its padding (none for a model, whose box is its
 period), and the nodes are those of `fourier.Transform(shape, domain)`,
 which the grid holds as `transform` and asks for them: a grid and the
@@ -28,10 +28,10 @@ holds.  It is the mean of each lateral rule's interpolant as well
 (`cartesian.lateral`), so that a gridded field's mean and its rule
 agree.
 
-**A section** (a grid over a `Rectangle`) has one axis: the body is the
-same at every y, a value at node x_i is the body's at every y, and the
-grid's `nodes` put y at zero.  Where the grid is asked for the points of
-its transform (`points`), y is not read.
+**Over a rectangle** (a `Rectangle`) a grid has one axis: the body is
+the same at every y, a value at node x_i is the body's at every y, and
+the grid's `nodes` put y at zero.  Where the grid is asked for the
+points of its transform (`points`), y is not read.
 
 `nodes` are the two lateral coordinates of every node, broadcasting to
 `shape`, as a sampler asks them of any lateral grid

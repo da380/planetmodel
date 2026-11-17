@@ -1,7 +1,7 @@
 """The flat model file: a model of `planetmodel.cartesian` written,
 validated and read back.
 
-A box and a section, padded, with fields of depth alone, gridded fields
+A box and a rectangle, padded, with fields of depth alone, gridded fields
 of ranks 0 to 2 under each lateral rule, a Fourier field and a Fourier
 perturbation, with and without a relief, a stretch held as its upward
 displacement, a prescribed gravity, fields on interfaces, a rule in the
@@ -47,15 +47,15 @@ def layered(domain, **kw):
         interface_names=["surface", "moho"], name="two layers", **kw)
 
 
-def smooth(char, *, section=False):
+def smooth(char, *, rectangle=False):
     """A smooth periodic field of the character on the mantle, local
     components, over the period of BOX (or of RECT)."""
     shape = char.voigt_shape or char.component_shape
-    (lx, ly) = (2.5, 3.0) if not section else (2.6, 1.0)
+    (lx, ly) = (2.5, 3.0) if not rectangle else (2.6, 1.0)
 
     def fn(d, x, y):
         d, x, y = np.broadcast_arrays(d, x, y)
-        u, v = 2 * np.pi * x / lx, (0.0 * y if section else 2 * np.pi * y / ly)
+        u, v = 2 * np.pi * x / lx, (0.0 * y if rectangle else 2 * np.pi * y / ly)
         base = (1.0 + d ** 2) * np.exp(0.3 * np.sin(u) - 0.2 * np.cos(v)
                                        + 0.1 * np.sin(u + v))
         if not char.rank:
@@ -76,7 +76,7 @@ def series(grid, interval, char=SCALAR, *, seed=3):
                              character=char)
 
 
-def three_d(domain, grid, *, section=False):
+def three_d(domain, grid, *, rectangle=False):
     """The layered model with, on the mantle, gridded fields of every rank
     under each lateral rule on `grid`, and a Fourier field; on the crust a
     relative Fourier perturbation of vs."""
@@ -86,7 +86,7 @@ def three_d(domain, grid, *, section=False):
                              ("t_fourier", STRESS, "fourier"),
                              ("u_cubic", TENSOR, "cubic")):
         m = m.with_field(1, name, flat.GriddedField.sampled(
-            smooth(char, section=section), grid, breaks=[0.4, 0.7, 1.0], ngll=4,
+            smooth(char, rectangle=rectangle), grid, breaks=[0.4, 0.7, 1.0], ngll=4,
             lateral=rule, name=name))
     m = m.with_field(1, "f_series", series(grid, MANTLE, VECTOR).renamed("f_series"))
     return perturbed(m, "vs", series(grid, (0.0, 0.4), seed=5).rescaled(k=1.0, v=0.01),
@@ -130,9 +130,9 @@ def test_a_flat_model_comes_back_from_its_file(tmp_path, domain):
     them, the gridded fields and the Fourier ones by their own rules
     (stated, and the same), and the fields of depth alone exactly; the
     names, domain and scales the model's."""
-    section = domain is RECT
-    grid = flat.Grid(domain, (14, 12) if not section else 14)
-    model = three_d(domain, grid, section=section)
+    rectangle = domain is RECT
+    grid = flat.Grid(domain, (14, 12) if not rectangle else 14)
+    model = three_d(domain, grid, rectangle=rectangle)
     path = written(tmp_path, model, grid=grid)
     check_model_file(path, model)
     back = read_model(path)
@@ -156,7 +156,7 @@ def test_a_flat_model_comes_back_from_its_file(tmp_path, domain):
         assert part["vs_perturbation"].lateral_interpolation == "fourier"
         assert part["rho"].dimensions == ("node",)
         assert part["v_cubic"].dimensions == (("node", "x", "y", "component")
-                                              if not section else
+                                              if not rectangle else
                                               ("node", "x", "component"))
 
 
@@ -425,7 +425,7 @@ def test_a_damaged_flat_file_is_refused_by_name(damaged, edit, message):
         check_model_file(damage(edit), model)
 
 
-def test_a_section_s_grid_has_no_y(tmp_path):
+def test_a_rectangle_s_grid_has_no_y(tmp_path):
     model = layered(RECT)
     path = written(tmp_path, model, grid=flat.Grid(RECT, 5))
     with netCDF4.Dataset(path, "a") as ds:

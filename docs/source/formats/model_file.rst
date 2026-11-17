@@ -14,7 +14,7 @@ the format, and ``validate_structure`` there checks a file against it.
 In C++, planetmodel's own library (:doc:`../cpp`) reads the file, its
 fields evaluated by the rules below, and writes one from a code's own
 fields, checked as the readers check it.  A flat model
-(``planetmodel.cartesian``, a box or a section layered in depth) is
+(``planetmodel.cartesian``, a box or a rectangle layered in depth) is
 written to a file of its own schema, described under `Flat models`_
 below, the rest of this page holding for it as stated there.
 
@@ -373,19 +373,19 @@ Flat models
 -----------
 
 A model of ``planetmodel.cartesian`` is a body layered in depth below
-one free surface, over a lateral domain: a box, or the section of a
-body invariant along y.  Points are ``(x, y, z)`` with ``z`` up and the
-free surface ``z = 0`` in the reference body; the layered coordinate is
-the depth, positive downward.  ``write_model`` writes it as it writes a
-spherical model, and ``read_model`` reads it back as a
-``cartesian.Model``.  Its file is of schema ``planetmodel.model/3``,
-whether or not a variable states a rule in the logarithm, and holds
-everything this page describes (the units and scales, the constants,
-citation and meta, parts of contiguous layers at the GLL nodes of their
-elements, fields of every rank with their characters and rules,
-references with perturbations, the radial rules, those in the logarithm
-among them, the exact layout, the groups ``geometry`` and ``surfaces``)
-except where the geometry differs:
+one free surface, over a lateral domain: a box, or a rectangle, the
+cross-section of a body invariant along y.  Points are ``(x, y, z)``
+with ``z`` up and the free surface ``z = 0`` in the reference body; the
+layered coordinate is the depth, positive downward.  ``write_model``
+writes it as it writes a spherical model, and ``read_model`` reads it
+back as a ``cartesian.Model``.  Its file is of schema
+``planetmodel.model/3``, whether or not a variable states a rule in the
+logarithm, and holds everything this page describes (the units and
+scales, the constants, citation and meta, parts of contiguous layers at
+the GLL nodes of their elements, fields of every rank with their
+characters and rules, references with perturbations, the radial rules,
+those in the logarithm among them, the exact layout, the groups
+``geometry`` and ``surfaces``) except where the geometry differs:
 
 **The root** states the system and the domain beside the shared
 attributes:
@@ -403,12 +403,13 @@ attributes:
        ``(e_up, e_x, e_y)``, the same at every point; the first is the
        upward one, and the frame is right-handed
    * - ``domain``
-     - ``box``, or ``section`` for the section of a body invariant along y
+     - ``box``, or ``rectangle`` for the cross-section of a body invariant
+       along y
    * - ``domain_bounds``
-     - ``x0, x1, y0, y1`` of a box, ``x0, x1`` of a section: the domain
+     - ``x0, x1, y0, y1`` of a box, ``x0, x1`` of a rectangle: the domain
        proper
    * - ``domain_padding``
-     - ``px, py`` of a box, ``px`` of a section: the periodic margin on
+     - ``px, py`` of a box, ``px`` of a rectangle: the periodic margin on
        each side of each axis.  The domain's extent, ``[x0 - px, x1 +
        px]`` (and so in y), is the period of every Fourier series on it
 
@@ -427,7 +428,7 @@ in the model's unit of length: the nodes ``x_i = x0 - px + i Lx / nx``,
 ``i = 0 .. nx - 1``, of the extent of length ``Lx``, the last one step
 short of the far end, which the period closes on the first (and so in
 y).  A field is ``name(node)`` of depth alone, or ``name(node, x, y)``
-(``name(node, x)`` over a section, the same at every y), with the
+(``name(node, x)`` over a rectangle, the same at every y), with the
 trailing axes of its components as above, in the local frame; its
 ``coordinates`` attribute is ``depth``.  No flat grid has poles, a kind,
 a band or weights: ``latitude``, ``longitude``, ``colatitude_weights``,
@@ -441,7 +442,7 @@ period, a point read at its coordinates reduced into the period from
 the first node:
 
 - ``linear``: the bilinear interpolant through the nodes and the wrap
-  node one period on (linear along a section's one axis);
+  node one period on (linear along a rectangle's one axis);
 - ``cubic``: the tensor product of the periodic cubic splines through
   the nodes, continuous with two derivatives across the seam;
 - ``fourier``: analysis of the values on the grid into its real

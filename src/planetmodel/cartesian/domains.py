@@ -12,7 +12,7 @@ bounds (`contains`).
 
 `Box` bounds x and y: the lateral domain of a three-dimensional body.
 `Rectangle` bounds x alone: in the flat system, whose points have three
-coordinates, a geometry over it is the section of a body invariant
+coordinates, a geometry over it is the cross-section of a body invariant
 along y, every y inside it, and its mapping is held to that invariance.
 Each samples its body for the checks of a geometry (`lattice`, the
 depths `FLAT.lattice` lays) and is rescaled with it (`scaled`).
@@ -141,8 +141,8 @@ class Box:
 
 class Rectangle:
     """x in `bounds`, with `padding` on each side, every y inside: the
-    lateral domain of the section of a body invariant along y; see the
-    module docstring.  Two rectangles are equal when their bounds and
+    lateral domain of the cross-section of a body invariant along y; see
+    the module docstring.  Two rectangles are equal when their bounds and
     padding are."""
 
     #: The lateral axes the domain bounds; the body is invariant along y.

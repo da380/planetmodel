@@ -18,26 +18,27 @@ in `modelfile` is the definition of the format;
 **The root** states the system and the lateral domain beside the shared
 attributes: `coordinate_system`, `flat` (`FLAT.name`); `local_frame`,
 `up x y`, the local frame (e_up, e_x, e_y) every component is in;
-`domain`, `box` (a `Box`) or `section` (a `Rectangle`, the section of a
-body invariant along y); `domain_bounds`, (x0, x1, y0, y1) of a box and
-(x0, x1) of a section, and `domain_padding`, (px, py) or (px,), exactly
-as the domain holds them, so that its extent, the period of every
-Fourier series on it, is rebuilt to the bit.  The skeleton is in depth
-from the free surface down: `layer_bounds(layer, bound)` the depths of
-each layer's top and bottom, `interface_depth(interface)` the depths of
-the interfaces as `cartesian.Geometry` numbers them, interface 0 the
-free surface (or a hollowed body's top) and interface k the top of layer
-k, the base a face of the box and no interface; parts run from the
-surface down, `part_0` holding the top layer.
+`domain`, `box` (a `Box`) or `rectangle` (a `Rectangle`, the
+cross-section of a body invariant along y); `domain_bounds`, (x0, x1,
+y0, y1) of a box and (x0, x1) of a rectangle, and `domain_padding`, (px,
+py) or (px,), exactly as the domain holds them, so that its extent, the
+period of every Fourier series on it, is rebuilt to the bit.  The
+skeleton is in depth from the free surface down: `layer_bounds(layer,
+bound)` the depths of each layer's top and bottom,
+`interface_depth(interface)` the depths of the interfaces as
+`cartesian.Geometry` numbers them, interface 0 the free surface (or a
+hollowed body's top) and interface k the top of layer k, the base a face
+of the box and no interface; parts run from the surface down, `part_0`
+holding the top layer.
 
 **A part** holds `depth(node)` (an auxiliary coordinate, CF
 `standard_name` `depth` with `positive` `down`) in place of the radius
 and the horizontal grid as `cartesian.Grid` states it: the CF coordinate
 variables `x(x)` and, over a box, `y(y)`, in the model's unit of length,
 the nodes x_i = x0 - px + i Lx / nx of the domain's extent (`Grid`), the
-last one step short of the far end; a section has no `y`.  A field is
+last one step short of the far end; a rectangle has no `y`.  A field is
 `name(node)` of depth alone or `name(node, x, y)` (`name(node, x)` over
-a section), with the trailing axes of its components as on the sphere,
+a rectangle), with the trailing axes of its components as on the sphere,
 the components in the local frame, the same at every point; its
 `lateral_interpolation` is one of the flat rules (`cartesian.lateral`:
 `linear`, `cubic`, `fourier`), and its `coordinates` attribute `depth`.
@@ -113,7 +114,7 @@ __all__ = ["FlatLayout", "LAYOUT", "LOCAL_FRAME_AXES", "DOMAINS", "SPHERICAL_NAM
 LOCAL_FRAME_AXES = ("up", "x", "y")
 
 #: The kinds of lateral domain a flat file states, by `domain`.
-DOMAINS = ("box", "section")
+DOMAINS = ("box", "rectangle")
 
 #: The statements of a spherical file a flat one never makes: dimensions,
 #: attributes and variables of a grid on the sphere, and of the radius.
@@ -136,7 +137,7 @@ _DISPLACEMENT_RULES = ("polynomial", "cubic")
 # -- the domain and the grid, shared with the flat surface file -----------------------
 
 def write_domain(group: Any, domain: Domain) -> None:
-    """The statements of the lateral domain: `domain`, `box` or `section`,
+    """The statements of the lateral domain: `domain`, `box` or `rectangle`,
     and `domain_bounds` and `domain_padding` as the domain holds them."""
     group.setncattr("domain", DOMAINS[0] if domain.axes == ("x", "y") else DOMAINS[1])
     group.setncattr("domain_bounds", np.ravel(np.asarray(domain.bounds, dtype=float)))
@@ -175,7 +176,7 @@ def read_domain(group: Any, fail: Callable[[str], NoReturn]) -> Domain:
 
 def axes_of(domain: Domain) -> tuple[str, ...]:
     """The lateral dimensions of a grid over the domain: (x, y) over a box
-    and (x,) over a section."""
+    and (x,) over a rectangle."""
     return tuple(domain.axes)
 
 
@@ -194,11 +195,11 @@ def check_grid_variables(group: Any, domain: Domain,
                          fail: Callable[[str], NoReturn]) -> Grid:
     """The grid a group's dimensions hold over `domain`, its coordinate
     variables checked to be the grid's nodes (to 1e-12 of the period),
-    `fail` called with what is wrong otherwise; a group over a section
+    `fail` called with what is wrong otherwise; a group over a rectangle
     with a `y` is refused."""
     axes = axes_of(domain)
     if "y" not in axes and ("y" in group.dimensions or "y" in group.variables):
-        fail("a section's grid has the one axis x, and the group states y")
+        fail("a rectangle's grid has the one axis x, and the group states y")
     for axis in axes:
         if axis not in group.dimensions or axis not in group.variables:
             fail(f"no coordinate {axis!r}")
@@ -358,7 +359,7 @@ class FlatLayout:
         return False
 
     def lateral_dims(self, grid: Grid) -> tuple[str, ...]:
-        """(x, y) over a box, (x,) over a section."""
+        """(x, y) over a box, (x,) over a rectangle."""
         return axes_of(grid.domain)
 
     def lateral_shape(self, grid: Grid) -> tuple[int, ...]:

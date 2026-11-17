@@ -1,4 +1,4 @@
-"""Flat-layered models: a box or a section, layered in depth below one
+"""Flat-layered models: a box or a rectangle, layered in depth below one
 free surface.
 
 The counterpart of the spherical library for bodies layered in depth,
@@ -20,21 +20,24 @@ boundary, is a face and no interface, as the centre of a ball is none.
 
 Fields are evaluated at (depth, x, y) in `FLAT`, whose local frame
 (e_up, e_x, e_y) is vertical first, so the transverse isotropy of
-`materials` and the rules written for radial fields carry over.  The
-frame is right-handed and its first vector points out of the body, as
-e_r does on the sphere; (e_down, e_x, e_y) would be left-handed.  So the
-first vector points up while depth increases down: a rank-1 field's
-first component is its upward one, and a derivative along the layered
-coordinate is the downward one, d/d depth = -d/dz.
+`materials` and the rules written for radial fields carry over.  A field
+of depth alone (`DepthField`) is the flat radial field: in a name shared
+with the spherical side (`is_radial`, `radial_profile`), "radial" means
+of the layered coordinate alone, depth here.  The frame is right-handed
+and its first vector points out of the body, as e_r does on the sphere;
+(e_down, e_x, e_y) would be left-handed.  So the first vector points up
+while depth increases down: a rank-1 field's first component is its
+upward one, and a derivative along the layered coordinate is the
+downward one, d/d depth = -d/dz.
 
 A finite box approximates an unbounded domain, laterally and in depth,
-and carries no boundary physics.  The lateral domain is a `Box` (x and
-y bounded) or a `Rectangle` (x bounded: the section of a body invariant
-along y), each with optional periodic padding, none by default, a
-model's box being its period.  Below the base a model is padded, where
-its base must be moved beyond reach, by `Model.extended(depths,
-fields="hold")`, the lowest layer's properties held.  No gravity is
-computed here; a model may carry a prescribed one.
+and carries no boundary physics.  The lateral domain is a `Box` (x and y
+bounded) or a `Rectangle` (x bounded: the cross-section of a body
+invariant along y), each with optional periodic padding, none by
+default, a model's box being its period.  Below the base a model is
+padded, where its base must be moved beyond reach, by
+`Model.extended(depths, fields="hold")`, the lowest layer's properties
+held.  No gravity is computed here; a model may carry a prescribed one.
 
 A flat body is placed in the physical world by a mapping, as a
 spherical one is, and the mapping machinery is shared (`MappingBase`,
@@ -50,11 +53,11 @@ linearly in depth between them; `Geometry.stretched` and
 A flat geometry is meshed for MFEM by `planetmodel.mesh3d`, as a
 spherical one is: `build_layered_mesh(MeshSpec(geometry, sizing), path)`
 gives the box over the domain's extent cut by the planes of the
-interfaces, or over a `Rectangle` its section in the (x, z) plane, with
-the layers and interfaces numbered from the surface down and the base
-and the sides labelled faces; `export_mfem` writes it with a model's
-fields by layer.  Faults given in a `fault.CartesianFrame`, whose points
-are this package's, are built into a box as into a sphere
+interfaces, or over a `Rectangle` its cross-section in the (x, z) plane,
+with the layers and interfaces numbered from the surface down and the
+base and the sides labelled faces; `export_mfem` writes it with a
+model's fields by layer.  Faults given in a `fault.CartesianFrame`,
+whose points are this package's, are built into a box as into a sphere
 (`mesh3d.EmbeddedFault`), leaving it through its surface, its base or a
 side; under topography the mesh is the reference box, deformed at the
 export, and a fault, given where it physically is, is pulled back
@@ -79,7 +82,7 @@ exactly where the field has a mean of its own (a Fourier field's
 constant term, a gridded field's node means), by the grid's quadrature
 otherwise, and `horizontally_averaged` a model (`means`).  A Fourier or
 gridded function is a relief like any other.  Over a `Rectangle` every
-grid, series and rule has the one axis x, and a section's field is the
+grid, series and rule has the one axis x, and a rectangle's field is the
 same at every y.
 
 A flat model is looked at through its slices

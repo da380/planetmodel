@@ -97,7 +97,7 @@ def test_on_an_interface_a_plane_takes_the_side_asked_for(two):
     assert np.all(np.isnan(lacking.values))
 
 
-def test_a_plane_of_a_section_is_a_line_in_x():
+def test_a_plane_of_a_rectangle_is_a_line_in_x():
     rect = flat.Rectangle((0.0, 2.0))
     m = flat.LayeredIsotropicElastic([0.0, 1.0], rect, rho=[1.0], vp=[2.0], vs=[1.0])
     m = m.with_field(0, "vs", flat.AnalyticField((0.0, 1.0), lateral, name="vs"),

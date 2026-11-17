@@ -1,4 +1,4 @@
-"""A box and a section under topography through the MFEM export.
+"""A box and a rectangle under topography through the MFEM export.
 
 The reference mesh is deformed at the export, as the sphere's is: in
 physical delivery the nodes are moved by the stretch, MFEM reads the
@@ -34,8 +34,8 @@ mfem = pytest.importorskip("mfem.ser", reason="needs the planetmodel[mfem] extra
 pytestmark = [pytest.mark.gmsh, pytest.mark.mfem]
 
 
-def section():
-    """The two layers over x in [0, 1], a section, under the range's
+def rectangle():
+    """The two layers over x in [0, 1], a rectangle, under the range's
     profile at y = 0 and the root's: the same at every y."""
     g = cartesian.Geometry(Skeleton([0.0, 0.4, 1.0]), cartesian.Rectangle((0.0, 1.0)),
                            layer_names=["crust", "mantle"],
@@ -45,7 +45,7 @@ def section():
                      lambda x, y: root(x, 0.0) + 0.0 * y, None]))
 
 
-GEOMETRIES = {"box": topography, "section": section}
+GEOMETRIES = {"box": topography, "rectangle": rectangle}
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +106,7 @@ def test_the_physical_mesh_lies_on_the_topography_with_positive_jacobians(
         axis = card.coordinates.index(face["axis"])
         x = boundary_nodes(mesh, face["attribute"])
         assert np.abs(x[:, axis] - face["value"]).max() < 1e-12
-    if kind == "section":
+    if kind == "rectangle":
         assert mesh.SpaceDimension() == 2
 
 
@@ -180,7 +180,7 @@ def test_fields_at_the_deformed_dofs_are_the_model_s_at_their_reference_points(
     back = res.mapping.inverse(x)
     assert np.abs(back[:, :2] - X[:, :2]).max() < 1e-12
     # the moved mesh interpolates the stretch at its nodes, quadratically
-    # between them: measured 4.6e-3 (box) and 1.5e-3 (section) off m(X)
+    # between them: measured 4.6e-3 (box) and 1.5e-3 (rectangle) off m(X)
     # inside the elements of order 2, a few percent of an element, so q
     # by 8.9e-3 and 2.4e-3
     assert np.abs(res.mapping(X) - x).max() < 0.01

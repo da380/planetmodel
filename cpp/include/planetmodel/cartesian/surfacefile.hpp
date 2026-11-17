@@ -16,7 +16,7 @@
  * over it, its nodes the coordinate variables `x(x)` and, over a box,
  * `y(y)`; `depth`, where stated, is the depth of the plane in the
  * reference body, and absent the fields lie on the free surface; a field
- * is `name(x, y)` (`name(x)` over a section) after its support's leading
+ * is `name(x, y)` (`name(x)` over a rectangle) after its support's leading
  * dimension, its lateral rule one of the flat rules.  A flat grid has no
  * poles: polar values and every other statement of a spherical file are
  * refused.  `ReadSurfaceFile(path)` reads a file whole and holds it to the

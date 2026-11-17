@@ -16,7 +16,7 @@ from planetmodel.plotting import in_plane
 
 
 def flat_card(*, coordinates=("x", "z")):
-    """A flat manifest assembled by hand: two layers of a section over
+    """A flat manifest assembled by hand: two layers of a rectangle over
     x in [-2, 3], or of a box over that and y in [0, 1]."""
     g = cartesian.Geometry(Skeleton([0.0, 0.4, 1.5]),
                            cartesian.Rectangle((-2.0, 3.0)) if len(coordinates) == 2
@@ -107,7 +107,7 @@ def test_a_mesh_in_a_plane_is_cut_whole():
     assert rim.pieces.shape == (4, 2, 2)
     assert np.isclose(np.linalg.norm(rim.pieces[:, 1] - rim.pieces[:, 0],
                                      axis=1).sum(), 4.0, rtol=1e-15)
-    # the plane's own coordinates: the (x, z) plane of a section's mesh
+    # the plane's own coordinates: the (x, z) plane of a rectangle's mesh
     side = in_plane(points[:, [0, 2, 1]], triangles, [0, 0, 0], [[1, 0, 0], [0, 0, 1]])
     assert np.array_equal(side.pieces, cut.pieces)
     bent = points.copy()
@@ -123,8 +123,8 @@ def test_a_mesh_in_a_plane_is_cut_whole():
 def test_a_flat_spec_reads_its_dimension_from_the_domain():
     sizing = UniformInterfaces(0.2, 0.3, 0.3)
     box = cartesian.Geometry(Skeleton([0.0, 1.0]), cartesian.Box([(0, 1), (0, 1)]))
-    section = cartesian.Geometry(Skeleton([0.0, 1.0]), cartesian.Rectangle((0, 1)))
+    rectangle = cartesian.Geometry(Skeleton([0.0, 1.0]), cartesian.Rectangle((0, 1)))
     assert MeshSpec(box, sizing).dimension == 3
-    assert MeshSpec(section, sizing).dimension == 2
-    assert MeshSpec(section, sizing).domain is section
+    assert MeshSpec(rectangle, sizing).dimension == 2
+    assert MeshSpec(rectangle, sizing).domain is rectangle
     assert MeshSpec(box, sizing).outer_radius == 1.0

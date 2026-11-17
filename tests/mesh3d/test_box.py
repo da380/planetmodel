@@ -1,5 +1,5 @@
 """Flat-layered meshes: a box cut by the planes of its interfaces, and its
-section in the (x, z) plane, each a few elements across.
+cross-section in the (x, z) plane, each a few elements across.
 
 Every cell lies in the layer its attribute says and every boundary
 element on the plane its group says, facing out of the layer below it or
@@ -42,13 +42,13 @@ def box(**kw):
                               layer_names=LAYERS, interface_names=INTERFACES, **kw)
 
 
-def section(**kw):
-    """The same three layers over x in [-1, 1]: a section, invariant along y."""
+def rectangle(**kw):
+    """The same three layers over x in [-1, 1]: a rectangle, invariant along y."""
     return cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((-1.0, 1.0)),
                               layer_names=LAYERS, interface_names=INTERFACES, **kw)
 
 
-GEOMETRIES = {"box": box, "section": section}
+GEOMETRIES = {"box": box, "rectangle": rectangle}
 ORDERS = (1, 2, 3)
 
 
@@ -113,17 +113,17 @@ def normals(mesh, faces):
 
 @pytest.mark.parametrize("order", ORDERS)
 @pytest.mark.parametrize("kind", list(GEOMETRIES))
-def test_a_box_and_a_section_build_checked_at_every_order(built, kind, order):
+def test_a_box_and_a_rectangle_build_checked_at_every_order(built, kind, order):
     res = built(kind, order)
     v = res.validation
     assert v.ok, v.failures
     assert v.negative_jacobians == 0 and v.negative_cells == 0 and v.min_sicn > 0.0
     assert v.inward_faces == 0
     assert v.max_interface_radius_error < 1e-12
-    d = {"box": 3, "section": 2}[kind]
+    d = {"box": 3, "rectangle": 2}[kind]
     assert res.spec.dimension == d and res.spec.order == order
     assert res.counts["layers"] == 3 and res.counts["interfaces"] == 3
-    assert res.counts["faces"] == {"box": 5, "section": 3}[kind]
+    assert res.counts["faces"] == {"box": 5, "rectangle": 3}[kind]
     assert v.group_counts == {"layers": 3, "interfaces": 3,
                               "faces": res.counts["faces"]}
     assert res.mapping.is_identity and res.geometry is res.spec.geometry
@@ -144,8 +144,8 @@ def test_every_cell_lies_in_the_layer_its_attribute_says(built, kind):
         assert nodes.min() >= lo - 1e-12 and nodes.max() <= hi + 1e-12
     # the arrays' own rule agrees, by position alone
     assert np.array_equal(mesh.layers_by_position(card), mesh.cell_attributes)
-    # a section's mesh lies in the (x, z) plane, as its coordinates say
-    if kind == "section":
+    # a rectangle's mesh lies in the (x, z) plane, as its coordinates say
+    if kind == "rectangle":
         assert card.coordinates == ["x", "z"] and np.all(mesh.points[:, 2] == 0.0)
         assert mesh.points[:, 1].min() == pytest.approx(-1.0, abs=1e-12)
         assert mesh.points[:, 1].max() == pytest.approx(0.0, abs=1e-12)
@@ -205,7 +205,7 @@ def test_the_mesh_file_names_its_groups(built, kind):
     d = res.spec.dimension
     assert groups[d] == {1: "upper", 2: "middle", 3: "lower"}
     faces = {"box": ["base", "x_min", "x_max", "y_min", "y_max"],
-             "section": ["base", "x_min", "x_max"]}[kind]
+             "rectangle": ["base", "x_min", "x_max"]}[kind]
     assert groups[d - 1] == dict(enumerate(INTERFACES + faces, start=1))
 
 
@@ -219,7 +219,7 @@ def test_the_flat_manifest_describes_the_box_and_round_trips(built, kind, tmp_pa
     assert "faults" not in data
     card = sc.read(res.manifest_path)
     assert card.is_flat and card.coordinate == "depth"
-    assert card.coordinates == {"box": ["x", "y", "z"], "section": ["x", "z"]}[kind]
+    assert card.coordinates == {"box": ["x", "y", "z"], "rectangle": ["x", "z"]}[kind]
     assert [(e["name"], e["depth_top"], e["depth_bottom"], e["in_geometry"])
             for e in card.layers] == [("upper", 0.0, 0.3, True),
                                       ("middle", 0.3, 0.6, True),
@@ -231,7 +231,7 @@ def test_the_flat_manifest_describes_the_box_and_round_trips(built, kind, tmp_pa
     want = {"box": [(4, "base", "z", -1.0, -1), (5, "x_min", "x", 0.0, -1),
                     (6, "x_max", "x", 1.0, 1), (7, "y_min", "y", -0.5, -1),
                     (8, "y_max", "y", 0.5, 1)],
-            "section": [(4, "base", "z", -1.0, -1), (5, "x_min", "x", -1.0, -1),
+            "rectangle": [(4, "base", "z", -1.0, -1), (5, "x_min", "x", -1.0, -1),
                         (6, "x_max", "x", 1.0, 1)]}[kind]
     assert [(e["attribute"], e["name"], e["axis"], e["value"], e["outward"])
             for e in card.faces] == want
@@ -376,7 +376,7 @@ def test_a_request_the_box_cannot_meet_is_refused_by_name():
         MeshSpec(g, SIZING, dimension=2)
     with pytest.raises(ValueError, match="dimension must be 2 for a flat geometry "
                                          "over a Rectangle"):
-        MeshSpec(section(), SIZING, dimension=3)
+        MeshSpec(rectangle(), SIZING, dimension=3)
     named = cartesian.Geometry(Skeleton(DEPTHS), cartesian.Rectangle((0.0, 1.0)),
                                interface_names=["top", "base", None])
     with pytest.raises(ValueError, match=r"named \['base'\] would share a name"):
@@ -388,14 +388,14 @@ def test_a_request_the_box_cannot_meet_is_refused_by_name():
         MeshSpec(Skeleton(DEPTHS), SIZING)
     # the spec's defaults: the geometry's own dimension, nothing else asked
     assert MeshSpec(g, SIZING).dimension == 3
-    assert MeshSpec(section(), SIZING).dimension == 2
+    assert MeshSpec(rectangle(), SIZING).dimension == 2
     assert MeshSpec(full_geometry(), COARSE).dimension == 3
 
 
 # ---------------------------------------------------------------- geometries
 
 def test_a_hollow_box_and_a_padded_domain_build(tmp_path):
-    hollow = section().hollowed(0.1)
+    hollow = rectangle().hollowed(0.1)
     res = build_layered_mesh(MeshSpec(hollow, SIZING, order=1), tmp_path / "hollow")
     card = sc.read(res.manifest_path)
     assert [e["depth"] for e in card.interfaces] == [0.1, 0.3, 0.6]
@@ -425,8 +425,8 @@ def test_a_mapping_is_carried_and_the_nodes_stay_on_the_reference_planes(kind,
 # ---------------------------------------------------------------- pictures
 
 @pytest.mark.parametrize("kind", list(GEOMETRIES))
-def test_a_box_and_a_section_are_drawn_by_layer(built, kind):
-    """A vertical section of the box, and the section's own mesh, tile the
+def test_a_box_and_a_rectangle_are_drawn_by_layer(built, kind):
+    """A vertical section of the box, and the rectangle's own mesh, tile the
     body's section exactly, each piece in its layer's colour."""
     matplotlib = pytest.importorskip("matplotlib",
                                      reason="needs the planetmodel[plot] extra")

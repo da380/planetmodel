@@ -13,7 +13,7 @@ from planetmodel.fields import RadialField
 from planetmodel.testing import check_geometry, check_model
 
 BOX = flat.Box([(0.0, 400e3), (-200e3, 200e3)])
-SECTION = flat.Rectangle((-500e3, 500e3))
+RECTANGLE = flat.Rectangle((-500e3, 500e3))
 
 
 def test_the_crust_over_a_mantle_holds_its_documented_values():
@@ -38,8 +38,8 @@ def test_the_crust_over_a_mantle_holds_its_documented_values():
 
 
 def test_the_crust_over_a_mantle_takes_a_maxwell_asthenosphere_and_a_base():
-    m = flat.CrustOverMantle(SECTION, viscosity=1e20, base=400e3)
-    assert m.skeleton.boundaries[-1] == 400e3 and m.geometry.domain == SECTION
+    m = flat.CrustOverMantle(RECTANGLE, viscosity=1e20, base=400e3)
+    assert m.skeleton.boundaries[-1] == 400e3 and m.geometry.domain == RECTANGLE
     assert m.name == "crust over mantle (Maxwell asthenosphere)"
     eta = m.layer("asthenosphere")["viscosity"]
     assert type(eta) is flat.DepthField and eta(300e3) == 1e20
@@ -52,7 +52,7 @@ def test_the_crust_over_a_mantle_takes_a_maxwell_asthenosphere_and_a_base():
         flat.CrustOverMantle(BOX, viscosity=0.0)
     km = m.converted(Scales(length=1e3, mass=1.0, time=1.0, temperature=1.0))
     assert type(km) is flat.CrustOverMantle and km.skeleton.boundaries[-1] == 400.0
-    assert km.geometry.domain == SECTION.scaled(1e-3)
+    assert km.geometry.domain == RECTANGLE.scaled(1e-3)
 
 
 def test_the_layered_model_is_the_spherical_one_by_depth():
@@ -68,7 +68,7 @@ def test_the_layered_model_is_the_spherical_one_by_depth():
         assert np.allclose(a(d), b(d), rtol=1e-15, atol=0), name
     assert np.isclose(m.layer("mantle")["rho"](100e3), 3300.1, rtol=1e-15)
     check_model(m)
-    slab = flat.LayeredIsotropicElastic.homogeneous(50e3, SECTION, rho=2700.0,
+    slab = flat.LayeredIsotropicElastic.homogeneous(50e3, RECTANGLE, rho=2700.0,
                                                     vp=6000.0, vs=3500.0, name="slab")
     assert slab.nlayers == 1 and slab.layer("slab").interval == (0.0, 50e3)
     with pytest.raises(ValueError, match="rho needs 2 values, got 1"):

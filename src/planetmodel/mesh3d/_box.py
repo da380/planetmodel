@@ -1,9 +1,9 @@
-"""A box cut by horizontal planes, or its section, and which entity is which.
+"""A box cut by horizontal planes, or its cross-section, and which entity is which.
 
 A flat geometry's body is the box over its lateral domain's extent,
 from the free surface z = 0 (or a hollow box's top) down to its base,
 layer k between the planes z = -d_k and z = -d_(k+1) of its depths; over
-a `Rectangle` it is the section of that body in the (x, z) plane, a
+a `Rectangle` it is the cross-section of that body in the (x, z) plane, a
 two-dimensional mesh whose coordinates are (x, z).  The construction
 is one box (or rectangle) per layer, fragmented into one body so that
 the layers share their interfaces, as the concentric construction
@@ -44,7 +44,7 @@ Each boundary entity states its outward direction (`PlanarTagging`):
 up for the top and every interface, out of the layer below as on the
 sphere, down for the base, away from the body for a side.  The distance
 to an interface is |z - z_k|, in the mesh's own coordinates (its second
-in a section), and an interface's measured place the mean depth of its
+over a rectangle), and an interface's measured place the mean depth of its
 nodes.
 """
 from __future__ import annotations
@@ -87,7 +87,7 @@ class PlanarTagging(Tagging):
     where a fault cuts it), numbered after the interfaces; `directions`
     the outward direction of every boundary
     entity in the mesh's coordinates; `axis` the index of the vertical
-    among the mesh's coordinates, its last: 2 in a box, 1 in a section.
+    among the mesh's coordinates, its last: 2 in a box, 1 over a rectangle.
     """
 
     _: KW_ONLY
@@ -166,7 +166,7 @@ def build_box(boundaries: ArrayLike, *, coordinates: Sequence[str],
     of the body, which the matching tolerance is relative to (`atol`, by
     default `_geometry.default_atol` of it); `surfaces` the tags of OCC
     surfaces already made in the session (a box alone, three
-    dimensions).  Refused, as a ValueError: surfaces in a section, and
+    dimensions).  Refused, as a ValueError: surfaces over a rectangle, and
     surfaces that cut a layer or an interface into pieces.
     """
     b = [float(v) for v in np.atleast_1d(np.asarray(boundaries, dtype=float))]
@@ -177,7 +177,7 @@ def build_box(boundaries: ArrayLike, *, coordinates: Sequence[str],
         raise ValueError(f"a box's coordinates end with z, got {coordinates}")
     surfaces = tuple(int(s) for s in surfaces)
     if surfaces and d != 3:
-        raise ValueError("surfaces are fragmented into a box alone, not a section")
+        raise ValueError("surfaces are fragmented into a box alone, not a rectangle")
     lateral = list(coordinates[:-1])
     tol = default_atol(scale) if atol is None else float(atol)
     occ = gmsh.model.occ

@@ -5,7 +5,7 @@
  * @file
  * @brief The flat model file, as `planetmodel.cartesian.modelfile` defines
  * it and the format page describes it: a model of `planetmodel.cartesian`,
- * layered in depth over a box or a section, in one netCDF-4 file of schema
+ * layered in depth over a box or a rectangle, in one netCDF-4 file of schema
  * `planetmodel.model/3`, read and written.
  *
  * Everything the model file holds on the sphere (modelfile.hpp) it holds
@@ -16,7 +16,7 @@
  * and interface k the top of layer k, the base a face of the box and no
  * interface; a part holds `depth(node)` and the horizontal grid `x(x)` and,
  * over a box, `y(y)`; a field is `name(node)` of depth alone or
- * `name(node, x, y)` (`name(node, x)` over a section), its components in
+ * `name(node, x, y)` (`name(node, x)` over a rectangle), its components in
  * the local frame (e_up, e_x, e_y), the same at every point; the lateral
  * rules are the doubly periodic `linear` and `cubic` (cartesian/rules.hpp),
  * `fourier` the Python's alone and refused by name where a field stating
@@ -164,7 +164,7 @@ inline Domain ReadDomain(const netcdf::Attributes& attrs, const std::string& sou
   }
   const auto kind = TextOf(attrs, "domain");
   if (!kind || !std::ranges::contains(DOMAIN_KINDS, std::string_view{*kind})) {
-    Fail(source, "domain", std::format("is {}, not box or section", kind.value_or("a number")));
+    Fail(source, "domain", std::format("is {}, not box or rectangle", kind.value_or("a number")));
   }
   const auto bounds = NumbersOf(attrs, "domain_bounds");
   const auto padding = NumbersOf(attrs, "domain_padding");
@@ -194,14 +194,14 @@ inline void WriteDomain(int group, const Domain& domain, const std::string& sour
   netcdf::WriteAttribute(group, netcdf::GLOBAL, "domain_padding", domain.PaddingList(), source);
 }
 
-/// The names of a domain's lateral axes: (x, y) of a box, (x) of a section.
+/// The names of a domain's lateral axes: (x, y) of a box, (x) of a rectangle.
 inline std::vector<std::string> AxesOf(const Domain& domain) {
   return domain.IsBox() ? std::vector<std::string>{"x", "y"} : std::vector<std::string>{"x"};
 }
 
 /// The grid a group's dimensions hold over `domain`, its coordinate
 /// variables checked to be the grid's nodes (to 1e-12 of the period), as
-/// the Python's `check_grid_variables` does; a section's group with a `y`
+/// the Python's `check_grid_variables` does; a rectangle's group with a `y`
 /// is refused.
 inline Grid GridOf(int group, const Domain& domain, const std::string& source,
                    std::string_view where) {
@@ -209,7 +209,7 @@ inline Grid GridOf(int group, const Domain& domain, const std::string& source,
   if (!domain.IsBox() &&
       (std::ranges::contains(dims, std::string{"y"}) || netcdf::HasVariable(group, "y"))) {
     Fail(source, Under(where, "y"),
-         "a section's grid has the one axis x, and the group states y");
+         "a rectangle's grid has the one axis x, and the group states y");
   }
   auto shape = std::vector<std::size_t>{};
   for (const auto& axis : AxesOf(domain)) {
@@ -309,17 +309,6 @@ inline void WriteCitation(int root, const std::vector<std::string>& citation,
 
 }  // namespace detail
 
-/**
- * @brief Whether a variable of a flat file varies laterally: its dimensions
- * after the first are the grid's, `x` and over a box `y`.  The test of a
- * flat file's variables, `FileVariable::IsLateral` being the spherical
- * file's.
- * @param var The variable, as stored.
- */
-[[nodiscard]] inline bool VariesLaterally(const FileVariable& var) {
-  return var.dimensions.size() >= 2 && var.dimensions[1] == "x";
-}
-
 /** @brief One part of a flat model file: a run of layers on one grid. */
 struct FilePart {
   int index = 0;                        /**< `part_<index>`. */
@@ -330,8 +319,8 @@ struct FilePart {
   std::vector<double> depth{};          /**< Every node's depth, element by element. */
   std::optional<Grid> grid{};           /**< The horizontal grid. */
   /** @brief The variables by name: `name(node)` of depth alone, or
-   * `name(node, x, y)` (`name(node, x)` over a section) where it varies
-   * laterally (`VariesLaterally`), then its components' axes. */
+   * `name(node, x, y)` (`name(node, x)` over a rectangle) where it varies
+   * laterally (`FileVariable::IsLateral`), then its components' axes. */
   std::map<std::string, FileVariable> variables{};
 
   /**
@@ -386,7 +375,7 @@ struct FileSurfaces {
  * A source of depth alone is given at each of `depths`, the layer's nodes
  * element by element, an element boundary twice.  A source that varies
  * laterally is given at (depth, x_i, y_j) for each depth and each node of
- * the grid, x before y and y fastest; over a section at (depth, x_i, 0).
+ * the grid, x before y and y fastest; over a rectangle at (depth, x_i, 0).
  */
 struct LayerPoints {
   std::vector<double> depths; /**< The depths, from the top of the layer down. */
@@ -635,8 +624,8 @@ class Field {
    * @param depth The depth, within the layer to the file's tolerance.
    * @param x The first lateral coordinate, of any range: the field is
    *        periodic over the domain's extent.
-   * @param y The second lateral coordinate, of any range; not read in a
-   *        section.
+   * @param y The second lateral coordinate, of any range; not read over a
+   *        rectangle.
    * @param frame The frame the components are given in.
    * @return The components, `Size()` of them.
    * @throws planetmodel::Error if the point lies off the layer.
@@ -672,8 +661,8 @@ class Field {
    * the derivative in depth is downward, d/d depth = -d/dz.
    * @param depth The depth, within the layer to the file's tolerance.
    * @param x The first lateral coordinate, of any range.
-   * @param y The second lateral coordinate, of any range; not read in a
-   *        section, where the derivative in y is zero.
+   * @param y The second lateral coordinate, of any range; not read over a
+   *        rectangle, where the derivative in y is zero.
    * @param frame The frame the components are given in.
    * @return The derivatives in depth, x and y, `Size()` of each.
    * @throws planetmodel::Error if the point lies off the layer.
@@ -803,8 +792,8 @@ class ScalarField {
    * @brief The value at a point by its flat coordinates.
    * @param depth The depth, within the layer to the file's tolerance.
    * @param x The first lateral coordinate, of any range.
-   * @param y The second lateral coordinate, of any range; not read in a
-   *        section.
+   * @param y The second lateral coordinate, of any range; not read over a
+   *        rectangle.
    * @throws planetmodel::Error if the point lies off the layer.
    */
   [[nodiscard]] double Value(double depth, double x, double y) const {
@@ -825,8 +814,8 @@ class ScalarField {
    * depth is downward, d/d depth = -d/dz.
    * @param depth The depth, within the layer to the file's tolerance.
    * @param x The first lateral coordinate, of any range.
-   * @param y The second lateral coordinate, of any range; not read in a
-   *        section.
+   * @param y The second lateral coordinate, of any range; not read over a
+   *        rectangle.
    * @return (d/d depth, d/dx, d/dy).
    * @throws planetmodel::Error if the point lies off the layer.
    */
@@ -883,8 +872,8 @@ class VerticalStretch {
    * @param depth The depth, within the reference body to the file's
    *        tolerance.
    * @param x The first lateral coordinate, of any range.
-   * @param y The second lateral coordinate, of any range; not read in a
-   *        section.
+   * @param y The second lateral coordinate, of any range; not read over a
+   *        rectangle.
    * @throws planetmodel::Error if the depth lies outside the body.
    */
   [[nodiscard]] double Height(double depth, double x, double y) const {
@@ -1984,7 +1973,7 @@ class ModelFile {
             }
           }
         }
-        if (VariesLaterally(var)) {
+        if (var.IsLateral()) {
           check_rule(*part.grid, *var.Text("lateral_interpolation"), where);
         }
       }
@@ -2071,7 +2060,7 @@ class ModelFile {
     if (const auto listed = var.Numbers("radial_layers")) {
       for (const auto x : *listed) radial_layers.push_back(static_cast<int>(x));
     }
-    const auto lateral = VariesLaterally(var);
+    const auto lateral = var.IsLateral();
     const auto cells = part.grid->Size();
     out.radial = !lateral || std::ranges::contains(radial_layers, layer);
     if (out.radial) {
@@ -2249,7 +2238,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       if (var.dimensions.size() != var.shape.size() || var.values.size() != size) {
         fail(vwhere, "has values that do not fill its shape");
       }
-      const auto lateral = VariesLaterally(var);
+      const auto lateral = var.IsLateral();
       if (lateral && !on_grid(var, "node", nnode, grid)) fail(vwhere, "is not on the part's grid");
       const auto need = vname == "displacement"
                             ? std::vector<std::string>{"radial_interpolation"}

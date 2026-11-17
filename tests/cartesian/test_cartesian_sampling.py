@@ -2,7 +2,7 @@
 
 The sample holds to `check_sample` (the contract the spherical sample is
 held to, its lateral half asked of the grid and the model's coordinates)
-over a box and a section, identity and stretched; its layout is (node,
+over a box and a rectangle, identity and stretched; its layout is (node,
 x, y) or (node, x), a field of depth alone (node,); both one-sided values
 survive at an interface; a missing field is refused or NaN; the depth
 mesh is sized by the grid's spacing unless told; what is not a flat
@@ -66,7 +66,7 @@ def model_over(domain):
     return flat.Model(g, layers), grid
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 def test_a_flat_sample_holds_to_the_sample_contract(domain):
     model, grid = model_over(domain)
     s = flat.sample(model, grid, fields=["rho", "q", "v"], drmax=0.25)
@@ -115,7 +115,7 @@ def test_the_depth_mesh_is_sized_by_the_grid_unless_told():
     assert s.radial.ngll == 3
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 def test_a_stretched_model_samples_its_displacement(domain):
     """Under a vertical stretch the displacement is (w, 0, 0) in the local
     frame, w the upward displacement at the node."""

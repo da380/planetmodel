@@ -1,4 +1,4 @@
-"""The flat model: the model contract on a box and a section, refusals of
+"""The flat model: the model contract on a box and a rectangle, refusals of
 the other system by name, and padding below the base by holding the
 lowest properties, exactly."""
 import numpy as np

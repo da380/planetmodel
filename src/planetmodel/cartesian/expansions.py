@@ -266,7 +266,7 @@ class FourierFunction:
     in and `coefficients` its N components (`grid.transform.size`); the
     components of values on the grid are `grid.transform.analyse_grid`'s.
     Calling it gives the values at points, every point read periodically;
-    `lateral_gradient` gives (d/dx, d/dy), d/dy zero on a section's grid,
+    `lateral_gradient` gives (d/dx, d/dy), d/dy zero on a rectangle's grid,
     so that it is a relief of `cartesian.layer_linear`; `on_grid` the
     values on a grid's nodes, `mean` the mean over the period, and
     `scaled(k)` k f(x / k, y / k), the relief of a body k times the size.

@@ -113,7 +113,7 @@ inline constexpr std::string_view MANIFEST_SCHEMA_WITH_FAULTS = "planetmodel.mes
 
 /**
  * @brief The schema of a manifest whose mesh is flat-layered, a box or a
- * section layered in depth, with faults or without, which `MeshManifest`
+ * rectangle layered in depth, with faults or without, which `MeshManifest`
  * refuses by name: `planetmodel::cartesian::MeshManifest`
  * (`planetmodel/cartesian/manifest.hpp`) reads it.
  */

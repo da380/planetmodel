@@ -56,7 +56,7 @@ writes files that the Python reads. It reads and writes:
 - the units, scales and vocabulary of the Python (`units.hpp`,
   `vocabulary.hpp`);
 - **flat models**, the files of `planetmodel.cartesian`, a body layered
-  in depth over a box or a section, in the namespace
+  in depth over a box or a rectangle, in the namespace
   `planetmodel::cartesian` under `planetmodel/cartesian/` (the section
   on flat models below): the flat model file and the flat surface file,
   read, evaluated and written; the manifest of a flat mesh, with the
@@ -179,10 +179,10 @@ wrote.
 ## Flat models
 
 A flat model is layered in depth below one free surface, over a box, or
-over a rectangle, the section of a body invariant along y. Its files are
-schemas of their own (`planetmodel.model/3`, `planetmodel.surface/2`,
-the manifest's schema 7), read by the headers under
-`planetmodel/cartesian/`, which also write the model file, the surface
+over a rectangle, the cross-section of a body invariant along y. Its
+files are schemas of their own (`planetmodel.model/3`,
+`planetmodel.surface/2`, the manifest's schema 7), read by the headers
+under `planetmodel/cartesian/`, which also write the model file, the surface
 file and the decks, and leave the spherical library as it is.
 Each reader refuses the other's files by their schema and names the
 reader that takes them.
@@ -192,7 +192,10 @@ reference body. The layered coordinate is the depth, positive down, and
 the layers and interfaces are numbered from the surface down: interface
 k is the top of layer k, and the base is a face of the box, not an
 interface. Components are in the local frame (up, x, y), the same at
-every point, or in the Cartesian one.
+every point, or in the Cartesian one. A field of depth alone is the flat
+radial field: in a name shared with the spherical side (`IsRadial`, the
+attributes `radial_layers` and `radial_interpolation`), "radial" means of
+the layered coordinate alone, depth here.
 
 ```cpp
 #include <planetmodel/cartesian/modelfile.hpp>
@@ -223,7 +226,7 @@ const auto shift = file.SurfaceFieldOn(1, "shift").Value(x, y);
   (`cartesian/rules.hpp`). A field stating `fourier`, a Fourier series of
   its grid, is the Python's alone: its numbers are read, and building it
   as a field is refused by name, as `harmonic` is on the sphere.
-- **A section** (`Domain::Rectangle`) has the one lateral axis x. Its
+- **A rectangle** (`Domain::Rectangle`) has the one lateral axis x. Its
   fields are evaluated at (depth, x, y) all the same, y not being read,
   and a vector still has its three components.
 - **Writing** is the spherical writer's with the flat types: a

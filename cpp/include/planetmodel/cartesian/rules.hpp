@@ -11,11 +11,11 @@
  * one step short of the far end, so each axis is closed by the first node
  * again one period on.  `linear` is the tensor product of the linear
  * splines through the nodes and that wrap node, bilinear over a box and
- * linear along the one axis of a section; `cubic` the tensor product of
+ * linear along the one axis of a rectangle; `cubic` the tensor product of
  * the periodic cubic splines through the nodes, continuous with its first
  * two derivatives across the seam.  A point is read at its coordinates
  * reduced into the period from the grid's first node (`Wrapped`), so both
- * rules are periodic; there are no poles, and a section's y is never
+ * rules are periodic; there are no poles, and a rectangle's y is never
  * read.  The components of a vector or a tensor are in the local frame
  * (e_up, e_x, e_y), the same everywhere, and are read as they stand.
  * `fourier`, which reads a Fourier series of the grid, is the Python's
@@ -114,7 +114,7 @@ class LateralInterpolant {
    * @brief The interpolant of values on a grid.
    * @param grid The horizontal grid.
    * @param values The values, x first: `NX()` rows of `NY()`, row-major;
-   *        `NX()` values over a section.  Every one finite.
+   *        `NX()` values over a rectangle.  Every one finite.
    * @param rule The lateral rule.
    * @param where What the values are of, as an error names it.
    * @throws planetmodel::Error if the values do not fit the grid or are not
@@ -123,11 +123,11 @@ class LateralInterpolant {
    */
   LateralInterpolant(const Grid& grid, std::span<const double> values, LateralRule rule,
                      std::string_view where = "")
-      : section_(grid.Dimension() == 1),
+      : rectangle_(grid.Dimension() == 1),
         x0_(grid.X().front()),
-        y0_(section_ ? 0.0 : grid.Y().front()),
+        y0_(rectangle_ ? 0.0 : grid.Y().front()),
         lx_(grid.GetDomain().Length(0)),
-        ly_(section_ ? 1.0 : grid.GetDomain().Length(1)) {
+        ly_(rectangle_ ? 1.0 : grid.GetDomain().Length(1)) {
     if (values.size() != grid.Size()) {
       throw Error("cartesian::LateralInterpolant", where,
                   std::format("has {} values for a grid of {} by {}", values.size(), grid.NX(),
@@ -148,7 +148,7 @@ class LateralInterpolant {
     const auto ny = grid.NY();
     auto x = grid.X();
     x.push_back(x0_ + lx_);
-    if (section_) {
+    if (rectangle_) {
       auto closed = std::vector<double>(values.begin(), values.end());
       closed.push_back(values[0]);
       if (rule == LateralRule::Linear) {
@@ -185,22 +185,22 @@ class LateralInterpolant {
    * @brief The value at a point.
    * @param x The first lateral coordinate, of any range.
    * @param y The second lateral coordinate, of any range; not read over a
-   *        section.
+   *        rectangle.
    * @throws planetmodel::Error if a coordinate that is read is not finite.
    */
   [[nodiscard]] double Value(double x, double y) const { return Read<0, 0>(x, y); }
 
   /**
    * @brief The derivatives in x and in y at a point; d/dy is zero over a
-   * section.
+   * rectangle.
    * @param x The first lateral coordinate, of any range.
    * @param y The second lateral coordinate, of any range; not read over a
-   *        section.
+   *        rectangle.
    * @return (d/dx, d/dy).
    * @throws planetmodel::Error if a coordinate that is read is not finite.
    */
   [[nodiscard]] std::array<double, 2> Gradient(double x, double y) const {
-    return {Read<1, 0>(x, y), section_ ? 0.0 : Read<0, 1>(x, y)};
+    return {Read<1, 0>(x, y), rectangle_ ? 0.0 : Read<0, 1>(x, y)};
   }
 
   /**
@@ -223,12 +223,12 @@ class LateralInterpolant {
 
   template <std::size_t Nx, std::size_t Ny>
   double Read(double x, double y) const {
-    if (!std::isfinite(x) || (!section_ && !std::isfinite(y))) {
+    if (!std::isfinite(x) || (!rectangle_ && !std::isfinite(y))) {
       throw Error("cartesian::LateralInterpolant", "",
                   std::format("({}, {}) is not a point: the coordinates are finite", x, y));
     }
     const auto a = Wrapped(x, x0_, lx_);
-    if (section_) {
+    if (rectangle_) {
       return std::visit(
           [&](const auto& s) -> double {
             if constexpr (requires { s.template Evaluate<Nx>(a); }) {
@@ -251,7 +251,7 @@ class LateralInterpolant {
         *spline_);
   }
 
-  bool section_;
+  bool rectangle_;
   double x0_;
   double y0_;
   double lx_;

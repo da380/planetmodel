@@ -4,7 +4,7 @@ The reference box is meshed a few elements across and the mapping moves
 it at the export: under a Fourier relief on the surface and a gridded root
 on the Moho, mapped, the surface's nodes lie on the series and the Moho's
 on the gridded relief to rounding, the base's stay where they were and the
-sides' on their planes; a section under a gridded relief likewise.
+sides' on their planes; a rectangle under a gridded relief likewise.
 """
 import numpy as np
 import pytest
@@ -37,7 +37,7 @@ def reliefs(domain):
 
 
 @pytest.mark.parametrize("domain", [UNIT, flat.Rectangle((0.0, 1.0))],
-                         ids=["box", "section"])
+                         ids=["box", "rectangle"])
 def test_a_mesh_under_a_series_and_a_grid_lies_on_both(tmp_path, domain):
     sk = Skeleton(DEPTHS)
     surface, root = reliefs(domain)
@@ -48,7 +48,7 @@ def test_a_mesh_under_a_series_and_a_grid_lies_on_both(tmp_path, domain):
     assert res.validation.ok and res.mapping is g.mapping
     card = sc.read(res.manifest_path)
     mesh = read_mesh(res.msh_path)
-    # a section's mesh is in (x, z), at y = 0
+    # a rectangle's mesh is in (x, z), at y = 0
     axes = card.mesh_axes(len(domain.axes) + 1)
     points = np.zeros((len(mesh.points), 3))
     points[:, axes] = mesh.points[:, :len(axes)]

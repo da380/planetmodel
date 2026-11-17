@@ -5,7 +5,7 @@ band.  Each rule interpolates the nodes, is periodic along every axis,
 converges at its order (bilinear 2, bicubic 4, measured and stated in
 `cartesian.lateral`), the Fourier rule exactly on a field of the grid's
 band; the gradients are the rules differentiated; the mean is the
-interpolant's own, against a quadrature of it; a section's grid has one
+interpolant's own, against a quadrature of it; a rectangle's grid has one
 axis; what a grid cannot carry is refused by name.
 """
 import numpy as np
@@ -57,7 +57,7 @@ def test_a_grid_is_the_nodes_of_its_domain_s_transform():
     assert big.shape == g.shape and big.lengths == (6.0, 4.0)
 
 
-def test_a_section_s_grid_has_one_axis():
+def test_a_rectangle_s_grid_has_one_axis():
     g = flat.Grid(RECT, 12)
     assert g.shape == (12,) and g.dimension == 1 and g.y is None
     x, y = g.nodes
@@ -93,7 +93,7 @@ def test_a_grid_refuses_what_it_cannot_be():
 # -- the rules ------------------------------------------------------------------
 
 @pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 def test_every_rule_interpolates_the_nodes_and_is_periodic(domain, method):
     f = band8(domain)
     g = flat.Grid(domain, 24)
@@ -111,7 +111,7 @@ def test_every_rule_interpolates_the_nodes_and_is_periodic(domain, method):
         assert np.array_equal(rule(px, 7.0 + py), here)
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 @pytest.mark.parametrize("method, order", [("linear", 2), ("cubic", 4)])
 def test_local_rules_converge_at_their_orders(domain, method, order):
     """The largest error at 4000 random points over the field's largest
@@ -133,7 +133,7 @@ def test_local_rules_converge_at_their_orders(domain, method, order):
         assert err[0] < bounds[0] and err[-1] < bounds[1], err
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 def test_the_fourier_rule_is_exact_on_the_grid_s_band(domain):
     """Exact to finufft's accuracy once the grid holds the field's band (17
     nodes a side and more); on 16 the sines of wavenumber 8 are lost."""
@@ -151,7 +151,7 @@ def test_the_fourier_rule_is_exact_on_the_grid_s_band(domain):
                   - ref).max() > 1e-3 * scale
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 @pytest.mark.parametrize("method", METHODS)
 def test_the_gradient_is_the_rule_differentiated(domain, method):
     """Against central differences of the rule (away from the nodes'
@@ -184,7 +184,7 @@ def test_the_gradient_is_the_rule_differentiated(domain, method):
             assert np.abs(gy - ey).max() < tol * np.abs(ey).max()
 
 
-@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "section"])
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=["box", "rectangle"])
 @pytest.mark.parametrize("method", METHODS)
 def test_the_mean_is_the_interpolant_s_own(domain, method):
     """The mean of the values is the mean over the period of the rule's

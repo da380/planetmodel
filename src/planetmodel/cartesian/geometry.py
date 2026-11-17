@@ -120,7 +120,7 @@ class Geometry(GeometryBase):
             i = np.unravel_index(int(np.argmax(gap)), gap.shape)
             d, a, b = (float(np.broadcast_to(v, gap.shape)[i]) for v in (depth, x, y))
             raise ValueError(
-                f"the mapping of a section must not vary along y: shifting by "
+                f"the mapping over a rectangle must not vary along y: shifting by "
                 f"{s:g} along y moves the image by {worst:.3g} more at "
                 f"({', '.join(FLAT.labels)}) = ({d:g}, {a:g}, {b:g})")
 

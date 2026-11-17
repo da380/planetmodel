@@ -32,13 +32,13 @@ def test_the_fixtures_are_written_and_validate(tmp_path):
     assert not (tmp_path / "manifests").exists()
     assert not (tmp_path / "fault_meshes").exists()
     # the flat fixtures, of planetmodel.cartesian
-    assert {"flat_model_layered.nc", "flat_model_layered_section.nc",
-            "flat_model_lateral.nc", "flat_model_section.nc", "flat_model_fourier.nc",
+    assert {"flat_model_layered.nc", "flat_model_layered_rectangle.nc",
+            "flat_model_lateral.nc", "flat_model_rectangle.nc", "flat_model_fourier.nc",
             "flat_model_stacked.nc", "flat_model_stretched.nc",
             "flat_model_surfaces.nc", "flat_model_held.nc", "flat_model_log.nc",
             "flat_model_lateral.expect", "flat_case_lateral_box_cubic.nc",
-            "flat_case_lateral_section_linear.nc", "flat_surface_box.nc",
-            "flat_surface_section.expect", "flat_deck_elastic.txt",
+            "flat_case_lateral_rectangle_linear.nc", "flat_surface_box.nc",
+            "flat_surface_rectangle.expect", "flat_deck_elastic.txt",
             "flat_deck_prony.expect"} <= names
     assert "flat_model_fourier.expect" not in names
     from planetmodel import cartesian
@@ -206,12 +206,12 @@ def test_the_flat_manifests_and_meshes_are_written_with_their_answers(tmp_path):
     spec.loader.exec_module(module)
     manifests = [p for p in module.flat_manifests(tmp_path) if p.suffix == ".json"]
     assert {p.parent.name for p in manifests} == {
-        "box", "section", "faulted", "referential", "physical_section"}
+        "box", "rectangle", "faulted", "referential", "physical_rectangle"}
     for path in manifests:
         card = manifest.read(path)
         assert card.is_flat
         assert path.with_name(path.name + ".walk").stat().st_size > 0
-        if path.parent.name in ("referential", "physical_section"):
+        if path.parent.name in ("referential", "physical_rectangle"):
             assert card.model["schema"] == "planetmodel.model/3"
             assert (path.parent / card.model["file"]).exists()
     written = module.flat_fault_meshes(tmp_path)

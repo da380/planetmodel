@@ -2,7 +2,7 @@
 function and vertical displacement.
 
 A flat gridded field passes the field contract for ranks 0 to 2, every
-rule and both radial rules, over a box and a section; equals the field
+rule and both radial rules, over a box and a rectangle; equals the field
 it was sampled from at every node; reproduces a band-limited field
 exactly at points by the Fourier rule; has the exact mean of its rules;
 continues its end elements and rescales.  A gridded function (a DEM on
@@ -29,14 +29,14 @@ INTERVAL = (0.2, 1.0)
 TENSOR = Character(2, 0, voigt=False)
 
 
-def smooth_for(char, *, section=False):
+def smooth_for(char, *, rectangle=False):
     """A smooth periodic field of the character over BOX (or RECT), its
     components local."""
     shape = char.voigt_shape or char.component_shape
 
     def fn(d, x, y):
         d, x, y = np.broadcast_arrays(d, x, y)
-        u, v = np.pi * x, (0.0 * y if section else np.pi * y)
+        u, v = np.pi * x, (0.0 * y if rectangle else np.pi * y)
         base = (1.0 + d ** 2) * np.exp(0.3 * np.sin(u) - 0.2 * np.cos(v)
                                        + 0.1 * np.sin(u + v))
         if not char.rank:
@@ -67,8 +67,8 @@ def test_the_field_contract_for_every_rank_and_rule(char, lateral, radial):
 
 @pytest.mark.parametrize("lateral", ["linear", "cubic", "fourier"])
 @pytest.mark.parametrize("char", [SCALAR, VECTOR], ids=str)
-def test_a_section_s_gridded_field_holds_to_the_contract(char, lateral):
-    g = flat.GriddedField.sampled(smooth_for(char, section=True),
+def test_a_rectangle_s_gridded_field_holds_to_the_contract(char, lateral):
+    g = flat.GriddedField.sampled(smooth_for(char, rectangle=True),
                                   flat.Grid(RECT, 12), breaks=[0.2, 1.0], ngll=3,
                                   lateral=lateral)
     check_field(g)
@@ -80,7 +80,7 @@ def test_a_section_s_gridded_field_holds_to_the_contract(char, lateral):
                          ids=repr)
 @pytest.mark.parametrize("char", [SCALAR, VECTOR, STRESS], ids=str)
 def test_sampled_equals_its_source_at_every_node(grid, char):
-    src = smooth_for(char, section=grid.dimension == 1)
+    src = smooth_for(char, rectangle=grid.dimension == 1)
     g = flat.GriddedField.sampled(src, grid, breaks=[0.2, 0.5, 1.0], ngll=3,
                                   lateral="cubic", name="q")
     d, x, y = nodes_of(g)
@@ -282,7 +282,7 @@ def test_a_dem_is_a_relief_whose_stretch_and_geometry_hold(lateral):
     assert np.allclose(top[..., 2], surface.values, rtol=0, atol=1e-13)
 
 
-def test_a_section_s_dem_is_the_same_at_every_y():
+def test_a_rectangle_s_dem_is_the_same_at_every_y():
     sk = Skeleton([0.0, 0.4, 1.0])
     rect = flat.Rectangle((0.0, 1.0))
     g = flat.Grid(rect, 32)

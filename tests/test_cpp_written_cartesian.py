@@ -82,12 +82,12 @@ def _check_expect(model, expect: Path, *, rtol: float, surfaces=None) -> int:
 def test_the_cpp_wrote_its_flat_files():
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     names = {p.name for p in _written("flat_*")}
-    assert {"flat_written_box.nc", "flat_written_section.nc", "flat_written_log.nc",
+    assert {"flat_written_box.nc", "flat_written_rectangle.nc", "flat_written_log.nc",
             "flat_roundtrip_model_layered.nc", "flat_roundtrip_model_lateral.nc",
-            "flat_roundtrip_model_section.nc", "flat_roundtrip_model_fourier.nc",
+            "flat_roundtrip_model_rectangle.nc", "flat_roundtrip_model_fourier.nc",
             "flat_roundtrip_model_stacked.nc", "flat_roundtrip_model_stretched.nc",
             "flat_roundtrip_model_surfaces.nc", "flat_roundtrip_model_held.nc",
-            "flat_surface_written.nc", "flat_surface_written_section.nc",
+            "flat_surface_written.nc", "flat_surface_written_rectangle.nc",
             "flat_deck_elastic.txt", "flat_deck_maxwell_built.txt",
             "flat_example.nc"} <= names
 
@@ -190,11 +190,11 @@ def test_the_box_the_cpp_built_is_the_model_it_was_given():
 
 
 @pytest.mark.netcdf
-def test_the_section_the_cpp_built_is_a_section_in_its_units():
+def test_the_rectangle_the_cpp_built_is_a_rectangle_in_its_units():
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     from planetmodel.cartesian import GriddedDisplacement, VerticalStretch
     from planetmodel.modelfile import read_model
-    model = read_model(Path(WRITTEN) / "flat_written_section.nc")
+    model = read_model(Path(WRITTEN) / "flat_written_rectangle.nc")
     assert model.geometry.domain == cartesian.Rectangle((0.0, 400.0), padding=50.0)
     assert model.scales.length == 1e3 and model.geometry.rtol == 1e-8
     assert np.array_equal(model.skeleton.boundaries, [5.0, 30.0, 200.0])
@@ -260,7 +260,7 @@ def test_the_flat_example_reads_as_a_box_under_topography():
 # -- surface files ---------------------------------------------------------------
 
 @pytest.mark.netcdf
-@pytest.mark.parametrize("box", [True, False], ids=["box", "section"])
+@pytest.mark.parametrize("box", [True, False], ids=["box", "rectangle"])
 def test_the_flat_surface_file_the_cpp_wrote_holds_what_it_was_given(box):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     from planetmodel import Scales
@@ -271,7 +271,7 @@ def test_the_flat_surface_file_the_cpp_wrote_holds_what_it_was_given(box):
     from planetmodel.units import LENGTH
 
     path = Path(WRITTEN) / ("flat_surface_written.nc" if box
-                            else "flat_surface_written_section.nc")
+                            else "flat_surface_written_rectangle.nc")
     grid = (cartesian.Grid(cartesian.Box([(0.0, 4.0), (-1.0, 2.0)], padding=(0.5, 0.0)),
                            (6, 4)) if box
             else cartesian.Grid(cartesian.Rectangle((0.0, 4.0), padding=0.5), (6,)))

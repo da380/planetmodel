@@ -203,7 +203,7 @@ extrapolation, by the same code) except where the surface differs:
   :doc:`model_file`, its flat models), and the grid is the CF
   coordinate variables ``x(x)`` and, over a box, ``y(y)``, its nodes
   over the domain's extent;
-- a field is ``name(x, y)`` (``name(x)`` over a section) after its
+- a field is ``name(x, y)`` (``name(x)`` over a rectangle) after its
   support's leading dimension, and states one of the flat lateral rules,
   ``linear``, ``cubic`` or ``fourier``;
 - a flat grid has no poles: polar values, ``grid_kind``, ``grid_lmax``,

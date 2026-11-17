@@ -73,7 +73,7 @@ wavenumber |k|,
 
     P_j = sum over the components i of bin j of c_i^2 / A,
 
-A the period's area (its length over a section), so that the sum over
+A the period's area (its length over a rectangle), so that the sum over
 the bins is the mean square of the slice over the grid's nodes
 (`Grid.mean` of its square), exactly: Parseval under the grid's
 quadrature.  For a field the grid resolves, its Nyquist components
@@ -647,7 +647,7 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
 
 
 def _extent(model: Model) -> tuple[tuple[float, float], tuple[float, float]]:
-    """The lateral extent of the model's body, a section's y taken as
+    """The lateral extent of the model's body, a rectangle's y taken as
     (0, 0)."""
     extent = model.geometry.domain.extent
     if isinstance(model.geometry.domain, Box):
@@ -740,12 +740,12 @@ def block(model: Model, fields: Fields, *, depths: tuple[float, float] | None = 
     and the two sides meeting at the corner, `n` points per layer down
     and `m` along; the component, frame and departure as `plane` takes
     them, the mean of a field without one of its own taken on
-    `mean_grid`.  A model over a `Rectangle`, a section, has no block."""
+    `mean_grid`.  A model over a `Rectangle` has no block."""
     _flat(model)
     domain = model.geometry.domain
     if not isinstance(domain, Box):
-        raise ValueError("a block is of a body over a Box; a section's body is drawn "
-                         "by its vertical section")
+        raise ValueError("a block is of a body over a Box; a rectangle's body is "
+                         "drawn by its vertical section")
     if corner not in CORNERS:
         raise ValueError(f"corner must be one of {CORNERS}, got {corner!r}")
     if int(m) < 2:

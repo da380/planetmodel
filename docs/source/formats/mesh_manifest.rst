@@ -26,7 +26,7 @@ mesh on disk was built towards the features it now wants.
 **Schema string**: ``planetmodel.mesh.manifest/5`` for a mesh of a
 spherical geometry without faults, ``planetmodel.mesh.manifest/6`` for
 one with them, and ``planetmodel.mesh.manifest/7`` for a mesh of a
-flat-layered geometry, a box or a section, with faults or without
+flat-layered geometry, a box or a rectangle, with faults or without
 (Flat meshes, below).
 Consumers check it; it is bumped only for an incompatible change.  Keys may be
 added within a schema: a reader ignores a key it does not know, and a
@@ -107,7 +107,7 @@ The blocks
    * - ``coordinates``
      - schema 7 alone: the physical axes of the mesh's coordinates, in
        order, ``["x", "y", "z"]`` for a box, ``["x", "z"]`` for a
-       section
+       rectangle
    * - ``layers[]``
      - ``attribute``, ``name``, ``r_inner``, ``r_outer`` (under schema 7
        ``depth_top``, ``depth_bottom``), ``in_geometry``
@@ -163,19 +163,19 @@ Flat meshes
 -----------
 
 A flat mesh (schema 7) is the mesh of a geometry of
-``planetmodel.cartesian``: a box, or the section of a body invariant
-along y, layered in depth below its free surface.  A finite box stands
-for an unbounded body, taken large enough that its sides and base do
-not matter, so they carry no physics: they are labelled, for a solver
-to put its own conditions on.
+``planetmodel.cartesian``: a box, or a rectangle, the cross-section of a
+body invariant along y, layered in depth below its free surface.  A
+finite box stands for an unbounded body, taken large enough that its
+sides and base do not matter, so they carry no physics: they are
+labelled, for a solver to put its own conditions on.
 
 - **Coordinates.**  Points are right-handed Cartesian ``(x, y, z)`` with
   z up and the free surface at ``z = 0``; the layered coordinate is the
   depth ``-z``.  ``coordinates`` names the physical axes of the mesh's
   own coordinates: ``["x", "y", "z"]`` for a box, ``["x", "z"]`` for a
-  section, whose mesh is two-dimensional with z its second coordinate
+  rectangle, whose mesh is two-dimensional with z its second coordinate
   (MFEM reads it as a mesh of space dimension 2).  A field's components
-  are those of ``(x, y, z)`` in a section too, three for a vector; the
+  are those of ``(x, y, z)`` over a rectangle too, three for a vector; the
   displacement, a vector of the mesh's own space, has the mesh's two,
   ``(u_x, u_z)``.
 - **Layers** carry ``attribute`` 1..N from the surface down, each between
@@ -190,7 +190,7 @@ to put its own conditions on.
   layer below it, as a sphere's interfaces point out of theirs.
 - **Faces** are the boundaries that are no interface: the base and the
   sides.  Their boundary attributes follow the interfaces', in this
-  order, a section having no y faces:
+  order, a rectangle having no y faces:
 
   .. list-table::
      :header-rows: 1
@@ -238,7 +238,7 @@ to put its own conditions on.
 - **Faults**.  A box takes faults given in a ``cartesian`` frame (the
   fault file's, z up), under any mapping that inverts itself, through
   which each is pulled back as on the sphere (``controls`` and
-  ``offset``, below); a section takes none; its manifest is schema 7 with or without them (above).  Their boundary attributes follow the faces': fault ``k``
+  ``offset``, below); a rectangle takes none; its manifest is schema 7 with or without them (above).  Their boundary attributes follow the faces': fault ``k``
   is ``M + F_b + k``, after the ``M`` interfaces and the ``F_b`` faces.
   Everything said of faults below holds, the box's top being the
   surface its free edge lies on.  A fault may end inside the box, cross
