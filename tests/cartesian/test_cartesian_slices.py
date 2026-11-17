@@ -375,8 +375,10 @@ def test_the_power_sums_to_the_mean_square(two):
     m = two.with_field(1, "q", flat.FourierField((0.4, 1.0), g, c, name="q"))
     coarse = slices.spectrum(m, "q", depth=0.6, grid=g)
     finer = slices.spectrum(m, "q", depth=0.6, grid=flat.Grid(BOX, (24, 20)))
+    # an empty bin holds the square of the transform's rounding, which the
+    # coefficients above are held to
     assert np.allclose(finer.power[:coarse.power.size], coarse.power, rtol=1e-11,
-                       atol=1e-24)
+                       atol=1e-11 ** 2)
     assert np.isclose(finer.power.sum(), coarse.power.sum(), rtol=1e-12)
 
 
