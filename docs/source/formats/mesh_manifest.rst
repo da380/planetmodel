@@ -6,9 +6,11 @@ from the consumer's side.  It is written by ``planetmodel.mesh3d``; the
 single definition of its shape is ``planetmodel/mesh3d/manifest.py``,
 and ``validate_structure`` there checks a file against it; ``read``
 there reads one, with no gmsh installed.  In C++,
-planetmodel's own library (:doc:`../cpp`) reads schemas 5 and 6, with
-the same checks, and states the three rules of a fault's faces (Faults,
-below); it refuses schema 7, the flat mesh's, by its schema string.
+planetmodel's own library (:doc:`../cpp`) reads schemas 5 and 6 with
+``planetmodel::MeshManifest`` and schema 7, the flat mesh's, with
+``planetmodel::cartesian::MeshManifest``, each with the same checks and
+each refusing the other's manifests by their schema string, and states
+the three rules of a fault's faces (Faults, below).
 
 A mesh file carries numbered attributes and nothing else.  Which number
 is which layer, which boundary is which interface, where each sits,
@@ -441,9 +443,10 @@ its faces lies on the fault, to ``offset``.
 
   The rule is ``planetmodel.mesh3d.manifest.fault_curves`` in the
   Python (the box's faces given by ``faces=``) and
-  ``planetmodel::FaultCurves`` in C++ (of the spherical schemas it
-  reads, without a face edge); the edges it gives are those of the MSH
-  file's curve groups, edge for edge.
+  ``planetmodel::FaultCurves`` in C++ (of the spherical schemas,
+  without a face edge) and ``planetmodel::cartesian::FaultCurves`` (of a
+  flat mesh, the box's faces given); the edges it gives are those of
+  the MSH file's curve groups, edge for edge.
 - ``ends_on``: the names of the faults it ends on, of those it
   ``meets``.  A fault ENDS on another where their junction lies on its
   own boundary: each junction edge is used by one of its faces alone
@@ -527,7 +530,8 @@ at its interior nodes in a space of order two or more, and at its
 midpoint once the mesh is refined, so the cells holding it are in a
 wall.  The rule is ``planetmodel.mesh3d.manifest.fault_walls`` (and
 ``walls_of_faults`` over all faults) in the Python and
-``planetmodel::FaultWalls`` (``WallsOfFaults``) in C++; a code need not
+``planetmodel::FaultWalls`` (``WallsOfFaults``, and for a flat mesh
+``planetmodel::cartesian::WallsOfFaults``) in C++; a code need not
 apply it, the mesher having written its answer as attributes.  Shells
 outside the geometry are in no wall: the displacement lives on the
 geometry's layers, whose outer boundary carries a fault's free edge.

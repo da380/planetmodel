@@ -54,7 +54,13 @@ writes files that the Python reads. It reads and writes:
   and two branches the body by `BurgersParameters` (`prony.hpp`), as the
   Python's `conversion.prony` forms them;
 - the units, scales and vocabulary of the Python (`units.hpp`,
-  `vocabulary.hpp`).
+  `vocabulary.hpp`);
+- **flat models**, the files of `planetmodel.cartesian`, a body layered
+  in depth over a box or a section, in the namespace
+  `planetmodel::cartesian` under `planetmodel/cartesian/` (the section
+  on flat models below): the flat model file and the flat surface file,
+  read, evaluated and written; the manifest of a flat mesh, with the
+  faces of the box and a fault's face edge; and decks of depths.
 
 The library knows no solver and no mesh library. Each code keeps its own
 glue: opening the mesh, sampling fields onto its own discretisation.
@@ -170,6 +176,83 @@ a code here builds a structured patch from its control positions
 (`FaultPatch::Structured`), or reads one from a fault file the Python
 wrote.
 
+## Flat models
+
+A flat model is layered in depth below one free surface, over a box, or
+over a rectangle, the section of a body invariant along y. Its files are
+schemas of their own (`planetmodel.model/3`, `planetmodel.surface/2`,
+the manifest's schema 7), read by the headers under
+`planetmodel/cartesian/`, which also write the model file, the surface
+file and the decks, and leave the spherical library as it is.
+Each reader refuses the other's files by their schema and names the
+reader that takes them.
+
+Points are (x, y, z) with z up and the free surface z = 0 in the
+reference body. The layered coordinate is the depth, positive down, and
+the layers and interfaces are numbered from the surface down: interface
+k is the top of layer k, and the base is a face of the box, not an
+interface. Components are in the local frame (up, x, y), the same at
+every point, or in the Cartesian one.
+
+```cpp
+#include <planetmodel/cartesian/modelfile.hpp>
+
+namespace flat = planetmodel::cartesian;
+const auto file = flat::ReadModelFile("box.nc");
+
+// a scalar field on layer 1, at (depth, x, y) or at a point (x, y, z)
+const auto vs = file.FieldOn(1, "vs").AsScalar();
+const auto value = vs.Value(depth, x, y);
+const auto same = vs.ValueAt({x, y, -depth});
+const auto [ddepth, dx, dy] = vs.Gradient(depth, x, y);
+
+// a field of any rank, its components in the frame you name
+const auto stress = file.FieldOn(1, "stress").Evaluate(depth, x, y, flat::Frame::Cartesian);
+
+// the mapping, a vertical stretch: the height a reference point rises by
+const auto mapping = file.Mapping();
+const auto height = mapping.Height(depth, x, y);
+const auto physical = mapping({x, y, -depth});
+
+// a field on an interface, a function of (x, y)
+const auto shift = file.SurfaceFieldOn(1, "shift").Value(x, y);
+```
+
+- **The lateral rules** are doubly periodic over the domain's extent, its
+  bounds widened by its padding: `linear` and `cubic`
+  (`cartesian/rules.hpp`). A field stating `fourier`, a Fourier series of
+  its grid, is the Python's alone: its numbers are read, and building it
+  as a field is refused by name, as `harmonic` is on the sphere.
+- **A section** (`Domain::Rectangle`) has the one lateral axis x. Its
+  fields are evaluated at (depth, x, y) all the same, y not being read,
+  and a vector still has its three components.
+- **Writing** is the spherical writer's with the flat types: a
+  `flat::ModelFile` of a skeleton of depths and a `flat::Domain`, parts
+  added from the surface down on `flat::Grid`s over the domain, fields
+  from `flat::LayerSource`s (`Depth`, `Lateral`, or values at
+  `PointsOf(layer)`), the mapping as the heights of surfaces
+  (`SetStack`) or as its upward displacement (`SetDisplacement`), heights
+  positive up, and `flat::WriteModelFile`.
+- **Surface files** (`cartesian/surfacefile.hpp`): `ReadSurfaceFile`,
+  `WriteSurfaceFile` and `SurfaceHistory`, which serves a field's values
+  at a date and the field there as a function of (x, y).
+- **Manifests** (`cartesian/manifest.hpp`): `cartesian::MeshManifest`
+  reads schema 7, the layers and interfaces by depth, the faces of the
+  box (`Faces()`, `FaceAttributes()`), and the faults with their
+  `face_edge`, the curve where a fault leaves the box through its base
+  or a side, its sides free there. `cartesian::FaultCurves` tells that
+  edge from the tip by the faces of the box; the other rules of a
+  fault's faces are the spherical ones.
+- **Decks of depths** (`cartesian/deck.hpp`): `ELASTIC()`, `MAXWELL()`,
+  `PRONY()` and `BURGERS()` with `depth` for `r`, read and written by
+  `ReadDeck` and `WriteDeck` as the Python does, the layers and
+  interfaces named from the surface down (`DepthNames`).
+- **The fault file** serves as it is: its `cartesian` frame is the flat
+  model's points.
+
+A code that may be built against a release without the flat headers
+tests for them with `__has_include(<planetmodel/cartesian/modelfile.hpp>)`.
+
 ## Writing a model file
 
 A code that holds fields of its own builds a `ModelFile` and writes it:
@@ -218,7 +301,8 @@ and renamed into place once it is complete. A failed write leaves no
 file, and an existing file at the path stays as it was. The programs in
 `examples/` write a model file, write the file a code computing
 sensitivity kernels writes (`write_kernel.cpp`, which the Python's
-tutorial 15 draws), and read any model file back.
+tutorial 15 draws), and read any model file back; `write_flat_model.cpp`
+and `read_flat_model.cpp` do the same for a box under topography.
 
 ## Versions and features
 

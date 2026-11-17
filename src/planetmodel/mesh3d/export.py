@@ -628,13 +628,15 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: ModelBase,
     `<base>.model.nc` on the mesh's reference skeleton, the fields
     chosen by `fields`, and records it in the manifest's `model` block:
     a grid (or a mapping from layers to grids) for the file's parts, as
-    `modelfile.write_model` takes it, or True for a model that does not
-    vary with direction under the identity, written on the smallest
+    `modelfile.write_model` takes it (an `AngularGrid`, or for a flat
+    model a `cartesian.Grid` over its domain), or True for a model that
+    does not vary laterally under the identity, written on the smallest
     grid.  Layer n of the file is the mesh's layer of own attribute
     n + 1, whose cells carry its `attributes`; a shell
     the spec appended has no model data.  The `.gf` fields are written
-    either way.  The model file of a flat model is not built, and
-    asking for it is refused.
+    either way.  A flat model's file is the flat model file
+    (`cartesian.modelfile`, of `modelfile.SCHEMA_FLAT`), which the
+    manifest's `model` block names by its schema.
     """
     mfem = _mfem()
     _check_model_sits_on(result, model)
@@ -645,9 +647,6 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: ModelBase,
             "displacement in referential delivery; rename the field, or leave it "
             "out of fields=")
     built = manifest.read(result.manifest_path)
-    if built.is_flat and model_file is not False:
-        raise ValueError("the model file of a flat model is not built; export its "
-                         "fields alone, model_file=False")
     grid = None if model_file is False else _model_file_grid(model, names, model_file)
     mesh = _load_mesh(result.msh_path)
     order = _mesh_order(mesh) if order is None else int(order)
@@ -709,8 +708,8 @@ def export_mfem(result: MeshResult, path_base: str | Path, *, model: ModelBase,
 def _model_file_grid(model: ModelBase, names: Sequence[str], grid: bool | Grids
                      ) -> Grids:
     """The grids of the model file: those given, or for a model that does
-    not vary with direction, the smallest grid."""
-    from ..sampling import gauss_legendre
+    not vary laterally, the smallest grid: the sphere's of band 0, or the
+    one node over a flat model's domain."""
     if grid is True:
         lateral = [n for n in names for i in model.layers_with(n)
                    if not getattr(model.layer(i)[n], "is_radial", False)]
@@ -720,5 +719,11 @@ def _model_file_grid(model: ModelBase, names: Sequence[str], grid: bool | Grids
                 "model_file=True writes a model that does not vary with "
                 f"direction under the identity; {varies} does: give the "
                 "angular grid, model_file=grid")
-        grid = gauss_legendre(0)
+        domain = getattr(model.geometry, "domain", None)
+        if domain is None:
+            from ..sampling import gauss_legendre
+            grid = gauss_legendre(0)
+        else:
+            from ..cartesian.grid import Grid
+            grid = Grid(domain, 1)
     return grid

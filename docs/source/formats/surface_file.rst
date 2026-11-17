@@ -172,7 +172,13 @@ axis of span 1, reached as -998.99999999999511, is read as -999).  ``function(na
 field as a ``GriddedFunction`` by its stated lateral rule, stored
 polar values carried along.  The C++ ``SurfaceHistory`` reads a file
 by the same arithmetic (``TimeRowsAt``, its tolerance ``TIME_RTOL``),
-so the two languages serve identical values.
+so the two languages serve identical values.  A flat surface's file is
+read and written in C++ by ``planetmodel::cartesian``'s
+``ReadSurfaceFile`` and ``WriteSurfaceFile``
+(``planetmodel/cartesian/surfacefile.hpp``), whose ``SurfaceHistory``
+serves a field's values by the same arithmetic and the field at a date
+as a function of ``(x, y)`` by the ``linear`` or the ``cubic`` rule;
+each of the two readers refuses the other's files by their schema.
 
 Flat surfaces
 -------------

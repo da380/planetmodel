@@ -359,7 +359,15 @@ radial variable does.
 variable under any of the four radial rules, with its derivatives, and
 ``RadialInterpolant`` reads nodal values by them; ``WriteModelFile``
 writes a variable added with ``Rules{.radial =
-RadialRule::LogPolynomial}``, and the file's schema follows.
+RadialRule::LogPolynomial}``, and the file's schema follows.  A flat
+model's file is read and written by ``planetmodel::cartesian``'s
+``ReadModelFile`` and ``WriteModelFile``
+(``planetmodel/cartesian/modelfile.hpp``), a field evaluated at
+``(depth, x, y)`` or at a point ``(x, y, z)`` in the local or the
+Cartesian frame, the mapping the vertical stretch; each of the two
+readers refuses the other's files by their schema, naming the reader
+that takes them, and the flat one refuses a field stating ``fourier``
+by name where the field is built, its numbers still read.
 
 Flat models
 -----------

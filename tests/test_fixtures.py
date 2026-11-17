@@ -31,6 +31,22 @@ def test_the_fixtures_are_written_and_validate(tmp_path):
     assert len(bad) > 30 and all(line.count("\t") == 2 for line in bad)
     assert not (tmp_path / "manifests").exists()
     assert not (tmp_path / "fault_meshes").exists()
+    # the flat fixtures, of planetmodel.cartesian
+    assert {"flat_model_layered.nc", "flat_model_layered_section.nc",
+            "flat_model_lateral.nc", "flat_model_section.nc", "flat_model_fourier.nc",
+            "flat_model_stacked.nc", "flat_model_stretched.nc",
+            "flat_model_surfaces.nc", "flat_model_held.nc", "flat_model_log.nc",
+            "flat_model_lateral.expect", "flat_case_lateral_box_cubic.nc",
+            "flat_case_lateral_section_linear.nc", "flat_surface_box.nc",
+            "flat_surface_section.expect", "flat_deck_elastic.txt",
+            "flat_deck_prony.expect"} <= names
+    assert "flat_model_fourier.expect" not in names
+    from planetmodel import cartesian
+    flat = read_model(tmp_path / "flat_model_held.nc")
+    assert isinstance(flat, cartesian.Model) and flat.nlayers == 5
+    assert (tmp_path / "flat_manifest_cases" / "base.json").exists()
+    assert not (tmp_path / "flat_manifests").exists()
+    assert not (tmp_path / "flat_fault_meshes").exists()
 
 
 @pytest.mark.gmsh
@@ -141,3 +157,76 @@ def test_the_python_refuses_the_model_files_the_cpp_refuses(tmp_path):
     assert {"model_kinds", "model_tensors", "model_stacked",
             "model_flattened"} <= expected
     assert "model_harmonic" not in expected
+
+
+def test_the_python_refuses_the_flat_files_the_cpp_refuses(tmp_path):
+    """Both readers agree on what is malformed in a flat file: every bad
+    copy of a flat model file and of a flat surface file is refused by the
+    Python's flat readers, and every bad flat manifest by `manifest.read`,
+    which reads the base and the accepted variants."""
+    from planetmodel.cartesian.modelfile import read_model_file
+    from planetmodel.cartesian.surfacefile import read_surface_file
+    from planetmodel.mesh3d import manifest
+    spec = importlib.util.spec_from_file_location("make_fixtures", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.flat_model_files(tmp_path)
+    module.flat_model_cases(tmp_path)
+    module.flat_surface_files(tmp_path)
+    module.flat_manifest_cases(tmp_path)
+    for folder, read, least in (("flat_model_cases", read_model_file, 30),
+                                ("flat_surface_cases", read_surface_file, 10)):
+        bad = [line.split("\t")[0] for line in
+               (tmp_path / folder / "bad.txt").read_text().splitlines()]
+        assert len(bad) > least
+        for label in bad:
+            with pytest.raises(ValueError):
+                read(tmp_path / folder / f"bad_{label}.nc")
+    root = tmp_path / "flat_manifest_cases"
+    for path in [root / "base.json", *sorted(root.glob("accept_*.json"))]:
+        assert manifest.read(path).is_flat
+    bad = [line.split("\t")[0] for line in (root / "bad.txt").read_text().splitlines()]
+    assert len(bad) == len(list(root.glob("bad_*.json"))) > 30
+    for label in bad:
+        with pytest.raises(ValueError):
+            manifest.read(root / f"bad_{label}.json")
+
+
+@pytest.mark.gmsh
+@pytest.mark.mfem
+def test_the_flat_manifests_and_meshes_are_written_with_their_answers(tmp_path):
+    """The flat manifests the C++ reader is held to, each valid, flat and
+    walked, and the flat meshes with faults, each fault's curves those its
+    record names, its face edge among them."""
+    pytest.importorskip("gmsh")
+    pytest.importorskip("mfem.ser")
+    from planetmodel.mesh3d import manifest
+    spec = importlib.util.spec_from_file_location("make_fixtures", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifests = [p for p in module.flat_manifests(tmp_path) if p.suffix == ".json"]
+    assert {p.parent.name for p in manifests} == {
+        "box", "section", "faulted", "referential", "physical_section"}
+    for path in manifests:
+        card = manifest.read(path)
+        assert card.is_flat
+        assert path.with_name(path.name + ".walk").stat().st_size > 0
+        if path.parent.name in ("referential", "physical_section"):
+            assert card.model["schema"] == "planetmodel.model/3"
+            assert (path.parent / card.model["file"]).exists()
+    written = module.flat_fault_meshes(tmp_path)
+    assert {p.name for p in written} == {
+        f"{case}{suffix}" for case in ("side", "several")
+        for suffix in (".json", ".mesh.txt", ".expect")}
+    for case, kinds in (("side", {"tip", "free_edge", "face_edge"}),
+                        ("several", {"tip", "free_edge", "face_edge", "junction",
+                                     "junction_end"})):
+        root = tmp_path / "flat_fault_meshes" / case
+        card = manifest.read(root / f"{case}.json")
+        lines = (root / f"{case}.expect").read_text().splitlines()
+        edges = {(line.split()[1], line.split()[2]) for line in lines
+                 if line.startswith("edge ")}
+        assert {kind for _, kind in edges} == kinds
+        for record in card.faults:
+            for kind in manifest.FLAT_FAULT_CURVES:
+                assert ((record["name"], kind) in edges) == (record[kind] is not None)

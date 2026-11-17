@@ -215,11 +215,49 @@ class ShiftedAlongY(MappingBase):
         return np.ones(np.shape(X)[:-1])
 
 
+@pytest.mark.netcdf
+@pytest.mark.parametrize("kind", list(GEOMETRIES))
+def test_a_flat_model_file_is_written_beside_the_mesh_and_named_in_the_manifest(
+        built, kind, tmp_path):
+    """The model of a flat mesh's export beside it as a flat model file,
+    on the grid given or, for the fields of depth alone, on the one node
+    of the domain; the manifest names it by its schema."""
+    pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
+    from planetmodel.modelfile import SCHEMA_FLAT, read_model
+    from planetmodel.testing import check_model_file
+    res = built(kind)
+    model = model_on(res.geometry)
+    domain = res.geometry.domain
+    export = export_mfem(res, tmp_path / "file", model=model,
+                         model_file=cartesian.Grid(domain, 4))
+    card = sc.read(export.manifest_path)
+    assert card.is_flat
+    assert card.model == {"file": "file.model.nc", "schema": SCHEMA_FLAT}
+    assert export.model_path == tmp_path / "file.model.nc"
+    check_model_file(export.model_path, model)
+    # layer n of the file is the mesh's layer of own attribute n + 1
+    back = read_model(export.model_path)
+    assert back.geometry.domain == domain
+    assert [lay.name for lay in back.geometry.layers] == [e["name"]
+                                                          for e in card.layers]
+    assert np.array_equal(back.skeleton.boundaries, card.boundaries)
+    # True takes a model that does not vary laterally, on the smallest grid
+    with pytest.raises(ValueError, match="does not vary with direction"):
+        export_mfem(res, tmp_path / "varies", model=model, model_file=True)
+    assert not (tmp_path / "varies.model.nc").exists()
+    layered = export_mfem(res, tmp_path / "layered", model=model, fields=["rho", "q"],
+                          model_file=True)
+    from planetmodel.cartesian.modelfile import read_model_file
+    data = read_model_file(layered.model_path)
+    assert data.parts[0].grid == cartesian.Grid(domain, 1)
+    assert sc.read(layered.manifest_path).model["schema"] == SCHEMA_FLAT
+    q = read_model(layered.model_path).layer(1)["q"]
+    assert float(q.evaluate(0.5 * sum(q.interval), 0.0, 0.0)) == pytest.approx(
+        sum(q.interval))
+
+
 def test_what_the_export_of_a_flat_mesh_refuses(built, tmp_path):
     res = built("box")
-    model = model_on(res.geometry)
-    with pytest.raises(ValueError, match="model file of a flat model is not built"):
-        export_mfem(res, tmp_path / "file", model=model, model_file=True)
     spherical = Model(Geometry(Skeleton(DEPTHS)),
                       [{"rho": spherical_constant(iv, 1.0, character=DENSITY)}
                        for iv in zip(DEPTHS[:-1], DEPTHS[1:])])

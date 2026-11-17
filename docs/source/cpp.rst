@@ -18,13 +18,14 @@ It reads and writes the Python's files:
   the mapping. Writing builds a file from a code's own fields: the code
   gives each layer's values as a function or as values at the points the
   library lists, and the library forms the file and checks it as the
-  readers will.  A flat model's file (``planetmodel.model/3``) is not
-  read in C++.
+  readers will.  A flat model's file (``planetmodel.model/3``) is read
+  and written by the flat side of the library (below); the spherical
+  reader refuses it by its schema, naming that reader.
 * **Surface files** (:doc:`formats/surface_file`). Reading gives the
   fields on the surface, static or in time, each served at any date by
   its own time rule; writing builds a file from a code's own fields.  A
-  flat surface's file (``planetmodel.surface/2``) is refused by its
-  schema.
+  flat surface's file (``planetmodel.surface/2``) is read and written by
+  the flat side of the library (below), and refused here by its schema.
 * **Fault files** (:doc:`formats/fault_file`). Reading makes the Python
   reader's checks and gives the fault, which evaluates as the Python's
   does, to rounding: positions, normals, the fault basis and the area
@@ -39,7 +40,9 @@ It reads and writes the Python's files:
   states the three rules of a fault's faces: which of a face's two cells
   is on the hanging wall, which edges are the fault's tip, free edge and
   junction and where it ends on another, and which cells are in its
-  hanging wall and its footwall.
+  hanging wall and its footwall.  A flat mesh's manifest (schema 7) is
+  read by the flat side of the library (below), and refused here by its
+  schema.
 * **Decks**, the mineos, Maxwell, prony and burgers tables of knots
   (:doc:`formats/maxwell_deck`, :doc:`formats/prony_deck`,
   :doc:`formats/burgers_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
@@ -54,6 +57,39 @@ It reads and writes the Python's files:
 
 The units, scales and vocabulary are the Python's, restated in C++. Tests
 hold the two sides equal, against fixtures that the Python writes.
+
+**Flat models.**  The files of ``planetmodel.cartesian``, a body layered
+in depth over a box or a section, are read and written by the headers
+under ``planetmodel/cartesian/``, in the namespace
+``planetmodel::cartesian``, beside the spherical library, which they
+leave as it is; each reader refuses the other's files by their schema,
+naming the reader that takes them.  Points are ``(x, y, z)`` with ``z``
+up, the layered coordinate is the depth, positive down, and components
+are in the local frame (up, x, y) or the Cartesian one:
+
+* the flat model file (``cartesian/modelfile.hpp``,
+  :doc:`formats/model_file`, its flat models): ``ReadModelFile`` and a
+  field evaluated at ``(depth, x, y)`` or at a point ``(x, y, z)`` by the
+  doubly periodic ``linear`` and ``cubic`` rules (``fourier``, a Fourier
+  series, is the Python's alone and refused by name, as ``harmonic`` is
+  on the sphere), over a box and over a section; the mapping, the
+  vertical stretch, as the height a point rises by; the fields on
+  interfaces; and ``WriteModelFile`` from a code's own fields, as on the
+  sphere;
+* the flat surface file (``cartesian/surfacefile.hpp``,
+  :doc:`formats/surface_file`, its flat surfaces), read, written and
+  served in time, a field at a date also as a function of ``(x, y)``;
+* the flat mesh's manifest, schema 7 (``cartesian/manifest.hpp``,
+  :doc:`formats/mesh_manifest`): the layers and interfaces by depth, the
+  faces of the box, and the faults with their face edge, where a fault
+  leaves the box through its base or a side, which
+  ``cartesian::FaultCurves`` tells from its tip by the faces of the box;
+* decks of depths (``cartesian/deck.hpp``): the elastic, Maxwell, prony
+  and burgers formats with ``depth`` for ``r``, named from the surface
+  down, read and written as the Python does, character for character.
+
+The fault file needs no flat counterpart: its ``cartesian`` frame is the
+flat model's points.
 
 A C++ code fetches the library from this repository at a release tag,
 with CMake's ``FetchContent``:
@@ -80,6 +116,18 @@ Reading a field from a model file looks like this:
    const auto file = planetmodel::ReadModelFile("earth.nc");
    const auto vs = file.FieldOn(3, "vsv").AsScalar();
    const auto value = vs.Value(r, theta, phi);   // theta the colatitude
+
+and from a flat one like this:
+
+.. code-block:: cpp
+
+   #include <planetmodel/cartesian/modelfile.hpp>
+
+   namespace flat = planetmodel::cartesian;
+   const auto box = flat::ReadModelFile("box.nc");
+   const auto vs = box.FieldOn(1, "vs").AsScalar();
+   const auto value = vs.Value(depth, x, y);           // depth positive down
+   const auto lifted = box.Mapping()({x, y, -depth});  // the point, z up
 
 The `reference <cpp-reference/index.html>`_ documents every name in the
 library. Its main page says how to read and write a model file, and the

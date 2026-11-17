@@ -14,7 +14,9 @@
  * and holds it to the structure the Python's `validate_structure` checks,
  * refusing the first fault with an `Error` naming the file and the JSON
  * path of the fault; schemas 5 (a mesh without faults) and 6 (a mesh with
- * them) are read.  Keys a schema added within itself are optional
+ * them) are read, and schema 7, a flat mesh's, is refused by name:
+ * `planetmodel::cartesian::MeshManifest`
+ * (`planetmodel/cartesian/manifest.hpp`) reads it.  Keys a schema added within itself are optional
  * (`refinements` empty, `scales.temperature` a kelvin, `model` null where
  * absent), and keys it does not know are ignored.  Null is kept as null: a
  * manifest written without a model says nothing of fluidity, kinds or
@@ -109,6 +111,14 @@ inline constexpr std::string_view MANIFEST_SCHEMA = "planetmodel.mesh.manifest/5
  */
 inline constexpr std::string_view MANIFEST_SCHEMA_WITH_FAULTS = "planetmodel.mesh.manifest/6";
 
+/**
+ * @brief The schema of a manifest whose mesh is flat-layered, a box or a
+ * section layered in depth, with faults or without, which `MeshManifest`
+ * refuses by name: `planetmodel::cartesian::MeshManifest`
+ * (`planetmodel/cartesian/manifest.hpp`) reads it.
+ */
+inline constexpr std::string_view MANIFEST_SCHEMA_FLAT = "planetmodel.mesh.manifest/7";
+
 /** @brief The formats a manifest's mesh may be in: the mesher's MSH, or MFEM's. */
 inline constexpr auto MANIFEST_FORMATS = std::array<std::string_view, 2>{"msh", "mfem"};
 
@@ -136,6 +146,478 @@ struct ReadOptions {
   /** @brief Options are equal when all three are. */
   friend bool operator==(const ReadOptions&, const ReadOptions&) = default;
 };
+
+namespace detail {
+
+/// What a fault's `controls` must be.
+inline constexpr std::string_view MANIFEST_CONTROLS_RULE =
+    "is not [n_u, n_v] per patch, each at least 4";
+
+/// The items of a list, comma separated.
+template <class Item>
+std::string JoinedList(const std::vector<Item>& items) {
+  auto out = std::string{};
+  for (auto first = true; const auto& item : items) {
+    out += std::format("{}{}", first ? "" : ", ", item);
+    first = false;
+  }
+  return out;
+}
+
+/// A list block of a manifest's document: absent is empty.
+inline const std::vector<Json>& ManifestList(const Json& document, std::string_view key) {
+  static const auto none = std::vector<Json>{};
+  const auto* v = document.Find(key);
+  return v ? v->AsArray() : none;
+}
+
+inline std::optional<double> OptionalNumber(const Json& v) {
+  return v.IsNull() ? std::nullopt : std::optional<double>{v.AsNumber()};
+}
+
+inline std::optional<int> OptionalInt(const Json& v) {
+  return v.IsNull() ? std::nullopt : std::optional<int>{v.AsInt()};
+}
+
+/// The `mesh` block of a manifest, as every schema has it.
+struct ManifestMesh {
+  std::string file{};
+  std::string format{};
+  std::string nodes{};
+  ReadOptions options{};
+  std::optional<std::string> displacement{};
+};
+
+inline ManifestMesh ReadManifestMesh(const Json& mesh) {
+  auto out = ManifestMesh{};
+  out.file = mesh.At("file").AsString();
+  out.format = mesh.At("format").AsString();
+  out.nodes = mesh.At("nodes").AsString();
+  const auto& options = mesh.At("read_options");
+  if (const auto* v = options.Find("generate_edges")) out.options.generate_edges = v->AsInt();
+  if (const auto* v = options.Find("refine")) out.options.refine = v->AsInt();
+  if (const auto* v = options.Find("fix_orientation")) out.options.fix_orientation = v->AsBool();
+  if (const auto& v = mesh.At("displacement"); !v.IsNull()) out.displacement = v.AsString();
+  return out;
+}
+
+/// What an interface record says beside its place, into a record with
+/// `between_layers`, `kind` and `values`: the same keys under every schema.
+template <class Interface, class Sides>
+void ReadManifestInterface(const Json& e, Interface& face, const std::string& source) {
+  const auto& between = e.At("between_layers");
+  if (between.Size() != 2) throw Error(source, between.Path(), "is not [below, above]");
+  face.between_layers = {between.At(0).AsInt(), between.At(1).AsInt()};
+  if (const auto& k = e.At("kind"); !k.IsNull()) face.kind = k.AsString();
+  if (const auto& v = e.At("values"); !v.IsNull()) {
+    auto values = std::map<std::string, Sides>{};
+    for (const auto& [key, pair] : v.AsObject()) {
+      if (!pair.IsArray() || pair.Size() != 2 ||
+          !std::ranges::all_of(pair.AsArray(), [](const Json& x) {
+            return x.IsNull() || x.IsNumber();
+          })) {
+        throw Error(source, pair.Path(), "is not [below, above] as numbers or nulls");
+      }
+      values[key] = {OptionalNumber(pair.At(0)), OptionalNumber(pair.At(1))};
+    }
+    face.values = std::move(values);
+  }
+}
+
+/// The `refinements[]` records.
+template <class Refinement>
+std::vector<Refinement> ReadManifestRefinements(const Json& document) {
+  auto out = std::vector<Refinement>{};
+  for (const auto& e : ManifestList(document, "refinements")) {
+    auto r = Refinement{.name = e.At("name").AsString(),
+                        .size = e.At("size").AsNumber(),
+                        .far_size = e.At("far_size").AsNumber(),
+                        .decay_width = OptionalNumber(e.At("decay_width"))};
+    if (const auto& p = e.At("points"); !p.IsNull()) r.points = p.AsInt();
+    if (const auto& d = e.At("digest"); !d.IsNull()) r.digest = d.AsString();
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
+/// What a `faults[]` record says under every schema that has faults, into
+/// a record with those members.
+template <class Fault, class Sizing>
+void ReadManifestFault(const Json& e, Fault& f, const std::string& source) {
+  f.name = e.At("name").AsString();
+  f.attribute = e.At("attribute").AsInt();
+  for (const auto& a : e.At("layers").AsArray()) f.layers.push_back(a.AsInt());
+  for (const auto& a : e.At("hanging_wall").AsArray()) f.hanging_wall.push_back(a.AsInt());
+  f.tip = OptionalInt(e.At("tip"));
+  f.free_edge = OptionalInt(e.At("free_edge"));
+  f.junction = OptionalInt(e.At("junction"));
+  for (const auto& other : e.At("meets").AsArray()) f.meets.push_back(other.AsString());
+  for (const auto& other : e.At("ends_on").AsArray()) f.ends_on.push_back(other.AsString());
+  if (const auto& c = e.At("controls"); !c.IsNull()) {
+    auto controls = std::vector<std::array<int, 2>>{};
+    for (const auto& pair : c.AsArray()) {
+      if (!pair.IsArray() || pair.Size() != 2) {
+        throw Error(source, c.Path(), MANIFEST_CONTROLS_RULE);
+      }
+      controls.push_back({pair.At(0).AsInt(), pair.At(1).AsInt()});
+    }
+    f.controls = std::move(controls);
+  }
+  f.offset = e.At("offset").AsNumber();
+  if (const auto& s = e.At("sizing"); !s.IsNull()) {
+    static_cast<void>(s.AsObject());
+    f.sizing = Sizing{.size = s.At("size").AsNumber(),
+                      .far_size = s.At("far_size").AsNumber(),
+                      .decay_width = s.At("decay_width").AsNumber()};
+  }
+}
+
+/// The `fields[]` records.
+template <class Field>
+std::vector<Field> ReadManifestFields(const Json& document) {
+  auto out = std::vector<Field>{};
+  for (const auto& e : ManifestList(document, "fields")) {
+    auto f = Field{.name = e.At("name").AsString(),
+                   .file = e.At("file").AsString(),
+                   .fe_space = e.At("fe_space").AsString(),
+                   .vdim = e.At("vdim").AsInt(),
+                   .ordering = e.At("ordering").AsString(),
+                   .rank = e.At("rank").AsInt(),
+                   .weight = e.At("weight").AsInt(),
+                   .voigt = e.At("voigt").AsBool(),
+                   .unit = e.At("unit").AsString()};
+    for (const auto& a : e.At("layers").AsArray()) f.layers.push_back(a.AsInt());
+    if (const auto& d = e.At("radial_degree"); !d.IsNull()) f.radial_degree = d.AsInt();
+    out.push_back(std::move(f));
+  }
+  return out;
+}
+
+/// The `scales`, `constants`, `model` and `meta` blocks.
+template <class ModelRecord>
+void ReadManifestModelBlocks(const Json& doc, const std::string& source,
+                             std::optional<::planetmodel::Scales>& scales,
+                             std::map<std::string, double>& constants,
+                             std::optional<ModelRecord>& model, Json& meta) {
+  if (const auto* s = doc.Find("scales"); s && !s->IsNull()) {
+    const auto* t = s->Find("temperature");
+    try {
+      scales = ::planetmodel::Scales(
+          {.length = s->At("length").AsNumber(),
+           .mass = s->At("mass").AsNumber(),
+           .time = s->At("time").AsNumber(),
+           .temperature = t ? t->AsNumber() : 1.0});
+    } catch (const Error& e) {
+      if (e.Source() != "Scales") throw;
+      throw Error(source, std::format("scales.{}", e.Where()),
+                  "is not a positive finite number");
+    }
+  }
+  if (const auto* c = doc.Find("constants")) {
+    for (const auto& [key, value] : c->AsObject()) constants[key] = value.AsNumber();
+  }
+  if (const auto* m = doc.Find("model"); m && !m->IsNull()) {
+    model = ModelRecord{m->At("file").AsString(), m->At("schema").AsString()};
+  }
+  if (const auto* found = doc.Find("meta")) {
+    static_cast<void>(found->AsObject());
+    meta = *found;
+  } else {
+    meta = ReadJson("{}", source);
+  }
+}
+
+/// The `mesh` block's format and nodes.
+inline void CheckManifestMesh(const ManifestMesh& mesh, const std::string& source) {
+  if (std::ranges::find(MANIFEST_FORMATS, std::string_view{mesh.format}) ==
+      MANIFEST_FORMATS.end()) {
+    throw Error(source, "mesh.format", std::format("is {}, not msh or mfem", mesh.format));
+  }
+  if (std::ranges::find(MANIFEST_NODES, std::string_view{mesh.nodes}) == MANIFEST_NODES.end()) {
+    throw Error(source, "mesh.nodes",
+                std::format("is {}, not reference or physical", mesh.nodes));
+  }
+}
+
+/// The `kind` of interface `i`, one of `INTERFACE_KINDS` where a model said.
+template <class Interface>
+void CheckManifestKind(const Interface& f, int i, const std::string& source) {
+  if (f.kind && std::ranges::find(INTERFACE_KINDS, std::string_view{*f.kind}) ==
+                    INTERFACE_KINDS.end()) {
+    throw Error(source, std::format("interfaces[{}].kind", i),
+                std::format("is {}, not a kind of interface or null", *f.kind));
+  }
+}
+
+/// The `refinements[]` records: sizes, widths and counts.
+template <class Refinement>
+void CheckManifestRefinements(const std::vector<Refinement>& refinements,
+                              const std::string& source) {
+  for (auto i = std::size_t{0}; i < refinements.size(); ++i) {
+    const auto& r = refinements[i];
+    const auto where = std::format("refinements[{}]", i);
+    if (!(r.size > 0.0) || r.far_size < r.size) {
+      throw Error(source, where,
+                  std::format("has size {} and far_size {}, not 0 < size <= far_size", r.size,
+                              r.far_size));
+    }
+    if (r.decay_width && !(*r.decay_width > 0.0)) {
+      throw Error(source, where + ".decay_width",
+                  std::format("is {}, not positive", *r.decay_width));
+    }
+    if (r.points && *r.points < 1) {
+      throw Error(source, where + ".points", std::format("is {}, not a count", *r.points));
+    }
+  }
+}
+
+/// The `fields[]` records against the layers, the displacement the `mesh`
+/// block names, and the fields the interfaces' `values` name.
+template <class Field, class Interface>
+void CheckManifestFields(const std::vector<Field>& fields,
+                         const std::vector<Interface>& interfaces, int n_layers,
+                         const ManifestMesh& mesh, const std::string& source) {
+  auto names = std::vector<std::string>{};
+  for (const auto& f : fields) names.push_back(f.name);
+  for (auto i = std::size_t{0}; i < fields.size(); ++i) {
+    const auto& f = fields[i];
+    const auto where = std::format("fields[{}]", i);
+    if (std::ranges::count(names, f.name) > 1) {
+      throw Error(source, where + ".name", std::format("{} is repeated", f.name));
+    }
+    for (const auto a : f.layers) {
+      if (a < 1 || a > n_layers) {
+        throw Error(source, where + ".layers",
+                    std::format("holds {}, not an attribute in 1..{}", a, n_layers));
+      }
+    }
+    if (f.radial_degree && *f.radial_degree < 0) {
+      throw Error(source, where + ".radial_degree",
+                  std::format("is {}, not a degree", *f.radial_degree));
+    }
+    auto stored = std::size_t{0};
+    try {
+      stored = f.GetCharacter().StoredSize();
+    } catch (const Error& e) {
+      throw Error(source, where, std::format("has no character: {}", e.what()));
+    }
+    // a vector of the mesh's own space, the displacement in 2D, has two
+    if (static_cast<std::size_t>(f.vdim) != stored && !(f.rank == 1 && f.vdim == 2)) {
+      throw Error(source, where + ".vdim",
+                  std::format("is {}, but a field of rank {}{} stores {} components", f.vdim,
+                              f.rank, f.voigt ? "" : " without Voigt form", stored));
+    }
+  }
+  if (mesh.displacement) {
+    if (!std::ranges::contains(names, *mesh.displacement)) {
+      throw Error(source, "mesh.displacement",
+                  std::format("names {}, which fields holds no record for",
+                              *mesh.displacement));
+    }
+    if (mesh.nodes == "physical") {
+      throw Error(source, "mesh.displacement",
+                  "is recorded with physical nodes; a mesh whose nodes are already moved has "
+                  "no displacement to apply");
+    }
+  }
+  for (auto i = std::size_t{0}; i < interfaces.size(); ++i) {
+    if (!interfaces[i].values) continue;
+    for (const auto& [key, sides] : *interfaces[i].values) {
+      if (!std::ranges::contains(names, key)) {
+        throw Error(source, std::format("interfaces[{}].values", i),
+                    std::format("names {}, which fields holds no record for", key));
+      }
+    }
+  }
+}
+
+/// The collars of a mesh with faults: each layer's attributes its own and
+/// then collar attributes above N in increasing order, none for a shell;
+/// the collar attributes N + 1..N + C, each one layer's and in some fault's
+/// hanging wall; each hanging wall collar attributes in increasing order;
+/// and the collars numbered in the order of their layer and then of their
+/// faults.
+template <class Layer, class Fault>
+void CheckManifestCollars(const std::vector<Layer>& layers, const std::vector<Fault>& faults,
+                          const std::string& source) {
+  const auto n = static_cast<int>(layers.size());
+  auto owner = std::map<int, int>{};  // collar attribute -> the layer's own
+  for (auto i = 0; i < n; ++i) {
+    const auto& l = layers[static_cast<std::size_t>(i)];
+    const auto where = std::format("layers[{}].attributes", i);
+    const auto& a = l.attributes;
+    auto ordered = !a.empty() && a.front() == l.attribute;
+    for (auto j = std::size_t{1}; ordered && j < a.size(); ++j) {
+      ordered = a[j] > n && (j == 1 || a[j] > a[j - 1]);
+    }
+    if (!ordered) {
+      throw Error(source, where,
+                  std::format("is [{}], not its own attribute {} and then collar attributes "
+                              "above {} in increasing order",
+                              JoinedList(a), l.attribute, n));
+    }
+    if (a.size() > 1 && !l.in_geometry) {
+      throw Error(source, where, "lists collars, and a shell holds no fault");
+    }
+    for (auto j = std::size_t{1}; j < a.size(); ++j) {
+      if (owner.contains(a[j])) {
+        throw Error(source, where,
+                    std::format("lists collar {}, which layers[{}] lists too", a[j],
+                                owner[a[j]] - 1));
+      }
+      owner[a[j]] = l.attribute;
+    }
+  }
+  const auto c = static_cast<int>(owner.size());
+  if (!owner.empty() && (owner.begin()->first != n + 1 || owner.rbegin()->first != n + c)) {
+    auto listed = std::vector<int>{};
+    for (const auto& [a, _] : owner) listed.push_back(a);
+    throw Error(source, "layers",
+                std::format("list the collar attributes [{}], not {}..{}", JoinedList(listed),
+                            n + 1, n + c));
+  }
+  auto walls = std::map<int, std::vector<int>>{};
+  for (auto k = std::size_t{0}; k < faults.size(); ++k) {
+    const auto& hw = faults[k].hanging_wall;
+    auto ordered = true;
+    for (auto j = std::size_t{0}; ordered && j < hw.size(); ++j) {
+      ordered = owner.contains(hw[j]) && (j == 0 || hw[j] > hw[j - 1]);
+    }
+    if (!ordered) {
+      throw Error(source, std::format("faults[{}].hanging_wall", k),
+                  std::format("is [{}], not collar attributes in increasing order",
+                              JoinedList(hw)));
+    }
+    for (const auto a : hw) walls[a].push_back(static_cast<int>(k));
+  }
+  auto previous = std::optional<std::pair<int, std::vector<int>>>{};
+  for (const auto& [a, layer] : owner) {
+    const auto where = std::format("layers[{}].attributes", layer - 1);
+    if (!walls.contains(a)) {
+      throw Error(source, where,
+                  std::format("lists collar {}, which is in no fault's hanging wall", a));
+    }
+    auto key = std::pair{layer, walls[a]};
+    if (previous && key <= *previous) {
+      throw Error(source, where,
+                  std::format("lists collar {} (layer {}, faults [{}]) out of the order of "
+                              "layer and faults",
+                              a, layer, JoinedList(walls[a])));
+    }
+    previous = std::move(key);
+  }
+}
+
+/// The faults against each other and the skeleton: names unique and not an
+/// interface's (nor one of `others`, a flat mesh's faces, named `other_kind`),
+/// the attributes running on from `before` (the boundary attributes that
+/// come first, described by `after`), layers of the geometry, the curve
+/// groups fault k's (`curves(fault)` its groups in the order of the mesh's
+/// curves, with their keys), meetings mutual and with a junction to show
+/// for them, the pull-back and sizing well formed, and the collars.
+template <class Layer, class Interface, class Fault, class Curves>
+void CheckManifestFaults(const std::vector<Layer>& layers,
+                         const std::vector<Interface>& interfaces,
+                         const std::vector<Fault>& faults, int before, std::string_view after,
+                         const std::vector<std::string>& others, std::string_view other_kind,
+                         Curves curves, const std::string& source) {
+  auto body = std::vector<int>{};  // the geometry's layers, by their own attributes
+  for (const auto& l : layers) {
+    if (l.in_geometry) body.push_back(l.attribute);
+  }
+  auto named = [&](std::string_view name) -> const Fault* {
+    for (const auto& f : faults) {
+      if (f.name == name) return &f;
+    }
+    return nullptr;
+  };
+  for (auto i = std::size_t{0}; i < faults.size(); ++i) {
+    const auto& name = faults[i].name;
+    if (std::ranges::count(faults, name, &Fault::name) > 1) {
+      throw Error(source, std::format("faults[{}].name", i),
+                  std::format("{} is repeated", name));
+    }
+  }
+  for (auto i = std::size_t{0}; i < faults.size(); ++i) {
+    const auto& name = faults[i].name;
+    if (std::ranges::count(interfaces, name, &Interface::name) > 0) {
+      throw Error(source, std::format("faults[{}].name", i),
+                  std::format("{} shares its name with an interface", name));
+    }
+    if (std::ranges::contains(others, name)) {
+      throw Error(source, std::format("faults[{}].name", i),
+                  std::format("{} shares its name with {}", name, other_kind));
+    }
+  }
+  for (auto i = std::size_t{0}; i < faults.size(); ++i) {
+    const auto& f = faults[i];
+    const auto k = static_cast<int>(i) + 1;
+    const auto where = std::format("faults[{}]", i);
+    if (f.attribute != before + k) {
+      throw Error(source, where + ".attribute",
+                  std::format("is {}, expected {}, after {}", f.attribute, before + k, after));
+    }
+    if (f.layers.empty() ||
+        !std::ranges::all_of(f.layers, [&](int a) { return std::ranges::contains(body, a); })) {
+      throw Error(source, where + ".layers",
+                  std::format("is [{}], not attributes of layers of the geometry, [{}]",
+                              JoinedList(f.layers), JoinedList(body)));
+    }
+    const auto groups = curves(f);
+    const auto count = static_cast<int>(groups.size());
+    for (auto j = 0; j < count; ++j) {
+      const auto& [key, group] = groups[static_cast<std::size_t>(j)];
+      if (const auto want = count * (k - 1) + 1 + j; group && *group != want) {
+        throw Error(source, std::format("{}.{}", where, key),
+                    std::format("is {}, expected {} or null", *group, want));
+      }
+    }
+    if (!std::ranges::all_of(f.meets, [&](const std::string& other) {
+          return other != f.name && named(other) != nullptr;
+        })) {
+      throw Error(source, where + ".meets",
+                  std::format("is [{}], not the names of other faults", JoinedList(f.meets)));
+    }
+    if (!std::ranges::all_of(f.meets, [&](const std::string& other) {
+          return named(other)->Meets(f.name);
+        })) {
+      throw Error(source, where + ".meets",
+                  std::format("is [{}], and not every one of them meets {}",
+                              JoinedList(f.meets), f.name));
+    }
+    if (f.meets.empty() == f.junction.has_value()) {
+      throw Error(source, where + ".junction",
+                  std::format("is {} but meets is [{}]: a junction is where it meets another "
+                              "fault",
+                              f.junction ? std::to_string(*f.junction) : "null",
+                              JoinedList(f.meets)));
+    }
+    if (!std::ranges::all_of(f.ends_on, [&](const std::string& other) {
+          return f.Meets(other) && std::ranges::count(f.ends_on, other) == 1;
+        })) {
+      throw Error(source, where + ".ends_on",
+                  std::format("is [{}], not faults it meets, each once", JoinedList(f.ends_on)));
+    }
+    if (f.controls && !std::ranges::all_of(*f.controls, [](const std::array<int, 2>& c) {
+          return c[0] >= 4 && c[1] >= 4;
+        })) {
+      throw Error(source, where + ".controls", MANIFEST_CONTROLS_RULE);
+    }
+    if (!(f.offset >= 0.0)) {
+      throw Error(source, where + ".offset", std::format("is {}, not a distance", f.offset));
+    }
+    if (const auto& s = f.sizing;
+        s && !(0.0 < s->size && s->size <= s->far_size && s->decay_width > 0.0)) {
+      throw Error(source, where + ".sizing",
+                  std::format("is {{size {}, far_size {}, decay_width {}}}, not 0 < size <= "
+                              "far_size with a positive decay_width",
+                              s->size, s->far_size, s->decay_width));
+    }
+  }
+  if (!faults.empty()) CheckManifestCollars(layers, faults, source);
+}
+
+}  // namespace detail
 
 /** @brief A mesh manifest, read and checked. */
 class MeshManifest {
@@ -379,22 +861,22 @@ class MeshManifest {
 
   /** @brief The mesh file beside the manifest. */
   [[nodiscard]] std::filesystem::path MeshFile() const {
-    return path_.parent_path() / mesh_file_;
+    return path_.parent_path() / mesh_.file;
   }
   /** @brief `msh` from the mesher, `mfem` from the exporter. */
-  [[nodiscard]] const std::string& Format() const noexcept { return format_; }
+  [[nodiscard]] const std::string& Format() const noexcept { return mesh_.format; }
   /** @brief `reference` or `physical`. */
-  [[nodiscard]] const std::string& Nodes() const noexcept { return nodes_; }
+  [[nodiscard]] const std::string& Nodes() const noexcept { return mesh_.nodes; }
   /** @brief Whether the mesh's nodes carry the mapping already. */
-  [[nodiscard]] bool PhysicalNodes() const noexcept { return nodes_ == "physical"; }
+  [[nodiscard]] bool PhysicalNodes() const noexcept { return mesh_.nodes == "physical"; }
   /** @brief How the mesh must be opened for its fields' dof numbering to hold. */
-  [[nodiscard]] const ReadOptions& Options() const noexcept { return options_; }
+  [[nodiscard]] const ReadOptions& Options() const noexcept { return mesh_.options; }
   /**
    * @brief The name of the displacement field, where one was written
    * beside a reference mesh.
    */
   [[nodiscard]] const std::optional<std::string>& Displacement() const noexcept {
-    return displacement_;
+    return mesh_.displacement;
   }
 
   /** @brief The layers, centre outward. */
@@ -713,50 +1195,24 @@ class MeshManifest {
  private:
   // -- reading --------------------------------------------------------------
 
-  static std::optional<double> OptionalNumber(const Json& v) {
-    return v.IsNull() ? std::nullopt : std::optional<double>{v.AsNumber()};
-  }
-
-  static std::optional<int> OptionalInt(const Json& v) {
-    return v.IsNull() ? std::nullopt : std::optional<int>{v.AsInt()};
-  }
-
-  /// What a fault's `controls` must be.
-  static constexpr std::string_view CONTROLS_RULE =
-      "is not [n_u, n_v] per patch, each at least 4";
-
-  /// A list block of the document: absent is empty.
-  static const std::vector<Json>& List(const Json& document, std::string_view key) {
-    static const auto none = std::vector<Json>{};
-    const auto* v = document.Find(key);
-    return v ? v->AsArray() : none;
-  }
-
   void Read() {
     const auto& doc = document_;
+    const auto source = path_.string();
     if (!doc.IsObject()) Fail("", "is not an object");
     ReadSchema(doc.At("schema"));
     const auto faulted = schema_ == MANIFEST_SCHEMA_WITH_FAULTS;
-    if (!faulted && !List(doc, "faults").empty()) {
+    if (!faulted && !detail::ManifestList(doc, "faults").empty()) {
       Fail("faults", std::format("are listed under schema {}; a manifest with faults is {}",
                                  schema_, MANIFEST_SCHEMA_WITH_FAULTS));
     }
-    if (faulted && List(doc, "faults").empty()) {
+    if (faulted && detail::ManifestList(doc, "faults").empty()) {
       Fail("faults", std::format("lists none, and a manifest of schema {} has faults",
                                  MANIFEST_SCHEMA_WITH_FAULTS));
     }
 
-    const auto& mesh = doc.At("mesh");
-    mesh_file_ = mesh.At("file").AsString();
-    format_ = mesh.At("format").AsString();
-    nodes_ = mesh.At("nodes").AsString();
-    const auto& options = mesh.At("read_options");
-    if (const auto* v = options.Find("generate_edges")) options_.generate_edges = v->AsInt();
-    if (const auto* v = options.Find("refine")) options_.refine = v->AsInt();
-    if (const auto* v = options.Find("fix_orientation")) options_.fix_orientation = v->AsBool();
-    if (const auto& v = mesh.At("displacement"); !v.IsNull()) displacement_ = v.AsString();
+    mesh_ = detail::ReadManifestMesh(doc.At("mesh"));
 
-    for (const auto& e : List(doc, "layers")) {
+    for (const auto& e : detail::ManifestList(doc, "layers")) {
       const auto& fluid = e.At("fluid");
       auto layer = Layer{.attribute = e.At("attribute").AsInt(),
                          .name = e.At("name").AsString(),
@@ -772,104 +1228,21 @@ class MeshManifest {
       }
       layers_.push_back(std::move(layer));
     }
-    for (const auto& e : List(doc, "interfaces")) {
+    for (const auto& e : detail::ManifestList(doc, "interfaces")) {
       auto face = Interface{.attribute = e.At("attribute").AsInt(),
                             .name = e.At("name").AsString(),
                             .radius = e.At("radius").AsNumber()};
-      const auto& between = e.At("between_layers");
-      if (between.Size() != 2) Fail(between.Path(), "is not [below, above]");
-      face.between_layers = {between.At(0).AsInt(), between.At(1).AsInt()};
-      if (const auto& k = e.At("kind"); !k.IsNull()) face.kind = k.AsString();
-      if (const auto& v = e.At("values"); !v.IsNull()) {
-        auto values = std::map<std::string, Sides>{};
-        for (const auto& [key, pair] : v.AsObject()) {
-          if (!pair.IsArray() || pair.Size() != 2 ||
-              !std::ranges::all_of(pair.AsArray(), [](const Json& x) {
-                return x.IsNull() || x.IsNumber();
-              })) {
-            Fail(pair.Path(), "is not [below, above] as numbers or nulls");
-          }
-          values[key] = {OptionalNumber(pair.At(0)), OptionalNumber(pair.At(1))};
-        }
-        face.values = std::move(values);
-      }
+      detail::ReadManifestInterface<Interface, Sides>(e, face, source);
       interfaces_.push_back(std::move(face));
     }
-    for (const auto& e : List(doc, "refinements")) {
-      auto r = Refinement{.name = e.At("name").AsString(),
-                          .size = e.At("size").AsNumber(),
-                          .far_size = e.At("far_size").AsNumber(),
-                          .decay_width = OptionalNumber(e.At("decay_width"))};
-      if (const auto& p = e.At("points"); !p.IsNull()) r.points = p.AsInt();
-      if (const auto& d = e.At("digest"); !d.IsNull()) r.digest = d.AsString();
-      refinements_.push_back(std::move(r));
-    }
-    for (const auto& e : List(doc, "faults")) {
-      auto f = Fault{.name = e.At("name").AsString(), .attribute = e.At("attribute").AsInt()};
-      for (const auto& a : e.At("layers").AsArray()) f.layers.push_back(a.AsInt());
-      for (const auto& a : e.At("hanging_wall").AsArray()) f.hanging_wall.push_back(a.AsInt());
-      f.tip = OptionalInt(e.At("tip"));
-      f.free_edge = OptionalInt(e.At("free_edge"));
-      f.junction = OptionalInt(e.At("junction"));
-      for (const auto& other : e.At("meets").AsArray()) f.meets.push_back(other.AsString());
-      for (const auto& other : e.At("ends_on").AsArray()) f.ends_on.push_back(other.AsString());
-      if (const auto& c = e.At("controls"); !c.IsNull()) {
-        auto controls = std::vector<std::array<int, 2>>{};
-        for (const auto& pair : c.AsArray()) {
-          if (!pair.IsArray() || pair.Size() != 2) Fail(c.Path(), CONTROLS_RULE);
-          controls.push_back({pair.At(0).AsInt(), pair.At(1).AsInt()});
-        }
-        f.controls = std::move(controls);
-      }
-      f.offset = e.At("offset").AsNumber();
-      if (const auto& s = e.At("sizing"); !s.IsNull()) {
-        static_cast<void>(s.AsObject());
-        f.sizing = FaultSizing{.size = s.At("size").AsNumber(),
-                               .far_size = s.At("far_size").AsNumber(),
-                               .decay_width = s.At("decay_width").AsNumber()};
-      }
+    refinements_ = detail::ReadManifestRefinements<Refinement>(doc);
+    for (const auto& e : detail::ManifestList(doc, "faults")) {
+      auto f = Fault{};
+      detail::ReadManifestFault<Fault, FaultSizing>(e, f, source);
       faults_.push_back(std::move(f));
     }
-    for (const auto& e : List(doc, "fields")) {
-      auto f = Field{.name = e.At("name").AsString(),
-                     .file = e.At("file").AsString(),
-                     .fe_space = e.At("fe_space").AsString(),
-                     .vdim = e.At("vdim").AsInt(),
-                     .ordering = e.At("ordering").AsString(),
-                     .rank = e.At("rank").AsInt(),
-                     .weight = e.At("weight").AsInt(),
-                     .voigt = e.At("voigt").AsBool(),
-                     .unit = e.At("unit").AsString()};
-      for (const auto& a : e.At("layers").AsArray()) f.layers.push_back(a.AsInt());
-      if (const auto& d = e.At("radial_degree"); !d.IsNull()) f.radial_degree = d.AsInt();
-      fields_.push_back(std::move(f));
-    }
-
-    if (const auto* s = doc.Find("scales"); s && !s->IsNull()) {
-      const auto* t = s->Find("temperature");
-      try {
-        scales_ = ::planetmodel::Scales(
-            {.length = s->At("length").AsNumber(),
-             .mass = s->At("mass").AsNumber(),
-             .time = s->At("time").AsNumber(),
-             .temperature = t ? t->AsNumber() : 1.0});
-      } catch (const Error& e) {
-        if (e.Source() != "Scales") throw;
-        Fail(std::format("scales.{}", e.Where()), "is not a positive finite number");
-      }
-    }
-    if (const auto* c = doc.Find("constants")) {
-      for (const auto& [key, value] : c->AsObject()) constants_[key] = value.AsNumber();
-    }
-    if (const auto* m = doc.Find("model"); m && !m->IsNull()) {
-      model_ = ModelRecord{m->At("file").AsString(), m->At("schema").AsString()};
-    }
-    if (const auto* meta = doc.Find("meta")) {
-      static_cast<void>(meta->AsObject());
-      meta_ = *meta;
-    } else {
-      meta_ = ReadJson("{}", path_.string());
-    }
+    fields_ = detail::ReadManifestFields<Field>(doc);
+    detail::ReadManifestModelBlocks(doc, source, scales_, constants_, model_, meta_);
   }
 
   void ReadSchema(const Json& schema) {
@@ -877,6 +1250,12 @@ class MeshManifest {
     if (declared == MANIFEST_SCHEMA || declared == MANIFEST_SCHEMA_WITH_FAULTS) {
       schema_ = declared;
       return;
+    }
+    if (declared == MANIFEST_SCHEMA_FLAT) {
+      Fail("schema", std::format("is {}, a flat mesh's, and this reader reads {} and {}: read "
+                                 "it with planetmodel::cartesian::MeshManifest "
+                                 "(planetmodel/cartesian/manifest.hpp)",
+                                 declared, MANIFEST_SCHEMA, MANIFEST_SCHEMA_WITH_FAULTS));
     }
     if (declared.starts_with("planetmodel.mesh.manifest/")) {
       Fail("schema", std::format("is {}, and this reader reads {} and {}: regenerate the "
@@ -889,12 +1268,8 @@ class MeshManifest {
   // -- checking, as validate_structure does ----------------------------------
 
   void Check() const {
-    if (!Contains(MANIFEST_FORMATS, format_)) {
-      Fail("mesh.format", std::format("is {}, not msh or mfem", format_));
-    }
-    if (!Contains(MANIFEST_NODES, nodes_)) {
-      Fail("mesh.nodes", std::format("is {}, not reference or physical", nodes_));
-    }
+    const auto source = path_.string();
+    detail::CheckManifestMesh(mesh_, source);
     const auto n = static_cast<int>(layers_.size());
     if (n == 0) Fail("layers", "lists no layers");
     for (auto i = 0; i < n; ++i) {
@@ -924,8 +1299,6 @@ class MeshManifest {
                                      "its inner boundary",
                                      m, n, layers_.front().r_inner));
     }
-    auto names = std::vector<std::string>{};
-    for (const auto& f : fields_) names.push_back(f.name);
     for (auto i = 0; i < m; ++i) {
       const auto& f = interfaces_[static_cast<std::size_t>(i)];
       const auto where = std::format("interfaces[{}]", i);
@@ -939,228 +1312,17 @@ class MeshManifest {
              std::format("is [{}, {}], expected [{}, {}]", f.between_layers[0],
                          f.between_layers[1], want[0], want[1]));
       }
-      if (f.kind && !Contains(INTERFACE_KINDS, *f.kind)) {
-        Fail(where + ".kind", std::format("is {}, not a kind of interface or null", *f.kind));
-      }
+      detail::CheckManifestKind(f, i, source);
     }
-    for (auto i = std::size_t{0}; i < refinements_.size(); ++i) {
-      const auto& r = refinements_[i];
-      const auto where = std::format("refinements[{}]", i);
-      if (!(r.size > 0.0) || r.far_size < r.size) {
-        Fail(where, std::format("has size {} and far_size {}, not 0 < size <= far_size",
-                                r.size, r.far_size));
-      }
-      if (r.decay_width && !(*r.decay_width > 0.0)) {
-        Fail(where + ".decay_width", std::format("is {}, not positive", *r.decay_width));
-      }
-      if (r.points && *r.points < 1) {
-        Fail(where + ".points", std::format("is {}, not a count", *r.points));
-      }
-    }
-    CheckFaults();
-    for (auto i = std::size_t{0}; i < fields_.size(); ++i) {
-      const auto& f = fields_[i];
-      const auto where = std::format("fields[{}]", i);
-      if (std::ranges::count(names, f.name) > 1) {
-        Fail(where + ".name", std::format("{} is repeated", f.name));
-      }
-      for (const auto a : f.layers) {
-        if (a < 1 || a > n) {
-          Fail(where + ".layers", std::format("holds {}, not an attribute in 1..{}", a, n));
-        }
-      }
-      if (f.radial_degree && *f.radial_degree < 0) {
-        Fail(where + ".radial_degree", std::format("is {}, not a degree", *f.radial_degree));
-      }
-      auto stored = std::size_t{0};
-      try {
-        stored = f.GetCharacter().StoredSize();
-      } catch (const Error& e) {
-        Fail(where, std::format("has no character: {}", e.what()));
-      }
-      // a vector of the mesh's own space, the displacement in 2D, has two
-      if (static_cast<std::size_t>(f.vdim) != stored && !(f.rank == 1 && f.vdim == 2)) {
-        Fail(where + ".vdim", std::format("is {}, but a field of rank {}{} stores {} "
-                                          "components",
-                                          f.vdim, f.rank, f.voigt ? "" : " without Voigt form",
-                                          stored));
-      }
-    }
-    if (displacement_) {
-      if (!std::ranges::contains(names, *displacement_)) {
-        Fail("mesh.displacement",
-             std::format("names {}, which fields holds no record for", *displacement_));
-      }
-      if (PhysicalNodes()) {
-        Fail("mesh.displacement", "is recorded with physical nodes; a mesh whose nodes are "
-                                  "already moved has no displacement to apply");
-      }
-    }
-    for (auto i = std::size_t{0}; i < interfaces_.size(); ++i) {
-      const auto& values = interfaces_[i].values;
-      for (const auto& [key, sides] : values.value_or(std::map<std::string, Sides>{})) {
-        if (!std::ranges::contains(names, key)) {
-          Fail(std::format("interfaces[{}].values", i),
-               std::format("names {}, which fields holds no record for", key));
-        }
-      }
-    }
-  }
-
-  /// The faults against each other and the skeleton: the attributes running
-  /// on from the interfaces', names unique and not an interface's, layers of
-  /// the geometry, the curve groups fault k's, meetings mutual and with a
-  /// junction to show for them, and the pull-back and sizing well formed.
-  void CheckFaults() const {
-    const auto m = static_cast<int>(interfaces_.size());
-    auto body = std::vector<int>{};  // the geometry's layers, by their own attributes
-    for (const auto& l : layers_) {
-      if (l.in_geometry) body.push_back(l.attribute);
-    }
-    for (auto i = std::size_t{0}; i < faults_.size(); ++i) {
-      const auto& name = faults_[i].name;
-      if (std::ranges::count(faults_, name, &Fault::name) > 1) {
-        Fail(std::format("faults[{}].name", i), std::format("{} is repeated", name));
-      }
-    }
-    for (auto i = std::size_t{0}; i < faults_.size(); ++i) {
-      const auto& name = faults_[i].name;
-      if (std::ranges::count(interfaces_, name, &Interface::name) > 0) {
-        Fail(std::format("faults[{}].name", i),
-             std::format("{} shares its name with an interface", name));
-      }
-    }
-    for (auto i = std::size_t{0}; i < faults_.size(); ++i) {
-      const auto& f = faults_[i];
-      const auto k = static_cast<int>(i) + 1;
-      const auto where = std::format("faults[{}]", i);
-      if (f.attribute != m + k) {
-        Fail(where + ".attribute", std::format("is {}, expected {}, after the {} interfaces",
-                                               f.attribute, m + k, m));
-      }
-      if (f.layers.empty() ||
-          !std::ranges::all_of(f.layers, [&](int a) { return std::ranges::contains(body, a); })) {
-        Fail(where + ".layers",
-             std::format("is [{}], not attributes of layers of the geometry, [{}]",
-                         Join(f.layers), Join(body)));
-      }
-      const auto groups = std::array{std::pair{"tip", f.tip}, std::pair{"free_edge", f.free_edge},
-                                     std::pair{"junction", f.junction}};
-      for (auto j = 0; j < 3; ++j) {
-        const auto& [key, group] = groups[static_cast<std::size_t>(j)];
-        if (const auto want = 3 * k - 2 + j; group && *group != want) {
-          Fail(std::format("{}.{}", where, key),
-               std::format("is {}, expected {} or null", *group, want));
-        }
-      }
-      if (!std::ranges::all_of(f.meets, [&](const std::string& other) {
-            return other != f.name && HasFault(other);
-          })) {
-        Fail(where + ".meets",
-             std::format("is [{}], not the names of other faults", Join(f.meets)));
-      }
-      if (!std::ranges::all_of(f.meets, [&](const std::string& other) {
-            return FaultNamed(other).Meets(f.name);
-          })) {
-        Fail(where + ".meets", std::format("is [{}], and not every one of them meets {}",
-                                           Join(f.meets), f.name));
-      }
-      if (f.meets.empty() == f.junction.has_value()) {
-        Fail(where + ".junction",
-             std::format("is {} but meets is [{}]: a junction is where it meets another fault",
-                         f.junction ? std::to_string(*f.junction) : "null", Join(f.meets)));
-      }
-      if (!std::ranges::all_of(f.ends_on, [&](const std::string& other) {
-            return f.Meets(other) && std::ranges::count(f.ends_on, other) == 1;
-          })) {
-        Fail(where + ".ends_on",
-             std::format("is [{}], not faults it meets, each once", Join(f.ends_on)));
-      }
-      if (f.controls && !std::ranges::all_of(*f.controls, [](const std::array<int, 2>& c) {
-            return c[0] >= 4 && c[1] >= 4;
-          })) {
-        Fail(where + ".controls", CONTROLS_RULE);
-      }
-      if (!(f.offset >= 0.0)) {
-        Fail(where + ".offset", std::format("is {}, not a distance", f.offset));
-      }
-      if (const auto& s = f.sizing;
-          s && !(0.0 < s->size && s->size <= s->far_size && s->decay_width > 0.0)) {
-        Fail(where + ".sizing",
-             std::format("is {{size {}, far_size {}, decay_width {}}}, not 0 < size <= "
-                         "far_size with a positive decay_width",
-                         s->size, s->far_size, s->decay_width));
-      }
-    }
-    if (!faults_.empty()) CheckCollars();
-  }
-
-  /// Schema 6's collars: each layer's attributes its own and then collar
-  /// attributes above N in increasing order, none for a shell; the collar
-  /// attributes N + 1..N + C, each one layer's and in some fault's hanging
-  /// wall; each hanging wall collar attributes in increasing order; and the
-  /// collars numbered in the order of their layer and then of their faults.
-  void CheckCollars() const {
-    const auto n = static_cast<int>(layers_.size());
-    auto owner = std::map<int, int>{};  // collar attribute -> the layer's own
-    for (auto i = 0; i < n; ++i) {
-      const auto& l = layers_[static_cast<std::size_t>(i)];
-      const auto where = std::format("layers[{}].attributes", i);
-      const auto& a = l.attributes;
-      auto ordered = !a.empty() && a.front() == l.attribute;
-      for (auto j = std::size_t{1}; ordered && j < a.size(); ++j) {
-        ordered = a[j] > n && (j == 1 || a[j] > a[j - 1]);
-      }
-      if (!ordered) {
-        Fail(where, std::format("is [{}], not its own attribute {} and then collar attributes "
-                                "above {} in increasing order",
-                                Join(a), l.attribute, n));
-      }
-      if (a.size() > 1 && !l.in_geometry) {
-        Fail(where, "lists collars, and a shell holds no fault");
-      }
-      for (auto j = std::size_t{1}; j < a.size(); ++j) {
-        if (owner.contains(a[j])) {
-          Fail(where, std::format("lists collar {}, which layers[{}] lists too", a[j],
-                                  owner[a[j]] - 1));
-        }
-        owner[a[j]] = l.attribute;
-      }
-    }
-    const auto c = static_cast<int>(owner.size());
-    if (!owner.empty() && (owner.begin()->first != n + 1 || owner.rbegin()->first != n + c)) {
-      auto listed = std::vector<int>{};
-      for (const auto& [a, _] : owner) listed.push_back(a);
-      Fail("layers", std::format("list the collar attributes [{}], not {}..{}", Join(listed),
-                                 n + 1, n + c));
-    }
-    auto walls = std::map<int, std::vector<int>>{};
-    for (auto k = std::size_t{0}; k < faults_.size(); ++k) {
-      const auto& hw = faults_[k].hanging_wall;
-      auto ordered = true;
-      for (auto j = std::size_t{0}; ordered && j < hw.size(); ++j) {
-        ordered = owner.contains(hw[j]) && (j == 0 || hw[j] > hw[j - 1]);
-      }
-      if (!ordered) {
-        Fail(std::format("faults[{}].hanging_wall", k),
-             std::format("is [{}], not collar attributes in increasing order", Join(hw)));
-      }
-      for (const auto a : hw) walls[a].push_back(static_cast<int>(k));
-    }
-    auto previous = std::optional<std::pair<int, std::vector<int>>>{};
-    for (const auto& [a, layer] : owner) {
-      const auto where = std::format("layers[{}].attributes", layer - 1);
-      if (!walls.contains(a)) {
-        Fail(where, std::format("lists collar {}, which is in no fault's hanging wall", a));
-      }
-      auto key = std::pair{layer, walls[a]};
-      if (previous && key <= *previous) {
-        Fail(where, std::format("lists collar {} (layer {}, faults [{}]) out of the order of "
-                                "layer and faults",
-                                a, layer, Join(walls[a])));
-      }
-      previous = std::move(key);
-    }
+    detail::CheckManifestRefinements(refinements_, source);
+    detail::CheckManifestFaults(
+        layers_, interfaces_, faults_, m, std::format("the {} interfaces", m), {}, "",
+        [](const Fault& f) {
+          return std::array{std::pair{"tip", f.tip}, std::pair{"free_edge", f.free_edge},
+                            std::pair{"junction", f.junction}};
+        },
+        source);
+    detail::CheckManifestFields(fields_, interfaces_, n, mesh_, source);
   }
 
   // -- helpers -----------------------------------------------------------------
@@ -1172,18 +1334,7 @@ class MeshManifest {
   /// The items of a list, comma separated.
   template <class Item>
   static std::string Join(const std::vector<Item>& items) {
-    auto out = std::string{};
-    for (auto first = true; const auto& item : items) {
-      out += std::format("{}{}", first ? "" : ", ", item);
-      first = false;
-    }
-    return out;
-  }
-
-  template <std::size_t N>
-  static bool Contains(const std::array<std::string_view, N>& options,
-                       std::string_view value) {
-    return std::ranges::find(options, value) != options.end();
+    return detail::JoinedList(items);
   }
 
   template <class Record>
@@ -1229,11 +1380,7 @@ class MeshManifest {
   std::string schema_;
   Json document_;
   Json meta_;
-  std::string mesh_file_;
-  std::string format_;
-  std::string nodes_;
-  ReadOptions options_{};
-  std::optional<std::string> displacement_;
+  detail::ManifestMesh mesh_{};
   std::vector<Layer> layers_;
   std::vector<Interface> interfaces_;
   std::vector<Refinement> refinements_;
@@ -1382,6 +1529,66 @@ struct CurveEdges {
   }
 };
 
+namespace detail {
+
+/// The curves of each fault read from the faces alone (`FaultCurves`), into
+/// records `Edges` with the members of `CurveEdges`, and with `face_edge`
+/// where they have one: of the edges a fault counts once that it shares
+/// with no other fault, those on the outer surface are its free edge, those
+/// of the rest on `box`, the faces of a flat mesh's base and sides, its
+/// face edge, and the others its tip.
+template <class Edges>
+std::vector<Edges> CurvesOfFaults(std::span<const std::vector<MeshTriangle>> faults,
+                                  std::span<const MeshTriangle> surface,
+                                  std::span<const MeshTriangle> box) {
+  auto count = [](std::span<const MeshTriangle> faces) {
+    auto out = std::map<MeshEdge, int>{};
+    for (const auto& t : faces) {
+      for (const auto& [i, j] : {std::pair{0, 1}, std::pair{1, 2}, std::pair{2, 0}}) {
+        const auto a = t[static_cast<std::size_t>(i)];
+        const auto b = t[static_cast<std::size_t>(j)];
+        ++out[MeshEdge{std::min(a, b), std::max(a, b)}];
+      }
+    }
+    return out;
+  };
+  auto edges = std::vector<std::map<MeshEdge, int>>{};
+  for (const auto& f : faults) edges.push_back(count(f));
+  const auto outer = count(surface);
+  const auto sides = count(box);
+  auto out = std::vector<Edges>(faults.size());
+  for (auto k = std::size_t{0}; k < edges.size(); ++k) {
+    auto ends = std::vector<char>(edges.size(), 0);
+    for (const auto& [edge, uses] : edges[k]) {
+      auto shared = false;
+      for (auto j = std::size_t{0}; j < edges.size(); ++j) {
+        if (j != k && edges[j].contains(edge)) {
+          shared = true;
+          if (uses == 1) ends[j] = 1;
+        }
+      }
+      if (shared) {
+        out[k].junction.push_back(edge);
+        if (uses == 1) out[k].junction_end.push_back(edge);
+      } else if (uses == 1) {
+        if (outer.contains(edge)) {
+          out[k].free_edge.push_back(edge);
+        } else if (sides.contains(edge)) {
+          if constexpr (requires { out[k].face_edge; }) out[k].face_edge.push_back(edge);
+        } else {
+          out[k].tip.push_back(edge);
+        }
+      }
+    }
+    for (auto j = std::size_t{0}; j < edges.size(); ++j) {
+      if (ends[j]) out[k].ends_on.push_back(static_cast<int>(j));
+    }
+  }
+  return out;
+}
+
+}  // namespace detail
+
 /**
  * @brief The tip, free-edge and junction edges of each fault, and the part
  * of its junction where it ends, read from the faces alone, for a mesh
@@ -1408,43 +1615,7 @@ struct CurveEdges {
  */
 [[nodiscard]] inline std::vector<CurveEdges> FaultCurves(
     std::span<const std::vector<MeshTriangle>> faults, std::span<const MeshTriangle> surface) {
-  auto count = [](std::span<const MeshTriangle> faces) {
-    auto out = std::map<MeshEdge, int>{};
-    for (const auto& t : faces) {
-      for (const auto& [i, j] : {std::pair{0, 1}, std::pair{1, 2}, std::pair{2, 0}}) {
-        const auto a = t[static_cast<std::size_t>(i)];
-        const auto b = t[static_cast<std::size_t>(j)];
-        ++out[MeshEdge{std::min(a, b), std::max(a, b)}];
-      }
-    }
-    return out;
-  };
-  auto edges = std::vector<std::map<MeshEdge, int>>{};
-  for (const auto& f : faults) edges.push_back(count(f));
-  const auto outer = count(surface);
-  auto out = std::vector<CurveEdges>(faults.size());
-  for (auto k = std::size_t{0}; k < edges.size(); ++k) {
-    auto ends = std::vector<char>(edges.size(), 0);
-    for (const auto& [edge, uses] : edges[k]) {
-      auto shared = false;
-      for (auto j = std::size_t{0}; j < edges.size(); ++j) {
-        if (j != k && edges[j].contains(edge)) {
-          shared = true;
-          if (uses == 1) ends[j] = 1;
-        }
-      }
-      if (shared) {
-        out[k].junction.push_back(edge);
-        if (uses == 1) out[k].junction_end.push_back(edge);
-      } else if (uses == 1) {
-        (outer.contains(edge) ? out[k].free_edge : out[k].tip).push_back(edge);
-      }
-    }
-    for (auto j = std::size_t{0}; j < edges.size(); ++j) {
-      if (ends[j]) out[k].ends_on.push_back(static_cast<int>(j));
-    }
-  }
-  return out;
+  return detail::CurvesOfFaults<CurveEdges>(faults, surface, {});
 }
 
 /**
