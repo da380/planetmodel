@@ -67,7 +67,12 @@ its gradient (d/dx_i along each axis, in the domain's lengths), and the
 adjoint of evaluation, sum_j w_j phi(x_j) for every basis function phi:
 through finufft's type-2 and type-1 non-uniform FFTs, to about
 `POINT_EPSILON` of the field's size, or by the direct sum over the basis
-with `route="direct"`, to rounding at a cost of N per point.  The
+with `route="direct"`, to rounding at a cost of N per point.  `at`
+prepares a set of points once, for transforms applied there many times:
+its `PointTransform` holds the points' angles in the box and, on
+finufft's route, finufft's plans with the points sorted, and applies the
+three to the same results with no work on the points; each of the
+methods that take points is one application of such a preparation.  The
 spectrum handed to finufft is two larger than the grid along every axis,
 so that +k and -k are distinct entries for every mode, Nyquist included,
 and the self-conjugate modes and the pairs need no separate handling.
@@ -87,10 +92,12 @@ padding: a step there would ring through a truncated series.
 """
 from __future__ import annotations
 
+import math
+import threading
 from collections.abc import Sequence
 from functools import cached_property, lru_cache
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -99,8 +106,8 @@ from scipy.fft import irfftn, rfftn
 if TYPE_CHECKING:
     from .cartesian.domains import Domain
 
-__all__ = ["Packing", "PaddedDomain", "Transform", "DomainLike", "POINT_EPSILON",
-           "POSITION_RTOL", "NUFFT_THREADS", "ROUTES"]
+__all__ = ["Packing", "PaddedDomain", "Transform", "PointTransform", "DomainLike",
+           "POINT_EPSILON", "POSITION_RTOL", "NUFFT_THREADS", "ROUTES"]
 
 #: The relative accuracy asked of finufft at arbitrary points.
 POINT_EPSILON = 1e-12
@@ -180,6 +187,7 @@ class Packing:
         self._paired = _readonly(np.flatnonzero(paired))
         self._partners = _readonly(partner[self._paired])
         size = int(np.prod(shape))
+        self._size = size
         if self._fixed.size + 2 * self._paired.size != size:
             raise AssertionError(
                 f"the packing of shape {shape} has {self._fixed.size} self-conjugate "
@@ -209,7 +217,7 @@ class Packing:
     @property
     def size(self) -> int:
         """The number of components, the grid's number of points."""
-        return int(np.prod(self._shape))
+        return self._size
 
     @property
     def dimension(self) -> int:
@@ -667,6 +675,19 @@ class Transform:
                              f"{c.shape}")
         return c
 
+    @cached_property
+    def _interchange(self) -> tuple[int, int, np.float64, np.ndarray, np.ndarray]:
+        """(entries, count, pair, retained, written): the entries of rfftn's
+        half spectrum, the number of self-conjugate modes, a pair's
+        component over its parts, sqrt(V) sqrt(2) / N, and the pairs whose
+        partner lies in the half spectrum with the flat index of each
+        partner."""
+        p = self._packing
+        retained = np.flatnonzero(p.paired_partners >= 0)
+        return (int(np.prod(p.rfft_shape)), p.fixed_indices.size,
+                self._scale * np.sqrt(2.0), _readonly(retained),
+                _readonly(p.paired_partners[retained]))
+
     def from_rfft(self, coefficients: ArrayLike) -> np.ndarray:
         """Components from an rfftn array of shape `(..., *rfft_shape)`, on the
         unnormalised scale numpy and scipy share.  A self-conjugate entry's
@@ -674,15 +695,23 @@ class Transform:
         entry other than its representative."""
         p = self._packing
         a = np.asarray(coefficients)
+        _, count, pair, _, _ = self._interchange
+        if a.shape == p.rfft_shape:            # one array: the steps below, unbatched
+            flat = a.reshape(-1)
+            out = np.empty(self.size)
+            out[:count] = flat[p.fixed_indices].real * self._scale
+            paired = flat[p.paired_indices] * pair
+            out[count::2] = paired.real
+            out[count + 1::2] = paired.imag
+            return out
         d = self.dimension
         if a.ndim < d or a.shape[a.ndim - d:] != p.rfft_shape:
             raise ValueError(f"an rfftn array of a grid of shape {self.shape} has "
                              f"trailing shape {p.rfft_shape}; got {a.shape}")
         flat = a.reshape(a.shape[:a.ndim - d] + (-1,))
-        count = p.fixed_indices.size
         out = np.empty(flat.shape[:-1] + (self.size,))
         out[..., :count] = flat[..., p.fixed_indices].real * self._scale
-        paired = flat[..., p.paired_indices] * (self._scale * np.sqrt(2.0))
+        paired = flat[..., p.paired_indices] * pair
         out[..., count::2] = paired.real
         out[..., count + 1::2] = paired.imag
         return out
@@ -693,15 +722,20 @@ class Transform:
         the half spectrum written as its conjugate."""
         p = self._packing
         c = self._components(components)
+        entries, count, pair, retained, written = self._interchange
+        if c.ndim == 1:                        # one vector: the steps below, unbatched
+            out = np.zeros(entries, dtype=complex)
+            out[p.fixed_indices] = c[:count] / self._scale
+            values = c[count::2] / pair + 1j * (c[count + 1::2] / pair)
+            out[p.paired_indices] = values
+            out[written] = np.conj(values[retained])
+            return out.reshape(p.rfft_shape)
         batch = c.shape[:-1]
-        count = p.fixed_indices.size
-        out = np.zeros(batch + (int(np.prod(p.rfft_shape)),), dtype=complex)
+        out = np.zeros(batch + (entries,), dtype=complex)
         out[..., p.fixed_indices] = c[..., :count] / self._scale
-        pair = self._scale * np.sqrt(2.0)
         values = c[..., count::2] / pair + 1j * (c[..., count + 1::2] / pair)
         out[..., p.paired_indices] = values
-        retained = p.paired_partners >= 0
-        out[..., p.paired_partners[retained]] = np.conj(values[..., retained])
+        out[..., written] = np.conj(values[..., retained])
         return out.reshape(batch + p.rfft_shape)
 
     def analyse_grid(self, values: ArrayLike) -> np.ndarray:
@@ -835,22 +869,21 @@ class Transform:
         spectrum[:, minus] += 0.5 * np.conj(weights)
         return spectrum.reshape((c.shape[0],) + sizes)
 
-    def _type2(self, spectra: np.ndarray, theta: np.ndarray, epsilon: float,
-               nthreads: int) -> np.ndarray:
-        """finufft's type 2, sum_k f_k exp(+i k . theta), of spectra (B,
-        *sizes) at angles (P, D): shape (B, P), real parts."""
-        finufft = _finufft()
-        transform = (finufft.nufft1d2, finufft.nufft2d2,
-                     finufft.nufft3d2)[self.dimension - 1]
-        angles = [np.ascontiguousarray(theta[:, i]) for i in range(self.dimension)]
-        values = transform(*angles, np.ascontiguousarray(spectra), isign=1,
-                           eps=float(epsilon), nthreads=int(nthreads))
-        return np.asarray(values).reshape(spectra.shape[0], -1).real
-
     def _flat(self, components: ArrayLike) -> tuple[np.ndarray, tuple[int, ...]]:
         """Components as (B, N), with the batch shape."""
         c = self._components(components)
         return c.reshape(-1, self.size), c.shape[:-1]
+
+    def at(self, points: ArrayLike, *, route: str = "nufft",
+           epsilon: float = POINT_EPSILON, nthreads: int = NUFFT_THREADS
+           ) -> PointTransform:
+        """The transforms at points of shape (..., D), prepared once to be
+        applied many times: a `PointTransform`, whose `synthesise`,
+        `synthesise_gradient` and `accumulate` take no points and give the
+        results of the methods of those names here, by `route`, to
+        `epsilon` with `nthreads` threads on finufft's."""
+        return PointTransform(self, points, route=route, epsilon=epsilon,
+                              nthreads=nthreads)
 
     def synthesise(self, components: ArrayLike, points: ArrayLike, *,
                    route: str = "nufft", epsilon: float = POINT_EPSILON,
@@ -860,18 +893,13 @@ class Transform:
 
         By finufft's type-2 transform, to about `epsilon` of the field's
         size with `nthreads` threads, or with `route="direct"` by the sum
-        over `basis`, to rounding at N per point.
+        over `basis`, to rounding at N per point.  Points used more than
+        once are prepared once by `at`.
         """
         route = self._route(route)
         c, batch = self._flat(components)
-        theta, shape = self._angles(points)
-        if theta.shape[0] == 0:
-            values = np.zeros((c.shape[0], 0))
-        elif route == "direct":
-            values = c @ self._basis(theta).T
-        else:
-            values = self._type2(self._spectrum(c), theta, epsilon, nthreads)
-        return values.reshape(batch + shape)
+        prepared = self.at(points, route=route, epsilon=epsilon, nthreads=nthreads)
+        return prepared._values(c).reshape(batch + prepared.shape)
 
     def synthesise_gradient(self, components: ArrayLike, points: ArrayLike, *,
                             route: str = "nufft", epsilon: float = POINT_EPSILON,
@@ -879,29 +907,13 @@ class Transform:
         """d/dx_i of the series along each axis at points of shape (..., D):
         the batch axes, the points' shape, then D.  The spectrum times
         i 2 pi k_i / L_i, every axis in one batched type-2 transform, or by
-        the direct sum; to the accuracy of `synthesise`."""
+        the direct sum; to the accuracy of `synthesise`.  Points used more
+        than once are prepared once by `at`."""
         route = self._route(route)
         c, batch = self._flat(components)
-        theta, shape = self._angles(points)
-        d = self.dimension
-        if theta.shape[0] == 0:
-            out = np.zeros((c.shape[0], 0, d))
-        elif route == "direct":
-            out = np.einsum("bn,pdn->bpd", c, self._basis_gradient(theta))
-        else:
-            sizes = self._layout[0]
-            spectrum = self._spectrum(c)
-            stacked = np.empty((c.shape[0], d) + sizes, dtype=complex)
-            for axis in range(d):
-                k = np.arange(sizes[axis]) - sizes[axis] // 2
-                factor = (1j * 2.0 * np.pi / self.lengths[axis]) * k
-                along = [1] * d
-                along[axis] = sizes[axis]
-                stacked[:, axis] = spectrum * factor.reshape(along)
-            values = self._type2(stacked.reshape((-1,) + sizes), theta, epsilon,
-                                 nthreads)
-            out = values.reshape(c.shape[0], d, -1).transpose(0, 2, 1)
-        return out.reshape(batch + shape + (d,))
+        prepared = self.at(points, route=route, epsilon=epsilon, nthreads=nthreads)
+        return prepared._gradient(c).reshape(batch + prepared.shape
+                                             + (self.dimension,))
 
     def accumulate(self, weights: ArrayLike, points: ArrayLike, *,
                    route: str = "nufft", epsilon: float = POINT_EPSILON,
@@ -912,44 +924,183 @@ class Transform:
 
         By finufft's type-1 transform, the adjoint of the type 2 that
         `synthesise` makes, to about `epsilon`, or by the direct sum.
+        Points used more than once are prepared once by `at`.
         """
-        route = self._route(route)
-        theta, shape = self._angles(points)
-        w = np.asarray(weights, dtype=float)
-        lead = w.ndim - len(shape)
-        if lead < 0 or w.shape[lead:] != shape:
-            raise ValueError(f"weights at points of shape {shape} have that trailing "
-                             f"shape; got {w.shape}")
-        batch = w.shape[:lead]
-        w = w.reshape(int(np.prod(batch)), theta.shape[0])
-        if theta.shape[0] == 0:
-            out = np.zeros((w.shape[0], self.size))
-        elif route == "direct":
-            out = w @ self._basis(theta)
-        else:
-            out = self._type1(w, theta, epsilon, nthreads)
-        return out.reshape(batch + (self.size,))
+        return self.at(points, route=route, epsilon=epsilon,
+                       nthreads=nthreads).accumulate(weights)
 
-    def _type1(self, w: np.ndarray, theta: np.ndarray, epsilon: float,
-               nthreads: int) -> np.ndarray:
+    def __repr__(self) -> str:
+        return f"Transform({self.shape}, {self._domain!r})"
+
+
+class PointTransform:
+    """The transforms of a `Transform` at one set of points, prepared once
+    to be applied many times (`Transform.at`): `synthesise`,
+    `synthesise_gradient` and `accumulate` without the points, giving the
+    results of the transform's methods of those names, which are each one
+    application of such a preparation.
+
+    The points, of shape (..., D), are taken to their angles in the box on
+    construction.  On finufft's route the first application of each type
+    of transform (2 for the series and its gradient, 1 for the adjoint) to
+    each number of fields at once makes finufft's plan for it, the points
+    sorted and its upsampled grid allocated (about 2^D times the spectrum,
+    complex, for each thread), and keeps it.  On the direct route the
+    angles are all that is kept, the basis summed at each application, N
+    per point.  Applications from several threads take turns on the plans;
+    a copy or a pickle leaves them behind, to be made again on first use.
+    """
+
+    def __init__(self, transform: Transform, points: ArrayLike, *,
+                 route: str = "nufft", epsilon: float = POINT_EPSILON,
+                 nthreads: int = NUFFT_THREADS) -> None:
+        self._transform = transform
+        self._route = transform._route(route)
+        theta, self._shape = transform._angles(points)
+        self._theta = _readonly(theta)
+        self._axes = (tuple(_readonly(np.ascontiguousarray(theta[:, i]))
+                            for i in range(transform.dimension))
+                      if self._route == "nufft" else ())
+        self._epsilon = epsilon
+        self._nthreads = nthreads
+        self._plans: dict[tuple[int, int], Any] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def transform(self) -> Transform:
+        """The transform whose series are taken at the points."""
+        return self._transform
+
+    @property
+    def route(self) -> str:
+        """The route of every application: one of `ROUTES`."""
+        return self._route
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """The points' shape, their coordinates' axis left out."""
+        return self._shape
+
+    def synthesise(self, components: ArrayLike) -> np.ndarray:
+        """The series of `components`, shape (..., N), at the points: the
+        batch axes and then the points' shape (`Transform.synthesise`)."""
+        c, batch = self._transform._flat(components)
+        return self._values(c).reshape(batch + self._shape)
+
+    def synthesise_gradient(self, components: ArrayLike) -> np.ndarray:
+        """d/dx_i of the series of `components` along each axis at the
+        points: the batch axes, the points' shape, then D
+        (`Transform.synthesise_gradient`)."""
+        c, batch = self._transform._flat(components)
+        return self._gradient(c).reshape(batch + self._shape
+                                         + (self._transform.dimension,))
+
+    def accumulate(self, weights: ArrayLike) -> np.ndarray:
+        """sum_j w_j phi(x_j) for every basis function phi, components of
+        shape `(..., N)` from `weights` of shape `(..., *P)`, P the points'
+        shape: the adjoint of `synthesise` (`Transform.accumulate`)."""
+        w = np.asarray(weights, dtype=float)
+        lead = w.ndim - len(self._shape)
+        if lead < 0 or w.shape[lead:] != self._shape:
+            raise ValueError(f"weights at points of shape {self._shape} have that "
+                             f"trailing shape; got {w.shape}")
+        batch = w.shape[:lead]
+        w = w.reshape(math.prod(batch), self._theta.shape[0])
+        return self._sums(w).reshape(batch + (self._transform.size,))
+
+    def _values(self, c: np.ndarray) -> np.ndarray:
+        """The series of components (B, N) at the points: shape (B, P)."""
+        t = self._transform
+        if self._theta.shape[0] == 0:
+            return np.zeros((c.shape[0], 0))
+        if self._route == "direct":
+            return c @ t._basis(self._theta).T
+        return self._type2(t._spectrum(c))
+
+    def _gradient(self, c: np.ndarray) -> np.ndarray:
+        """d/dx_i of the series of components (B, N) at the points: shape
+        (B, P, D), the spectrum times i 2 pi k_i / L_i, every axis in one
+        batched type-2 transform."""
+        t = self._transform
+        d = t.dimension
+        if self._theta.shape[0] == 0:
+            return np.zeros((c.shape[0], 0, d))
+        if self._route == "direct":
+            return np.einsum("bn,pdn->bpd", c, t._basis_gradient(self._theta))
+        sizes = t._layout[0]
+        spectrum = t._spectrum(c)
+        stacked = np.empty((c.shape[0], d) + sizes, dtype=complex)
+        for axis in range(d):
+            k = np.arange(sizes[axis]) - sizes[axis] // 2
+            factor = (1j * 2.0 * np.pi / t.lengths[axis]) * k
+            along = [1] * d
+            along[axis] = sizes[axis]
+            stacked[:, axis] = spectrum * factor.reshape(along)
+        values = self._type2(stacked.reshape((-1,) + sizes))
+        return values.reshape(c.shape[0], d, -1).transpose(0, 2, 1)
+
+    def _sums(self, w: np.ndarray) -> np.ndarray:
+        """sum_j w_j phi(x_j) of weights (B, P): components (B, N)."""
+        t = self._transform
+        if self._theta.shape[0] == 0:
+            return np.zeros((w.shape[0], t.size))
+        if self._route == "direct":
+            return w @ t._basis(self._theta)
+        return self._type1(w)
+
+    def _plan(self, kind: int, count: int) -> Any:
+        """finufft's plan of type `kind`, 2 with exp(+i k . theta) or 1 with
+        exp(-i k . theta), for `count` transforms at once at the points:
+        made on first use and kept.  The caller holds the lock."""
+        plan = self._plans.get((kind, count))
+        if plan is None:
+            plan = _finufft().Plan(kind, self._transform._layout[0], n_trans=count,
+                                   eps=float(self._epsilon),
+                                   isign=1 if kind == 2 else -1,
+                                   nthreads=int(self._nthreads))
+            plan.setpts(*self._axes)
+            self._plans[kind, count] = plan
+        return plan
+
+    def _type2(self, spectra: np.ndarray) -> np.ndarray:
+        """finufft's type 2, sum_k f_k exp(+i k . theta), of spectra (B,
+        *sizes) at the points: shape (B, P), real parts."""
+        with self._lock:
+            values = self._plan(2, spectra.shape[0]).execute(
+                np.ascontiguousarray(spectra))
+        return np.asarray(values).reshape(spectra.shape[0], -1).real
+
+    def _type1(self, w: np.ndarray) -> np.ndarray:
         """Components (B, N) of finufft's type 1, sum_j w_j exp(-i k .
         theta_j), read at each mode's +k: a pair's cosine from the real part
         and its sine from the imaginary part, the sine's sign and the
         transform's cancelling."""
-        finufft = _finufft()
-        transform = (finufft.nufft1d1, finufft.nufft2d1,
-                     finufft.nufft3d1)[self.dimension - 1]
-        sizes, plus, _, amplitude = self._layout
-        angles = [np.ascontiguousarray(theta[:, i]) for i in range(self.dimension)]
-        spectrum = transform(*angles, np.ascontiguousarray(w, dtype=complex), sizes,
-                             isign=-1, eps=float(epsilon), nthreads=int(nthreads))
+        t = self._transform
+        _, plus, _, amplitude = t._layout
+        with self._lock:
+            spectrum = self._plan(1, w.shape[0]).execute(
+                np.ascontiguousarray(w, dtype=complex))
         at = np.asarray(spectrum).reshape(w.shape[0], -1)[:, plus]
-        count = self._packing.fixed_indices.size
-        out = np.empty((w.shape[0], self.size))
+        count = t.packing.fixed_indices.size
+        out = np.empty((w.shape[0], t.size))
         out[:, :count] = amplitude[:count] * at[:, :count].real
         out[:, count::2] = amplitude[count:] * at[:, count:].real
         out[:, count + 1::2] = amplitude[count:] * at[:, count:].imag
         return out
 
+    def __getstate__(self) -> dict[str, Any]:
+        """The state a copy or a pickle takes: finufft's plans and the lock
+        left behind."""
+        state = self.__dict__.copy()
+        state["_plans"] = {}
+        del state["_lock"]
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """The state restored, with a lock of its own and no plans yet."""
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     def __repr__(self) -> str:
-        return f"Transform({self.shape}, {self._domain!r})"
+        return (f"PointTransform({self._transform!r}, points of shape {self._shape}, "
+                f"route={self._route!r})")
