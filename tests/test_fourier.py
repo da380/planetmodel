@@ -2,10 +2,14 @@
 and its Nyquist rule, the grid transforms against scipy's rfftn, the
 transforms at points through finufft against the direct sum over the
 basis (the oracle), the gradient against finite differences, the adjoint
-identity, and the padded domain, in one to three dimensions with even
+identity, the transforms at prepared points against those at points given
+on each call, and the padded domain, in one to three dimensions with even
 and odd sizes."""
+import copy
+import pickle
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -17,6 +21,7 @@ from planetmodel.fourier import (
     POSITION_RTOL,
     Packing,
     PaddedDomain,
+    PointTransform,
     Transform,
 )
 
@@ -50,6 +55,13 @@ def scale(t, c):
     """The field's size: the sum of its coefficients' moduli times the
     larger basis amplitude, bounding it everywhere."""
     return np.abs(c).sum(axis=-1).max() * np.sqrt(2.0 / t.volume)
+
+
+def close(a, b, *, rel=1e-12):
+    """Agreement to rounding, relative to the largest entry of `b` or one."""
+    a, b = np.asarray(a), np.asarray(b)
+    assert a.shape == b.shape
+    assert np.max(np.abs(a - b), initial=0.0) <= rel * np.max(np.abs(b), initial=1.0)
 
 
 # -- the packing -------------------------------------------------------------------
@@ -209,6 +221,29 @@ def test_the_rfft_interchange(case):
     assert np.allclose(t.from_rfft(t.to_rfft(c)), c, atol=1e-14)
 
 
+@pytest.mark.parametrize("case", CASES, ids=IDS)
+def test_one_vector_in_the_rfft_interchange_is_a_batch_s_row(case):
+    """One array or vector without batch axes goes by its own steps, the
+    batched ones' elementwise arithmetic on the same entries, so the values
+    are a batch's rows exactly."""
+    rng = np.random.default_rng(11)
+    t = transform(case)
+    axes = tuple(range(-t.dimension, 0))
+    plain = rfftn(rng.standard_normal((3,) + t.shape), s=t.shape, axes=axes)
+    batch = t.from_rfft(plain)
+    for i in range(3):
+        one = t.from_rfft(plain[i])
+        assert one.shape == (t.size,) and np.array_equal(one, batch[i])
+    c = rng.standard_normal((3, t.size))
+    batch = t.to_rfft(c)
+    for i in range(3):
+        one = t.to_rfft(c[i])
+        assert one.shape == t.packing.rfft_shape and np.array_equal(one, batch[i])
+    # a batch of one is a batch
+    assert t.from_rfft(plain[:1]).shape == (1, t.size)
+    assert t.to_rfft(c[:1]).shape == (1,) + t.packing.rfft_shape
+
+
 # -- at points ---------------------------------------------------------------------
 
 @pytest.mark.parametrize("case", CASES, ids=IDS)
@@ -295,6 +330,110 @@ def test_a_single_point_and_a_single_field():
     assert v.shape == () and np.isclose(v, t.basis([0.3]) @ c)
     assert t.synthesise_gradient(c, [0.3]).shape == (1,)
     assert t.accumulate(2.0, [0.3]).shape == (t.size,)
+
+
+# -- prepared points ---------------------------------------------------------------
+
+@pytest.mark.parametrize("route", ["nufft", "direct"])
+@pytest.mark.parametrize("case", CASES, ids=IDS)
+def test_prepared_points_give_the_transforms_at_points(case, route):
+    """Applied again and again, to batches of different sizes and to one
+    field, a preparation gives what the transform gives with the points."""
+    rng = np.random.default_rng(12)
+    t = transform(case)
+    x = random_points(t, rng, 30, spill=0.5).reshape(6, 5, t.dimension)
+    prepared = t.at(x, route=route)
+    assert isinstance(prepared, PointTransform)
+    assert prepared.transform is t and prepared.route == route
+    assert prepared.shape == (6, 5)
+    for batch in [(3,), (), (2, 2), (3,)]:
+        c = rng.standard_normal(batch + (t.size,))
+        w = rng.standard_normal(batch + (6, 5))
+        values = prepared.synthesise(c)
+        assert values.shape == batch + (6, 5)
+        close(values, t.synthesise(c, x, route=route))
+        gradient = prepared.synthesise_gradient(c)
+        assert gradient.shape == batch + (6, 5, t.dimension)
+        close(gradient, t.synthesise_gradient(c, x, route=route))
+        back = prepared.accumulate(w)
+        assert back.shape == batch + (t.size,)
+        close(back, t.accumulate(w, x, route=route))
+        # the adjoint identity, to rounding of the sum's terms
+        lhs = np.sum(values * w, axis=(-2, -1))
+        rhs = np.sum(c * back, axis=-1)
+        terms = np.sum(np.abs(values * w), axis=(-2, -1))
+        assert np.all(np.abs(lhs - rhs) <= 1e-12 * np.max(terms))
+
+
+def test_prepared_points_copy_and_pickle_without_their_plans():
+    rng = np.random.default_rng(13)
+    t = Transform((8, 9), PaddedDomain([(2.0, 3.0), (5.0, 6.0)], padding=0.1))
+    x = random_points(t, rng, 50)
+    prepared = t.at(x)
+    c, w = rng.standard_normal(t.size), rng.standard_normal(50)
+    values, back = prepared.synthesise(c), prepared.accumulate(w)
+    for other in (pickle.loads(pickle.dumps(prepared)), copy.copy(prepared),
+                  copy.deepcopy(prepared)):
+        close(other.synthesise(c), values)
+        close(other.accumulate(w), back)
+        close(other.synthesise_gradient(c), prepared.synthesise_gradient(c))
+    assert "points of shape (50,)" in repr(prepared)
+
+
+def test_prepared_points_from_several_threads():
+    """Applications from several threads take turns on finufft's plans."""
+    rng = np.random.default_rng(14)
+    t = Transform((16, 12), [1.0, 2.0])
+    x = random_points(t, rng, 400)
+    prepared = t.at(x)
+    c = rng.standard_normal((12, t.size))
+    w = rng.standard_normal((12, 400))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        values = list(pool.map(prepared.synthesise, c))
+        back = list(pool.map(prepared.accumulate, w))
+    for i in range(12):
+        close(values[i], t.synthesise(c[i], x))
+        close(back[i], t.accumulate(w[i], x))
+
+
+def test_prepared_points_of_none_one_and_more_axes():
+    t = Transform((6, 4), [1.0, 2.0])
+    c = np.ones((2, t.size))
+    for route in ("nufft", "direct"):
+        none = t.at(np.zeros((0, 2)), route=route)
+        assert none.synthesise(c).shape == (2, 0)
+        assert none.synthesise_gradient(c).shape == (2, 0, 2)
+        assert np.array_equal(none.accumulate(np.zeros((2, 0))), np.zeros((2, t.size)))
+    one = Transform((7,), 2.0)
+    c = np.random.default_rng(15).standard_normal(one.size)
+    single = one.at([0.3])
+    assert single.shape == ()
+    assert single.synthesise(c).shape == () and np.isclose(single.synthesise(c),
+                                                          one.basis([0.3]) @ c)
+    assert single.synthesise_gradient(c).shape == (1,)
+    assert single.accumulate(2.0).shape == (one.size,)
+    four = Transform((3, 4, 2, 3), [1.0, 2.0, 1.0, 1.0])
+    p = random_points(four, np.random.default_rng(16), 5)
+    c = np.random.default_rng(17).standard_normal(four.size)
+    close(four.at(p, route="direct").synthesise(c),
+          four.synthesise(c, p, route="direct"))
+    with pytest.raises(ValueError, match="route='direct'"):
+        four.at(p)
+
+
+def test_prepared_points_refuse_what_is_wrong():
+    t = Transform((6, 4), [1.0, 2.0])
+    with pytest.raises(ValueError, match="route must be one of"):
+        t.at(np.zeros((3, 2)), route="fast")
+    with pytest.raises(ValueError, match="2 coordinates each"):
+        t.at(np.zeros((3, 3)))
+    prepared = t.at(np.zeros((3, 2)))
+    with pytest.raises(ValueError, match="24 entries"):
+        prepared.synthesise(np.zeros(23))
+    with pytest.raises(ValueError, match="24 entries"):
+        prepared.synthesise_gradient(np.zeros((2, 25)))
+    with pytest.raises(ValueError, match="trailing shape"):
+        prepared.accumulate(np.zeros(4))
 
 
 # -- derivative and transfer -------------------------------------------------------

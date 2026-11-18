@@ -40,7 +40,6 @@ examples/figures/
 # Claude Code session state and agent worktrees
 .claude/
 
-CHANGELOG.md
 CLAUDE.md
 docs/**/*.md
 
