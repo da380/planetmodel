@@ -838,7 +838,7 @@ struct ParameterPoints {
     throw Error("ParameterRule", "", "n_u, n_v and points must be positive integers");
   }
   const auto [x, w] = GaussLegendrePoints(points);
-  auto composite = [&x, &w](std::size_t n) {
+  auto composite = [&x = x, &w = w](std::size_t n) {
     const auto e = detail::Linspace(FAULT_SQUARE[0], FAULT_SQUARE[1], n + 1);
     auto p = std::vector<double>{}, q = std::vector<double>{};
     for (auto c = std::size_t{0}; c < n; ++c) {
