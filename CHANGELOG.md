@@ -34,6 +34,17 @@ again empty.
   takes no derivative there. `coarsened` refuses a merge that includes
   such a layer; `hollowed`, and `extended` by continuation, give the
   description up.
+- `SelfGravitating.stabilised` makes the unstably stratified fluid layers
+  of a model stable. Each is replaced by the stable layer nearest to it
+  of the same P velocity, radii, mass and moment of inertia
+  (`stable_layer`): every unstable interval becomes neutral together
+  with as much of the fluid beside it as that takes, and the layer is
+  then described by its Bullen excess. It returns the model and a
+  `Stabilisation` saying, for each layer changed, where it is neutral
+  and how far its density moved. A layer that cannot keep its moment of
+  inertia, as a uniform one cannot, is refused unless the mass alone is
+  asked to be held; a stable model is returned as it is. On PREM's
+  outer core the density changes by at most 2.9e-4.
 
 ### Fixed
 

@@ -48,7 +48,12 @@ from numpy.typing import ArrayLike
 from . import materials, rheology
 from .character import DENSITY, SCALAR
 from .fields import ComposedField, Field, RadialField
-from .layerfunction import LayerFunctionLike, as_layer_function
+from .layerfunction import (
+    LayerFunctionLike,
+    NumericLayer,
+    as_layer_function,
+    constant_layer,
+)
 from .mesh1d.gravity import (
     gravity,
     gravity_fields,
@@ -59,10 +64,12 @@ from .mesh1d.gravity import (
 )
 from .mesh1d.stratification import (
     BULLEN_EXCESS,
+    Stabilisation,
     brunt_vaisala_squared,
     bullen_excess,
     bullen_parameter,
     is_neutral,
+    stable_layer,
     stratified_density,
 )
 
@@ -569,7 +576,9 @@ class SelfGravitating:
     A fluid layer may be described by its stratification in place of its
     density: `with_bullen_excess` gives it a Bullen excess, held under
     that name, and derives its density from it, and `is_neutral` says
-    whether the excess a layer holds vanishes.  On a model that is also
+    whether the excess a layer holds vanishes.  `stabilised` makes the
+    unstably stratified fluid layers stable, each becoming such a layer.
+    On a model that is also
     `Elastic` such a density is kept in step with what it was derived
     from (`Elastic.with_field`).  Cutting the inside of the model away
     (`hollowed`) removes the mass under which those densities were
@@ -626,6 +635,89 @@ class SelfGravitating:
         layers = [dict(other.fields) for other in self.layers]
         layers[i][BULLEN_EXCESS] = _excess_field(self, layer, excess)
         return _derived(self.replaced(layers=layers), i, rtol=rtol, **given)
+
+    def stabilised(self: Model, *, layers: Iterable[int | str] | None = None,
+                   inertia: bool = True, neutral_below: float = 0.0,
+                   rtol: float = 1e-12) -> tuple[Model, Stabilisation]:
+        """The model with its unstably stratified fluid made stable, and
+        what was done.
+
+        Each fluid layer of `layers`, every fluid layer by default, that
+        is unstable in places is replaced by the stable layer nearest to
+        it (`mesh1d.stratification.stable_layer`): its P velocity, its
+        radii and its mass are kept, and with `inertia` its moment of
+        inertia, so that nothing above or below it changes and the
+        model's mass and moment of inertia are what they were.  The
+        layer is then described by its stratification, holding its
+        Bullen excess, zero on the intervals made neutral, and the
+        density derived from it (`with_bullen_excess`).  A layer
+        described by its bulk modulus is described by its P velocity
+        from then on, that being what is kept.  With `neutral_below`
+        positive a stretch whose excess stays under it is made neutral
+        as well.
+
+        A layer that is stable as it stands, or already holds a Bullen
+        excess, is left alone, and a model of such layers is returned as
+        it is.  A layer that cannot keep its moment of inertia, being
+        unstable throughout as a uniform layer is, is refused by name:
+        leave it out of `layers`, or pass `inertia=False`.  A layer of
+        `layers` that is not fluid, and a frozen model, are refused.
+        """
+        _refuse_frozen(self, "stabilising changes the density")
+        if layers is None:
+            which = []
+            for layer in self.layers:
+                try:
+                    if materials.is_fluid(layer):
+                        which.append(layer.index)
+                except KeyError:
+                    pass
+        else:
+            which = sorted({self.layer(w).index for w in layers})
+            for i in which:
+                _excess_field(self, self.layers[i], 0.0)     # refuses a solid
+        masses = layer_masses(self)
+        out = [dict(layer.fields) for layer in self.layers]
+        found = {}
+        make = self.geometry.radial_field_type
+        for i in which:
+            layer = self.layers[i]
+            if BULLEN_EXCESS in layer:
+                continue
+            kind, stiffness = _p_stiffness(layer)
+            rho = layer["rho"]
+            if kind == "kappa":
+                kappa = materials.kappa_mu(layer)[0]
+                stiffness = NumericLayer(
+                    layer.interval,
+                    lambda r, kappa=kappa, rho=rho: np.sqrt(kappa(r) / rho(r)))
+            try:
+                result = stable_layer(
+                    layer.interval, rho.function, stiffness, G=self.G,
+                    mass_below=float(np.sum(masses[:i])), inertia=inertia,
+                    neutral_below=neutral_below, rtol=rtol)
+            except ValueError as exc:
+                raise ValueError(f"{_label(layer)}: {exc}") from exc
+            if result is None:
+                continue
+            if kind == "kappa":
+                fields = {k: f for k, f in layer.fields.items()
+                          if k not in materials.ELASTIC_NAMES}
+                fields["vp"] = make(layer.interval, stiffness, name="vp")
+                fields["vs"] = make(layer.interval,
+                                    constant_layer(layer.interval, 0.0), name="vs")
+            else:
+                fields = {k: f for k, f in layer.fields.items()
+                          if k not in _MODULUS_NAMES}
+            fields["rho"] = make(layer.interval, result.density, character=DENSITY,
+                                 name="rho")
+            fields[BULLEN_EXCESS] = make(layer.interval, result.excess,
+                                         character=SCALAR, name=BULLEN_EXCESS)
+            out[i] = with_velocities(with_moduli(fields))
+            found[i] = result
+        if not found:
+            return self, Stabilisation({})
+        return self.replaced(layers=out), Stabilisation(found)
 
     def hollowed(self: Model, radius: float, *, name: str | None = None) -> Model:
         """`Model.hollowed`; the layers that hold a Bullen excess keep
