@@ -1553,6 +1553,7 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
     at them; and the surfaces group as on the sphere, without poles.
     netCDF4 is imported here.
     """
+    from .fields import from_inside
     from .frames import cartesian_points, spherical_frame
     from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_FLAT, SCHEMA_WITH_LOG_RULES,
                             read_model, read_model_file, read_surfaces, schema_of,
@@ -1606,12 +1607,16 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
                 r = r_all[idx]
                 if values.ndim == 1 + len(source.stored_shape):
                     th = np.full(r.shape, 0.5 * np.pi)
-                    want = source.evaluate(r, th, np.zeros_like(r))
+                    # an element's last node holds the value from inside it
+                    outer = idx % mesh.ngll == mesh.ngll - 1
+                    want = from_inside(source, r,
+                                       source.evaluate(r, th, np.zeros_like(r)), outer)
                     stored_against(values[idx], want, f"part_{k}/{name}")
                     got = back.layer(i)[name]
                     got = getattr(got, "reference", got)
-                    stored_against(values[idx], got.evaluate(r, th, np.zeros_like(r)),
-                                   f"part_{k}/{name} read back")
+                    read = from_inside(got, r, got.evaluate(r, th, np.zeros_like(r)),
+                                       outer)
+                    stored_against(values[idx], read, f"part_{k}/{name} read back")
                 else:
                     it = rng.integers(grid.ntheta, size=idx.size)
                     ip = rng.integers(grid.nphi, size=idx.size)

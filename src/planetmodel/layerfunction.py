@@ -180,6 +180,20 @@ class PolynomialLayer:
         """The polynomial at `r`, of its shape."""
         return as_values(self._p(np.asarray(r, dtype=float)))
 
+    def below(self, r: ArrayLike) -> np.ndarray:
+        """The limit of the polynomial at `r` from below, of its shape:
+        its value, but on a breakpoint that of the piece below it, which
+        differs where the pieces do not meet there.  `__call__` takes a
+        breakpoint from the piece above."""
+        r = np.asarray(r, dtype=float)
+        x, c = self._p.x, self._p.c
+        k = np.clip(np.searchsorted(x, r, side="left") - 1, 0, x.size - 2)
+        step = r - x[k]
+        out = np.array(c[0][k])
+        for coefficient in c[1:]:
+            out = out * step + coefficient[k]
+        return as_values(out)
+
     def derivative(self, *, nu: int = 1) -> "PolynomialLayer":
         """The nu-th derivative, exact on the coefficients."""
         if nu < 0:

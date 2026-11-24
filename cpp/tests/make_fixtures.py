@@ -17,7 +17,10 @@ poles); and PREM given a viscosity and converted by sl3d's chain from a
 perturbation of its shear speeds (`model_converted.nc`, the viscosity a
 log perturbation and the model's citation the chain's), and the same
 with that viscosity made a Burgers body's two Prony branches and
-power-law creep beside them (`model_prony.nc`).  A Maxwell deck's model
+power-law creep beside them (`model_prony.nc`); and PREM with its
+outer core made stable, described by its Bullen excess, zero on the
+stretches made neutral, with the density that excess derives
+(`model_stratified.nc`).  A Maxwell deck's model
 whose viscosity changes by three decades between knots, joined in its
 logarithm, one viscosity through another layer and none in the core and
 crust, every field written (`model_log.nc`, of `planetmodel.model/2`,
@@ -463,6 +466,10 @@ def model_files(directory: Path) -> list[Path]:
                     fields=["rho", "vsv", "vsh", "viscosity"]),
         write_model(directory / "model_prony.nc", with_burgers(converted()),
                     grid=pm.gauss_legendre(6)),
+        write_model(directory / "model_stratified.nc",
+                    prem.stabilised(layers=["outer_core"])[0],
+                    grid=pm.gauss_legendre(2),
+                    fields=["rho", "vpv", "vsv", "bullen_excess"]),
     ] + log_model_files(directory)
 
 

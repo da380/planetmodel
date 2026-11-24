@@ -45,9 +45,25 @@ again empty.
   inertia, as a uniform one cannot, is refused unless the mass alone is
   asked to be held; a stable model is returned as it is. On PREM's
   outer core the density changes by at most 2.9e-4.
+- A model file carries a layer's `bullen_excess` like any other radial
+  field, its breakpoints element edges, so the stretches of a layer
+  that are neutral are read back as exactly that; the schema is
+  unchanged and a reader that does not know the name loses nothing. The
+  format page says what the variable means, and the C++ reader is held
+  to a fixture that carries it.
 
 ### Fixed
 
+- A radial field that jumps at a breakpoint inside its layer is sampled
+  from inside each element. The model file holds the boundary between
+  two elements as two nodes, each with its own side's value; the writer
+  and `RadialMesh.nodal` took both from the side above, so the element
+  below was read back as a polynomial through one wrong value. An
+  element's last node now takes the limit from below where the two
+  sides differ (`fields.from_inside`, `PolynomialLayer.below`,
+  `RadialField.below`). A field whose pieces meet, which is every field
+  the library made before the Bullen excess, is sampled as it was, and
+  its files are written bit for bit as before.
 - The C++ header `planetmodel/fault.hpp` compiles under Clang 18 with
   OpenMP enabled: `ParameterRule`'s lambda takes the quadrature's points
   and weights by init-capture, where it captured a structured binding,

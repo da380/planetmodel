@@ -203,6 +203,34 @@ def test_a_field_without_pieces_subdivides_its_own_layer(tmp_path):
     assert np.allclose(back.layer(1)["rho"](r), rho(r), rtol=1e-10)
 
 
+def test_a_stratified_layer_comes_back_through_its_breakpoints(prem, tmp_path):
+    """The outer core made stable holds its Bullen excess, zero on the
+    stretches made neutral, and the density that derives: both are
+    piecewise polynomials, their breakpoints element edges of the file,
+    and both come back as they were."""
+    from planetmodel.mesh1d.stratification import BULLEN_EXCESS
+    stable, report = prem.stabilised(layers=["outer_core"], inertia=False)
+    core = stable.layer("outer_core")
+    path = write_model(tmp_path / "stable.nc", stable, grid=gauss_legendre(2))
+    check_model_file(path, stable)
+    back = read_model(path)
+    assert BULLEN_EXCESS in back.layer("outer_core")
+    assert BULLEN_EXCESS not in back.layer("inner_core")
+    lo, hi = core.interval
+    r = np.linspace(lo, hi, 401)
+    excess, density = back.layer("outer_core")[BULLEN_EXCESS], back.layer(1)["rho"]
+    assert np.allclose(excess(r), core[BULLEN_EXCESS](r), atol=1e-13)
+    assert np.allclose(density(r), core["rho"](r), rtol=1e-13)
+    # neutral where it was made neutral, to the last node
+    for a, b in report.layers[core.index].neutral:
+        inside = np.linspace(a, b, 9)[1:-1]
+        assert np.all(excess(inside) == 0.0)
+    breaks = excess.radial_pieces()[0]
+    for edge in (x for interval in report.layers[core.index].neutral
+                 for x in interval):
+        assert np.min(np.abs(breaks - edge)) <= 1e-9 * hi
+
+
 def test_a_model_in_three_parts_on_three_grids(prem, tmp_path):
     grids = {i: gauss_legendre(4) for i in range(2)}
     dh = driscoll_healy(5)

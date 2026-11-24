@@ -75,7 +75,12 @@ if TYPE_CHECKING:
 __all__ = ["Field", "FieldBase", "RadialField", "AnalyticField",
            "ComposedField", "HeldField", "constant_field", "held", "FRAMES",
            "check_frame", "stored_shape", "to_stored", "rotate_stored",
-           "radial_pieces_of", "log_radial_pieces_of"]
+           "radial_pieces_of", "log_radial_pieces_of", "from_inside",
+           "JUMP_RTOL"]
+
+#: Two one-sided values of a field differ, and the field jumps, where they
+#: are further apart than this of the larger.
+JUMP_RTOL = 1e-9
 
 #: The frames a field in spherical coordinates can present its components
 #: in: `SPHERICAL.frames`.
@@ -521,6 +526,21 @@ class RadialField(FieldBase):
         coordinate (the radius on the sphere); the character is kept."""
         return self._map(lambda f: f.derivative(nu=nu))
 
+    def below(self, r: ArrayLike) -> np.ndarray | None:
+        """The limit of every component at `r` from below along the layered
+        coordinate, as `evaluate` shapes its values; None where a
+        component cannot state one (`PolynomialLayer.below`).  It differs
+        from the value only on a breakpoint at which the field jumps."""
+        if not all(hasattr(self._fs[idx], "below")
+                   for idx in np.ndindex(self._fs.shape)):
+            return None
+        r = np.asarray(r, dtype=float)
+        if not self._fs.shape:
+            return np.asarray(self._fs[()].below(r))
+        parts = [np.asarray(self._fs[idx].below(r))
+                 for idx in np.ndindex(self._fs.shape)]
+        return np.stack(parts, axis=-1).reshape(r.shape + self._fs.shape)
+
     def held(self, at: float, interval: tuple[float, float]) -> "RadialField":
         """Every component's value at `at` (within the interval), held
         constant on `interval`: an exact constant field of the same class
@@ -870,3 +890,38 @@ def held(field: Field, at: float, interval: tuple[float, float]) -> Field:
     one (a radial field's, exact and of its class), else a `HeldField`."""
     own = getattr(field, "held", None)
     return own(at, interval) if callable(own) else HeldField(field, at, interval)
+
+
+def from_inside(field: Field, r: ArrayLike, values: ArrayLike,
+                outer: ArrayLike) -> np.ndarray:
+    """A radial field's `values` at the radii `r`, corrected where a
+    radius is the outer end of the element it was sampled for and the
+    field jumps there.
+
+    A field is a function on its layer and may jump at a breakpoint
+    inside it, as the Bullen excess of a fluid does where a neutral
+    stretch ends.  Evaluated on the breakpoint it gives the value above;
+    an element that ends there wants the value below, the limit from
+    inside it.  `outer` marks the entries of `r` that are such ends.
+    There the limit from below replaces the value where the two differ
+    by more than `JUMP_RTOL` of the larger, and nowhere else, so the
+    values of a field that does not jump are returned as they came.  A
+    field that cannot state its limit from below is returned unchanged.
+    """
+    values = np.array(values)
+    outer = np.asarray(outer, dtype=bool)
+    below = getattr(field, "below", None)
+    if below is None or not outer.any():
+        return values
+    limit = below(np.asarray(r, dtype=float)[outer])
+    if limit is None:
+        return values
+    limit = np.asarray(limit).reshape(values[outer].shape)
+    scale = np.maximum(np.abs(limit), np.abs(values[outer]))
+    jumps = np.abs(limit - values[outer]) > JUMP_RTOL * scale
+    if not jumps.any():
+        return values
+    corrected = values[outer]
+    corrected[jumps] = limit[jumps]
+    values[outer] = corrected
+    return values
