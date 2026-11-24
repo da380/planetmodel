@@ -43,18 +43,31 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from . import materials, rheology
 from .character import DENSITY, SCALAR
-from .fields import ComposedField, Field
-from .mesh1d.gravity import gravity, gravity_fields, mass, pressure, pressure_fields
+from .fields import ComposedField, Field, RadialField
+from .layerfunction import LayerFunctionLike, as_layer_function
+from .mesh1d.gravity import (
+    gravity,
+    gravity_fields,
+    layer_masses,
+    mass,
+    pressure,
+    pressure_fields,
+)
 from .mesh1d.stratification import (
+    BULLEN_EXCESS,
     brunt_vaisala_squared,
     bullen_excess,
     bullen_parameter,
+    is_neutral,
+    stratified_density,
 )
 
 if TYPE_CHECKING:
+    from .geometry import Names
     from .model import CoarseningFit, Layer, Model
 
 __all__ = ["layer_method", "with_moduli", "with_velocities", "Elastic", "ConstantQ",
@@ -134,6 +147,132 @@ def _description_family(model: Model, group: Sequence[int]) -> tuple[str, ...]:
         f"merged layers {list(group)} share no complete elastic description "
         "in velocities or moduli (perhaps only 'elastic_moduli'); keep the "
         "interface, or re-describe the layers first")
+
+
+#: The elastic names that are moduli, not velocities.
+_MODULUS_NAMES = tuple(n for n in materials.ELASTIC_NAMES if n not in VELOCITY_NAMES)
+
+
+def _label(layer: Layer) -> str:
+    """A layer by its index, and its name where it has one."""
+    return f"layer {layer.index}" + (f" ({layer.name!r})" if layer.name else "")
+
+
+def _excess_field(model: Model, layer: Layer, excess: Field | LayerFunctionLike
+                  ) -> RadialField:
+    """`excess` as the Bullen excess of a fluid layer: a radial scalar
+    field on its interval that is nowhere negative.  A layer that is not
+    fluid, an excess that depends on direction and one that is negative
+    somewhere are refused."""
+    where = _label(layer)
+    try:
+        fluid = materials.is_fluid(layer)
+    except KeyError:
+        fluid = False
+    if not fluid:
+        raise ValueError(
+            f"{where} is not a fluid layer; only a fluid is described by its "
+            "stratification, and a solid's density is its own description")
+    if isinstance(excess, Field):
+        if not isinstance(excess, RadialField) or excess.character.rank != 0:
+            raise ValueError(
+                f"the Bullen excess of {where} must be a radial scalar field")
+        excess = excess.function
+    field = model.geometry.radial_field_type(
+        layer.interval, as_layer_function(layer.interval, excess), character=SCALAR,
+        name=BULLEN_EXCESS)
+    pieces = field.radial_pieces()
+    breaks = np.asarray(layer.interval if pieces is None else pieces[0], dtype=float)
+    x = 0.5 * (1.0 - np.cos(np.pi * np.arange(17) / 16.0))        # in [0, 1]
+    r = (breaks[:-1, None] + (breaks[1:] - breaks[:-1])[:, None] * x).ravel()
+    values = np.asarray(field(r), dtype=float)
+    if np.min(values) < -1e-12 * (1.0 + np.max(np.abs(values))):
+        raise ValueError(
+            f"the Bullen excess given for {where} is negative in places (as low "
+            f"as {np.min(values):g}): the layer would be unstably stratified, "
+            "and a description by stratification is of a stable layer")
+    return field
+
+
+def _p_stiffness(layer: Layer) -> tuple[str, LayerFunctionLike]:
+    """What resists compression in a fluid layer, as `stratified_density`
+    takes it: its P velocity where the layer holds one as a radial field
+    of its own, the velocities then being its description, and its bulk
+    modulus otherwise."""
+    for name in ("vp", "vpv"):
+        field = layer.fields.get(name)
+        if isinstance(field, RadialField):
+            return "vp", field.function
+    kappa = materials.kappa_mu(layer)[0]
+    return "kappa", kappa.function if isinstance(kappa, RadialField) else kappa
+
+
+def _derived(model: Model, j: int, *, rtol: float = 1e-12,
+             **anchor: float) -> Model:
+    """`model` with the density of layer `j` derived from the Bullen
+    excess it holds, under the gravity of the mass beneath it, and its
+    elastic description completed again: the moduli follow the new
+    density where the velocities describe the layer, the velocities
+    where the moduli do.  `anchor` is the one number `stratified_density`
+    is given."""
+    layer = model.layers[j]
+    kind, stiffness = _p_stiffness(layer)
+    below = float(np.sum(layer_masses(model)[:j]))
+    density = stratified_density(
+        layer.interval, layer[BULLEN_EXCESS].function, G=model.G, mass_below=below,
+        rtol=rtol, **{kind: stiffness}, **anchor)
+    drop = _MODULUS_NAMES if kind == "vp" else VELOCITY_NAMES
+    fields = {k: f for k, f in layer.fields.items() if k not in drop}
+    fields["rho"] = model.geometry.radial_field_type(
+        layer.interval, density, character=DENSITY, name="rho")
+    layers = [dict(other.fields) for other in model.layers]
+    layers[j] = with_velocities(with_moduli(fields))
+    return model.replaced(layers=layers)
+
+
+def _derived_above(model: Model, i: int, masses: np.ndarray) -> Model:
+    """`model` with the density of every layer above layer `i` that holds
+    a Bullen excess derived again, each keeping the mass `masses` gives
+    it: what a change of the mass inside them asks for, gravity in them
+    having changed."""
+    for j in range(i + 1, model.nlayers):
+        if BULLEN_EXCESS in model.layers[j]:
+            model = _derived(model, j, mass=float(masses[j]))
+    return model
+
+
+def _stratification_kept(before: Model, after: Model, i: int, name: str,
+                         replace: bool) -> Model:
+    """`after`, the model `before` with `name` attached to layer `i`, with
+    the densities that are derived from a Bullen excess derived again
+    where the change asks for it.
+
+    A Bullen excess attached to a layer derives its density, the layer
+    keeping its mass.  A density attached to a layer becomes its
+    description: the layer's Bullen excess is dropped, and the layers
+    above that hold one are derived again, each keeping its mass.  An
+    elastic field replaced on a layer holding a Bullen excess derives
+    that layer's density again, the layer keeping its mass.  A model
+    that is not self-gravitating is returned as it is.
+    """
+    if not isinstance(after, SelfGravitating):
+        return after
+    if name == BULLEN_EXCESS:
+        layer = after.layers[i]
+        layers = [dict(other.fields) for other in after.layers]
+        layers[i][BULLEN_EXCESS] = _excess_field(after, layer, layer[BULLEN_EXCESS])
+        held = after.replaced(layers=layers)
+        return _derived(held, i, mass=float(layer_masses(before)[i]))
+    if not any(BULLEN_EXCESS in layer for layer in after.layers):
+        return after
+    if name == "rho":
+        masses = layer_masses(before)
+        if BULLEN_EXCESS in after.layers[i]:
+            after = after.without_field(BULLEN_EXCESS, layers=[i])
+        return _derived_above(after, i, masses)
+    if replace and name in materials.ELASTIC_NAMES and BULLEN_EXCESS in after.layers[i]:
+        return _derived(after, i, mass=float(layer_masses(before)[i]))
+    return after
 
 
 def layer_method[T](fn: Callable[..., T]) -> Callable[..., T]:
@@ -221,6 +360,10 @@ class Elastic:
     frozen model's moduli were derived from.  A change that goes through
     `replaced` directly, as the library's own transformations do, is the
     caller's to keep consistent.
+
+    On a model that is also `SelfGravitating`, `with_field` keeps in step
+    the densities that are derived from a Bullen excess
+    (`SelfGravitating.with_bullen_excess`): see `with_field`.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -251,13 +394,34 @@ class Elastic:
         model (`rheology.is_frozen`) rho, the elastic names and the
         rheology names are refused, the frozen moduli having been derived
         from them.
+
+        On a self-gravitating model the densities derived from a Bullen
+        excess follow.  A Bullen excess attached to a fluid layer derives
+        the layer's density from it, the layer keeping its mass.  An
+        elastic field replaced on a layer that holds a Bullen excess
+        derives its density again, the layer keeping its mass.  A density
+        attached to a layer is that layer's description from then on: a
+        Bullen excess it held is dropped, and since the mass inside the
+        layers above may have changed, each of those that holds a Bullen
+        excess has its density derived again, keeping its own mass.
         """
         from .model import ModelBase
-        if name in _FROZEN_FROM or rheology.is_rheology_name(name):
-            _refuse_frozen(self, f"its moduli were derived from {name!r}")
+        if (name in _FROZEN_FROM or name == BULLEN_EXCESS
+                or rheology.is_rheology_name(name)):
+            _refuse_frozen(self, f"its moduli were derived from {name!r}"
+                           if name != BULLEN_EXCESS else
+                           "the density is derived from the Bullen excess")
         _refuse_other_symmetry(self.layer(which), name)
         out = ModelBase.with_field(self, which, name, field, replace=replace)
         i = self.layer(which).index
+        return _stratification_kept(self, self._completed(out, i, name, replace),
+                                    i, name, replace)
+
+    def _completed(self: Model, out: Model, i: int, name: str,
+                   replace: bool) -> Model:
+        """`out`, this model with `name` attached to layer `i`, with the
+        elastic description of that layer completed again from the family
+        the change makes its description."""
         if name == "rho" and any(n in out.layer(i) for n in VELOCITY_NAMES):
             keep = VELOCITY_NAMES
         elif not replace or name not in materials.ELASTIC_NAMES:
@@ -287,7 +451,12 @@ class Elastic:
         elastic relations exactly.  A group whose layers share no such
         description (one speaking only through `elastic_moduli`, say)
         is refused, as is a frozen model.  Layers left whole are
-        untouched.
+        untouched, but for the density of a layer that holds a Bullen
+        excess and lies above a merged group: the refit changes the mass
+        beneath it, so it is derived again, the layer keeping its mass.
+        A group that includes a layer holding a Bullen excess is refused:
+        a fit of the density is not a density derived from a fit of the
+        excess.
         """
         from .model import ModelBase
         _refuse_frozen(self, "coarsening refits the elastic description")
@@ -295,6 +464,13 @@ class Elastic:
         layers = [dict(layer.fields) for layer in self.layers]
         merged = [group for group in cmap.layers if len(group) > 1]
         for group in merged:
+            held = [i for i in group if BULLEN_EXCESS in self.layers[i]]
+            if held:
+                stratified = _label(self.layers[held[0]])
+                raise ValueError(
+                    f"merged layers {list(group)} include {stratified}, whose "
+                    f"density is derived from its {BULLEN_EXCESS!r}; keep its "
+                    "interfaces, or drop the field with without_field first")
             family = _description_family(self, group)
             for i in group:
                 layers[i] = {k: f for k, f in layers[i].items()
@@ -303,10 +479,15 @@ class Elastic:
         coarse, fit = ModelBase.coarsened(stripped, keep=keep, drop=drop,
                                           degree=degree, n=n)
         out = [dict(layer.fields) for layer in coarse.layers]
+        lowest = None
         for j, group in enumerate(fit.map.layers):
             if len(group) > 1:
                 out[j] = with_velocities(with_moduli(out[j]))
-        return coarse.replaced(layers=out), fit
+                lowest = j if lowest is None else lowest
+        result = coarse.replaced(layers=out)
+        if lowest is not None and isinstance(result, SelfGravitating):
+            result = _derived_above(result, lowest, layer_masses(coarse))
+        return result, fit
 
     def isotropic(self: Model) -> Model:
         """The model with every elastic description replaced by its Voigt
@@ -383,7 +564,20 @@ class SelfGravitating:
     `with_stratification` attaches d rho / d Phi_0 = rho'(r) / g(r) to
     the fluid layers.  `bullen_parameter`, `bullen_excess` and
     `brunt_vaisala_squared` say how each layer is stratified
-    (`mesh1d.stratification`).  A density that depends on direction is refused,
+    (`mesh1d.stratification`).
+
+    A fluid layer may be described by its stratification in place of its
+    density: `with_bullen_excess` gives it a Bullen excess, held under
+    that name, and derives its density from it, and `is_neutral` says
+    whether the excess a layer holds vanishes.  On a model that is also
+    `Elastic` such a density is kept in step with what it was derived
+    from (`Elastic.with_field`).  Cutting the inside of the model away
+    (`hollowed`) removes the mass under which those densities were
+    derived, so the layers keep their densities and lose their Bullen
+    excess, as does a layer made by continuing another outward
+    (`extended` by "extrapolate" or "hold").
+
+    A density that depends on direction is refused,
     and the geometry's mapping does not enter (see `mesh1d.gravity`).
     A model off the sphere (a flat one) is refused by name."""
 
@@ -395,6 +589,66 @@ class SelfGravitating:
     bullen_parameter = bullen_parameter
     bullen_excess = bullen_excess
     brunt_vaisala_squared = brunt_vaisala_squared
+    layer_masses = layer_masses
+    is_neutral = layer_method(is_neutral)
+
+    def with_bullen_excess(self: Model, which: int | str,
+                           excess: Field | LayerFunctionLike, *,
+                           mass: float | None = None,
+                           rho_bottom: float | None = None,
+                           rho_top: float | None = None,
+                           rtol: float = 1e-12) -> Model:
+        """The model with one fluid layer described by its stratification.
+
+        `excess` is the Bullen excess of the layer: a radial field, a
+        layer function, a number, or a callable of radius, nowhere
+        negative; zero where the layer is neutrally stratified.  It is
+        attached under the vocabulary name `bullen_excess`, and the
+        layer's density is derived from it and from what the layer holds
+        to resist compression, its P velocity where the velocities
+        describe it and its bulk modulus otherwise, under the gravity of
+        the mass beneath (`mesh1d.stratification.stratified_density`, to
+        `rtol`).  One number fixes the density: `mass`, the mass of the
+        layer; `rho_bottom`, its density at the inner radius; or
+        `rho_top`, at the outer.  With none given the layer keeps the
+        mass it has, and gravity above it is unchanged.  The elastic
+        description of the layer is completed again from the new
+        density.  A layer that is not fluid, and a frozen model, are
+        refused.
+        """
+        _refuse_frozen(self, "the density is derived from the Bullen excess")
+        layer = self.layer(which)
+        i = layer.index
+        given = {k: v for k, v in (("mass", mass), ("rho_bottom", rho_bottom),
+                                   ("rho_top", rho_top)) if v is not None}
+        if not given:
+            given = {"mass": float(layer_masses(self)[i])}
+        layers = [dict(other.fields) for other in self.layers]
+        layers[i][BULLEN_EXCESS] = _excess_field(self, layer, excess)
+        return _derived(self.replaced(layers=layers), i, rtol=rtol, **given)
+
+    def hollowed(self: Model, radius: float, *, name: str | None = None) -> Model:
+        """`Model.hollowed`; the layers that hold a Bullen excess keep
+        their densities and lose it, the mass under which the densities
+        were derived having been cut away."""
+        out = super().hollowed(radius, name=name)
+        if any(BULLEN_EXCESS in layer for layer in out.layers):
+            out = out.without_field(BULLEN_EXCESS)
+        return out
+
+    def extended(self: Model, radii: ArrayLike, *,
+                 fields: str | Sequence[Mapping[str, Field]] | None = None,
+                 names: Names = None, interface_names: Names = None) -> Model:
+        """`Model.extended`; a layer made by continuing the last one
+        outward ("extrapolate" or "hold") does not take its Bullen
+        excess, its density being a continuation and not derived."""
+        out = super().extended(radii, fields=fields, names=names,
+                               interface_names=interface_names)
+        new = range(self.nlayers, out.nlayers)
+        if isinstance(fields, str) and any(BULLEN_EXCESS in out.layers[j]
+                                           for j in new):
+            out = out.without_field(BULLEN_EXCESS, layers=new)
+        return out
 
     def with_gravity(self: Model, *, name: str = "g", replace: bool = False) -> Model:
         """The model with its gravity attached to every layer as a radial
@@ -416,8 +670,10 @@ class SelfGravitating:
         under `name`; solid layers, and layers whose fluidity cannot
         be read, are left alone, and a model with no fluid layer is
         refused.  rho' is exact where the density is polynomial; the
-        field is zero where g vanishes (the centre).  A fluid layer
-        already holding `name` is refused unless `replace`."""
+        field is zero where g vanishes (the centre).  On a layer that
+        holds its Bullen excess e the field is -(1 + e) rho^2 / kappa,
+        with no derivative taken.  A fluid layer already holding `name`
+        is refused unless `replace`."""
         fields = gravity_fields(self)
         layers = []
         n_fluid = 0
@@ -434,6 +690,14 @@ class SelfGravitating:
                     f"layer {layer.index} ({layer.name!r}) already holds {name!r}; "
                     "pass replace=True to replace it")
             rho = layer["rho"]
+            if BULLEN_EXCESS in layer:
+                n_fluid += 1
+                strat = ComposedField(
+                    lambda e, d, k: -(1.0 + e) * d * d / k,
+                    (layer[BULLEN_EXCESS], rho, materials.kappa_mu(layer)[0]),
+                    character=DENSITY, name=name)
+                layers.append({**layer.fields, name: strat})
+                continue
             if not hasattr(rho, "derivative"):
                 raise ValueError(
                     f"layer {layer.index} ({layer.name!r}) holds a rho that "

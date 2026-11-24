@@ -68,7 +68,10 @@ if TYPE_CHECKING:
     from ..model import Model
 
 __all__ = ["bullen_parameter", "bullen_excess", "brunt_vaisala_squared",
-           "stratified_density", "DENSITY_DEGREE"]
+           "stratified_density", "is_neutral", "BULLEN_EXCESS", "DENSITY_DEGREE"]
+
+#: The vocabulary name under which a layer holds its Bullen excess.
+BULLEN_EXCESS = "bullen_excess"
 
 #: The degree of each polynomial piece of a derived density.
 DENSITY_DEGREE = 12
@@ -162,6 +165,18 @@ def brunt_vaisala_squared(model: Model, radii: ArrayLike) -> np.ndarray:
         rho, d1, _, kappa = _density_and_modulus(model, i, flat[mask])
         out[mask] = -g[mask] * (d1 / rho + rho * g[mask] / kappa)
     return out.reshape(r.shape)
+
+
+def is_neutral(layer: materials.LayerLike) -> bool:
+    """Whether the Bullen excess a layer holds vanishes throughout it, so
+    that the layer is neutrally stratified; a layer that does not hold
+    one, under `BULLEN_EXCESS`, is refused with KeyError."""
+    if BULLEN_EXCESS not in layer:
+        raise KeyError(
+            f"the layer holds no {BULLEN_EXCESS!r}, so whether it is neutrally "
+            "stratified is not stated; `bullen_excess` computes it from the "
+            "density")
+    return materials.vanishes(layer[BULLEN_EXCESS])
 
 
 def _knots(interval: tuple[float, float],

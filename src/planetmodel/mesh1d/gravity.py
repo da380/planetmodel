@@ -42,8 +42,8 @@ from ..layerfunction import NumericLayer, polynomial_layer
 if TYPE_CHECKING:
     from ..model import Model
 
-__all__ = ["gravity", "mass", "gravity_fields", "pressure", "pressure_fields",
-           "PRESSURE_NODES"]
+__all__ = ["gravity", "mass", "layer_masses", "gravity_fields", "pressure",
+           "pressure_fields", "PRESSURE_NODES"]
 
 #: The Gauss-Legendre points of each pressure integral.
 PRESSURE_NODES = 24
@@ -88,6 +88,11 @@ def _within(model: Model, r: np.ndarray) -> np.ndarray:
                    or np.any(r > b[-1] + tol)):
         raise ValueError(f"radii must lie in the model [{b[0]:g}, {b[-1]:g}]")
     return np.clip(r, b[0], b[-1])
+
+
+def layer_masses(model: Model) -> np.ndarray:
+    """The mass of every layer, from the centre outward."""
+    return _shell_masses(model)[1]
 
 
 def mass(model: Model, *, radius: float | None = None) -> float:

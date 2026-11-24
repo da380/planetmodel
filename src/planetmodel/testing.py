@@ -680,12 +680,17 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
     pass `check_field`, sit on the layer's interval, are in the
     geometry's coordinates and have their spec's character; that
     `layer(name)` and `layer(i)` agree; that every constant is its SI
-    value over the scales' factor; that conversion to other scales and
+    value over the scales' factor; that on a self-gravitating model a
+    layer holding a Bullen excess is fluid, the excess nowhere negative,
+    and its density the one the excess derives; that conversion to other scales and
     back restores every field to 1e-12 at points the coordinates probe;
     and that every surgery, the extension by "extrapolate" and by "hold"
     among them, keeps the class and validates again.
     """
+    from .behaviours import SelfGravitating
     from .coordinates import coordinates_of
+    from .materials import is_fluid
+    from .mesh1d.stratification import BULLEN_EXCESS
     from .model import ModelBase
     from .units import Scales
 
@@ -732,6 +737,22 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
         want = c.value_si / model.scales.factor(c.dimensions)
         assert np.isclose(model.constant(name), want, rtol=1e-15), (
             f"constant {name!r} is not its SI value in the model's units")
+
+    if isinstance(model, SelfGravitating):
+        for layer in model.layers:
+            if BULLEN_EXCESS not in layer:
+                continue
+            assert is_fluid(layer), (
+                f"layer {layer.index} holds a Bullen excess and is not fluid")
+            lo, hi = layer.interval
+            r = lo + (hi - lo) * rng.uniform(0.05, 0.95, 8)
+            stated = np.asarray(layer[BULLEN_EXCESS](r), dtype=float)
+            assert np.all(stated >= -1e-12), (
+                f"the Bullen excess of layer {layer.index} is negative")
+            assert np.allclose(model.bullen_excess(r), stated,
+                               atol=1e-8 * (1.0 + np.max(stated))), (
+                f"the density of layer {layer.index} is not the one its Bullen "
+                "excess derives")
 
     names = model.field_names()
     convertible = all(model.spec(n) is not None

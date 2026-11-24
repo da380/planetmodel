@@ -19,6 +19,21 @@ again empty.
   density at the top or its mass, as a piecewise polynomial that holds
   the solution to a stated relative tolerance, with a breakpoint wherever
   the excess or the velocity has one.
+- A fluid layer may be described by its stratification in place of its
+  density. `SelfGravitating.with_bullen_excess` attaches a Bullen excess
+  to a fluid layer, nowhere negative and zero where the layer is
+  neutrally stratified, and derives the layer's density from it; the
+  layer keeps its mass unless a mass or a density at one end is given.
+  On a model that is also `Elastic`, `with_field` keeps such a density in
+  step: a new velocity or excess on the layer derives it again, a new
+  density beneath it derives it again under the changed gravity, and a
+  density given to the layer directly becomes its description, the
+  excess dropped. `is_neutral` says whether the excess a layer holds
+  vanishes; `layer_masses` gives the mass of every layer.
+  `with_stratification` reads the excess where a layer holds one, and
+  takes no derivative there. `coarsened` refuses a merge that includes
+  such a layer; `hollowed`, and `extended` by continuation, give the
+  description up.
 
 ### Fixed
 
