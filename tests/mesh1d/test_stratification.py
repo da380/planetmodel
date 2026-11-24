@@ -2,18 +2,20 @@
 and a finite-difference oracle."""
 import numpy as np
 import pytest
+from scipy.interpolate import PPoly
 
 from planetmodel import Elastic, Geometry, Model, SelfGravitating, Skeleton
 from planetmodel.catalogue import LayeredIsotropicElastic, PREM
 from planetmodel.character import DENSITY
 from planetmodel.fields import RadialField
-from planetmodel.layerfunction import polynomial_layer
+from planetmodel.layerfunction import PolynomialLayer, polynomial_layer
 from planetmodel.materials import kappa_mu
 from planetmodel.mesh1d.gravity import gravity
 from planetmodel.mesh1d.stratification import (
     brunt_vaisala_squared,
     bullen_excess,
     bullen_parameter,
+    stratified_density,
 )
 from planetmodel.units import G_SI
 
@@ -131,3 +133,104 @@ def test_a_radius_outside_the_model_is_refused():
     m = adams_williamson(0.0)
     with pytest.raises(ValueError, match="radii must lie"):
         bullen_parameter(m, 1.5)
+
+
+# --- the density from the stratification -------------------------------------
+
+AW = dict(rho0=3.0, alpha=0.2, c=0.6)
+
+
+def aw_density(r):
+    return AW["rho0"] * (1.0 - AW["alpha"] * (np.asarray(r) / AW["c"]) ** 2)
+
+
+def planet_with_core_density(base, density):
+    """`base` with the density of its core replaced by a layer function."""
+    core = base.layers[0]
+    rho = RadialField(core.interval, density, character=DENSITY, name="rho")
+    fields = [{"rho": rho, "kappa": core["kappa"], "mu": core["mu"]},
+              {n: base.layers[1][n] for n in ("rho", "kappa", "mu")}]
+    return Planet(base.geometry, fields)
+
+
+@pytest.mark.parametrize("excess", [0.0, 0.3])
+def test_the_density_of_an_adams_williamson_core_is_recovered(excess):
+    m = adams_williamson(excess, **AW)
+    core = m.layers[0]
+    kappa = kappa_mu(core)[0].function
+    r = np.linspace(0.0, AW["c"], 41)
+    layer_mass = m.mass(radius=AW["c"])
+    for anchor in ({"rho_bottom": AW["rho0"]}, {"rho_top": float(aw_density(AW["c"]))},
+                   {"mass": layer_mass}):
+        d = stratified_density(core.interval, excess=excess, kappa=kappa, G=G_SI,
+                               **anchor)
+        assert isinstance(d, PolynomialLayer)
+        assert np.allclose(d(r), aw_density(r), rtol=1e-11), anchor
+    # by the velocity in the place of the modulus
+    d = stratified_density(core.interval, excess=excess, G=G_SI,
+                           vp=lambda x: np.sqrt(kappa(x) / aw_density(x)),
+                           rho_bottom=AW["rho0"])
+    assert np.allclose(d(r), aw_density(r), rtol=1e-11)
+
+
+def test_the_mass_asked_for_is_the_mass_of_the_layer():
+    m = adams_williamson(0.1, **AW)
+    core = m.layers[0]
+    d = stratified_density(core.interval, excess=0.4, G=G_SI,
+                           kappa=kappa_mu(core)[0].function, mass=2.5)
+    assert np.isclose(planet_with_core_density(m, d).mass(radius=AW["c"]), 2.5,
+                      rtol=1e-11)
+
+
+def test_a_layer_neutral_below_and_stratified_above():
+    # the derived density, read back by the Bullen parameter, has the
+    # excess it was derived from on each piece, and a breakpoint between
+    m = adams_williamson(0.0, **AW)
+    core = m.layers[0]
+    mid = 0.5 * AW["c"]
+    excess = PPoly(np.array([[0.0, 0.25]]), [0.0, mid, AW["c"]])
+    d = stratified_density(core.interval, excess=excess, G=G_SI,
+                           kappa=kappa_mu(core)[0].function, rho_bottom=AW["rho0"])
+    assert mid in d.ppoly.x
+    assert np.isclose(d(mid - 1e-12), d(mid + 1e-12), rtol=1e-11)
+    held = planet_with_core_density(m, d)
+    below, above = np.linspace(0.0, mid, 9)[:-1], np.linspace(mid, AW["c"], 9)[:-1]
+    assert np.allclose(bullen_excess(held, below), 0.0, atol=1e-9)
+    assert np.allclose(bullen_excess(held, above), 0.25, atol=1e-9)
+
+
+def test_prems_outer_core_is_recovered_from_its_own_excess():
+    # the excess of a layer, of either sign, gives the layer's density back
+    m = PREM()
+    layer = m.layer("outer_core")
+    lo, hi = layer.interval
+    rho, kappa = layer["rho"], kappa_mu(layer)[0]
+
+    def excess(r):
+        r = np.asarray(r, dtype=float)
+        return (-kappa(r) * rho.derivative(nu=1)(r)
+                / (rho(r) ** 2 * gravity(m, r)) - 1.0)
+
+    d = stratified_density((lo, hi), excess=excess, kappa=kappa.function, G=m.G,
+                           mass_below=m.mass(radius=lo), rho_bottom=float(rho(lo)))
+    r = np.linspace(lo, hi, 101)
+    assert np.allclose(d(r), rho(r), rtol=1e-11)
+
+
+def test_a_density_needs_one_stiffness_and_one_anchor():
+    interval = (0.0, 1.0)
+    with pytest.raises(ValueError, match="exactly one of vp and kappa"):
+        stratified_density(interval, excess=0.0, G=1.0, rho_bottom=1.0)
+    with pytest.raises(ValueError, match="exactly one of vp and kappa"):
+        stratified_density(interval, excess=0.0, G=1.0, vp=1.0, kappa=1.0,
+                           rho_bottom=1.0)
+    with pytest.raises(ValueError, match="exactly one of rho_bottom"):
+        stratified_density(interval, excess=0.0, G=1.0, vp=1.0)
+    with pytest.raises(ValueError, match="exactly one of rho_bottom"):
+        stratified_density(interval, excess=0.0, G=1.0, vp=1.0, rho_bottom=1.0,
+                           mass=1.0)
+    with pytest.raises(ValueError, match="must be positive"):
+        stratified_density(interval, excess=0.0, G=1.0, vp=1.0, mass=-1.0)
+    with pytest.raises(ValueError, match="mass_below"):
+        stratified_density(interval, excess=0.0, G=1.0, vp=1.0, rho_bottom=1.0,
+                           mass_below=1.0)

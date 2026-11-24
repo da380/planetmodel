@@ -14,6 +14,11 @@ again empty.
   `brunt_vaisala_squared`, at any radii, from the density, the bulk
   modulus and gravity; also methods of `SelfGravitating`. The vocabulary
   gains the name `bullen_excess`, in the Python and in the C++.
+- `stratified_density`: the density of a layer from its Bullen excess and
+  its P velocity or bulk modulus, fixed by its density at the bottom, its
+  density at the top or its mass, as a piecewise polynomial that holds
+  the solution to a stated relative tolerance, with a breakpoint wherever
+  the excess or the velocity has one.
 
 ### Fixed
 

@@ -129,6 +129,7 @@ from .mesh1d.stratification import (
     brunt_vaisala_squared,
     bullen_excess,
     bullen_parameter,
+    stratified_density,
 )
 from .model import CoarseningFit, Layer, Model
 from .perturbation import PerturbedField, perturbed, unperturbed
@@ -277,6 +278,7 @@ __all__ = [
     "bullen_parameter",
     "bullen_excess",
     "brunt_vaisala_squared",
+    "stratified_density",
     "testing",
     "__version__",
 ]
