@@ -48,6 +48,11 @@ from . import materials, rheology
 from .character import DENSITY, SCALAR
 from .fields import ComposedField, Field
 from .mesh1d.gravity import gravity, gravity_fields, mass, pressure, pressure_fields
+from .mesh1d.stratification import (
+    brunt_vaisala_squared,
+    bullen_excess,
+    bullen_parameter,
+)
 
 if TYPE_CHECKING:
     from .model import CoarseningFit, Layer, Model
@@ -376,7 +381,9 @@ class SelfGravitating:
     under the vocabulary name `g` by `with_gravity`, `pressure` by
     `with_pressure`;
     `with_stratification` attaches d rho / d Phi_0 = rho'(r) / g(r) to
-    the fluid layers.  A density that depends on direction is refused,
+    the fluid layers.  `bullen_parameter`, `bullen_excess` and
+    `brunt_vaisala_squared` say how each layer is stratified
+    (`mesh1d.stratification`).  A density that depends on direction is refused,
     and the geometry's mapping does not enter (see `mesh1d.gravity`).
     A model off the sphere (a flat one) is refused by name."""
 
@@ -385,6 +392,9 @@ class SelfGravitating:
     gravity_fields = gravity_fields
     pressure = pressure
     pressure_fields = pressure_fields
+    bullen_parameter = bullen_parameter
+    bullen_excess = bullen_excess
+    brunt_vaisala_squared = brunt_vaisala_squared
 
     def with_gravity(self: Model, *, name: str = "g", replace: bool = False) -> Model:
         """The model with its gravity attached to every layer as a radial

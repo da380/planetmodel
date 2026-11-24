@@ -6,6 +6,15 @@ again empty.
 
 ## Unreleased
 
+### Added
+
+- The stratification of a spherically symmetric model
+  (`planetmodel.mesh1d.stratification`): `bullen_parameter`, its excess
+  over one `bullen_excess`, and the square of the buoyancy frequency
+  `brunt_vaisala_squared`, at any radii, from the density, the bulk
+  modulus and gravity; also methods of `SelfGravitating`. The vocabulary
+  gains the name `bullen_excess`, in the Python and in the C++.
+
 ### Fixed
 
 - The C++ header `planetmodel/fault.hpp` compiles under Clang 18 with
