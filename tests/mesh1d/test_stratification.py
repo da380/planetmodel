@@ -194,9 +194,12 @@ def test_a_layer_neutral_below_and_stratified_above():
     assert mid in d.ppoly.x
     assert np.isclose(d(mid - 1e-12), d(mid + 1e-12), rtol=1e-11)
     held = planet_with_core_density(m, d)
-    below, above = np.linspace(0.0, mid, 9)[:-1], np.linspace(mid, AW["c"], 9)[:-1]
+    below, above = np.linspace(0.0, mid, 9)[1:-1], np.linspace(mid, AW["c"], 9)[:-1]
     assert np.allclose(bullen_excess(held, below), 0.0, atol=1e-9)
     assert np.allclose(bullen_excess(held, above), 0.25, atol=1e-9)
+    # at the centre the excess is a limit that takes the second derivative
+    # of the density, which a fitted polynomial holds less closely
+    assert np.isclose(bullen_excess(held, 0.0), 0.0, atol=1e-6)
 
 
 def test_prems_outer_core_is_recovered_from_its_own_excess():

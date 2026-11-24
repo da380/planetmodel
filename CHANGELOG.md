@@ -64,8 +64,3 @@ again empty.
   `RadialField.below`). A field whose pieces meet, which is every field
   the library made before the Bullen excess, is sampled as it was, and
   its files are written bit for bit as before.
-- The C++ header `planetmodel/fault.hpp` compiles under Clang 18 with
-  OpenMP enabled: `ParameterRule`'s lambda takes the quadrature's points
-  and weights by init-capture, where it captured a structured binding,
-  which that compiler refuses in a translation unit built with
-  `-fopenmp`. Nothing changes in what the function returns.
