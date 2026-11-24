@@ -116,7 +116,9 @@ layers alone:
 **The radial layout.**  Dimension ``node``: the Gauss-Lobatto-Legendre
 nodes of every radial element, flattened element by element, so that
 the boundary between two elements, and every interface, is two nodes at
-one radius, each holding its own side's value; ``radius(node)``, an
+one radius, each holding its own side's value (they differ at an
+interface, and inside a layer where a field jumps at the boundary, as a
+``bullen_excess`` does where a neutral stretch ends); ``radius(node)``, an
 auxiliary coordinate since it repeats; ``element_layer(element)``, the
 layer of each element; ``element_bounds(element, bound)``; and the
 attribute ``ngll``, the nodes per element.  Node ``j`` of element ``e``
@@ -207,6 +209,20 @@ is a node of the grid is its own row, which holds one value: for a
 scalar, the same number at every longitude; for a field with
 components, the same Cartesian components, which the stored spherical
 components at each longitude rotate into.
+
+**A fluid layer described by its stratification.**  A fluid layer may
+hold ``bullen_excess``, a radial scalar with no dimensions: the excess
+over one of its Bullen parameter, ``-kappa rho'(r) / (rho^2 g) - 1``,
+with ``g`` the gravity of the spherically symmetric reference.  It is
+zero where the layer is neutrally stratified, positive where it is
+stably stratified and nowhere negative, and it is a polynomial on each
+of the stretches between its breakpoints, which are element edges of
+the radial layout: where the variable is zero on every node of an
+element the layer is neutral across that element, and where it is not
+it is stratified.  The layer's ``rho`` is then the density that excess
+derives, stored like any other, so a reader that does not know the name
+loses nothing; one that needs the stratification reads it here and does
+not differentiate the density.
 
 The mapping
 -----------

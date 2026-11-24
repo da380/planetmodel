@@ -146,7 +146,7 @@ from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
 from .character import SCALAR, VECTOR, Character
-from .fields import Field, RadialField, stored_shape
+from .fields import Field, RadialField, from_inside, stored_shape
 from .files import written_whole
 from .frames import from_geographic, geographic, spherical_frame
 from .layerfunction import ExponentialLayer, PolynomialLayer, constant_layer
@@ -1326,6 +1326,9 @@ def _write_part(group: Any, model: ModelBase, index: int, layers: list[int],
     length = scaled_unit(Dimensions(length=1), model.scales)
     r = mesh.r.ravel()
     node_layer = np.repeat(mesh.layer, mesh.ngll)
+    # the last node of each element: where a field jumps at an element
+    # edge inside a layer, it holds the value from inside its element
+    outer_end = np.arange(r.size) % mesh.ngll == mesh.ngll - 1
     put_variable(group, layout.coordinate, ("node",), r, layout.node_attributes(length))
     var = group.createVariable("element_layer", "i4", ("element",))
     var[...] = mesh.layer
@@ -1362,6 +1365,8 @@ def _write_part(group: Any, model: ModelBase, index: int, layers: list[int],
         for i, f in fields.items():
             m = node_layer == i
             values[m] = layout.evaluate(f, r[m], grid, radial=radial)
+            if radial:
+                values[m] = from_inside(f, r[m], values[m], outer_end[m])
             _check_positive(values[m], r[m], name, i, rules[name][0])
             if poles is not None:
                 poles[m] = layout.poles_of(f, r[m])
@@ -1390,6 +1395,7 @@ def _write_perturbed(group: Any, model: ModelBase, name: str,
     """A field held as a radial reference with a perturbation: two
     variables, stating `ref_rules` and `rules`."""
     r = mesh.r.ravel()
+    outer_end = np.arange(r.size) % mesh.ngll == mesh.ngll - 1
     any_field = next(iter(fields.values()))
     char = any_field.character
     pert = [getattr(f, "perturbation", None) for f in fields.values()]
@@ -1402,8 +1408,9 @@ def _write_perturbed(group: Any, model: ModelBase, name: str,
     for i, f in fields.items():
         m = node_layer == i
         reference = getattr(f, "reference", None)
-        ref[m] = layout.evaluate(f if reference is None else reference, r[m], grid,
-                                 radial=True)
+        source = f if reference is None else reference
+        ref[m] = layout.evaluate(source, r[m], grid, radial=True)
+        ref[m] = from_inside(source, r[m], ref[m], outer_end[m])
         _check_positive(ref[m], r[m], name, i, ref_rules[0])
         if reference is None:
             continue

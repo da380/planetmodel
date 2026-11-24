@@ -141,6 +141,11 @@ VOCABULARY: dict[str, FieldSpec] = {
         DENSITY, units.DENSITY / (units.GRAVITY * units.LENGTH),
         meaning="stratification of a fluid layer: "
                 "d rho / d Phi_0 = rho'(r) / g(r)"),
+    "bullen_excess": FieldSpec(
+        SCALAR, units.DIMENSIONLESS,
+        meaning="excess of the Bullen parameter of a layer over one, "
+                "-kappa rho'(r) / (rho^2 g) - 1: zero where the layer is "
+                "neutrally stratified, positive where it is stably stratified"),
 }
 
 #: The families of names, each stem mapped to the spec every member has.

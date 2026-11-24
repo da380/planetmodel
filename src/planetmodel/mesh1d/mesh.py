@@ -28,6 +28,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import PPoly
 
+from ..fields import from_inside
 from ..skeleton import Skeleton
 from .gll import gll_points_weights, lagrange_basis, lagrange_derivative_matrix
 
@@ -327,8 +328,10 @@ class RadialMesh(Mesh1D):
         for rank 0, with the stored components appended for higher rank.
 
         Each element takes the field of its own layer, so a node on a
-        skeleton boundary carries both one-sided values; `nu` asks for
-        the nu-th radial derivative.  An element whose layer lacks the
+        skeleton boundary carries both one-sided values, and where a
+        field jumps at an element edge inside a layer each of the two
+        nodes there carries its own side's (`fields.from_inside`); `nu`
+        asks for the nu-th radial derivative.  An element whose layer lacks the
         name is refused by name, or filled with NaN when
         `missing="nan"`.  Complex where any layer's field is complex.
         A new array each call.
@@ -351,7 +354,10 @@ class RadialMesh(Mesh1D):
                     "values are for radial fields")
             if nu:
                 field = field.derivative(nu=nu)
-            pieces[int(i)] = field.evaluate(self.r[self.layer == i], 0.0, 0.0)
+            r = self.r[self.layer == i]
+            outer = np.zeros(r.shape, dtype=bool)
+            outer[:, -1] = True
+            pieces[int(i)] = from_inside(field, r, field.evaluate(r, 0.0, 0.0), outer)
         if not pieces:
             raise KeyError(f"no layer of the mesh holds {name!r}")
         first = next(iter(pieces.values()))

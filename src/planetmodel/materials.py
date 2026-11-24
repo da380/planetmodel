@@ -79,7 +79,7 @@ if TYPE_CHECKING:
 
 __all__ = ["moduli_from_velocities", "velocities_from_moduli", "voigt_vs", "voigt_vp",
            "kappa_mu_from_moduli", "voigt_matrix", "ElasticField",
-           "is_fluid", "moduli", "elastic_moduli", "kappa_mu", "named",
+           "is_fluid", "vanishes", "moduli", "elastic_moduli", "kappa_mu", "named",
            "independent_moduli", "LayerLike", "Operand", "MODULI_NAMES",
            "VELOCITY_SETS", "VELOCITY_NAMES", "SHEAR_NAMES", "ELASTIC_NAMES"]
 
@@ -385,7 +385,7 @@ def _describe(layer: LayerLike) -> str:
     return f"a layer holding {list(_held(layer))}"
 
 
-def _vanishes(field: Field) -> bool:
+def vanishes(field: Field) -> bool:
     """Whether a field is zero throughout its interval: by its polynomial
     coefficients where it has them, else at nine radii."""
     if isinstance(field, RadialField) and field.character.rank == 0:
@@ -420,7 +420,7 @@ def is_fluid(layer: LayerLike) -> bool:
         raise KeyError(
             f"{_describe(layer)} holds none of {list(SHEAR_NAMES)}, so its "
             "fluidity cannot be read")
-    return all(_vanishes(layer[n]) for n in held)
+    return all(vanishes(layer[n]) for n in held)
 
 
 def independent_moduli(layer: LayerLike) -> tuple[Symmetry, dict[str, Field]]:

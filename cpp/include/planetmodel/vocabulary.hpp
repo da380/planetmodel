@@ -86,6 +86,11 @@ struct FieldSpec {
       {"drho_dphi0",
        {DENSITY, Dimensions{.mass = 1, .length = -5, .time = 2},
         "stratification of a fluid layer: d rho / d Phi_0 = rho'(r) / g(r)"}},
+      {"bullen_excess",
+       {SCALAR, u::DIMENSIONLESS,
+        "excess of the Bullen parameter of a layer over one, -kappa rho'(r) / (rho^2 g) - 1: "
+        "zero where the layer is neutrally stratified, positive where it is stably "
+        "stratified"}},
   };
   return vocabulary;
 }

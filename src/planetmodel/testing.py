@@ -680,12 +680,17 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
     pass `check_field`, sit on the layer's interval, are in the
     geometry's coordinates and have their spec's character; that
     `layer(name)` and `layer(i)` agree; that every constant is its SI
-    value over the scales' factor; that conversion to other scales and
+    value over the scales' factor; that on a self-gravitating model a
+    layer holding a Bullen excess is fluid, the excess nowhere negative,
+    and its density the one the excess derives; that conversion to other scales and
     back restores every field to 1e-12 at points the coordinates probe;
     and that every surgery, the extension by "extrapolate" and by "hold"
     among them, keeps the class and validates again.
     """
+    from .behaviours import SelfGravitating
     from .coordinates import coordinates_of
+    from .materials import is_fluid
+    from .mesh1d.stratification import BULLEN_EXCESS
     from .model import ModelBase
     from .units import Scales
 
@@ -732,6 +737,22 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
         want = c.value_si / model.scales.factor(c.dimensions)
         assert np.isclose(model.constant(name), want, rtol=1e-15), (
             f"constant {name!r} is not its SI value in the model's units")
+
+    if isinstance(model, SelfGravitating):
+        for layer in model.layers:
+            if BULLEN_EXCESS not in layer:
+                continue
+            assert is_fluid(layer), (
+                f"layer {layer.index} holds a Bullen excess and is not fluid")
+            lo, hi = layer.interval
+            r = lo + (hi - lo) * rng.uniform(0.05, 0.95, 8)
+            stated = np.asarray(layer[BULLEN_EXCESS](r), dtype=float)
+            assert np.all(stated >= -1e-12), (
+                f"the Bullen excess of layer {layer.index} is negative")
+            assert np.allclose(model.bullen_excess(r), stated,
+                               atol=1e-8 * (1.0 + np.max(stated))), (
+                f"the density of layer {layer.index} is not the one its Bullen "
+                "excess derives")
 
     names = model.field_names()
     convertible = all(model.spec(n) is not None
@@ -1532,6 +1553,7 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
     at them; and the surfaces group as on the sphere, without poles.
     netCDF4 is imported here.
     """
+    from .fields import from_inside
     from .frames import cartesian_points, spherical_frame
     from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_FLAT, SCHEMA_WITH_LOG_RULES,
                             read_model, read_model_file, read_surfaces, schema_of,
@@ -1585,12 +1607,16 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
                 r = r_all[idx]
                 if values.ndim == 1 + len(source.stored_shape):
                     th = np.full(r.shape, 0.5 * np.pi)
-                    want = source.evaluate(r, th, np.zeros_like(r))
+                    # an element's last node holds the value from inside it
+                    outer = idx % mesh.ngll == mesh.ngll - 1
+                    want = from_inside(source, r,
+                                       source.evaluate(r, th, np.zeros_like(r)), outer)
                     stored_against(values[idx], want, f"part_{k}/{name}")
                     got = back.layer(i)[name]
                     got = getattr(got, "reference", got)
-                    stored_against(values[idx], got.evaluate(r, th, np.zeros_like(r)),
-                                   f"part_{k}/{name} read back")
+                    read = from_inside(got, r, got.evaluate(r, th, np.zeros_like(r)),
+                                       outer)
+                    stored_against(values[idx], read, f"part_{k}/{name} read back")
                 else:
                     it = rng.integers(grid.ntheta, size=idx.size)
                     ip = rng.integers(grid.nphi, size=idx.size)

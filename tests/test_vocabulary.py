@@ -10,7 +10,7 @@ EXPECTED_NAMES = {
     "rho", "vp", "vs", "vpv", "vsv", "vph", "vsh", "eta", "qkappa", "qmu", "qp",
     "kappa", "mu", "A", "C", "F", "L", "N", "elastic_moduli", "viscosity", "g",
     "drho_dphi0", "temperature", "pressure", "stress_exponent", "transition_stress",
-    "kelvin_viscosity", "kelvin_modulus_fraction",
+    "kelvin_viscosity", "kelvin_modulus_fraction", "bullen_excess",
 }
 
 
