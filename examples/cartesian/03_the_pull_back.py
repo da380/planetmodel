@@ -87,7 +87,7 @@ for label, g in (("pulled back", geometry), ("built as given", reference)):
         MeshSpec(g, UniformInterfaces(0.1, 0.25, 0.3), order=2,
                  faults=[EmbeddedFault(fault, name="thrust", sizing=size)]),
         work / label.replace(" ", "_"))
-    meshes[label] = (read_mesh(result.msh_path), manifest.read(result.manifest_path))
+    meshes[label] = (read_mesh(result.mesh_path), manifest.read(result.manifest_path))
 mapping = geometry.mapping
 record = meshes["pulled back"][1].fault_record("thrust")
 print(f"the preimage: {record['controls'][0]} control nodes, offset "

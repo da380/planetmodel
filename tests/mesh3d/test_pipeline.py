@@ -13,8 +13,8 @@ from planetmodel.mesh3d._orient import (element_quality, node_positions,
                                         signed_measures)
 from planetmodel.mesh3d._session import is_active, session, set_options
 from planetmodel.mesh3d._sizing import (apply_mesh_options, apply_size_fields,
-                                        check_sizing_resolves_spans,
-                                        check_sizing_scale)
+                                        check_sizing_resolves_spans)
+from planetmodel.mesh3d.spec import check_sizing_scale
 from planetmodel.mesh3d._tagging import (apply_physical_groups, default_atol,
                                          identify, mean_radius_of_entity)
 from planetmodel.mesh3d._validate import check_interface_radii, validate_mesh

@@ -28,11 +28,11 @@ from ..geometry import InterfaceInfo
 from . import manifest
 from ._orient import orient_mesh, raise_order
 from ._session import session
-from ._sizing import apply_mesh_options, apply_size_fields, check_sizing_scale
+from ._sizing import apply_mesh_options, apply_size_fields
 from ._tagging import Tagging, mean_radius_of_entity
 from ._validate import validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import MeshResult, SizingRule, optimise_methods
+from .spec import MeshResult, SizingRule, check_sizing_scale, optimise_methods
 
 __all__ = ["build_offset_mesh"]
 
@@ -154,7 +154,7 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
 
     counts["layers"] = 2
     counts["interfaces"] = 2
-    return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
+    return MeshResult(mesh_path=msh_path, manifest_path=manifest_path,
                       geometry=None, counts=counts, validation=report,
                       timings=timings)
 

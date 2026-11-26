@@ -37,7 +37,7 @@ from ._tagging import Tagging
 from .spec import InterfaceSizing, Refinement
 
 __all__ = ["apply_size_fields", "apply_refinements", "apply_mesh_options",
-           "check_sizing_resolves_spans", "check_sizing_scale"]
+           "check_sizing_resolves_spans"]
 
 
 def apply_size_fields(tagging: Tagging, sizes: Mapping[int, InterfaceSizing], *,
@@ -186,35 +186,3 @@ def check_sizing_resolves_spans(boundaries: ArrayLike,
               "(CappedInterfaces), or coarsen the geometry so the thin "
               "layers are merged.")
     return problems
-
-
-def check_sizing_scale(outer_radius: float, sizes: Mapping[int, InterfaceSizing], *,
-                       refinements: Sequence[Refinement] = (),
-                       floor: float = 1e-5, ceiling: float = 2.0) -> None:
-    """Catch a sizing given at the wrong scale before gmsh does.
-
-    Sizing rules and refinements return lengths in the geometry's own
-    units, the ones its radii are in; a rule written for a unit ball
-    and applied to one of radius 6.4e6 asks for elements a million
-    times too small, and gmsh reports that as "identical points in
-    triangulation", which names neither the scale nor the rule.  Both
-    bounds are relative to the outer radius: a target element more than
-    a hundred thousand times smaller than the domain, or larger than
-    the domain itself, is not a resolution choice.  A refinement is
-    judged by its `size` floor.
-    """
-    outer = float(outer_radius)
-    targets = ([s.size for s in sizes.values()]
-               + [float(fine.size) for fine in refinements])
-    smallest = min(targets)
-    largest = max(targets)
-    if smallest < floor * outer:
-        raise ValueError(
-            f"the smallest element size is {smallest:.3g} against an outer "
-            f"radius of {outer:.3g}, a ratio of {smallest / outer:.1e}, "
-            "which is not a resolution choice. Sizing rules take lengths in "
-            "the geometry's own units, the ones its radii are in.")
-    if largest > ceiling * outer:
-        raise ValueError(
-            f"the largest element size is {largest:.3g}, more than the outer "
-            f"radius {outer:.3g}: nothing would be resolved.")

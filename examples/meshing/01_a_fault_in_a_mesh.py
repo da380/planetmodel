@@ -124,7 +124,7 @@ for record in card.faults:
 # at a few nodes.
 
 # %%
-mesh = read_mesh(result.msh_path)
+mesh = read_mesh(result.mesh_path)
 x = result.mapping(mesh.points)
 for record in card.faults:
     fault = faults[record["name"]]

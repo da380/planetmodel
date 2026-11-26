@@ -114,8 +114,13 @@ def test_a_mesh_in_a_plane_is_cut_whole():
     bent[2, 2] = 1e-3
     with pytest.raises(ValueError, match="off the plane"):
         in_plane(bent, triangles, [0, 0, 0], [[1, 0, 0], [0, 1, 0]])
-    with pytest.raises(ValueError, match="2 or 3 corner"):
-        in_plane(points, np.array([[0, 1, 2, 3]]), [0, 0, 0], [[1, 0, 0], [0, 1, 0]])
+    # a row of four corners is a quadrilateral, kept as it is
+    square = in_plane(points, np.array([[0, 1, 2, 3]]), [0, 0, 0],
+                      [[1, 0, 0], [0, 1, 0]])
+    assert np.array_equal(square.pieces, points[None, :, :2])
+    with pytest.raises(ValueError, match="2, 3 or 4 corner"):
+        in_plane(points, np.array([[0, 1, 2, 3, 0]]), [0, 0, 0],
+                 [[1, 0, 0], [0, 1, 0]])
     with pytest.raises(ValueError, match="outside"):
         in_plane(points, triangles + 4, [0, 0, 0], [[1, 0, 0], [0, 1, 0]])
 

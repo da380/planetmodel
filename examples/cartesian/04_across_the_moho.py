@@ -87,7 +87,7 @@ result = build_layered_mesh(
              faults=[EmbeddedFault(fault, name="thrust", sizing=0.03)]),
     work / "across")
 pieces = result.preimages["thrust"]
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 record = card.fault_record("thrust")
 print(f"{len(pieces)} pieces, through {record['controls'][0]} control nodes each "
       f"way, offset {record['offset']:.2g}; the fault in layers {record['layers']}, "

@@ -21,6 +21,15 @@ mapping that inverts itself (topography, a `cartesian.VerticalStretch`),
 pulled back through it as on the sphere; over a rectangle they are not
 built.
 
+A CubedSphereSpec is the description of a mesh of hexahedra of a
+spherical geometry made with no mesher, a cubed sphere (`_cubed`): the
+same geometry, shells, order and outer boundary, with the number of
+cells along an edge for its lateral resolution and the sizing read as
+radial sizes, or the radii of its spheres given outright.  What the two
+specs share is here once: the computational domain
+(`computational_domain`), the shells' radii and names, and the checks
+of the mapping on the shells and on the outer boundary.
+
 Sizing is a callable, not a class hierarchy: a rule takes the
 interfaces of the computational domain and its last boundary (the
 outer radius of a ball, the depth of a box's base), in the geometry's
@@ -60,6 +69,7 @@ import hashlib
 from collections.abc import Callable, Sequence
 from collections.abc import Mapping as MappingOf
 from dataclasses import KW_ONLY, dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -68,8 +78,10 @@ from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
 from ..fault import Fault
+from ..frames import cartesian_points
 from ..geometry import Geometry, GeometryBase, InterfaceInfo, LayerInfo
-from ..mapping import Mapping
+from ..mapping import Mapping, validity_lattice
+from ._cubed import DIMENSIONS, blend_fractions, sphere_knots
 from ._layout import layout_of
 
 if TYPE_CHECKING:
@@ -78,10 +90,13 @@ if TYPE_CHECKING:
 __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "CappedInterfaces", "PerInterface", "Refinement",
-    "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec",
+    "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec", "CubedSphereSpec",
     "MeshResult", "ValidationReport", "optimise_methods", "largest_size",
+    "shell_radii", "shell_names", "computational_domain", "check_shells",
+    "check_sizing_scale", "require_mapping_on_shells",
+    "require_spherical_outer_boundary",
     "DELIVERIES", "OUTER_BOUNDARIES", "QUALITY_FLOOR", "QUALITY_MEASURE",
-    "GRADIENT", "OPTIMISE", "OPTIMISE_WITH_FAULTS",
+    "ASPECT_WARNING", "GRADIENT", "OPTIMISE", "OPTIMISE_WITH_FAULTS",
 ]
 
 #: The two deliveries of the MFEM export: the nodes moved by the mapping,
@@ -106,6 +121,12 @@ QUALITY_MEASURE = "minSICN"
 #: which `raise_order` runs gmsh's high-order optimiser and at which
 #: `validate_mesh` warns.  Elements at or below zero are folded and fail.
 QUALITY_FLOOR = 0.05
+
+#: The aspect ratio of a cell of a cubed sphere (its greatest length
+#: over its least) above which its validation warns: a layer one cell
+#: thick and far thinner than the cells are wide, or cells left long
+#: and thin by the centre.
+ASPECT_WARNING = 10.0
 
 
 @dataclass(frozen=True)
@@ -194,6 +215,14 @@ class InterfaceSizing:
         """The same sizing with every length multiplied by `factor`."""
         return InterfaceSizing(self.size * factor, self.far_size * factor,
                                self.decay_width * factor)
+
+    def at(self, distance: ArrayLike) -> np.ndarray:
+        """The element size at `distance` from the interface: `size` on
+        it, growing linearly to `far_size` at `decay_width` and held
+        there beyond."""
+        ramp = np.clip(np.asarray(distance, dtype=float) / self.decay_width,
+                       0.0, 1.0)
+        return self.size + (self.far_size - self.size) * ramp
 
     @classmethod
     def graded(cls, size: float, far_size: float, *,
@@ -720,6 +749,139 @@ class EmbeddedFault:
         return InterfaceSizing.graded(self.sizing, max(float(ceiling), self.sizing))
 
 
+# --------------------------------------------- what every spec shares
+
+def shell_radii(geometry: GeometryBase, shells: Sequence[Shell]
+                ) -> tuple[float, ...]:
+    """The outer radii of `shells` appended outside `geometry`, innermost
+    first."""
+    radii = []
+    inner = float(geometry.skeleton.boundaries[-1])
+    for shell in shells:
+        inner = shell.outer_radius(inner)
+        radii.append(inner)
+    return tuple(radii)
+
+
+def shell_names(shells: Sequence[Shell]) -> list[str]:
+    """The layer names of `shells`, the defaults of `Shell` filled in."""
+    many = len(shells) > 1
+    return [shell.name if shell.name is not None
+            else (f"buffer_{k}" if many else "buffer")
+            for k, shell in enumerate(shells, start=1)]
+
+
+def check_shells(geometry: GeometryBase, shells: Sequence[Shell]) -> None:
+    """Refuse what is no `Shell`, and a shell whose outer radius is not
+    above the boundary it is attached to."""
+    for shell in shells:
+        if not isinstance(shell, Shell):
+            raise TypeError(
+                f"shells must be Shell instances, got {type(shell).__name__}")
+    inner = float(geometry.skeleton.boundaries[-1])
+    for name, shell in zip(shell_names(shells), shells):
+        outer = shell.outer_radius(inner)
+        if not outer > inner:
+            raise ValueError(
+                f"shell {name!r} has outer radius {outer:g}, not above "
+                f"the boundary it is attached to at {inner:g}")
+        inner = outer
+
+
+def computational_domain(geometry: GeometryBase, shells: Sequence[Shell]
+                         ) -> GeometryBase:
+    """The computational domain: `geometry` then `shells`, unchecked.
+
+    A Geometry under the geometry's own mapping, whose layers and
+    interfaces carry the numbering the mesh will; a geometry with no
+    shells is its own.  Whether the mapping is defined on the shells is
+    the builder's check (`require_mapping_on_shells`), not this one's.
+    """
+    if not shells:
+        return geometry
+    sk = geometry.skeleton.extended(shell_radii(geometry, shells))
+    return Geometry(
+        sk, mapping=geometry.mapping,
+        layer_names=[lay.name for lay in geometry.layers] + shell_names(shells),
+        interface_names=[f.name for f in geometry.interfaces] + [None] * len(shells),
+        rtol=geometry.rtol, check=False)
+
+
+def require_mapping_on_shells(spec: MeshSpec | CubedSphereSpec) -> None:
+    """Refuse a mapping that is not defined on the shells.
+
+    The computational domain under the geometry's mapping must satisfy
+    every invariant of a Geometry: knots on boundaries, orientation
+    preserved on the validity lattice, continuity across every interior
+    boundary, the geometry's own outer boundary included.
+    """
+    g = spec.geometry
+    domain = spec.domain
+    try:
+        Geometry(domain.skeleton, mapping=g.mapping, rtol=g.rtol, check=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            "with shells the mapping must be defined and orientation-preserving "
+            f"on the whole computational domain, out to r = {spec.outer_radius:g}: "
+            f"{exc}"
+        ) from exc
+
+
+def require_spherical_outer_boundary(spec: MeshSpec | CubedSphereSpec) -> None:
+    """Refuse a mapping that moves the outer boundary of the domain.
+
+    The mapping must be the identity on the outer boundary of the
+    computational domain to `geometry.rtol` times that radius, checked
+    on the validity lattice's angles.
+    """
+    g = spec.geometry
+    outer = spec.outer_radius
+    _, theta, phi = validity_lattice(spec.domain.skeleton)
+    X = cartesian_points(outer, theta, phi)
+    gap = float(np.max(np.linalg.norm(np.asarray(g.mapping(X), dtype=float) - X,
+                                      axis=-1)))
+    tol = g.rtol * outer
+    if gap > tol:
+        raise ValueError(
+            "a spherical outer boundary was asked for, so the mapping must be the "
+            f"identity on the outer boundary of the computational domain at r = "
+            f"{outer:g}, and it moves points there by up to {gap:.3g} (tolerance "
+            f"{tol:.3g}); make the displacement vanish there, or mesh with "
+            "outer_boundary='free'")
+
+
+def check_sizing_scale(outer_radius: float, sizes: MappingOf[int, InterfaceSizing], *,
+                       refinements: Sequence[Refinement] = (),
+                       floor: float = 1e-5, ceiling: float = 2.0) -> None:
+    """Catch a sizing given at the wrong scale before a mesher does.
+
+    Sizing rules and refinements return lengths in the geometry's own
+    units, the ones its radii are in; a rule written for a unit ball
+    and applied to one of radius 6.4e6 asks for elements a million
+    times too small, and gmsh reports that as "identical points in
+    triangulation", which names neither the scale nor the rule.  Both
+    bounds are relative to the outer radius: a target element more than
+    a hundred thousand times smaller than the domain, or larger than
+    the domain itself, is not a resolution choice.  A refinement is
+    judged by its `size` floor.
+    """
+    outer = float(outer_radius)
+    targets = ([s.size for s in sizes.values()]
+               + [float(fine.size) for fine in refinements])
+    smallest = min(targets)
+    largest = max(targets)
+    if smallest < floor * outer:
+        raise ValueError(
+            f"the smallest element size is {smallest:.3g} against an outer "
+            f"radius of {outer:.3g}, a ratio of {smallest / outer:.1e}, "
+            "which is not a resolution choice. Sizing rules take lengths in "
+            "the geometry's own units, the ones its radii are in.")
+    if largest > ceiling * outer:
+        raise ValueError(
+            f"the largest element size is {largest:.3g}, more than the outer "
+            f"radius {outer:.3g}: nothing would be resolved.")
+
+
 @dataclass(frozen=True)
 class MeshSpec:
     """The complete description of a mesh to build.
@@ -831,14 +993,7 @@ class MeshSpec:
                 raise ValueError(
                     f"refinements[{i}] returns shape {probe} for one point; a "
                     "refinement returns one size per point")
-        inner = float(self.geometry.skeleton.boundaries[-1])
-        for name, shell in zip(self.shell_names, self.shells):
-            outer = shell.outer_radius(inner)
-            if not outer > inner:
-                raise ValueError(
-                    f"shell {name!r} has outer radius {outer:g}, not above "
-                    f"the boundary it is attached to at {inner:g}")
-            inner = outer
+        check_shells(self.geometry, self.shells)
         domain = self.domain    # names must be unique across geometry and shells
         for i, item in enumerate(self.faults):
             if not isinstance(item, EmbeddedFault):
@@ -862,20 +1017,12 @@ class MeshSpec:
     @property
     def shell_radii(self) -> tuple[float, ...]:
         """The outer radii of the shells, innermost first."""
-        radii = []
-        inner = float(self.geometry.skeleton.boundaries[-1])
-        for shell in self.shells:
-            inner = shell.outer_radius(inner)
-            radii.append(inner)
-        return tuple(radii)
+        return shell_radii(self.geometry, self.shells)
 
     @property
     def shell_names(self) -> list[str]:
         """The layer names of the shells, the defaults of `Shell` filled in."""
-        many = len(self.shells) > 1
-        return [shell.name if shell.name is not None
-                else (f"buffer_{k}" if many else "buffer")
-                for k, shell in enumerate(self.shells, start=1)]
+        return shell_names(self.shells)
 
     @property
     def fault_names(self) -> list[str]:
@@ -892,22 +1039,10 @@ class MeshSpec:
 
     @property
     def domain(self) -> GeometryBase:
-        """The computational domain: the geometry then the shells, unchecked.
-
-        A Geometry under the geometry's own mapping, whose layers and
-        interfaces carry the numbering the mesh will; a flat geometry,
-        which takes no shells, is its own.  Whether the mapping is
-        defined on the shells is the builder's check, not this one's.
-        """
-        g = self.geometry
-        if not self.shells:
-            return g
-        sk = g.skeleton.extended(self.shell_radii)
-        return Geometry(
-            sk, mapping=g.mapping,
-            layer_names=[lay.name for lay in g.layers] + self.shell_names,
-            interface_names=[f.name for f in g.interfaces] + [None] * len(self.shells),
-            rtol=g.rtol, check=False)
+        """The computational domain: the geometry then the shells, unchecked
+        (`computational_domain`); a flat geometry, which takes no shells,
+        is its own."""
+        return computational_domain(self.geometry, self.shells)
 
     @property
     def layers(self) -> tuple[LayerInfo, ...]:
@@ -922,6 +1057,251 @@ class MeshSpec:
         return self.domain.interfaces
 
 
+@dataclass(frozen=True)
+class CubedSphereSpec:
+    """The complete description of a cubed-sphere mesh to build.
+
+    A conforming mesh of hexahedra of a spherical geometry, made with
+    no mesher (`_cubed`): a central cube of `edge`^3 cells and six
+    blocks of `edge` x `edge` columns above its faces, or for a hollow
+    geometry the six blocks alone; in two dimensions a central square
+    and four blocks of quadrilaterals, the disc or the annulus.  The
+    computational domain, its numbering and its shells are `MeshSpec`'s,
+    and so is the mesh built: the reference one, to which the mapping is
+    applied at the MFEM export.
+
+    The lateral resolution is `edge` alone: a quarter of a great circle
+    has `edge` cells, so a cell at radius r is (pi / 2) r / edge wide,
+    narrower the deeper it lies.  The radial resolution is the sizing
+    rule's, read as radial sizes: the target at a radius is the
+    smallest of the sizes the interfaces' sizings give at their
+    distances (`InterfaceSizing.at`), and each layer takes the cells
+    that asks for, at least one.  `knots` gives the radii of the
+    spheres of the mesh outright in place of a rule: every interface of
+    the computational domain from the first sphere outward, and
+    whatever lies between them.
+
+    The first sphere is the innermost interface, and the innermost
+    layer of a ball is the cube, of half-width `cube` times that
+    sphere's radius, and the blend from the cube's surface out to it.
+    The blend is divided as a layer is and then, where `aspect` is
+    given, more finely until none of its cells is more than `aspect`
+    times longer radially than it is wide; one cell across it is about
+    half of `edge` times longer.
+    """
+
+    #: The geometry to mesh: a spherical one, a ball or a shell.
+    geometry: Geometry
+    #: The number of cells along an edge of the central cube, and across
+    #: each block: a quarter of a great circle.
+    edge: int
+    _: KW_ONLY
+    #: The rule giving every interface of the computational domain its
+    #: sizing, read radially; exactly one of `sizing` and `knots`.
+    sizing: SizingRule | None = None
+    #: The radii of the spheres of the mesh, increasing, from the first
+    #: sphere to the outer boundary of the computational domain.
+    knots: ArrayLike | None = None
+    #: 3 for a ball or a shell, 2 for its disc or annulus.
+    dimension: int = 3
+    #: The order of the geometry, 1 or more.
+    order: int = 2
+    #: Shells appended outside the geometry, innermost first.
+    shells: Sequence[Shell] = ()
+    #: "free": the outer boundary of the computational domain may carry
+    #: topography; "spherical": the mapping must be the identity on it.
+    outer_boundary: str = "free"
+    #: The half-width of the central cube over the radius of the first
+    #: sphere: below 1 / sqrt(dimension), where its corners reach it.
+    cube: float = 0.45
+    #: The most a cell of the blend may be longer radially than it is
+    #: wide; None for no cap.
+    aspect: float | None = 4.0
+    #: False writes a failing mesh; the failures are on the result's report.
+    validate: bool = True
+    #: Copied into the manifest's `meta` block, for the consumer's own use.
+    meta: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.geometry, Geometry):
+            raise TypeError(
+                "a cubed sphere is a mesh of a spherical geometry (Geometry), got "
+                f"{type(self.geometry).__name__}")
+        if isinstance(self.edge, bool) or int(self.edge) != self.edge \
+                or self.edge < 1:
+            raise ValueError(f"edge must be a whole number of cells, at least 1, "
+                             f"got {self.edge!r}")
+        object.__setattr__(self, "edge", int(self.edge))
+        if (self.sizing is None) == (self.knots is None):
+            raise ValueError("give exactly one of sizing and knots")
+        if self.sizing is not None and not callable(self.sizing):
+            raise TypeError("sizing must be a callable sizing rule")
+        if self.dimension not in DIMENSIONS:
+            raise ValueError(f"dimension must be 3 or 2, got {self.dimension}")
+        if isinstance(self.order, bool) or int(self.order) != self.order \
+                or self.order < 1:
+            raise ValueError(f"the order of the geometry is a whole number, at "
+                             f"least 1, got {self.order!r}")
+        object.__setattr__(self, "order", int(self.order))
+        if self.outer_boundary not in OUTER_BOUNDARIES:
+            raise ValueError(
+                f"outer_boundary must be one of {OUTER_BOUNDARIES}, "
+                f"got {self.outer_boundary!r}")
+        object.__setattr__(self, "shells", tuple(self.shells))
+        check_shells(self.geometry, self.shells)
+        limit = 1.0 / np.sqrt(self.dimension)
+        if not 0.0 < self.cube < limit:
+            raise ValueError(
+                f"cube must lie between 0 and 1 / sqrt({self.dimension}) = "
+                f"{limit:.3f}, where the cube's corners reach the first sphere, "
+                f"got {self.cube}")
+        if self.aspect is not None and not self.aspect > 0.0:
+            raise ValueError(f"aspect must be positive, or None for no cap, got "
+                             f"{self.aspect}")
+        domain = self.domain    # names must be unique across geometry and shells
+        if self.knots is not None:
+            object.__setattr__(self, "knots", self._checked_knots(domain))
+
+    def _checked_knots(self, domain: GeometryBase) -> tuple[float, ...]:
+        """The knots given, as a tuple: increasing, from the first sphere to
+        the outer boundary, with every interface among them, each put on
+        its interface's own radius."""
+        knots = np.array(self.knots, dtype=float).ravel()
+        if knots.size < 1 or not np.all(np.diff(knots) > 0.0):
+            raise ValueError("knots must be increasing radii")
+        tol = self.geometry.rtol * self.outer_radius
+        wanted = [f.radius for f in domain.interfaces]
+        for radius in wanted:
+            k = int(np.argmin(np.abs(knots - radius)))
+            if abs(knots[k] - radius) > tol:
+                raise ValueError(
+                    f"knots must hold every interface of the computational "
+                    f"domain, and none is at r = {radius:g}; its interfaces are "
+                    f"at {wanted}")
+            knots[k] = radius
+        if knots[0] != self.first_sphere or knots[-1] != self.outer_radius:
+            raise ValueError(
+                f"knots run from the first sphere at r = {self.first_sphere:g} to "
+                f"the outer boundary at r = {self.outer_radius:g}, got "
+                f"{knots[0]:g} to {knots[-1]:g}")
+        return tuple(knots.tolist())
+
+    @property
+    def shell_radii(self) -> tuple[float, ...]:
+        """The outer radii of the shells, innermost first."""
+        return shell_radii(self.geometry, self.shells)
+
+    @property
+    def shell_names(self) -> list[str]:
+        """The layer names of the shells, the defaults of `Shell` filled in."""
+        return shell_names(self.shells)
+
+    @property
+    def outer_radius(self) -> float:
+        """The outer radius of the computational domain."""
+        radii = self.shell_radii
+        return radii[-1] if radii else float(self.geometry.skeleton.boundaries[-1])
+
+    @property
+    def domain(self) -> GeometryBase:
+        """The computational domain: the geometry then the shells, unchecked
+        (`computational_domain`)."""
+        return computational_domain(self.geometry, self.shells)
+
+    @property
+    def layers(self) -> tuple[LayerInfo, ...]:
+        """The layers of the computational domain, centre outward."""
+        return self.domain.layers
+
+    @property
+    def interfaces(self) -> tuple[InterfaceInfo, ...]:
+        """The interfaces of the computational domain, centre outward."""
+        return self.domain.interfaces
+
+    @property
+    def hollow(self) -> bool:
+        """Whether the geometry is a shell, meshed with no central cube."""
+        return bool(self.geometry.is_hollow)
+
+    @property
+    def first_sphere(self) -> float:
+        """The radius of the first sphere of the mesh: the innermost
+        interface, a shell's inner boundary or the top of a ball's
+        innermost layer."""
+        return float(self.geometry.skeleton.boundaries[0 if self.hollow else 1])
+
+    @property
+    def half_width(self) -> float | None:
+        """The half-width of the central cube; None for a shell."""
+        return None if self.hollow else self.cube * self.first_sphere
+
+    @cached_property
+    def sizes(self) -> dict[int, InterfaceSizing] | None:
+        """The sizing of every interface of the computational domain, by
+        its index, as the rule gives them; None where the knots were
+        given.  Refused where an interface has none, or where the sizes
+        are at another scale than the body (`check_sizing_scale`)."""
+        if self.sizing is None:
+            return None
+        faces = self.domain.interfaces
+        sizes = dict(self.sizing(faces, self.outer_radius))
+        missing = [f.index for f in faces if f.index not in sizes]
+        if missing:
+            raise ValueError(f"no sizing for interfaces {missing}")
+        check_sizing_scale(self.outer_radius, sizes)
+        return sizes
+
+    def _sized(self) -> tuple[list[float], list[InterfaceSizing]] | tuple[None, None]:
+        """The interfaces' radii and their sizings, in step; a pair of None
+        where the knots were given."""
+        sizes = self.sizes
+        if sizes is None:
+            return None, None
+        faces = self.domain.interfaces
+        return [f.radius for f in faces], [sizes[f.index] for f in faces]
+
+    @cached_property
+    def spheres(self) -> np.ndarray:
+        """The radii of the spheres of the mesh, from the first sphere to
+        the outer boundary: the knots given, or those the sizing asks for
+        (`_cubed.sphere_knots`)."""
+        if self.knots is not None:
+            spheres = np.array(self.knots, dtype=float)
+        else:
+            radii, sizings = self._sized()
+            spheres = sphere_knots(self.domain.skeleton.boundaries, radii, sizings)
+        spheres.flags.writeable = False
+        return spheres
+
+    @cached_property
+    def blend(self) -> np.ndarray | None:
+        """The fractions of the blend's levels, from 0 on the cube's
+        surface to 1 on the first sphere (`_cubed.blend_fractions`); None
+        for a shell, which has no blend."""
+        if self.hollow:
+            return None
+        radii, sizings = self._sized()
+        blend = blend_fractions(
+            self.edge, half_width=self.half_width, radius=self.first_sphere,
+            radii=radii, sizings=sizings, elongation=self.aspect,
+            dimension=self.dimension)
+        blend.flags.writeable = False
+        return blend
+
+    @property
+    def levels(self) -> int:
+        """The number of levels of cells above the cube's surface: the
+        blend's and those between the spheres."""
+        blend = self.blend
+        return (0 if blend is None else blend.size - 1) + self.spheres.size - 1
+
+    @property
+    def cells(self) -> int:
+        """The number of cells the mesh will have."""
+        d, n = self.dimension, self.edge
+        return (0 if self.hollow else n ** d) + 2 * d * n ** (d - 1) * self.levels
+
+
 @dataclass
 class ValidationReport:
     """The outcome of every check of a built mesh, whether or not any failed."""
@@ -931,7 +1311,12 @@ class ValidationReport:
     _: KW_ONLY
     #: Elements whose minSICN is not positive.
     negative_jacobians: int = 0
-    #: The worst minSICN over the cells.
+    #: The worst shape of a cell, the signed inverse condition number of
+    #: its Jacobian at its worst over the cell: gmsh's minSICN where
+    #: gmsh built the mesh (`QUALITY_MEASURE`), and for a cubed sphere
+    #: the same measure of the straight-sided cell through its corners,
+    #: at its corners, 1 for a cube (`_cubed.cell_shapes`).  The two
+    #: agree in kind and not to the digit.
     min_sicn: float = 0.0
     #: Cells with negative signed volume or area.
     negative_cells: int = 0
@@ -946,6 +1331,13 @@ class ValidationReport:
     #: The largest distance of a tagged interface's mean radius (across a
     #: box, its mean depth) from the one asked for, in the mesh's lengths.
     max_interface_radius_error: float = 0.0
+    #: The largest relative error of a layer's volume (in two dimensions
+    #: its area) against that of the shell it fills; None where the
+    #: builder does not measure it.
+    max_layer_volume_error: float | None = None
+    #: The largest aspect ratio of a cell, its greatest length over its
+    #: least; None where the builder does not measure it.
+    max_aspect_ratio: float | None = None
     #: The number of physical groups found, by "layers" and "interfaces",
     #: and "faces" and "faults" where the mesh has them.
     group_counts: dict[str, int] = field(default_factory=dict)
@@ -996,8 +1388,9 @@ class MeshResult:
     have defaults so a MeshResult written by hand still constructs.
     """
 
-    #: The MSH 2.2 file.
-    msh_path: Path
+    #: The mesh file: MSH 2.2 where gmsh built it, MFEM's own format
+    #: for a cubed sphere.
+    mesh_path: Path
     #: The JSON manifest beside it.
     manifest_path: Path
     #: The geometry the mesh was built from; None for an offset mesh.
@@ -1010,7 +1403,7 @@ class MeshResult:
     timings: dict[str, float]
     _: KW_ONLY
     #: The spec the mesh was built from, if any.
-    spec: MeshSpec | None = None
+    spec: MeshSpec | CubedSphereSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
     #: Each fault's name -> the preimages of the surfaces built in: one a
@@ -1035,5 +1428,5 @@ class MeshResult:
 
     def __repr__(self) -> str:
         n = self.counts.get("elements", "?")
-        return (f"MeshResult({self.msh_path.name}, {n} elements, "
+        return (f"MeshResult({self.mesh_path.name}, {n} elements, "
                 f"{self.counts.get('layers', '?')} layers)")

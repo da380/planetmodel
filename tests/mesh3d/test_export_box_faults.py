@@ -70,7 +70,7 @@ def test_mfem_reads_the_attributes_and_the_sides(delivered, name):
     assert card.mesh["nodes"] == "reference"     # the identity moves nothing
     assert out["referential"][1].faults == card.faults
     mesh = load(export)
-    built = read_mesh(res.msh_path)
+    built = read_mesh(res.mesh_path)
     assert mesh.GetNE() == len(built.cells) and mesh.GetNBE() == len(built.faces)
     attributes = {mesh.GetAttribute(e) for e in range(mesh.GetNE())}
     assert attributes == set(card.element_attributes())
@@ -112,7 +112,7 @@ def test_the_curves_are_recovered_from_mfem_s_boundary_elements(delivered, name)
     recovered = sc.fault_curves(
         [faces[r["attribute"]] for r in card.faults], faces[card.surface_attribute],
         faces=[f for a in card.face_attributes for f in faces[a]])
-    built = read_mesh(res.msh_path)
+    built = read_mesh(res.mesh_path)
     at = np.round(built.points, 10)
     lines = {group: {tuple(sorted((tuple(at[a]), tuple(at[b]))))
                      for a, b in edges[:, :2].tolist()}

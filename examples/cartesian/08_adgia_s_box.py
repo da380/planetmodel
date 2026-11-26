@@ -95,7 +95,7 @@ for label, g in (("flat", flat), ("under the range", under)):
         MeshSpec(g, UniformInterfaces(0.05, 0.1, (0.1 - 0.05) / 0.3), order=2,
                  faults=[EmbeddedFault(fault, name="fault", sizing=0.15 * SCALE)]),
         work / label.replace(" ", "_"))
-    mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+    mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
     built[label] = (mesh, card, result.mapping(mesh.points))
     print(f"{label}: {result.counts['elements']} elements, minSICN "
           f"{result.validation.min_sicn:.2f}")

@@ -89,7 +89,7 @@ result = build_layered_mesh(
              faults=[EmbeddedFault(f, name=n, sizing=0.03) for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 for record in card.faults:
     kinds = ", ".join(f"{key} {record[key]}" for key in manifest.FLAT_FAULT_CURVES)
     print(f"{record['name']}: attribute {record['attribute']}; {kinds}; meets "

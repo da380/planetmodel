@@ -23,7 +23,7 @@ from planetmodel.layerfunction import polynomial_layer
 from planetmodel.mesh3d import (EmbeddedFault, InterfaceSizing, MeshSpec,
                                 UniformInterfaces, build_layered_mesh, export_mfem,
                                 export_mfem_mesh, manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array
+from planetmodel.mesh3d.export import MESH_READ_OPTIONS, node_array
 from planetmodel.vocabulary import FieldSpec
 
 from test_box_topography import (LOCAL, SIZING, ZERO, Plane, adgia, box, ridge, root,
@@ -77,7 +77,7 @@ def lifted(X, card):
 def boundary_nodes(mesh, attribute):
     """The positions of every nodal dof, high-order ones included, of the
     boundary elements of an attribute, in the mesh's coordinates."""
-    nodes = np.asarray(_node_array(mesh.GetNodes()), dtype=float)
+    nodes = np.asarray(node_array(mesh.GetNodes()), dtype=float)
     fes = mesh.GetNodes().FESpace()
     dofs = [np.asarray(fes.GetBdrElementDofs(b), dtype=int)
             for b in range(mesh.GetNBE()) if mesh.GetBdrAttribute(b) == attribute]
@@ -124,9 +124,9 @@ def test_the_referential_delivery_writes_the_stretch_s_displacement(built, kind,
     # every array read is copied while the MFEM object holding it lives
     mesh, moved = load(ref.mesh_path), load(phys.mesh_path)
     gf = mfem.GridFunction(mesh, str(ref.displacement_path))
-    X = np.array(_node_array(mesh.GetNodes()), dtype=float)
-    u = np.array(_node_array(gf), dtype=float)
-    x = np.array(_node_array(moved.GetNodes()), dtype=float)
+    X = np.array(node_array(mesh.GetNodes()), dtype=float)
+    u = np.array(node_array(gf), dtype=float)
+    x = np.array(node_array(moved.GetNodes()), dtype=float)
     P = lifted(X, card)
     want = res.mapping.displacement(P)[:, list(card.mesh_axes(X.shape[1]))]
     assert np.abs(u - want).max() < 1e-15
@@ -172,7 +172,7 @@ def test_fields_at_the_deformed_dofs_are_the_model_s_at_their_reference_points(
     card = sc.read(export.manifest_path)
     moved, still = load(export.mesh_path), load(reference.mesh_path)
     gf = mfem.GridFunction(moved, str(export.field_paths["q"]))
-    q = np.array(_node_array(gf), dtype=float)[:, 0]
+    q = np.array(node_array(gf), dtype=float)[:, 0]
     fes = gf.FESpace()                     # held by gf, which is kept alive
     x = lifted(dof_points(moved, fes), card)
     X = lifted(dof_points(still, fes), card)

@@ -24,7 +24,7 @@ def test_an_offset_ball_builds_and_validates(offset3):
     assert res.validation.ok, res.validation.failures
     assert res.counts["layers"] == 2 and res.counts["interfaces"] == 2
     assert res.geometry is None and res.spec is None and res.mapping is None
-    assert res.msh_path.exists() and res.manifest_path.exists()
+    assert res.mesh_path.exists() and res.manifest_path.exists()
     assert "optimise" in res.timings
 
 
@@ -58,7 +58,7 @@ def test_the_offset_manifest_says_what_it_knows(offset3):
 
 
 def test_the_inclusion_sits_where_it_was_put(offset3):
-    mesh = read_mesh(offset3.msh_path)
+    mesh = read_mesh(offset3.mesh_path)
     xyz = mesh.points[np.unique(mesh.faces_with(1))]
     assert np.allclose(np.linalg.norm(xyz - [0.0, 0.0, 0.3], axis=1), 0.4,
                        atol=2e-3)
@@ -71,7 +71,7 @@ def test_a_disc_builds_in_two_dimensions(offset, tmp_path):
     assert res.validation.ok
     card = sc.read(res.manifest_path)
     assert card.meta["kind"] == "two_disc"
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     xyz = mesh.points[np.unique(mesh.faces_with(1))]
     assert np.allclose(np.linalg.norm(xyz - [offset, 0.0, 0.0], axis=1), 0.4,
                        atol=2e-3)
@@ -86,7 +86,7 @@ def test_the_inclusion_is_meshed_uniformly_at_the_size_asked_for(tmp_path):
                             dimension=2, order=1)
     assert res.validation.ok
     with session(name="edges"):
-        gmsh.merge(str(res.msh_path))
+        gmsh.merge(str(res.mesh_path))
         for group in (1, 2):
             (curve,) = gmsh.model.getEntitiesForPhysicalGroup(1, group)
             lengths = boundary_edge_lengths(curve)
@@ -104,7 +104,7 @@ def test_an_offset_mesh_keeps_the_numbers_it_was_given(tmp_path):
     assert card.meta["offset"] == 1.5
     assert card.outer_radius == 5.0
     assert card.layers[1]["r_outer"] == 5.0
-    r = np.linalg.norm(read_mesh(res.msh_path).points, axis=1)
+    r = np.linalg.norm(read_mesh(res.mesh_path).points, axis=1)
     assert r.max() == pytest.approx(5.0, abs=1e-9)
 
 

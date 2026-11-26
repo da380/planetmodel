@@ -70,9 +70,13 @@ with buffer shells outside it when a far-field condition needs room;
 element sizes are controlled per interface, and refinements
 (`NearPoints`, `near_curve`, or any size function of your own) make the
 mesh finer towards a coastline, a source region or a station network
-without coarsening anything elsewhere. Every mesh comes with a JSON
-manifest saying what each attribute means, and exports to MFEM together
-with the mapping's displacement and the model's fields.
+without coarsening anything elsewhere. A spherical geometry can also be
+meshed with hexahedra and no mesher, as a cubed sphere
+(`CubedSphereSpec`, `build_cubed_sphere`): a central cube and six blocks
+above its faces that conform to every interface, sized by the number of
+cells along an edge and the same sizing rules read radially. Every mesh
+comes with a JSON manifest saying what each attribute means, and exports
+to MFEM together with the mapping's displacement and the model's fields.
 
 **Executable contracts.** `planetmodel.testing` holds one `check_*`
 function per protocol, and the shipped implementations and your own are
@@ -83,7 +87,7 @@ held to the same call.
 ```
 pip install planetmodel                     # numpy, scipy, ducc0 and finufft
 pip install 'planetmodel[meshing]'          # 2D and 3D meshes via gmsh
-pip install 'planetmodel[mfem]'             # export to MFEM (PyMFEM)
+pip install 'planetmodel[mfem]'             # export to MFEM, and cubed spheres (PyMFEM)
 pip install 'planetmodel[netcdf]'           # the model, surface and fault files (netCDF4)
 pip install 'planetmodel[plot]'             # matplotlib, for the figures
 pip install 'planetmodel[notebook]'         # ipykernel, to run tutorials cell by cell

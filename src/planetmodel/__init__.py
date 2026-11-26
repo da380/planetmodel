@@ -40,7 +40,7 @@ Modules reached by name, one level down::
                cartopy, optional), and VTK files for ParaView
   mesh1d       radial spectral-element meshes (GLL), nodal values, gravity,
                hydrostatic pressure and stratification
-  mesh3d       2D and 3D meshes via gmsh, and MFEM export
+  mesh3d       2D and 3D meshes, by gmsh or as a cubed sphere, and MFEM export
   randomfield  Matern random fields on balls, annuli and layers
   datasets     published models: their entries, fetched on demand into a
                cache, read into the library's objects

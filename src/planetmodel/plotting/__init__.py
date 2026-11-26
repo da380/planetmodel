@@ -30,8 +30,9 @@ degree and radius, or a flat model's by horizontal wavenumber and
 depth, the wavelength along the top (`spectra`); `write_vtk` writes a
 model as VTK files for ParaView, and `write_flat_vtk` a flat one (`vtk`,
 no extra needed); `plane_cut` cuts the cells or
-faces of a simplex mesh by a plane, or with `kind="crinkle"` takes the
-cells it passes through whole, seen from one side, the elements' shape
+faces of a mesh by a plane, tetrahedra and triangles or hexahedra and
+quadrilaterals, or with `kind="crinkle"` takes the tetrahedra it
+passes through whole, seen from one side, the elements' shape
 kept where a cut shreds them, `in_plane` takes the elements of a
 mesh lying in a plane whole (a two-dimensional mesh, or a box's top),
 and `mesh_section` draws either, the elements' sections coloured as

@@ -49,7 +49,7 @@ def test_a_mesh_under_a_series_and_a_grid_lies_on_both(tmp_path, domain):
     res = build_layered_mesh(MeshSpec(g, SIZING, order=2), tmp_path / "box")
     assert res.validation.ok and res.mapping is g.mapping
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     # a rectangle's mesh is in (x, z), at y = 0
     axes = card.mesh_axes(len(domain.axes) + 1)
     points = np.zeros((len(mesh.points), 3))

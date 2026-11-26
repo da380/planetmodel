@@ -247,7 +247,7 @@ def test_validation_report_raises_with_every_failure():
 
 
 def test_mesh_result_constructs_by_hand(tmp_path):
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None, counts={"elements": 3, "layers": 1},
                    validation=ValidationReport(dimension=2), timings={})
     assert r.spec is None and r.mapping is None
@@ -255,7 +255,7 @@ def test_mesh_result_constructs_by_hand(tmp_path):
 
 
 def test_mesh_result_summary_is_one_line(tmp_path):
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None,
                    counts={"elements": 3, "nodes": 5, "layers": 1},
                    validation=ValidationReport(dimension=3, min_sicn=0.4),
@@ -282,7 +282,7 @@ def test_the_report_shows_the_fault_checks_and_warnings_where_there_are_faults(
         "ValidationReport(ok, minSICN 0.4, max interface error 0; 2 faults, 1 "
         "misoriented and 0 nonconforming faces; warning: Netgen skipped; warning: "
         "poor elements)")
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None, counts={"elements": 3, "nodes": 5, "layers": 1},
                    validation=faulted, timings={"mesh": 0.5})
     line = r.summary()

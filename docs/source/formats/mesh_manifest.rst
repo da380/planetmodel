@@ -1,8 +1,8 @@
 The mesh manifest
 =================
 
-The JSON that travels beside every mesh the 3D mesher writes, described
-from the consumer's side.  It is written by ``planetmodel.mesh3d``; the
+The JSON that travels beside every mesh ``planetmodel.mesh3d`` writes,
+described from the consumer's side.  It is written by ``planetmodel.mesh3d``; the
 single definition of its shape is ``planetmodel/mesh3d/manifest.py``,
 and ``validate_structure`` there checks a file against it; ``read``
 there reads one, with no gmsh installed.  In C++,
@@ -22,6 +22,12 @@ exception is ``refinements[]``, which records the extra size fields the
 mesh was sized under by identity alone (the sizes, and a point cloud's
 count and digest, never the points), so a consumer can tell whether a
 mesh on disk was built towards the features it now wants.
+
+**Elements.**  A mesh gmsh built is of tetrahedra, in two dimensions
+triangles; a cubed sphere (``build_cubed_sphere``) is of hexahedra, in
+two dimensions quadrilaterals, and lists no ``refinements``.  The
+manifest is the same for both and does not say which: the mesh file
+holds what its elements are, and a consumer asks the mesh.
 
 **Schema string**: ``planetmodel.mesh.manifest/5`` for a mesh of a
 spherical geometry without faults, ``planetmodel.mesh.manifest/6`` for
@@ -98,7 +104,9 @@ The blocks
      - the schema string
    * - ``mesh``
      - ``file`` (beside the manifest), ``format`` (``"msh"`` from the
-       mesher, ``"mfem"`` from the exporter), ``nodes`` (``"reference"``,
+       mesher, ``"mfem"`` from the exporter and from the builder of a
+       cubed sphere, whose reference mesh is itself in MFEM's format),
+       ``nodes`` (``"reference"``,
        or ``"physical"`` for an MFEM mesh whose nodes the mapping has
        moved), ``read_options`` (the ``mfem::Mesh`` constructor arguments
        the field files' dof numbering was written under; empty for a
@@ -609,7 +617,14 @@ unless told not to, which permutes that numbering.  The mesh must
 therefore be constructed with the arguments in ``mesh.read_options``,
 which are ``generate_edges = 1``, ``refine = 0``, ``fix_orientation =
 false``: ``Mesh(path, 1, 0, false)`` in C++, ``mfem.Mesh(path, 1, 0,
-False)`` in PyMFEM.
+False)`` in PyMFEM.  A mesh of hexahedra is opened the same way; MFEM
+does not re-mark it, and the arguments cost nothing.
+
+The mesh carries its curved nodes, of the order it was built with,
+which need not be the order a consumer solves at.  MFEM chooses its
+default quadrature rules from the order of the geometry as well as
+that of the space, so on a geometry of order 4 or more they are very
+large: a consumer of such a mesh sets its own rules.
 
 An example
 ----------

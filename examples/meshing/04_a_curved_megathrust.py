@@ -75,7 +75,7 @@ result = build_layered_mesh(
                                    sizing=InterfaceSizing(0.03, 0.12, 0.15))]),
     work / "megathrust")
 print(result.summary())
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 record = card.fault_record("megathrust")
 faces = mesh.faces_with(record["attribute"])[:, :3]
 surface = mesh.faces_with(card.surface_attribute)[:, :3]

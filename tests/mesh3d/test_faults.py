@@ -95,20 +95,20 @@ def held(res, faults, distance=1e-12):
     """The mesh held to the contract, the fault given by name."""
     plain = {n: getattr(f, "fault", f) for n, f in faults.items()}
     off = max((p.offset for v in res.preimages.values() for p in v), default=0.0)
-    testing.check_fault_mesh(res.msh_path, plain, mapping=res.mapping,
+    testing.check_fault_mesh(res.mesh_path, plain, mapping=res.mapping,
                              distance=max(distance, 2.0 * off))
     return sc.read(res.manifest_path)
 
 
 def faces(res, attribute):
     """(node positions, the fault's elements), read as a consumer reads them."""
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     return mesh.points, mesh.faces_with(attribute)
 
 
 def curve_nodes(res, group):
     """The positions of the nodes of a dimension-1 group."""
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     return mesh.points[np.unique(mesh.curves[group])]
 
 
@@ -187,7 +187,7 @@ def test_a_fault_crossing_a_layer_boundary_is_one_fault_of_several_faces(built):
     card = held(res, faults)
     (record,) = card.faults
     assert record["layers"] == [1, 2] and record["tip"] == 1
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     cells = mesh.face_cells(mesh.faces_with(record["attribute"])[:, :3])
     assert set(mesh.layers(card)[cells].ravel().tolist()) == {1, 2}
     # a collar in each layer it crosses
@@ -219,7 +219,7 @@ def test_two_separate_faults_have_their_own_attributes(built):
     assert (b["name"], b["attribute"], b["tip"]) == ("b", 4, 4)
     assert a["junction"] is None and b["junction"] is None
     assert a["meets"] == b["meets"] == []
-    names = {t: n for (d, t), n in read_mesh(res.msh_path).names.items()
+    names = {t: n for (d, t), n in read_mesh(res.mesh_path).names.items()
              if d in (1, 2)}
     assert names[3] == "a" and names[4] == "b"
 
@@ -440,7 +440,7 @@ def test_a_fault_across_a_knot_of_the_stretch_is_built_in_pieces(tmp_path):
     assert record["layers"] == [1, 2] and record["hanging_wall"] == [3, 4]
     assert [e["attributes"] for e in card.layers] == [[1, 3], [2, 4]]
     assert record["junction"] is None and record["free_edge"] is None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     tri = mesh.faces_with(record["attribute"])
     layer = mesh.layers(card)[mesh.face_cells(tri[:, :3])[:, 0]]
     sides = [np.unique(tri[layer == k]) for k in (1, 2)]
@@ -569,7 +569,7 @@ def test_a_fault_sized_by_a_number_is_graded_and_relocated(tmp_path):
     assert sc.read(res.manifest_path).faults[0]["sizing"] == {
         "size": 0.06, "far_size": 0.3, "decay_width": graded.decay_width}
     spelt = build_layered_mesh(spec(graded, optimise="Relocate3D"), tmp_path / "spelt")
-    a, b = read_mesh(res.msh_path), read_mesh(spelt.msh_path)
+    a, b = read_mesh(res.mesh_path), read_mesh(spelt.mesh_path)
     assert np.array_equal(a.cells, b.cells) and np.array_equal(a.faces, b.faces)
     assert np.allclose(a.points, b.points, rtol=0.0, atol=1e-12)
 
@@ -597,7 +597,7 @@ def test_the_relocation_moves_no_node_of_a_fault_or_an_interface(tmp_path):
         "the Netgen optimisation was skipped: it crashes on a solid with a fault "
         "embedded in it"]
     held(moved, {"f": fault})
-    a, b, c = (read_mesh(r.msh_path) for r in (steep, netgen, moved))
+    a, b, c = (read_mesh(r.mesh_path) for r in (steep, netgen, moved))
     assert np.array_equal(a.points, b.points) and np.array_equal(a.cells, b.cells)
     assert np.array_equal(a.cells, c.cells) and np.array_equal(a.faces, c.faces)
     on_faces = np.unique(a.faces[:, :3])
@@ -617,7 +617,7 @@ def test_a_mesh_without_faults_has_the_manifest_it_always_had(tmp_path):
     assert card.faults == [] and card.element_attributes() == (1, 2)
     assert "faults" not in res.counts and "collars" not in res.counts
     assert res.preimages == {}
-    assert set(read_mesh(res.msh_path).cell_attributes.tolist()) == {1, 2}
+    assert set(read_mesh(res.mesh_path).cell_attributes.tolist()) == {1, 2}
 
 
 def test_the_manifest_describes_the_faults(built):
@@ -928,11 +928,12 @@ def test_the_check_catches_a_fault_other_than_the_one_built(built):
     for length, match in ((0.301, "a node of its tip lies"),
                           (0.299, "no free edge")):
         with pytest.raises(AssertionError, match=match):
-            testing.check_fault_mesh(res.msh_path, {"f": Fault([plane(length=length)])},
+            testing.check_fault_mesh(res.mesh_path,
+                                     {"f": Fault([plane(length=length)])},
                                      distance=1e-9)
     res, _ = built("surface")
     with pytest.raises(AssertionError, match="not its free edge"):
-        testing.check_fault_mesh(res.msh_path, {"f": Fault([reaching(length=0.29)])},
+        testing.check_fault_mesh(res.mesh_path, {"f": Fault([reaching(length=0.29)])},
                                  distance=1e-9)
     # the same plane shorter up dip alone (a bilinear patch through its
     # corners), where the fault was carried across the surface: the nodes
@@ -940,7 +941,7 @@ def test_the_check_catches_a_fault_other_than_the_one_built(built):
     U, V = np.meshgrid([-0.5, 0.5], [-0.5 + 0.02 / 0.3, 0.5], indexing="ij")
     shorter = StructuredPatch(UNIT, UNIT.coordinates(reaching().cartesian(U, V)),
                               slip=ZERO, interpolation="linear")
-    testing.check_fault_mesh(res.msh_path, {"f": Fault([shorter])}, distance=1e-9)
+    testing.check_fault_mesh(res.mesh_path, {"f": Fault([shorter])}, distance=1e-9)
 
 
 def test_a_preimage_near_an_interface_is_refused_saying_so(tmp_path):

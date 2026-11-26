@@ -22,7 +22,7 @@ def test_a_mesh_reads_back_as_arrays(dimension, tmp_path):
     res = build_layered_mesh(MeshSpec(full_geometry(), COARSE, dimension=dimension,
                                       order=2), tmp_path / "ball")
     card = manifest.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     d = dimension
     assert mesh.dimension == d
     assert mesh.points.shape == (res.counts["nodes"], 3)
@@ -57,7 +57,7 @@ def test_a_mesh_reads_back_as_arrays(dimension, tmp_path):
             got = np.sort(mesh.cell_attributes[cells], axis=1)
             assert np.all(got == [below + 1, above + 1])
     # every cell's shape in the same order, by the measure the build checks
-    quality = cell_quality(res.msh_path)
+    quality = cell_quality(res.mesh_path)
     assert quality.shape == (len(mesh.cells),)
     assert quality.min() == pytest.approx(res.validation.min_sicn, rel=1e-12)
     assert 0.0 < quality.min() and quality.max() <= 1.0 + 1e-12

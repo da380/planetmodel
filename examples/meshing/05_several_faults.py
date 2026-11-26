@@ -87,7 +87,7 @@ result = build_layered_mesh(
                      for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 for record in card.faults:
     counts = ", ".join(f"{key} {len(mesh.curves[record[key]])}"
                        for key in CURVES if record[key] is not None)

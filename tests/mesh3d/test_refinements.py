@@ -16,9 +16,9 @@ from planetmodel.mesh3d import (InterfaceSizing, MeshSpec, NearPoints,
 from planetmodel.mesh3d._geometry import build_concentric
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._sizing import (apply_mesh_options, apply_refinements,
-                                        apply_size_fields, check_sizing_scale)
+                                        apply_size_fields)
 from planetmodel.mesh3d._tagging import apply_physical_groups, identify
-from planetmodel.mesh3d.spec import QUALITY_FLOOR
+from planetmodel.mesh3d.spec import QUALITY_FLOOR, check_sizing_scale
 from planetmodel.testing import check_refinement
 
 from conftest import COARSE, full_geometry

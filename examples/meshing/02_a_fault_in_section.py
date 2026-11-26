@@ -66,7 +66,7 @@ for label, sizing in (("without", None), ("with", 0.025)):
         MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1,
                  faults=[EmbeddedFault(fault, name="fault", sizing=sizing)]),
         work / label)
-    mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+    mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
     faces = mesh.faces_with(card.fault_record("fault")["attribute"])
     p = mesh.points[faces]
     edge = np.linalg.norm(p - np.roll(p, 1, axis=1), axis=2).mean()

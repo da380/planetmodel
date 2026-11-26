@@ -11,7 +11,7 @@ pytest.importorskip("gmsh", reason="needs the planetmodel[meshing] extra")
 from planetmodel import Deck, cartesian, write_deck  # noqa: E402
 from planetmodel.mesh3d import (MeshSpec, UniformInterfaces,  # noqa: E402
                                 build_layered_mesh, export_mfem, manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array  # noqa: E402
+from planetmodel.mesh3d.export import MESH_READ_OPTIONS, node_array  # noqa: E402
 
 mfem = pytest.importorskip("mfem.ser", reason="needs the planetmodel[mfem] extra")
 
@@ -59,7 +59,7 @@ def test_a_deck_read_flat_model_is_exported_by_layer(tmp_path):
         X[dofs] = pts.GetDataArray().T
         attribute[dofs] = mesh.GetAttribute(e)
     depth = -X[:, 2]
-    values = {name: np.array(_node_array(g), dtype=float)[:, 0]
+    values = {name: np.array(node_array(g), dtype=float)[:, 0]
               for name, g in gf.items()}
     for k in (1, 2, 3):
         on = attribute == k

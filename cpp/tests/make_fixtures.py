@@ -747,10 +747,10 @@ def fault_meshes(directory: Path) -> list[Path]:
                                     for n, f in faults.items()])
             res = build_layered_mesh(spec, Path(scratch) / label / label)
             offset = max(p.offset for v in res.preimages.values() for p in v)
-            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+            testing.check_fault_mesh(res.mesh_path, faults, mapping=res.mapping,
                                      distance=2.0 * offset + 1e-12)
             card = mf.read(res.manifest_path)
-            mesh = read_mesh(res.msh_path)
+            mesh = read_mesh(res.mesh_path)
             cells, layers = mesh.cells, mesh.cell_attributes
             boundary, attributes = mesh.faces, mesh.face_attributes
             x = np.asarray(res.mapping(mesh.points), dtype=float)
@@ -3294,10 +3294,10 @@ def flat_fault_meshes(directory: Path) -> list[Path]:
                             faults=[EmbeddedFault(f, name=n, sizing=0.08)
                                     for n, f in faults.items()])
             res = build_layered_mesh(spec, Path(scratch) / label / label)
-            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+            testing.check_fault_mesh(res.mesh_path, faults, mapping=res.mapping,
                                      distance=1e-9)
             card = mf.read(res.manifest_path)
-            mesh = read_mesh(res.msh_path)
+            mesh = read_mesh(res.mesh_path)
             cells, layers = mesh.cells, mesh.cell_attributes
             boundary, attributes = mesh.faces, mesh.face_attributes
             x = np.asarray(mesh.points, dtype=float)

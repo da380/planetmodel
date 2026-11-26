@@ -14,8 +14,8 @@ from planetmodel.mesh3d import (CappedInterfaces, InterfaceSizing, MeshSpec,
                                 manifest as sc, read_mesh)
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._writer import read_groups
-from planetmodel.mesh3d.layered import (require_mapping_on_shells,
-                                        require_spherical_outer_boundary)
+from planetmodel.mesh3d.spec import (require_mapping_on_shells,
+                                     require_spherical_outer_boundary)
 
 from conftest import COARSE, confined_flattening, flattening, full_geometry, \
     hollow_geometry
@@ -54,7 +54,7 @@ CASES = [(d, h, s) for d in (2, 3) for h in (False, True) for s in (False, True)
 def test_identity_builds_produce_a_checked_mesh_and_manifest(build, dimension,
                                                              hollow, shells):
     res = build(dimension, hollow, shells)
-    assert res.msh_path.exists() and res.manifest_path.exists()
+    assert res.mesh_path.exists() and res.manifest_path.exists()
     v = res.validation
     assert v.ok, v.failures
     assert v.negative_jacobians == 0 and v.negative_cells == 0
@@ -79,7 +79,7 @@ def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
     assert card.schema == sc.SCHEMA
     sc.validate_against(card, layer_count=res.counts["layers"],
                         interface_count=res.counts["interfaces"])
-    assert card.mesh == {"file": res.msh_path.name, "format": "msh",
+    assert card.mesh == {"file": res.mesh_path.name, "format": "msh",
                          "nodes": "reference", "read_options": {},
                          "displacement": None}
     assert card.outer_radius == pytest.approx(1.25 if shells else 1.0)
@@ -105,18 +105,18 @@ def test_the_manifest_describes_the_domain(build, dimension, hollow, shells):
 
 def test_the_mesh_is_msh_2_2_with_names_intact(build):
     res = build(3, False, True)
-    header = res.msh_path.read_text(errors="ignore").splitlines()[:2]
+    header = res.mesh_path.read_text(errors="ignore").splitlines()[:2]
     assert header[1].split()[0] == "2.2"
     with session(name="reread"):
-        groups = read_groups(res.msh_path)
+        groups = read_groups(res.mesh_path)
     assert groups[3] == {1: "core", 2: "mantle", 3: "crust", 4: "buffer"}
     assert groups[2] == {1: "cmb", 2: "moho", 3: "surface", 4: "interface_4"}
 
 
 def test_a_hollow_mesh_has_no_nodes_inside_the_hole(build):
-    r = node_radii(build(3, True, False).msh_path)
+    r = node_radii(build(3, True, False).mesh_path)
     assert r.min() == pytest.approx(0.5, abs=1e-6)
-    r = node_radii(build(2, True, True).msh_path)
+    r = node_radii(build(2, True, True).mesh_path)
     assert r.min() == pytest.approx(0.5, abs=1e-6)
     assert r.max() == pytest.approx(1.25, abs=1e-6)
 
@@ -125,7 +125,7 @@ def test_unnamed_layers_get_default_names(tmp_path):
     g = Geometry(Skeleton([0.0, 0.6, 1.0]))
     res = build_layered_mesh(MeshSpec(g, COARSE, dimension=2), tmp_path / "plain")
     with session(name="reread"):
-        groups = read_groups(res.msh_path)
+        groups = read_groups(res.mesh_path)
     assert groups[2] == {1: "layer_1", 2: "layer_2"}
     assert groups[1] == {1: "interface_1", 2: "interface_2"}
     card = sc.read(res.manifest_path)
@@ -142,7 +142,7 @@ def test_the_mesher_leaves_the_nodes_on_the_reference_spheres(tmp_path):
     card = sc.read(res.manifest_path)
     assert card.mesh["nodes"] == "reference"
     assert "perturb" not in res.timings
-    assert node_radii(res.msh_path).max() == pytest.approx(1.0, abs=1e-6)
+    assert node_radii(res.mesh_path).max() == pytest.approx(1.0, abs=1e-6)
     assert res.validation.max_interface_radius_error < 1e-3
     assert res.mapping is res.geometry.mapping
 
@@ -152,7 +152,7 @@ def test_two_dimensions_carry_the_same_mapping(tmp_path):
     res = build_layered_mesh(MeshSpec(g, COARSE, dimension=2), tmp_path / "disc")
     assert res.validation.ok
     assert res.mapping is g.mapping
-    assert node_radii(res.msh_path).max() == pytest.approx(1.0, abs=1e-6)
+    assert node_radii(res.mesh_path).max() == pytest.approx(1.0, abs=1e-6)
 
 
 def test_a_mapping_may_move_the_outer_boundary_of_the_shells(tmp_path):
@@ -224,11 +224,11 @@ def test_the_geometry_is_meshed_in_its_own_numbers(tmp_path):
     assert [lay["r_outer"] for lay in card.layers] == [3.48e6, 5.7e6, a]
     assert [f["radius"] for f in card.interfaces] == [3.48e6, 5.7e6, a]
     assert res.validation.max_interface_radius_error < 1e-3 * a
-    r = node_radii(res.msh_path)
+    r = node_radii(res.mesh_path)
     assert r.max() == pytest.approx(a, rel=1e-9)
     assert r.min() < 1.5e6                      # the core is meshed, not a hole
     # the nodes of the Moho sit on a circle of radius 5.7e6, in metres
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     moho = np.linalg.norm(mesh.points[np.unique(mesh.faces_with(2))], axis=1)
     assert np.allclose(moho, 5.7e6, rtol=1e-9)
     # element sizes are in the same numbers: a coarse mesh, a few across

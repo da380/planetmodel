@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from ._faults import CollarTagging
     from ._geometry import ConcentricGeometry
     from ._tagging import Tagging
-    from .spec import MeshSpec
+    from .spec import CubedSphereSpec, MeshSpec
 
 __all__ = ["Layout", "Concentric", "Planar", "layout_of", "PlanarFace", "Exit"]
 
@@ -278,8 +278,8 @@ class Concentric:
                                trim=float(spec.geometry.skeleton.boundaries[-1]))
         return cad, identify(cad, [f.radius for f in domain.interfaces])
 
-    def records(self, spec: MeshSpec, *, collared: CollarTagging | None
-                ) -> dict[str, Any]:
+    def records(self, spec: MeshSpec | CubedSphereSpec, *,
+                collared: CollarTagging | None) -> dict[str, Any]:
         """The layers by radius, shells flagged, with their collars'
         attributes where the mesh has faults, and the interfaces."""
         domain = spec.domain

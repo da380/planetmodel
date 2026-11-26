@@ -51,6 +51,69 @@ again empty.
   unchanged and a reader that does not know the name loses nothing. The
   format page says what the variable means, and the C++ reader is held
   to a fixture that carries it.
+- Cubed-sphere meshes: a spherical geometry meshed with hexahedra and no
+  mesher. `mesh3d.CubedSphereSpec` describes one and
+  `mesh3d.build_cubed_sphere` builds it: a central cube of `edge`^3 cells
+  and six blocks of columns above its faces, conforming to every
+  interface, for a ball, and the six blocks alone for a shell; with
+  `dimension=2`, the disc or annulus of quadrilaterals. `edge`, the
+  number of cells along an edge of the cube, is the lateral resolution.
+  The radial knots follow the sizing rule a `MeshSpec` takes, read as
+  radial sizes (each layer takes the cells the target size asks for, at
+  least one, so a layer of any thinness is kept), or are given outright
+  as `knots`. The innermost layer of a ball is the cube and the blend
+  out to the first sphere, and the blend is divided until none of its
+  cells is more than `aspect` times longer radially than it is wide (4
+  by default). The geometry is of any order from 1; the nodes on an
+  interface lie on its sphere exactly. The mesh is written in MFEM's
+  format through PyMFEM (the `mfem` extra) and needs no gmsh; its
+  manifest is that of any spherical mesh, schema 5 unchanged, and
+  `export_mfem_mesh` and `export_mfem` take it as they take a mesh of
+  tetrahedra. Before it is written a cubed sphere is held to MFEM's
+  orientation of its elements, the sign of its Jacobian, the facing and
+  the radius of every interface, and each layer's volume against that of
+  the shell it fills. `ValidationReport` gains `max_layer_volume_error`
+  and `max_aspect_ratio`, which a builder that does not measure them
+  leaves as None.
+- `InterfaceSizing.at`: the size a sizing gives at a distance from its
+  interface.
+- Sections of hexahedra and quadrilaterals. `plotting.plane_cut` cuts
+  hexahedra (rows of eight corners) into polygons of up to six sides,
+  and with `tensor=True` reads rows of four as quadrilaterals and cuts
+  them into segments; `plotting.in_plane` takes quadrilaterals whole;
+  `mesh_section` draws either.
+- `mesh3d.read_mesh` reads a file in MFEM's format (`.mesh`) through
+  PyMFEM as it reads an MSH file through gmsh, each element by its
+  corners, and `mesh3d.cell_quality` gives the shape of the cells of
+  such a file of hexahedra or quadrilaterals. `MeshArrays.tensor` says
+  whether the cells are hexahedra or quadrilaterals; the rules stated
+  for simplices (`layers_by_position`, `walls`, `face_cells`) refuse
+  them by name.
+- Examples `meshing/07_a_cubed_sphere.py` and
+  `meshing/08_prem_on_a_cubed_sphere.py`, and the Earth-scale script
+  `scripts/cubed_sphere_prem.py`.
+
+### Changed
+
+- `MeshResult.msh_path` is now `MeshResult.mesh_path`: the file is MSH
+  where gmsh built the mesh and MFEM's format for a cubed sphere. Code
+  that reads `result.msh_path`, or builds a `MeshResult` by that
+  keyword, takes the new name.
+- `export_mfem_mesh` and `export_mfem` refuse a delivery whose `.mesh`
+  file would be the reference mesh it is made from, which a cubed
+  sphere's reference mesh, itself a `.mesh` file, makes possible: such a
+  delivery takes another basename.
+- `require_mapping_on_shells` and `require_spherical_outer_boundary`
+  moved from `mesh3d.layered` to `mesh3d.spec`, and `check_sizing_scale`
+  from `mesh3d._sizing` to `mesh3d.spec`, where both kinds of spec share
+  them with `shell_radii`, `shell_names`, `check_shells` and
+  `computational_domain`. In `mesh3d.export`, `load_mesh`, `mesh_order`,
+  `node_array` and `write_vector` are public names (they had a leading
+  underscore), and `PRECISION` is the number of digits a mesh and a
+  field are written with.
+- The mesh manifest's format page says what a mesh's elements may be and
+  that the manifest does not record it, and notes MFEM's default
+  quadrature on a geometry of high order.
 
 ### Fixed
 

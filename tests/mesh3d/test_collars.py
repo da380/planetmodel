@@ -269,10 +269,10 @@ def test_every_configuration_is_classified_and_its_collars_written(built, name):
     and a face turned against the others refused, naming the fault."""
     res = built(name)
     faults = CASES[name][0]
-    testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+    testing.check_fault_mesh(res.mesh_path, faults, mapping=res.mapping,
                              distance=1e-9)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     walls = mesh.walls(card)
     cells = mesh.cells[:, :4]
     surface = mesh.faces_with(card.surface_attribute)[:, :3]
@@ -312,7 +312,7 @@ def test_a_splay_ends_on_its_main_fault_and_crossing_faults_share_a_collar(built
     assert a["meets"] == ["b"]
     assert [e["attributes"] for e in card.layers] == [[1], [2, 3, 4, 5]]
     assert (a["hanging_wall"], b["hanging_wall"]) == ([3, 4], [4, 5])
-    names = read_mesh(built("crossing").msh_path).names
+    names = read_mesh(built("crossing").mesh_path).names
     assert names[(3, 4)] == "mantle:a+b"
 
 
@@ -336,7 +336,7 @@ def test_the_builder_s_check_refuses_cells_that_disagree(built, tmp_path):
     res = built("inside")
     msh = tmp_path / "copy.msh"
     js = tmp_path / "copy.json"
-    shutil.copyfile(res.msh_path, msh)
+    shutil.copyfile(res.mesh_path, msh)
     shutil.copyfile(res.manifest_path, js)
     confirm_collars(msh, js)
     text = msh.read_text().splitlines()
@@ -400,7 +400,7 @@ def test_the_collar_attributes_survive_refinement(built, name):
     diagonal matter here: its midpoint carries slip once refined."""
     res = built(name)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     faces = [mesh.faces_with(e["attribute"])[:, :3] for e in card.faults]
     surface = mesh.faces_with(card.surface_attribute)[:, :3]
     points, cells, parents, refined = refine(mesh.points, mesh.cells[:, :4],
