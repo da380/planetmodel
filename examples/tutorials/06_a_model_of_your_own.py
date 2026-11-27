@@ -149,7 +149,7 @@ print(
 # only the fields they are given, none here.
 
 # %%
-split = model.refined([5701e3], names=["d670"])
+split = model.refined([5701e3], interface_names=["d670"])
 print(split.nlayers, "layers;", [lay.name for lay in split.layers])
 print(
     "rho continuous across the new boundary:",
@@ -158,7 +158,7 @@ print(
 )
 cut = model.truncated(6000e3, name="top")
 print("cut at 6000 km:", cut.skeleton.boundaries[-1], cut.geometry.interfaces[-1].name)
-with_air = model.extended([6500e3], names=["atmosphere"])
+with_air = model.extended([6500e3], layer_names=["atmosphere"])
 print("an empty shell holds:", with_air.layer("atmosphere").names)
 
 # %% [markdown]
@@ -183,12 +183,13 @@ print("surface gravity:", gravity(model, 6371e3), "m/s^2")
 # `layer_method`, which turns `fn(layer)` into `model.fn(which)` and
 # accepts a layer index or a layer name. The library's *mixins*,
 # `Elastic`, `SelfGravitating` and `Viscoelastic`, are classes that hold
-# nothing but such assignments, one bundle per kind of behaviour, so a
-# model type lists them in its bases instead of repeating the
-# assignments. Every copy of a model, whether from a unit conversion or
-# a change of layering, is a shallow copy made by `Model.replaced`, so
-# the constructor is entirely yours to design and a copy keeps your
-# class.
+# such assignments and a few methods of their own, such as
+# `Elastic.with_field` and `SelfGravitating.with_gravity`, one bundle
+# per kind of behaviour, so a model type lists them in its bases instead
+# of repeating them. Every copy of a model, whether from a unit
+# conversion or a change of layering, is a shallow copy made by
+# `Model.replaced`, so the constructor is entirely yours to design and a
+# copy keeps your class.
 #
 # The example is a function of a layer that a convection code might
 # want: the strain rate at which the viscous stress reaches the yield

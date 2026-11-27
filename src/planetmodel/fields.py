@@ -29,7 +29,7 @@ operands, a number standing for a constant in that system, and refuses
 to combine fields of two systems; it keeps their class too, the more
 derived of two (a flat `cartesian.DepthField` stays one).
 
-`held(field, at, interval)` is a field held constant along the layered
+`held(interval, field, at)` is a field held constant along the layered
 coordinate at its value at `at`, restated on `interval`: what a model
 appended beyond its last boundary holds when padded (`Model.extended`
 with `fields="hold"`).  A radial field holds itself exactly; any other
@@ -541,10 +541,10 @@ class RadialField(FieldBase):
                  for idx in np.ndindex(self._fs.shape)]
         return np.stack(parts, axis=-1).reshape(r.shape + self._fs.shape)
 
-    def held(self, at: float, interval: tuple[float, float]) -> "RadialField":
-        """Every component's value at `at` (within the interval), held
-        constant on `interval`: an exact constant field of the same class
-        and system."""
+    def held(self, interval: tuple[float, float], at: float) -> "RadialField":
+        """Every component's value at `at` (within the field's interval),
+        held constant on `interval`: an exact constant field of the same
+        class and system."""
         self._inside(np.asarray(at, dtype=float))
         at = float(at)
         lo, hi = as_interval(interval)
@@ -714,7 +714,9 @@ class ComposedField(FieldBase):
 
     The sources' stored components in the local frame are passed to
     `fn`, which returns the stored components of `character`; it is
-    never sampled or refitted.  Radial when every source is.  The
+    never sampled or refitted.  Radial when every source is, and then,
+    where its own rank is 0, called with the radius alone whatever the
+    rank of its sources, each of which is read in one direction.  The
     sources share one coordinate system, which is the field's; a mix is
     refused.
     """
@@ -757,6 +759,10 @@ class ComposedField(FieldBase):
 
     def _values(self, r: np.ndarray, theta: np.ndarray | None,
                 phi: np.ndarray | None) -> np.ndarray:
+        if theta is None:
+            # called with the layered coordinate alone, so every source is
+            # radial: its local components are those of any one direction
+            theta = phi = np.zeros(r.shape)
         args = [s.evaluate(r, theta, phi) for s in self._sources]
         raw = np.asarray(self._fn(*args))
         return to_stored(raw, r.shape, self._character, self)
@@ -819,7 +825,7 @@ class HeldField(FieldBase):
     is exact and keeps its class: `held` asks for it.
     """
 
-    def __init__(self, source: Field, at: float, interval: tuple[float, float]) -> None:
+    def __init__(self, interval: tuple[float, float], source: Field, at: float) -> None:
         if not isinstance(source, Field):
             raise TypeError(f"{source!r} is not a Field")
         self._coordinates = coordinates_of(source)
@@ -854,9 +860,9 @@ class HeldField(FieldBase):
 
     def _copy(self, *, source: Field | None = None, at: float | None = None,
               interval: tuple[float, float] | None = None) -> "HeldField":
-        out = HeldField(self._source if source is None else source,
-                        self._at if at is None else at,
-                        self._interval if interval is None else interval)
+        out = HeldField(self._interval if interval is None else interval,
+                        self._source if source is None else source,
+                        self._at if at is None else at)
         out._name = self._name
         return out
 
@@ -884,12 +890,12 @@ class HeldField(FieldBase):
                 f"on [{lo:g}, {hi:g}])")
 
 
-def held(field: Field, at: float, interval: tuple[float, float]) -> Field:
+def held(interval: tuple[float, float], field: Field, at: float) -> Field:
     """`field` held constant along the layered coordinate at its value at
-    `at`, on `interval`: the field's own `held(at, interval)` where it has
+    `at`, on `interval`: the field's own `held(interval, at)` where it has
     one (a radial field's, exact and of its class), else a `HeldField`."""
     own = getattr(field, "held", None)
-    return own(at, interval) if callable(own) else HeldField(field, at, interval)
+    return own(interval, at) if callable(own) else HeldField(interval, field, at)
 
 
 def from_inside(field: Field, r: ArrayLike, values: ArrayLike,

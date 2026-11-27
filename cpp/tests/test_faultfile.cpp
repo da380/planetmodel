@@ -23,6 +23,7 @@
 #include "fixtures.hpp"
 #include "planetmodel/fault.hpp"
 #include "planetmodel/faultfile.hpp"
+#include "planetmodel/version.hpp"
 
 #if !defined(PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE) || !defined(PLANETMODEL_HAS_FAULT_FILE_WRITER)
 #error "fault.hpp and faultfile.hpp define the macros of their features"
@@ -856,6 +857,32 @@ TEST(FaultFile, WritesAFaultBuiltInCodeThatReadsBackToItself) {
   }
 }
 
+TEST(FaultFile, WritesACitationByTheRuleOfAModels) {
+  // each work trimmed of white space at its ends, an empty one or a repeat
+  // dropped
+  auto file = BuiltStaticFault();
+  file.citation = {" A. ", "", "B.", "A.", "\tC.\n"};
+  const auto dir = pm::testing::WrittenDir() / "fault_cited";
+  std::filesystem::create_directories(dir);
+  pm::WriteFaultFile(dir / "fault.nc", file);
+  EXPECT_EQ(pm::ReadFaultFile(dir / "fault.nc").citation,
+            (std::vector<std::string>{"A.", "B.", "C."}));
+  file.citation = {"  ", ""};
+  pm::WriteFaultFile(dir / "fault.nc", file);
+  EXPECT_TRUE(pm::ReadFaultFile(dir / "fault.nc").citation.empty());
+}
+
+TEST(FaultFile, StampsThisLibraryAsItsSourceUnlessGivenOne) {
+  // as the model file's writer does
+  const auto dir = pm::testing::WrittenDir() / "fault_stamped";
+  std::filesystem::create_directories(dir);
+  auto file = BuiltStaticFault();
+  file.source = "";
+  pm::WriteFaultFile(dir / "fault.nc", file);
+  EXPECT_EQ(pm::ReadFaultFile(dir / "fault.nc").source,
+            "planetmodel C++ " + std::string{pm::Version()});
+}
+
 TEST(FaultFile, RefusesWhatTheFormatCannotHoldBeforeWritingAnything) {
   const auto dir = pm::testing::WrittenDir() / "fault_refused";
   std::filesystem::remove_all(dir);
@@ -880,13 +907,16 @@ TEST(FaultFile, RefusesWhatTheFormatCannotHoldBeforeWritingAnything) {
   file = BuiltStaticFault();
   file.meta = {{"pair", std::vector<double>{1.0, 2.0}}};
   refused(file, "meta_pair");
+  file = BuiltStaticFault();
+  file.citation = {"A. Author (2026).\nA fault."};
+  refused(file, "citation");
   EXPECT_TRUE(std::filesystem::is_empty(dir));
   // a directory that is not there; a file that stands until replaced
   EXPECT_THROW(pm::WriteFaultFile(dir / "missing" / "fault.nc", BuiltStaticFault()), pm::Error);
   const auto path = dir / "fault.nc";
   pm::WriteFaultFile(path, BuiltStaticFault());
   file = BuiltStaticFault();
-  file.source = "";
+  file.source = "\t ";
   EXPECT_THROW(pm::WriteFaultFile(path, file), pm::Error);
   EXPECT_EQ(pm::ReadFaultFile(path).source, "planetmodel C++ tests");
   auto left = 0;

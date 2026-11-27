@@ -27,8 +27,8 @@ def test_a_mesh_reads_back_as_arrays(dimension, tmp_path):
     assert mesh.dimension == d
     assert mesh.points.shape == (res.counts["nodes"], 3)
     assert np.all(np.diff(mesh.tags) > 0)
-    assert len(mesh.cells) == res.counts[f"dim{d}"]
-    assert len(mesh.faces) == res.counts[f"dim{d - 1}"]
+    assert len(mesh.cells) == res.counts["elements"]
+    assert len(mesh.faces) == res.counts["boundary_elements"]
     # quadratic simplices, corners first
     assert mesh.cells.shape[1] == {2: 6, 3: 10}[d]
     assert mesh.faces.shape[1] == {2: 3, 3: 6}[d]

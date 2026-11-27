@@ -7,7 +7,7 @@ properties on each — and the meshes that hand such a model to a
 numerical solver.
 
 With this library you can build a model (PREM out of the box, simple
-layered models, any mineos deck file, or a model type of your own), ask
+layered models, a published table of one, or a model type of your own), ask
 it for its properties with the discontinuities treated honestly, deform
 it with ellipticity or surface topography, and mesh it: a
 spectral-element mesh along the radius, or a 2D or 3D finite-element
@@ -25,6 +25,15 @@ A model is three things:
   physical one, plus names for the layers and interfaces.
 * **Fields**: data on each layer, named by a vocabulary that says what
   each name means and what dimensions it carries.
+
+The form of every model on disk is the :doc:`model file
+<formats/model_file>`, one netCDF file that holds a model, radial or
+laterally varying, with what its numbers mean, and which
+``planetmodel.modelfile.read_model`` gives back with its behaviours.  A
+text deck is an import and an export beside it (``planetmodel.deck``):
+a mineos or TauP table, or any table of named columns, is brought in as
+an ordinary model, and a model is written as one for a code that reads
+one.
 
 Installation
 ============
@@ -69,12 +78,6 @@ for their readers:
   on them, static or in time, in one netCDF file.
 * :doc:`formats/mesh_manifest`: the JSON beside every mesh, saying what
   the mesh's numbered attributes and the field files beside it are.
-* :doc:`formats/maxwell_deck`: a radial viscoelastic body as a plain-text
-  table, density and elastic velocities beside a viscosity.
-* :doc:`formats/prony_deck`: the same with one pair of columns per Prony
-  branch, a generalised Maxwell body.
-* :doc:`formats/burgers_deck`: the same with a Kelvin element beside the
-  viscosity, each layer a Maxwell or a Burgers body.
 
 .. toctree::
    :maxdepth: 2
@@ -85,17 +88,14 @@ for their readers:
    formats/surface_file
    formats/fault_file
    formats/mesh_manifest
-   formats/maxwell_deck
-   formats/prony_deck
-   formats/burgers_deck
 
 The C++ library
 ===============
 
-:doc:`cpp` reads the model file, the mesh manifest and decks in C++, and
-writes model files and decks, so that a solver in C++ can take a model from the
-Python and hand its own fields back; its reference is built beside these
-pages.
+:doc:`cpp` reads the model file, the surface file, the fault file and
+the mesh manifest in C++, and writes model files, surface files and
+fault files, so that a solver in C++ can take a model from the Python
+and hand its own fields back; its reference is built beside these pages.
 
 .. toctree::
    :maxdepth: 2

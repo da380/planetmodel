@@ -34,8 +34,9 @@
  * order of `FAULT_CURVES`.  A flat mesh without faults has neither the
  * faults' records nor its layers' `attributes`.
  *
- * `cartesian::MeshManifest(path)` reads a manifest and holds it to the
- * structure the Python's `validate_structure` checks; a spherical manifest
+ * `cartesian::ReadMeshManifest(path)`, or the constructor
+ * `cartesian::MeshManifest(path)` it calls, reads a manifest and holds it
+ * to the structure the Python's `validate_structure` checks; a spherical manifest
  * (schemas 5 and 6) is refused by its schema, naming its reader.  The
  * rules that turn a fault's faces into what a split-node code needs are
  * the spherical ones over plain arrays (`FaultSide`, `PlusCell`,
@@ -819,6 +820,19 @@ class MeshManifest {
   std::map<std::string, double> constants_;
   std::optional<ModelRecord> model_;
 };
+
+/**
+ * @brief Read a flat mesh manifest and hold it to the structure, as
+ * `cartesian::MeshManifest(path)` does: the function beside
+ * `cartesian::ReadModelFile` and `cartesian::ReadSurfaceFile`.
+ * @param path The manifest.
+ * @return The manifest, read and checked.
+ * @throws planetmodel::Error naming the file and the JSON path of the
+ *         first fault.
+ */
+[[nodiscard]] inline MeshManifest ReadMeshManifest(const std::filesystem::path& path) {
+  return MeshManifest(path);
+}
 
 /**
  * @brief The edges of one fault's faces that lie on its curves in a flat

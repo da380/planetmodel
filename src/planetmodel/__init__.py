@@ -21,8 +21,8 @@ Modules reached by name, one level down::
   units        Dimensions, Scales and the dimension constants
   vocabulary   the shipped field names, their characters and dimensions
   behaviours   the free functions as methods: `layer_method` and the mixins
-  catalogue    PREM, LayeredIsotropicElastic, and the model types of the decks
-  deck         tabulated models: decks, their formats, fields by interpolation
+  catalogue    PREM and LayeredIsotropicElastic
+  deck         a table of knots brought in as a model, and a model written as one
   sampling     a model on a radial mesh times an angular grid
   lateral      values between the nodes of an angular grid: the lateral rules
   modelfile    the model file: a model in one netCDF file (netCDF4, optional)
@@ -56,26 +56,16 @@ from .behaviours import (
     with_moduli,
     with_velocities,
 )
-from .catalogue import (
-    PREM,
-    BurgersDeckModel,
-    LayeredIsotropicElastic,
-    MaxwellDeckModel,
-    MineosModel,
-    PronyDeckModel,
-)
+from .catalogue import PREM, LayeredIsotropicElastic
 from .character import DENSITY, ELASTIC, SCALAR, STRESS, VECTOR, Character, Symmetry
 from .deck import (
-    BURGERS,
-    MAXWELL,
     MINEOS,
     ND,
-    PRONY,
     TVEL,
     Deck,
     DeckFormat,
-    Tabulated,
     deck_layers,
+    model_from_deck,
     read_deck,
     sample_deck,
     write_deck,
@@ -158,7 +148,7 @@ from .units import EARTH_MEAN_DENSITY, G_SI, Dimensions, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec
 from . import testing  # noqa: F401
 
-__version__ = "2.2.0"
+__version__ = "3.0.0"
 
 __all__ = [
     "Skeleton",
@@ -245,23 +235,16 @@ __all__ = [
     "Viscoelastic",
     "PREM",
     "LayeredIsotropicElastic",
-    "MineosModel",
-    "MaxwellDeckModel",
-    "PronyDeckModel",
-    "BurgersDeckModel",
     "Deck",
     "DeckFormat",
     "MINEOS",
-    "MAXWELL",
-    "PRONY",
-    "BURGERS",
     "ND",
     "TVEL",
     "read_deck",
+    "model_from_deck",
     "write_deck",
     "sample_deck",
     "deck_layers",
-    "Tabulated",
     "flattening",
     "layer_linear",
     "AngularGrid",

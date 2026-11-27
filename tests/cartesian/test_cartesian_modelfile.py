@@ -8,29 +8,33 @@ displacement, a prescribed gravity, fields on interfaces, a rule in the
 logarithm and other scales: each comes back at the file's nodes, and
 between them by the stated rules, the domain's bounds and padding to the
 bit and the mapped points of the body, held to the file by
-`check_model_file`.  What the flat file cannot hold is refused on
+`check_model_file`.  A model of depth alone is written with no grid
+given, and a model read back has the behaviours its file names.  What
+the flat file cannot hold is refused on
 writing; a damaged flat file is refused by name; xarray opens it as CF
 tools do.
 """
 import dataclasses
+import warnings
 
 import numpy as np
 import pytest
 from scipy.interpolate import PPoly
 
-from planetmodel import SCALAR, STRESS, VECTOR, Scales, gauss_legendre, perturbed
+from planetmodel import (SCALAR, STRESS, VECTOR, ConstantQ, Elastic, Scales,
+                         SelfGravitating, Viscoelastic, gauss_legendre, perturbed)
 from planetmodel import cartesian as flat
+from planetmodel.behaviours import model_type
 from planetmodel.cartesian import FLAT
 from planetmodel.character import Character
-from planetmodel.deck import MAXWELL_COLUMNS
 from planetmodel.testing import check_geometry, check_model, check_model_file
 
 pytestmark = pytest.mark.netcdf
 netCDF4 = pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
 
 from planetmodel.cartesian.modelfile import read_model_file  # noqa: E402
-from planetmodel.modelfile import (SCHEMA_FLAT, read_model, read_surfaces,  # noqa: E402
-                                   schema_of, write_model)
+from planetmodel.modelfile import (SCHEMA_FLAT, radial_grid, read_model,  # noqa: E402
+                                   read_surfaces, schema_of, write_model)
 
 BOX = flat.Box([(0.0, 2.0), (-1.0, 1.0)], padding=(0.25, 0.5))
 RECT = flat.Rectangle((0.0, 2.0), padding=0.3)
@@ -97,7 +101,7 @@ def random_points(domain, interval, n=300, seed=0):
     rng = np.random.default_rng(seed)
     lo, hi = interval
     d = lo + (hi - lo) * rng.uniform(0.001, 0.999, n)
-    (x0, x1) = domain.extent[0] if domain.axes == ("x", "y") else domain.extent
+    (x0, x1) = domain.extent[0]
     x = rng.uniform(x0 - 1.0, x1 + 1.0, n)         # beyond the period: periodic
     y = rng.uniform(-3.0, 3.0, n)
     return d, x, y
@@ -149,6 +153,16 @@ def test_a_flat_model_comes_back_from_its_file(tmp_path, domain):
     assert errors[(1, "t_fourier")] < 1e-10 and errors[(1, "f_series")] < 1e-10
     assert errors[(0, "vs")] < 1e-12
     with netCDF4.Dataset(path) as ds:
+        # the domain as the file states it: its kind, then bounds and padding
+        # axis after axis
+        kind, bounds, padding = (("box", [0.0, 2.0, -1.0, 1.0], [0.25, 0.5])
+                                 if not rectangle else ("rectangle", [0.0, 2.0], [0.3]))
+        assert ds.getncattr("domain") == kind
+        for key, want in (("domain_bounds", bounds), ("domain_padding", padding)):
+            stored = np.atleast_1d(ds.getncattr(key))
+            assert stored.dtype == np.float64 and stored.tolist() == want
+        assert np.ravel(domain.bounds).tolist() == bounds
+        assert list(domain.padding) == padding
         part = ds["part_0"]
         assert part["t_fourier"].lateral_interpolation == "fourier"
         assert part["f_series"].lateral_interpolation == "fourier"
@@ -287,28 +301,135 @@ def test_a_prescribed_gravity_and_other_scales_come_back(tmp_path):
 
 
 def test_a_rule_in_the_logarithm_keeps_the_flat_schema(tmp_path):
-    """A flat Maxwell deck's viscosity, joined in its logarithm, states
-    log-polynomial under the one flat schema and comes back the same
-    function."""
-    from planetmodel import sample_deck
+    """The viscosity of a flat model built from a table of depths, joined
+    in its logarithm, states log-polynomial under the one flat schema and
+    comes back the same function, the model with its behaviours."""
+    from planetmodel import Elastic, Viscoelastic, model_from_deck, sample_deck
     box = flat.Box([(0.0, 400e3), (0.0, 300e3)])
-    deck = sample_deck(flat.CrustOverMantle(box, viscosity=1e20), MAXWELL_COLUMNS)
+    deck = sample_deck(flat.CrustOverMantle(box, viscosity=1e20),
+                       ("rho", "vp", "vs", "viscosity"))
     eta = np.array(deck.columns["viscosity"], dtype=float)
     held = np.isfinite(eta) & (eta > 0)
     eta[held] = 1e20 * 10.0 ** np.linspace(0.0, 2.0, int(held.sum()))
     deck = dataclasses.replace(deck, columns={**deck.columns, "viscosity": eta})
-    model = flat.MaxwellDeckModel(deck, box)
+    model = model_from_deck(deck, behaviours=[Elastic, Viscoelastic],
+                            kinds={"viscosity": "log-linear"}, coordinate=flat.DEPTH,
+                            domain=box)
     path = written(tmp_path, model, grid=flat.Grid(box, 1), fields=["viscosity", "rho"])
     check_model_file(path, model)
     with netCDF4.Dataset(path) as ds:
         assert ds["part_0"]["viscosity"].radial_interpolation == "log-polynomial"
     back = read_model(path)
+    assert type(back) is type(model)
+    assert back.behaviours == ("Elastic", "Viscoelastic")
     for layer in model.layers:
         if "viscosity" not in layer:
             continue
         d = np.linspace(*layer.interval, 17)
         assert np.allclose(back.layer(layer.index)["viscosity"](d),
                            layer["viscosity"](d), rtol=1e-12, atol=0)
+
+
+@pytest.mark.parametrize("domain", [BOX, RECT], ids=repr)
+def test_a_model_of_depth_alone_is_written_with_no_grid(tmp_path, same_netcdf,
+                                                        domain):
+    """A flat model whose fields are all of depth alone, under the
+    identity, needs no grid: the file is the one the grid of one node over
+    its domain writes, to the bit, and reads back to rounding; a field
+    that varies laterally, and a relief, are refused by name."""
+    model = layered(domain).with_uniform_gravity(9.8)
+    path = written(tmp_path, model)
+    check_model_file(path, model)
+    one = flat.Grid(domain, 1)
+    assert radial_grid(model) == one
+    same_netcdf(path, written(tmp_path, model, "given.nc", grid=one))
+    data = read_model_file(path)
+    assert len(data.parts) == 1 and data.parts[0].grid == one
+    assert all(var.values.ndim == 1 for var in data.parts[0].variables.values())
+    back = read_model(path)
+    assert back.geometry.domain == domain
+    assert max(worst(model, back).values()) < 1e-13
+    assert [lay.name for lay in back.layers] == ["crust", "mantle"]
+    grid = flat.Grid(domain, 8)
+    lateral = three_d(domain, grid, rectangle=domain is RECT)
+    with pytest.raises(ValueError, match=r"'vs' on layer 0 \('crust'\) depends on "
+                                         r"\(x, y\).*of the depth alone"):
+        written(tmp_path, lateral, "x.nc")
+    alone = written(tmp_path, lateral, "names.nc", fields=["rho", "vp"])
+    assert read_model(alone).field_names() == ("rho", "vp")
+    assert read_model_file(alone).parts[0].grid == one
+    relief = flat.GriddedFunction.sampled(dem, grid)
+    with pytest.raises(ValueError, match="the model is placed by"):
+        written(tmp_path, model.stretched(
+            flat.layer_linear(model.skeleton, [relief, None, None])), "x.nc")
+    assert not (tmp_path / "x.nc").exists()
+
+
+class Creeping:
+    """A behaviour of a program's own over a flat model."""
+
+    def viscous_layers(self):
+        return self.layers_with("viscosity")
+
+
+class Lithosphere(Elastic, Creeping, Viscoelastic, flat.Model):
+    """A flat model type of a program's own."""
+
+
+def test_a_flat_model_read_back_has_its_behaviours(tmp_path):
+    """A flat file names the behaviours of the model written and the model
+    read back has them over `cartesian.Model`; a name the program lacks is
+    kept with a warning, and `model_type` gives the caller's own type."""
+    box = flat.Box([(0.0, 400e3), (0.0, 300e3)])
+    model = flat.CrustOverMantle(box, viscosity=1e20)
+    names = ("Elastic", "ConstantQ", "Viscoelastic")
+    assert model.behaviours == names
+    path = written(tmp_path, model)
+    check_model_file(path, model)
+    with netCDF4.Dataset(path) as ds:
+        assert ds.getncattr("behaviours") == " ".join(names)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        back = read_model(path)
+    assert type(back) is model_type(flat.Model, (Elastic, ConstantQ, Viscoelastic))
+    assert isinstance(back, flat.Model) and not isinstance(back, SelfGravitating)
+    assert back.behaviours == names
+    check_model(back)
+    assert max(worst(model, back).values()) < 1e-13
+    omega = 2.0 * np.pi / 3.0e10
+    frozen, want = back.frozen(omega), model.frozen(omega)
+    d = np.linspace(*model.layer(-1).interval, 9)
+    for i in range(model.nlayers):
+        assert back.is_viscoelastic(i) == model.is_viscoelastic(i)
+        assert back.is_fluid(i) == model.is_fluid(i)
+    for name, field in want.layer(-1).fields.items():
+        assert np.allclose(frozen.layer(-1)[name](d), field(d), rtol=1e-12), name
+    for name, field in model.moduli(-1).items():
+        assert np.allclose(back.moduli(-1)[name](d), field(d), rtol=1e-12), name
+    assert back.elastic().field_names() == model.elastic().field_names()
+
+    own = Lithosphere(model.geometry, [layer.fields for layer in model.layers])
+    path = written(tmp_path, own, "own.nc")
+    check_model_file(path, own)
+    with pytest.warns(UserWarning, match="names the behaviour 'Creeping'"):
+        back = read_model(path)
+    assert type(back) is model_type(flat.Model, (Elastic, Viscoelastic))
+    assert back.behaviours == ("Elastic", "Creeping", "Viscoelastic")
+    with netCDF4.Dataset(written(tmp_path, back, "again.nc")) as ds:
+        assert ds.getncattr("behaviours") == "Elastic Creeping Viscoelastic"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        mine = read_model(path, model_type=Lithosphere)
+        plain = read_model(path, model_type=())
+    assert type(mine) is Lithosphere and mine.viscous_layers() == (2,)
+    assert type(plain) is flat.Model and plain.behaviours == ()
+    from planetmodel import Model
+    with pytest.raises(TypeError, match=r"holds a planetmodel\.cartesian\.model\.Model"
+                                        ".*is not a model type over it"):
+        read_model(path, model_type=Model)
+    with netCDF4.Dataset(path, "a") as ds:
+        ds.delncattr("behaviours")
+    assert type(read_model(path)) is flat.Model
 
 
 def test_fields_on_interfaces_come_back_as_flat_gridded_functions(tmp_path):
@@ -342,6 +463,17 @@ def test_what_the_flat_file_cannot_hold_is_refused(tmp_path):
         write_model(tmp_path / "x.nc",
                     model.with_field(0, "depth", model.layer(0)["rho"]),
                     grid=flat.Grid(BOX, 2))
+    # a spherical file's variable, which a reader refuses in a flat file
+    for name in ("radius", "latitude", "colatitude_weights"):
+        with pytest.raises(ValueError, match=f"'{name}' is a name the model file "
+                                             "keeps for itself"):
+            write_model(tmp_path / "x.nc",
+                        model.with_field(0, name, model.layer(0)["rho"]),
+                        grid=flat.Grid(BOX, 2), fields=[name])
+        with pytest.raises(ValueError, match=f"'{name}' is a name the model file "
+                                             "keeps for itself"):
+            write_model(tmp_path / "x.nc", model, grid=flat.Grid(BOX, 2),
+                        surfaces={name: {0: lambda x, y: 1.0 + 0.0 * x + 0.0 * y}})
     from planetmodel.mapping import IdentityMapping
 
     class Shear(IdentityMapping):
@@ -391,6 +523,17 @@ def add_variable(group, name, dims, *, sizes=None):
     group.createVariable(name, "f8", dims)
 
 
+def relabel_an_element(ds):
+    """The first element of a layer of several given to the layer above it:
+    `element_layer` holds the part's layers still, and gives that element a
+    layer its bounds lie outside."""
+    el = ds["part_0"]["element_layer"]
+    layers = np.asarray(el[:], dtype=int)
+    e = next(e for e in range(1, layers.size) if layers[e] != layers[e - 1]
+             and np.sum(layers == layers[e]) > 1)
+    el[e] = layers[e - 1]
+
+
 @pytest.mark.parametrize("edit, message", [
     (lambda ds: ds.delncattr("coordinate_system"), "coordinate_system is None"),
     (lambda ds: ds.setncattr("local_frame", "down x y"), "local_frame is 'down x y'"),
@@ -418,10 +561,32 @@ def add_variable(group, name, dims, *, sizes=None):
     (lambda ds: ds.setncattr("schema", "planetmodel.model/9"), "schema is"),
     (lambda ds: ds.setncattr("schema", "planetmodel.model/1"),
      "no variable 'interface_radius'"),
+    (lambda ds: ds["interface_depth"].__setitem__(1, 0.5),
+     "interface_depth does not hold the 2 interfaces"),
+    (lambda ds: ds.setncattr("scale_mass", np.inf), "scale_mass is missing or"),
+    (lambda ds: ds["part_0"].setncattr("ngll", "four"), "ngll is 'four'"),
+    (relabel_an_element, "part_0/element_layer gives element . to layer 0, which "
+                         "its bounds do not lie in"),
+    (lambda ds: ds["geometry"]["boundary_depth"].__setitem__(0, -0.5),
+     "geometry: boundary_depth starts above the free surface"),
+    (lambda ds: ds["geometry"]["boundary_depth"].__setitem__(1, 2.0),
+     "geometry: boundary_depth does not increase strictly"),
+    (lambda ds: ds["geometry"]["boundary_depth"].__setitem__(2, 0.4),
+     "geometry: boundary_depth does not increase strictly"),
 ])
 def test_a_damaged_flat_file_is_refused_by_name(damaged, edit, message):
     model, damage = damaged
     with pytest.raises(ValueError, match=message):
+        check_model_file(damage(edit), model)
+
+
+@pytest.mark.parametrize("edit, message", [
+    (lambda ds: ds.setncattr("name", "another"), "names its model"),
+    (lambda ds: ds.setncattr("constant_G", 1.0), "constant G"),
+])
+def test_the_check_holds_a_flat_file_s_name_and_constants(damaged, edit, message):
+    model, damage = damaged
+    with pytest.raises(AssertionError, match=message):
         check_model_file(damage(edit), model)
 
 

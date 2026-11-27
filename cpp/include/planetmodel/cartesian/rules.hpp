@@ -27,11 +27,13 @@
  * nothing mutable, so they are safe to use from many threads.
  */
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <format>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -82,6 +84,20 @@ inline constexpr auto LATERAL_RULES =
               std::format("{} is not a flat lateral rule; they are linear and cubic", name));
 }
 
+namespace detail {
+
+/// What keeps a grid from carrying the cubic rule, or nothing where it
+/// carries it: fewer than three nodes along an axis, the fewest a periodic
+/// cubic spline is determined by.
+inline std::optional<std::string> CubicRefusal(const Grid& grid) {
+  if (std::ranges::all_of(grid.Shape(), [](std::size_t n) { return n >= 3; })) return std::nullopt;
+  return std::format("the cubic rule needs at least 3 nodes along every axis; this grid has {} "
+                     "by {}",
+                     grid.NX(), grid.NY());
+}
+
+}  // namespace detail
+
 /**
  * @brief Refuse a lateral rule the grid cannot carry, as the Python's
  * `cartesian.lateral.check_rule` does: the cubic rule on fewer than three
@@ -94,13 +110,8 @@ inline constexpr auto LATERAL_RULES =
  */
 inline void CheckRule(const Grid& grid, LateralRule rule, std::string_view where = "") {
   if (rule != LateralRule::Cubic) return;
-  for (const auto n : grid.Shape()) {
-    if (n < 3) {
-      throw Error("cartesian::LateralInterpolant", where,
-                  std::format("the cubic rule needs at least 3 nodes along every axis; this "
-                              "grid has {} by {}",
-                              grid.NX(), grid.NY()));
-    }
+  if (const auto why = detail::CubicRefusal(grid)) {
+    throw Error("cartesian::LateralInterpolant", where, *why);
   }
 }
 

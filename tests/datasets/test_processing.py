@@ -110,6 +110,49 @@ def test_a_data_set_of_values_needs_its_reference_under_relative_mode():
     assert np.allclose(ab.segments[0](r, t, f), v(r, t, f) - 4.5e3, rtol=1e-13)
 
 
+def test_a_source_in_other_scales_is_converted_to_the_model_s():
+    """Onto a model in other scales, an SI source and its reference are
+    converted first: the perturbation is the one the formulas give in SI,
+    at the model's own radii and, where it is absolute, in its units."""
+    from planetmodel.units import Scales
+    prem = pm.PREM()
+    src = over_reference(prem, {"vs": harmonic()}, kind="relative", name="src")
+    v = pm.AnalyticField((CMB, MOHO), lambda r, t, p: 4.6e3 + 10.0 * np.cos(t) + 0 * r,
+                         name="vs")
+    values = standalone({"vs": v}, surface=R, name="values")
+    onto = simple(4.5e3, moho=6300e3)
+    rng = np.random.default_rng(8)
+    for scales in (Scales(time=1000.0), Scales(length=1000.0, mass=1e12),
+                   Scales.geophysical(R)):
+        k, speed = scales.length, scales.length / scales.time
+        other = onto.converted(scales)
+        kept = rereferenced(src, other)["vs"]
+        assert kept.support == pytest.approx((CMB / k, MOHO / k), rel=1e-12)
+        for s in kept.segments:
+            lo, hi = (k * x for x in s.interval)
+            r, t, f = points(rng, lo, hi, n=20)
+            assert np.allclose(s(r / k, t, f), harmonic()(r, t, f), rtol=1e-11,
+                               atol=1e-15)
+        against = rereferenced(src, other, mode="absolute")["vs"]
+        assert any(np.isclose(k * s.interval[0], 6300e3) for s in against.segments)
+        for s in against.segments:
+            lo, hi = (k * x for x in s.interval)
+            r, t, f = points(rng, lo, hi, n=20)
+            mid = 0.5 * (lo + hi)
+            lay = prem.layer(prem.skeleton.locate(mid).layer)
+            rs = voigt_vs(lay["vsv"](r), lay["vsh"](r))
+            ro = onto.layer(onto.skeleton.locate(mid).layer)["vs"](r)
+            want = rs * (1 + harmonic()(r, t, f)) / ro - 1
+            assert np.allclose(s(r / k, t, f), want, rtol=1e-10, atol=1e-13)
+        r, t, f = points(rng, CMB, 6300e3, n=20)
+        rel = rereferenced(values, other, source_reference=simple(4.4e3))["vs"]
+        assert np.allclose(rel.segments[0](r / k, t, f), v(r, t, f) / 4.4e3 - 1,
+                           rtol=1e-10)
+        ab = rereferenced(values, other, mode="absolute", kind="absolute")["vs"]
+        assert np.allclose(ab.segments[0](r / k, t, f), (v(r, t, f) - 4.5e3) / speed,
+                           rtol=1e-10)
+
+
 def test_a_log_perturbation_stays_log():
     prem = pm.PREM()
     src = over_reference(prem, {"vs": harmonic()}, kind="log", name="src")
@@ -248,6 +291,37 @@ def test_a_regional_grid_merges_inside_and_leaves_the_rest():
     assert m.layer("ocean")["vsv"] is prem.layer("ocean")["vsv"]     # a fluid's left
     assert not isinstance(m.layer("lower_mantle")["vsv"], pm.PerturbedField)
     pm.testing.check_model(m)
+
+
+def test_a_regional_grid_merges_into_a_model_in_other_scales():
+    """A regional grid is SI: into a model in other scales its radii and
+    its values go in the model's units, so the merged field is the SI
+    model's in those units, the box's velocity at a node inside it."""
+    from planetmodel.units import Scales
+    prem = pm.PREM()
+    box = regional_box(prem)
+    grid = pm.equiangular(45, 90)
+    si = merged(prem, box, name="vsv", width=np.radians(4.0), grid=grid,
+                radial_width=(50e3, 0.0))
+    rng = np.random.default_rng(9)
+    for scales in (Scales(time=1000.0), Scales(length=1000.0, mass=1e12)):
+        k, speed = scales.length, scales.length / scales.time
+        m = merged(prem.converted(scales), box, name="vsv", width=np.radians(4.0),
+                   grid=grid, radial_width=(50e3 / k, 0.0))
+        lay = m.layer("low_velocity_zone")
+        f = lay["vsv"]
+        assert isinstance(f, pm.PerturbedField)
+        deep = pm.from_geographic(50.0, 0.0)
+        node = lay.interval[0]
+        assert speed * float(f(node, *deep)) == pytest.approx(5000.0, rel=1e-12)
+        lo, hi = prem.layer("low_velocity_zone").interval
+        r = rng.uniform(lo, hi, 50)
+        theta, phi = pm.from_geographic(rng.uniform(30.0, 70.0, 50),
+                                        rng.uniform(-30.0, 30.0, 50))
+        want = si.layer(lay.index)["vsv"](r, theta, phi)
+        assert np.any(np.abs(want / prem.layer(lay.index)["vsv"](r) - 1) > 0.01)
+        assert np.allclose(speed * f(r / k, theta, phi), want, rtol=1e-10, atol=0)
+        assert not isinstance(m.layer("lower_mantle")["vsv"], pm.PerturbedField)
 
 
 def test_merge_refusals():

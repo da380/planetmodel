@@ -79,6 +79,12 @@ buried = Plane.at_depth(UNIT, 0.0, 33.0, 0.12, strike=60.0, dip=75.0, length=0.1
 faults = {"thrust": Fault([thrust]), "splay": Fault([splay]),
           "buried": Fault([buried])}
 
+# %% [markdown]
+# The mesh, of order 2, the size 0.035 on every fault. Its summary gives
+# the shape of the worst cell as minSICN: gmsh's signed inverse
+# condition number, 1 for a regular tetrahedron, falling to 0 as a cell
+# flattens.
+
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
 result = build_layered_mesh(
@@ -132,6 +138,7 @@ WEST, EAST, SOUTH, NORTH, FLOOR = -0.25, 0.3, -0.42, 0.22, -0.25
 BOX = ([[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1]],
        [-WEST, EAST, -SOUTH, NORTH, -FLOOR])
 interfaces = np.isin(mesh.face_attributes, [e["attribute"] for e in card.interfaces])
+shade = np.array(list(LAYERS.values()))[mesh.layers(card) - 1]
 walls, colours, curves = [], [], []
 for origin, axes in (([WEST, 0, 0], [[0, 1, 0], [0, 0, 1]]),
                      ([0, NORTH, 0], [[1, 0, 0], [0, 0, 1]]),
@@ -139,8 +146,7 @@ for origin, axes in (([WEST, 0, 0], [[0, 1, 0], [0, 0, 1]]),
     cut = plane_cut(local, mesh.cells[:, :4], origin, axes)
     parts, index = clip_polygons(cut.in_space(), *BOX)
     walls += parts
-    colours += [list(LAYERS.values())[a - 1]
-                for a in mesh.cell_attributes[cut.index[index]]]
+    colours += list(shade[cut.index[index]])
     lines = plane_cut(local, mesh.faces[interfaces, :3], origin, axes).in_space()
     curves += clip_polygons(lines, *BOX)[0]
 top, _ = clip_polygons(local[mesh.faces_with(card.surface_attribute)[:, :3]], *BOX)

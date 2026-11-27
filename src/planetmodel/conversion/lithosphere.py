@@ -20,7 +20,8 @@ bisects between it and the one above to `rtol` of the radius; a crossing
 at a boundary between layers, where the field may jump, is the boundary.
 A line hot already at the top has its base at the top; one that never
 crosses has it at the bottom of the chosen layers.  The thresholds are
-in SI, the field's values converted at the boundary.  The result is a
+in SI and `step` is in metres, whatever the model's scales: the field's
+values and the layers' radii are converted at the boundary.  The result is a
 `datasets.Surface` measuring a radius, read bilinearly between the
 grid's nodes, for `datasets.relief` and `datasets.building.moved` (the
 base as geometry) or `with_lid` (the base as a field: the viscosity
@@ -129,7 +130,8 @@ def isotherm(model: Model, temperature: float, *, grid: AngularGrid,
              layers: Iterable[int | str] | None = None, name: str = "temperature",
              step: float = 2e3, rtol: float = 1e-10) -> Surface:
     """The base where the field `name`, an absolute temperature, rises to
-    `temperature` (K), by the rule of the module docstring."""
+    `temperature` (K), by the rule of the module docstring, sampled at
+    radii no more than `step` (m) apart."""
     if model.spec(name) is None or model.spec(name).dimensions != TEMPERATURE:
         raise ValueError(f"{name!r} is not a temperature in this model")
     return _base(model, _reading(model, name), float(temperature), True,
@@ -141,7 +143,8 @@ def viscosity_threshold(model: Model, viscosity: float, *, grid: AngularGrid,
                         layers: Iterable[int | str] | None = None,
                         name: str = "viscosity", step: float = 2e3,
                         rtol: float = 1e-10) -> Surface:
-    """The base where the viscosity falls to `viscosity` (Pa s)."""
+    """The base where the viscosity falls to `viscosity` (Pa s), sampled
+    at radii no more than `step` (m) apart."""
     if model.spec(name) is None or model.spec(name).dimensions != VISCOSITY:
         raise ValueError(f"{name!r} is not a viscosity in this model")
     return _base(model, _reading(model, name), float(viscosity), False,
@@ -154,7 +157,8 @@ def maxwell_threshold(model: Model, loading_time: float, *, grid: AngularGrid,
                       name: str = "viscosity", step: float = 2e3,
                       rtol: float = 1e-10) -> Surface:
     """The base where the Maxwell time eta / mu falls to `loading_time`
-    (s), mu the layer's Voigt shear modulus."""
+    (s), mu the layer's Voigt shear modulus, sampled at radii no more
+    than `step` (m) apart."""
     kt = model.scales.factor(TIME)
     mus: dict[int, Field] = {}
 

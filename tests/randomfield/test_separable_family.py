@@ -272,7 +272,7 @@ def test_disk_basis_holds_the_contract():
                                   robin=(None, 2.0))
     for m, R in ((0, restriction(mesh, 0.0, 1.0)), (3, restriction(mesh, 0.5, 1.0))):
         basis = SpectralBasis(fam, m, restrict=R, power=2.0, tol=1e-8)
-        assert basis.degree == m and type(basis.degree) is int
+        assert basis.label == m and type(basis.label) is int
         assert basis.lateral_eigenvalue == float(m * m)
         testing.check_spectral_basis(basis)
         r1, r2 = R.interval
@@ -380,7 +380,7 @@ def test_flat_basis_holds_the_contract_with_float_labels():
     R = restriction(mesh, 0.0, 1.0)
     for label in (0, 0.37, np.float64(41.5)):
         basis = SpectralBasis(fam, label, restrict=R, power=2.0, tol=1e-8)
-        assert type(basis.degree) is float and basis.degree == label
+        assert type(basis.label) is float and basis.label == label
         assert basis.lateral_eigenvalue == float(label)
         assert repr(basis).startswith(f"SpectralBasis(l={float(label)!r}")
         testing.check_spectral_basis(basis)

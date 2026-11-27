@@ -71,6 +71,31 @@ def test_on_an_interface_a_sphere_slice_takes_the_side_asked_for(two):
                                          component="norm").values))
 
 
+def test_a_radius_on_an_interface_to_the_tolerance_is_read_on_it(two):
+    """The geometry takes a radius within its tolerance of a boundary to
+    lie on it; the layer asked for is then read at its end, the field
+    never asked outside its interval."""
+    grid = gauss_legendre(4)
+    t, p = np.meshgrid(grid.colatitudes, grid.longitudes, indexing="ij")
+    tol = two.geometry.rtol * two.skeleton.span
+    off = 0.8 * tol
+    for at in ("reference", "physical"):
+        below = slices.sphere(two, "rho", radius=0.5 + off, grid=grid, side="below",
+                              at=at)
+        assert np.allclose(below.values, 10.0) and below.side == "below"
+        above = slices.sphere(two, "vs", radius=0.5 - off, grid=grid, side="above",
+                              at=at)
+        assert np.allclose(above.values, lateral(0.5, t, p), rtol=1e-12)
+        top = slices.sphere(two, "vs", radius=1.0 + off, grid=grid, at=at)
+        assert np.allclose(top.values, lateral(1.0, t, p), rtol=1e-12)
+    assert slices.evaluate(two, "rho", 0, 0.5 + off, 0.3, 0.2) == 10.0
+    # farther out than the tolerance is outside the body, or the layer
+    with pytest.raises(ValueError, match="outside"):
+        slices.sphere(two, "rho", radius=1.0 + 1e3 * tol, grid=grid)
+    with pytest.raises(ValueError, match="outside the interval"):
+        slices.evaluate(two, "rho", 0, 0.5 + 1e3 * tol, 0.3, 0.2)
+
+
 def test_sections_and_profiles_keep_both_sides_of_an_interface(two):
     sec = slices.section(two, "rho", (0.4, 0.1), end=(1.9, 2.0), n=6, m=11)
     assert [lay.index for lay in sec.layers] == [0, 1]
@@ -133,6 +158,142 @@ def test_a_vector_is_sliced_by_component_in_a_frame_or_by_its_norm(two):
         slices.sphere(two, "vs", radius=0.7, grid=grid, component=0, frame="spherical")
 
 
+def _wind(r, t, p):
+    """One vector everywhere, Cartesian: (1, 0.5, 0)."""
+    shape = np.broadcast(r, t, p).shape
+    return np.broadcast_to(np.array([1.0, 0.5, 0.0]), shape + (3,))
+
+
+@pytest.fixture
+def windy(two):
+    """`two` with a constant vector field on both layers, whose components
+    in the spherical frame are the frame's own vectors against it."""
+    m = two
+    for layer in range(2):
+        m = m.with_field(layer, "wind", AnalyticField(
+            m.skeleton.interval(layer), _wind, character=VECTOR, frame="cartesian",
+            name="wind"))
+    return m
+
+
+def _wind_in(t, p):
+    """The components of `_wind` along (e_r, e_theta, e_phi) at (t, p)."""
+    t, p = np.broadcast_arrays(t, p)
+    st, ct, sp, cp = np.sin(t), np.cos(t), np.sin(p), np.cos(p)
+    return np.stack([st * (cp + 0.5 * sp), ct * (cp + 0.5 * sp), 0.5 * cp - sp],
+                    axis=-1)
+
+
+@pytest.mark.parametrize("theta, phi", [(0.0, 0.5 * np.pi), (0.0, -2.0), (np.pi, 0.7),
+                                        (0.3, 1.0)])
+def test_a_profile_is_read_at_the_angles_given_where_its_points_fix_none(
+        windy, theta, phi):
+    """On the polar axis a point fixes no longitude, and at the centre no
+    angle: the frame of a component is that of the angles given."""
+    want = _wind_in(theta, phi)
+    for at, m in (("reference", windy),
+                  ("physical", windy.stretched(flattening(0.05)))):
+        for k in range(3):
+            prof = slices.profile(m, "wind", theta, phi, component=k,
+                                  frame="spherical", n=3, at=at)
+            assert prof.layers[0].radius[0] == 0.0             # through the centre
+            for lay in prof.layers:
+                assert np.allclose(lay.values, want[k], rtol=0, atol=1e-14)
+    direct = windy.layer(1)["wind"].evaluate(0.75, theta, phi, frame="spherical")
+    assert np.allclose(direct, want, rtol=0, atol=1e-14)
+
+
+def test_a_physical_sphere_reads_a_polar_node_at_its_own_longitude(windy):
+    """A physical node on the polar axis is pulled back to the axis by a
+    radial stretch, where its position fixes no longitude: the frame of a
+    component is the node's own, as it is at reference points."""
+    from planetmodel import driscoll_healy, equiangular
+    m = windy.stretched(flattening(0.05))
+    for grid, rows in ((driscoll_healy(4), [0]),
+                       (equiangular(5, 8, poles=True), [0, -1])):
+        assert [k for k, node in zip([0, -1], grid.pole_nodes) if node] == rows
+        t, p = np.meshgrid(grid.colatitudes, grid.longitudes, indexing="ij")
+        for k in (1, 2):
+            for at in ("physical", "reference"):
+                s = slices.sphere(m, "wind", radius=0.8, grid=grid, at=at,
+                                  component=k, frame="spherical")
+                assert np.allclose(s.values, _wind_in(t, p)[..., k], rtol=0,
+                                   atol=1e-13)
+                for row in rows:                       # a polar row turns with phi
+                    assert np.ptp(s.values[row]) > 0.5
+
+
+def test_a_section_from_a_pole_counts_its_azimuth_from_the_longitude_given(windy):
+    """At a pole every way is south: the azimuth is counted in the frame at
+    the angles given, north the way a point travelling up the meridian of
+    that longitude leaves the pole."""
+    phi0 = 0.7
+    north = -np.array([np.cos(phi0), np.sin(phi0), 0.0])
+    east = np.array([-np.sin(phi0), np.cos(phi0), 0.0])
+    for theta0, sign in ((0.0, 1.0), (np.pi, -1.0)):
+        for azimuth in (0.0, 0.4, np.pi):
+            sec = slices.section(windy, "rho", (theta0, phi0), azimuth=azimuth,
+                                 length=1.0, n=2, m=5)
+            travel = np.cos(azimuth) * sign * north + np.sin(azimuth) * east
+            assert np.allclose(sec.plane, [[0.0, 0.0, sign], travel], atol=1e-15)
+            assert np.all(sec.path[0, :2] == 0.0)
+    # at the north pole an azimuth of pi runs down the meridian given, at the
+    # south pole one of zero runs up it
+    for theta0, azimuth in ((0.0, np.pi), (np.pi, 0.0)):
+        sec = slices.section(windy, "rho", (theta0, phi0), azimuth=azimuth, length=1.0,
+                             n=2, m=5)
+        _, t, p, _ = spherical_coordinates(sec.path[1:])
+        assert np.allclose(np.abs(t - theta0), sec.distance[1:])
+        assert np.allclose(p, phi0)
+
+
+def _along(sec):
+    """The colatitude and longitude of a section's points off the polar
+    axis, and which of them they are."""
+    _, t, p, _ = spherical_coordinates(sec.path)
+    off = np.hypot(sec.path[:, 0], sec.path[:, 1]) > 0.0
+    return t, p, off
+
+
+@pytest.mark.parametrize("k", [1, 2])
+def test_a_section_reads_a_point_on_the_polar_axis_as_the_arc_beside_it(windy, k):
+    """A pole fixes no longitude, so a component in the frame there is read
+    at the longitude of the arc beside it, the one it leaves along at its
+    start and arrives along elsewhere, whatever the pole was given with:
+    the component is continuous along the arc up to a pole and from one."""
+    kw = dict(component=k, frame="spherical", n=2)
+    # from each pole to a point: the first ray is read at the end's longitude,
+    # at reference points and at physical ones
+    for m, at in ((windy, "reference"), (windy.stretched(flattening(0.05)),
+                                         "physical")):
+        for pole in (0.0, np.pi):
+            for given in (0.3, 2.9):
+                sec = slices.section(m, "wind", (pole, given), end=(1.0, 2.0), m=5,
+                                     at=at, **kw)
+                t, p, off = _along(sec)
+                assert not off[0] and np.all(off[1:]) and np.allclose(p[1:], 2.0)
+                want = _wind_in(np.where(off, t, pole), 2.0)[:, k]
+                for lay in sec.layers:
+                    assert np.allclose(lay.values, want[None, :], atol=1e-13)
+    # to each pole from a point: the last ray is read at the start's longitude
+    for pole in (0.0, np.pi):
+        sec = slices.section(windy, "wind", (1.0, 2.0), end=(pole, 0.3), m=5, **kw)
+        t, p, off = _along(sec)
+        assert not off[-1] and np.all(off[:-1])
+        want = _wind_in(np.where(off, t, pole), 2.0)[:, k]
+        assert np.allclose(sec.layers[1].values, want[None, :], atol=1e-13)
+    # through both poles, a meridian's whole circle: each pole is read at the
+    # longitude it is arrived along, the frame turning over beyond it
+    sec = slices.section(windy, "wind", (0.5 * np.pi, 0.4), azimuth=0.0,
+                         length=2.0 * np.pi, m=9, **kw)
+    t, p, off = _along(sec)
+    assert np.array_equal(np.flatnonzero(~off), [2, 6])
+    arrived = np.where(off, p, [0, 0, 0.4, 0, 0, 0, 0.4 + np.pi, 0, 0])
+    want = _wind_in(t, arrived)[:, k]
+    assert np.allclose(sec.layers[1].values, want[None, :], atol=1e-13)
+    assert not np.isclose(want[2], _wind_in(0.0, 0.0)[k])
+
+
 def test_a_departure_from_the_mean_is_zero_in_mean(two):
     grid = gauss_legendre(10)
     for departure in ("difference", "percent"):
@@ -180,6 +341,46 @@ def test_a_departure_from_a_reference_or_another_model(two):
     rho = slices.section(two, "rho", (0.4, 0.1), end=(1.9, 2.0), relative_to=base,
                          departure="difference")
     assert all(np.allclose(lay.values, 0.0) for lay in rho.layers)
+
+
+def test_another_model_in_other_scales_is_compared_at_the_same_place(two):
+    """A departure compares numbers in one unit at one place: another model
+    in other scales is converted to the model's, so a model departs from
+    itself in other units by nothing, and from another by what their SI
+    numbers give."""
+    grid = gauss_legendre(6)
+    t, p = np.meshgrid(grid.colatitudes, grid.longitudes, indexing="ij")
+    plain = two.without_field("flow")
+    scales = Scales(length=0.5, mass=1e-3, time=3.0)
+    itself = plain.converted(scales)
+    assert itself.skeleton.boundaries[-1] == 2.0
+    for name, radius in (("rho", 0.8), ("vs", 0.8), ("rho", 0.3)):
+        s = slices.sphere(plain, name, radius=radius, grid=grid, relative_to=itself)
+        assert np.allclose(s.values, 0.0, rtol=0, atol=1e-12)
+    base = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[8.0, 5.0], vp=[9.0, 7.0],
+                                   vs=[4.0, 2.0]).named("base")
+    other = base.converted(scales)
+    rho = slices.sphere(plain, "rho", radius=0.8, grid=grid, relative_to=other)
+    assert np.allclose(rho.values, 100.0 * (4.0 / 5.0 - 1.0), rtol=1e-12)
+    assert rho.label == "rho, percent from base [%]"
+    vs = slices.sphere(plain, "vs", radius=0.8, grid=grid, relative_to=other,
+                       departure="difference")
+    assert np.allclose(vs.values, lateral(0.8, t, p) - 2.0, rtol=1e-12)
+    assert vs.label == "vs, difference from base [m s-1]"
+    # on the interface the other model is read on the slice's own side
+    sec = slices.section(plain, "rho", (0.4, 0.1), end=(1.9, 2.0), relative_to=other,
+                         departure="difference", n=3, m=4)
+    assert np.allclose(sec.layers[0].values, 2.0, rtol=1e-12)
+    assert np.allclose(sec.layers[1].values, -1.0, rtol=1e-12)
+    # the other way round, the radius is the first model's own
+    back = slices.sphere(other, "rho", radius=1.6, grid=grid, relative_to=plain)
+    assert np.allclose(back.values, 100.0 * (5.0 / 4.0 - 1.0), rtol=1e-12)
+    # a model that cannot be converted is refused, naming both scales
+    unit = AnalyticField((1.0, 2.0), lambda r, t, p: 1.0 + 0.0 * r * t * p)
+    with pytest.raises(ValueError, match=r"Scales\.SI, and it cannot be converted: "
+                                         "'bare'"):
+        slices.sphere(plain, "rho", radius=0.8, grid=grid,
+                      relative_to=other.with_field(1, "bare", unit))
 
 
 def test_slices_at_reference_points_give_their_physical_positions(two):
@@ -452,6 +653,27 @@ def test_a_field_correlates_to_one_with_itself_and_to_zero_with_an_orthogonal_on
         slices.correlation(ma, "vs", mb, lmax=3)
 
 
+def test_a_correlation_reads_both_models_at_the_first_one_s_radii(two):
+    """The other model in other scales is the same body: at a radius of the
+    first it is read at the same place, in the same units, so its spectrum
+    there is the first's own."""
+    a = np.zeros((2, 4, 4))
+    a[0, 2, 1], a[0, 3, 0] = 1.0, 0.5
+    ma = _with(two.without_field("flow"), 1, _harmonic(a))
+    other = ma.converted(Scales(length=0.5, mass=2.0, time=3.0))
+    cr = slices.correlation(ma, "vs", other, lmax=3, radii=[0.6, 0.9])
+    assert np.allclose(cr.by_degree[:, 2:], 1.0) and np.allclose(cr.total, 1.0)
+    for first, second, radius in zip(cr.first, cr.second, cr.radii):
+        # the field is r times the harmonics, so its power says where it was read
+        want = radius ** 2 * np.array([0.0, 0.0, 1.0, 0.25]) / (4.0 * np.pi)
+        assert np.allclose(first.power, want, rtol=0, atol=1e-14)
+        assert np.allclose(second.power, want, rtol=0, atol=1e-14)
+    by_layer = {1: other.layer(1)["vs"]}
+    with pytest.raises(ValueError, match="fields given by layer state no scales"):
+        slices.correlation(ma, "vs", other, other_fields=by_layer, lmax=3,
+                           radii=[0.6])
+
+
 # -- kernels ------------------------------------------------------------------
 
 def _cubic(r, t, p):
@@ -503,6 +725,52 @@ def test_an_integral_along_the_radius_is_its_closed_form(kernel):
         slices.integrated(kernel, "K", grid=grid, weight="area")
     with pytest.raises(ValueError, match="no layer"):
         slices.integrated(kernel, "K", grid=grid, radii=(0.1, 0.4))
+
+
+@pytest.mark.parametrize("kind", ["absolute", "relative", "log"])
+def test_an_integral_of_a_perturbed_field_is_of_its_values(two, kind):
+    """A reference cubic in r perturbed by a cubic: the values are of degree
+    three when the perturbation is added and six when it multiplies, a
+    polynomial integrated here in closed form; under a logarithmic one
+    they are no polynomial, and `n` points on each piece hold them, held
+    here to scipy's adaptive quadrature."""
+    from numpy.polynomial import Polynomial
+    from scipy.integrate import quad
+    from scipy.interpolate import PPoly
+    from planetmodel import GriddedField, RadialField
+    from planetmodel.layerfunction import PolynomialLayer
+    iv = (0.5, 1.0)
+    grid = gauss_legendre(4)
+    t, p = np.meshgrid(grid.colatitudes, grid.longitudes, indexing="ij")
+    # in x = r - 0.5: the reference 3 + 2 x - 4 x^2 + 5 x^3, the perturbation
+    # 0.4 x^3 cos(theta)
+    ref = RadialField(iv, PolynomialLayer(iv, PPoly(
+        np.array([[5.0], [-4.0], [2.0], [3.0]]), np.array(iv))), name="vs",
+        character=two.layer(1)["vs"].character)
+    dp = GriddedField.sampled(
+        AnalyticField(iv, lambda r, t, p: 0.4 * (r - 0.5) ** 3 * np.cos(t)
+                      + 0.0 * p), grid, breaks=[0.5, 0.7, 1.0], ngll=4)
+    m = perturbed(two.with_field(1, "vs", ref, replace=True), "vs", dp, kind=kind)
+    reference, cubic = Polynomial([3.0, 2.0, -4.0, 5.0]), Polynomial([0, 0, 0, 0.4])
+    for weight, measure in (("volume", Polynomial([0.5, 1.0]) ** 2),
+                            ("radius", Polynomial([1.0]))):
+        if kind == "log":
+            want = np.array([quad(
+                lambda x, c=c: reference(x) * np.exp(cubic(x) * c) * measure(x),
+                0.0, 0.5, epsabs=0.0, epsrel=1e-13)[0] for c in np.cos(t[:, 0])])
+            want = np.broadcast_to(want[:, None], t.shape)
+        else:
+            part = (cubic if kind == "absolute" else reference * cubic) * measure
+            want = ((reference * measure).integ()(0.5)
+                    + part.integ()(0.5) * np.cos(t))
+        got = slices.integrated(m, "vs", radii=iv, weight=weight, grid=grid)
+        assert np.allclose(got.values, want, rtol=1e-13, atol=0)
+    if kind == "log":
+        # the points asked for are taken on each piece
+        fine = slices.integrated(m, "vs", radii=iv, grid=grid, n=32)
+        coarse = slices.integrated(m, "vs", radii=iv, grid=grid, n=2)
+        assert not np.allclose(coarse.values, fine.values, rtol=1e-9, atol=0)
+        assert np.allclose(coarse.values, fine.values, rtol=1e-3, atol=0)
 
 
 def test_the_total_profile_is_r2_times_the_integral_over_the_sphere(two):
@@ -833,3 +1101,31 @@ def test_a_shell_cut_to_the_centre_shows_its_inner_surface():
     assert np.any(core)
     r, t, p, _ = spherical_coordinates(c.reference[core])
     assert np.allclose(r, 0.5) and np.allclose(c.values[core], lateral(0.5, t, p))
+
+
+def test_a_flat_model_is_refused_by_name(two):
+    """The slices here are of a body on the sphere: a model of another
+    coordinate system is refused, naming both, whichever slice is asked."""
+    from planetmodel import cartesian
+    box = cartesian.LayeredIsotropicElastic(
+        [0.0, 0.4, 1.0], cartesian.Box(((0.0, 2.0), (0.0, 2.0))), rho=[2.0, 3.0],
+        vp=[8.0, 6.0], vs=[4.0, 3.0])
+    grid = gauss_legendre(2)
+    asked = [
+        lambda: slices.sphere(box, "rho", radius=0.5, grid=grid),
+        lambda: slices.section(box, "rho", (0.4, 0.1), end=(1.0, 1.0), n=2, m=3),
+        lambda: slices.profile(box, "rho", 0.4, 0.1, n=2),
+        lambda: slices.mean_profile(box, "rho", n=2),
+        lambda: slices.integrated(box, "rho", grid=grid),
+        lambda: slices.surface(box, lambda t, p: 0.0 * t * p, 1, grid=grid),
+        lambda: slices.cutaway(box, "rho", n=4),
+        lambda: slices.discs(box, "rho", poles=[(0.0, 0.0)], outer=0.5, n=4),
+        lambda: slices.evaluate(box, "rho", 0, 0.2, 0.3, 0.1),
+        lambda: slices.spectrum(box, "rho", lmax=2, radius=0.5),
+        lambda: slices.correlation(box, "rho", box, lmax=2, radii=[0.5]),
+        lambda: slices.correlation(two, "rho", box, lmax=2, radii=[0.8]),
+    ]
+    for ask in asked:
+        with pytest.raises(ValueError, match="'spherical' alone; this "
+                                             "LayeredIsotropicElastic is in 'flat'"):
+            ask()

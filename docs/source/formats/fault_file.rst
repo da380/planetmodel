@@ -14,7 +14,8 @@ mesh), as it samples a model.  It is written by
 which make every check below; ``planetmodel.testing.check_fault_file``
 holds a file to the fault it was written from.  The file is CF-styled,
 so ncdump, xarray and Panoply open it as it stands.  The Python module
-is the definition of the format.  In C++, planetmodel's own library
+is the definition of the format, and ``validate_structure`` there
+checks a file against it.  In C++, planetmodel's own library
 (:doc:`../cpp`) reads a fault file with the same checks and evaluates
 it as the Python does: positions, normals and slip at any point, a
 quadrature, and the location of a point near the fault; and it writes
@@ -260,15 +261,19 @@ Reading and checking
 
 A reader checks, in this order, and refuses the file naming the first
 fault: the schema; that every global attribute is one the format names
-(or ``meta_<key>``); ``source`` and ``created``; the four scales,
-positive; the frame and its reference, the other frame's reference
+(or ``meta_<key>``); ``source`` and ``created``, present and not empty;
+that ``title`` and ``citation``, where the file has them, are text; the
+four scales, positive and finite; the frame and its reference, the
+other frame's reference
 refused; the time support (``interval`` and ``instant`` refused by
 name, as not part of this version) and its rule; ``patches``; that the
 root holds the ``time`` dimension and variable for ``node`` and nothing
 for ``static``, the axis finite and strictly increasing; that the
 groups are exactly ``patch_0`` to ``patch_<patches - 1>``; and in each
-patch, its kind, that every attribute, dimension and variable is one
-its kind has, a plane's parameters or a structured patch's rule, node
+patch, its kind, that every attribute is one its kind has and its
+``name``, where it has one, is text, that every dimension and variable
+is one its kind has, a plane's parameters or a structured patch's rule,
+node
 counts and finite positions, the slip's dimensions, ``components``,
 ``rule`` and node counts, finite values, and last a structured patch's
 positive area element at every control node.  The variables' own

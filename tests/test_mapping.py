@@ -70,7 +70,7 @@ def test_identity():
     m = IdentityMapping()
     X = points()
     assert np.array_equal(m(X), X)
-    assert m.is_identity and m.is_valid()
+    assert m.is_identity and m.validity()
     assert np.all(m.jacobian(X) == 1.0)
     testing.check_mapping(m, X)
 
@@ -83,7 +83,7 @@ def swirl_h():
 def test_radial_stretch_passes_the_contract(h):
     m = RadialStretch(h, rmax=A)
     testing.check_mapping(m, points())
-    assert m.is_valid(sample=validity_lattice(SK))
+    assert m.validity(sample=validity_lattice(SK))
 
 
 def test_radial_stretch_closed_forms():
@@ -118,30 +118,30 @@ def test_radial_stretch_needs_rmax_and_moves_along_rays():
 
 def test_validity_reports_the_failing_factor():
     lattice = validity_lattice(SK)
-    ok = RadialStretch(kinked_h(0.1), rmax=A).is_valid(sample=lattice)
+    ok = RadialStretch(kinked_h(0.1), rmax=A).validity(sample=lattice)
     assert ok and isinstance(ok, ValidityReport) and ok.margin > 0
-    fold = RadialStretch(kinked_h(-12.0), rmax=A).is_valid(sample=lattice)
+    fold = RadialStretch(kinked_h(-12.0), rmax=A).validity(sample=lattice)
     assert not fold and "folds radially" in fold.reason
     assert fold.worst_point is not None and fold.worst_point[0] > 0.8
     # with h(0) = 0, 1 + dh/dr > 0 implies 1 + h/r > 0: shells cross only
     # in a hollow body, or after a tear at the centre
     crossing = RadialStretch(CallableDisplacement(lambda r, t, p: -0.3 * (1.0 - r)),
                              rmax=A)
-    report = crossing.is_valid(sample=validity_lattice(Skeleton([0.1, A])))
+    report = crossing.validity(sample=validity_lattice(Skeleton([0.1, A])))
     assert not report and "cross through the origin" in report.reason
-    assert not crossing.is_valid(sample=lattice)              # torn at the centre
+    assert not crossing.validity(sample=lattice)              # torn at the centre
     centre = RadialStretch(CallableDisplacement(lambda r, t, p: 0.1 + 0.0 * r), rmax=A)
-    report = centre.is_valid(X=np.zeros((1, 3)))
+    report = centre.validity(X=np.zeros((1, 3)))
     assert not report and "at the centre" in report.reason
     assert report.margin == pytest.approx(0.1 / A)
     with pytest.raises(ValueError, match="give either"):
-        RadialStretch(kinked_h(0.1), rmax=A).is_valid()
+        RadialStretch(kinked_h(0.1), rmax=A).validity()
 
 
 def test_generic_validity_on_a_general_mapping():
     lattice = validity_lattice(SK)
-    assert Squash(0.9, 0.1).is_valid(sample=lattice)
-    bad = Squash(-0.5, 0.0).is_valid(sample=lattice)
+    assert Squash(0.9, 0.1).validity(sample=lattice)
+    bad = Squash(-0.5, 0.0).validity(sample=lattice)
     assert not bad and "J = -0.5" in bad.reason
 
 
@@ -251,7 +251,7 @@ def test_scaled_mapping():
     assert np.allclose(big.deformation_gradient(k * X), m.deformation_gradient(X))
     assert np.allclose(big.jacobian(k * X), m.jacobian(X))
     assert np.allclose(big.inverse(big(k * X)), k * X, rtol=1e-9)
-    assert big.is_valid(sample=validity_lattice(Skeleton(k * SK.boundaries)))
+    assert big.validity(sample=validity_lattice(Skeleton(k * SK.boundaries)))
     assert ScaledMapping(RadialStretch(kinked_h(0.1), rmax=A), k).knots == (0.8 * k,)
     assert ScaledMapping(IdentityMapping(), k).is_identity
     with pytest.raises(ValueError, match="positive"):
@@ -312,7 +312,7 @@ class Shear:
 
 def test_a_scaled_mapping_asks_what_the_mapping_has():
     scaled = ScaledMapping(Shear(), 2.0)
-    assert scaled.is_valid(sample=validity_lattice(SK))
+    assert scaled.validity(sample=validity_lattice(SK))
     assert Geometry(SK, mapping=Shear()).scaled(2.0).validity()
     with pytest.raises(NotImplementedError):
         scaled.inverse(np.zeros((1, 3)))

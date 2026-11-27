@@ -26,7 +26,7 @@ using planetmodel::MeshManifest;
 ::testing::AssertionResult RefusedAt(const std::filesystem::path& path,
                                      const std::string& where, const std::string& phrase) {
   try {
-    static_cast<void>(MeshManifest(path));
+    static_cast<void>(planetmodel::ReadMeshManifest(path));
   } catch (const Error& e) {
     if (e.Source() != path.string()) {
       return ::testing::AssertionFailure() << "names " << e.Source() << ": " << e.what();
@@ -273,10 +273,59 @@ TEST(Manifest, ReadsEveryManifestThePythonWrites) {
               planetmodel::G_SI, 1e-24);
 }
 
+TEST(Manifest, ReadsTheManifestsOfCubedMeshes) {
+  // the manifests the builders of a cubed sphere and of a squared circle
+  // write beside their own meshes, in MFEM's format with no export
+  PLANETMODEL_FIXTURE(root, "cubed_manifests");
+  auto read = std::map<std::string, MeshManifest>{};
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    const auto label = entry.path().filename().string();
+    for (const auto& file : std::filesystem::directory_iterator(entry.path())) {
+      if (file.path().extension() != ".json") continue;
+      SCOPED_TRACE(file.path().string());
+      const auto m = MeshManifest(file.path());
+      ExpectAsWritten(m, planetmodel::ReadJsonFile(file.path()));
+      EXPECT_TRUE(std::filesystem::exists(m.MeshFile()));
+      EXPECT_EQ(m.Schema(), planetmodel::MANIFEST_SCHEMA);
+      EXPECT_EQ(m.Format(), "mfem");
+      EXPECT_FALSE(m.PhysicalNodes());
+      EXPECT_FALSE(m.Displacement());
+      EXPECT_FALSE(m.Model());
+      EXPECT_TRUE(m.Fields().empty());
+      EXPECT_TRUE(m.Faults().empty());
+      read.emplace(label, m);
+    }
+  }
+  ASSERT_EQ(read.size(), 2u);
+
+  const auto& sphere = read.at("cubed_sphere");
+  EXPECT_FALSE(sphere.IsHollow());
+  ASSERT_EQ(sphere.Layers().size(), 3u);
+  EXPECT_EQ(sphere.LayerNamed("mantle").attribute, 2);
+  EXPECT_EQ(sphere.SurfaceAttribute(), 3);
+  EXPECT_EQ(sphere.OuterAttribute(), 3);
+  EXPECT_TRUE(sphere.ShellAttributes().empty());
+
+  const auto& circle = read.at("squared_circle");
+  EXPECT_TRUE(circle.IsHollow());
+  EXPECT_EQ(circle.InnerRadius(), 0.5);
+  ASSERT_EQ(circle.Layers().size(), 3u);
+  EXPECT_EQ(circle.ShellAttributes(), (std::vector<int>{3}));
+  EXPECT_EQ(circle.SurfaceAttribute(), 3);
+  EXPECT_EQ(circle.OuterAttribute(), 4);
+}
+
 TEST(Manifest, ReadsTheBaseCaseAsWritten) {
   PLANETMODEL_FIXTURE(path, "manifest_cases/base.json");
   const auto m = MeshManifest(path);
   ExpectAsWritten(m, planetmodel::ReadJsonFile(path), false);
+  // the function beside the other formats' readers reads what the
+  // constructor does
+  const auto read = planetmodel::ReadMeshManifest(path);
+  ExpectAsWritten(read, planetmodel::ReadJsonFile(path), false);
+  EXPECT_EQ(read.Path(), m.Path());
+  EXPECT_EQ(read.Schema(), m.Schema());
+  EXPECT_EQ(read.MeshFile(), m.MeshFile());
   EXPECT_EQ(m.BodyAttributes(), (std::vector<int>{1, 2}));
   EXPECT_EQ(m.ShellAttributes(), (std::vector<int>{3}));
   EXPECT_EQ(m.FluidAttributes(), (std::vector<int>{1}));

@@ -45,14 +45,14 @@ Global attributes
    * - ``Conventions``
      - ``CF-1.8``
    * - ``source``
-     - the writing code and version; required
+     - the writing code and version, text; required
    * - ``created``
-     - when the file was written, ISO 8601; required
+     - when the file was written, ISO 8601, text; required
    * - ``title``
      - a name for the file's contents, where one was given
    * - ``scale_length``, ``scale_mass``, ``scale_time``,
        ``scale_temperature``
-     - what one stored unit is in SI
+     - what one stored unit is in SI, each one positive, finite number
    * - ``radius``
      - the radius of the surface the fields live on, in the file's
        units; absent, the fields live on the outer surface of whatever
@@ -74,7 +74,8 @@ One grid per file and one surface per file.  The CF coordinate
 variables ``latitude`` (degrees north, decreasing) and ``longitude``
 (degrees east, in [0, 360)) hold the grid, with
 ``colatitude_weights(latitude)`` where the grid has weights — the same
-representation a model-file part uses.
+representation a model-file part uses.  Latitudes lie in [-90, 90], and
+a reader refuses a file with one outside.
 
 Time enters through up to two coordinates and one derived dimension:
 
@@ -84,6 +85,10 @@ Time enters through up to two coordinates and one derived dimension:
 * the dimension ``interval``, present where a field needs it, of size
   one less than ``time``: interval ``k`` spans ``time[k]`` to
   ``time[k + 1]``.
+
+A file holding a ``node`` or an ``interval`` field has the coordinate
+variable ``time``, and one holding an ``instant`` field has ``instant``:
+a reader refuses a file with such a field and without its coordinate.
 
 How the stored times map onto a calendar (kiloyears before present,
 say) is the writer's provenance — ``meta_<key>`` attributes — not the
@@ -117,14 +122,32 @@ and fixes its dimensions:
      - one function per observation time
 
 Each field carries ``long_name``, ``units``, ``dimensions`` (where
-declared), ``lateral_interpolation`` (as a model-file field states it),
+declared: four whole numbers, and a reader refuses a field whose
+``dimensions`` are anything else), ``lateral_interpolation`` (as a
+model-file field states it),
 and ``time_interpolation``: ``linear`` or ``previous`` for a ``node``
 field a reader may sample between nodes, and ``none`` otherwise —
 ``none`` always, for the other supports, which must not be resampled in
-time.  Where the grid lacks either pole, a field may carry
-``name_poles``, north then south, on its leading time shape; a reader
-without it falls back to its lateral rule.  Values are real; complex
-fields are refused.
+time.  The lateral rule is one the grid can carry, which the writer and
+a reader both check: ``harmonic`` only on a grid of a shipped kind with
+its band (``grid_kind`` other than ``custom``, and ``grid_lmax``), and
+``cubic`` only on a grid of at least three longitudes and of at least
+four rows once a row is added for each pole it lacks.
+
+Where the grid lacks either pole, a field may carry its polar values,
+the variable ``name_poles``: the field's value at the north and then
+the south pole, over the field's leading dimension and the dimension
+``pole`` (two), so ``name_poles(pole)`` for a ``static`` field,
+``name_poles(time, pole)`` for a ``node`` one, ``name_poles(interval,
+pole)`` and ``name_poles(instant, pole)`` for the others.  The
+dimension ``pole`` and the global attribute ``poles`` are present where
+any field carries them; a reader refuses polar values that accompany no
+field or run over other dimensions, and a dimension ``pole`` whose
+length is not two, and a reader of a field without them falls back to
+the field's lateral rule.  On a grid that holds both poles as nodes a
+field carries no polar values: the writer refuses them, and a reader
+refuses a file that has them.  Values are real; complex fields are
+refused.
 
 Reading and checking
 --------------------
@@ -172,7 +195,12 @@ axis of span 1, reached as -998.99999999999511, is read as -999).  ``function(na
 field as a ``GriddedFunction`` by its stated lateral rule, stored
 polar values carried along.  The C++ ``SurfaceHistory`` reads a file
 by the same arithmetic (``TimeRowsAt``, its tolerance ``TIME_RTOL``),
-so the two languages serve identical values.  A flat surface's file is
+so the two languages serve identical values, and its ``Function(name,
+date)`` is the field as a function of the angles by the ``linear`` or
+the ``cubic`` rule, stored polar values carried along; it evaluates no
+spherical-harmonic expansion, so a field stating ``harmonic``, and on a
+grid lacking a pole a field without stored polar values, is served as
+values and refused as a function.  A flat surface's file is
 read and written in C++ by ``planetmodel::cartesian``'s
 ``ReadSurfaceFile`` and ``WriteSurfaceFile``
 (``planetmodel/cartesian/surfacefile.hpp``), whose ``SurfaceHistory``
@@ -187,8 +215,10 @@ A flat surface file holds fields on one horizontal plane of a body of
 ``planetmodel.cartesian`` (a topography, an ice-thickness history, the
 kernels of a measurement on the free surface), written by
 ``cartesian.surfacefile.write_surface`` and read by
-``cartesian.surfacefile.read_surface_file`` and ``read_surface``.  Its
-schema is ``planetmodel.surface/2``, and everything above holds for it
+``cartesian.surfacefile.read_surface_file`` (the numbers and metadata)
+and, as a history, by ``surfacefile.read_surface``, which reads a file
+of either kind.  Its schema is ``planetmodel.surface/2``, and
+everything above holds for it
 (the attributes ``source``, ``created``, ``title``, the scales,
 ``citation`` and ``meta_<key>``; the axes ``time``, ``instant`` and
 ``interval``; each field's supports, time rules, ``dimensions``,
@@ -205,7 +235,8 @@ extrapolation, by the same code) except where the surface differs:
   over the domain's extent;
 - a field is ``name(x, y)`` (``name(x)`` over a rectangle) after its
   support's leading dimension, and states one of the flat lateral rules,
-  ``linear``, ``cubic`` or ``fourier``;
+  ``linear``, ``cubic`` (on a grid of at least three nodes along every
+  axis) or ``fourier``;
 - a flat grid has no poles: polar values, ``grid_kind``, ``grid_lmax``,
   colatitude weights, ``latitude``, ``longitude`` and ``radius`` are a
   spherical file's, refused on writing and on reading.

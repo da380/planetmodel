@@ -35,8 +35,10 @@ the two angular derivatives, so that it serves as a relief of
 lithosphere.  A `GriddedDisplacement` is a mapping held the same way:
 its displacement m(X) - X a gridded vector field on every layer of a
 skeleton, its deformation gradient the derivatives of the rules that
-read it, and every element boundary declared as a knot, since the
-radial rule's derivative may jump there.
+read it, and every radius its radial rule's derivative may jump at
+declared as a knot: the breakpoints of each field's `radial_pieces`,
+the element boundaries under the polynomial rule and every node under
+the linear one.
 
 `GriddedBase` is the radial half, shared with the gridded fields of a
 box (`cartesian.GriddedField`): the elements, the radial rule, the
@@ -431,9 +433,10 @@ class GriddedFunction:
         if lateral not in METHODS:
             raise ValueError(f"lateral must be one of {METHODS}, got {lateral!r}")
         check_rule(grid, lateral)
-        self._poles = _readonly(polar_values(v, grid, poles=poles, rtol=rtol))
+        self._rtol = float(rtol)
+        self._poles = _readonly(polar_values(v, grid, poles=poles, rtol=self._rtol))
         self._f = LateralInterpolant(v, grid, method=lateral, poles=self._poles,
-                                     rtol=rtol)
+                                     rtol=self._rtol)
         self._data = _readonly(v)
 
     @classmethod
@@ -480,11 +483,11 @@ class GriddedFunction:
         return float(self._f.mean())
 
     def scaled(self, k: float) -> "GriddedFunction":
-        """k times the function, on the same grid by the same rule: the
-        relief of a body k times the size."""
+        """k times the function, on the same grid by the same rule and with
+        the same `rtol`: the relief of a body k times the size."""
         k = float(k)
         return GriddedFunction(self.grid, k * self._data, lateral=self.lateral,
-                               poles=k * self._poles)
+                               poles=k * self._poles, rtol=self._rtol)
 
     def __repr__(self) -> str:
         return f"GriddedFunction({self.lateral} on {self.grid!r})"
@@ -498,8 +501,11 @@ class GriddedDisplacement(MappingBase):
     m(X) - X in the spherical frame at X, as a sample holds it.  The
     deformation gradient is I + grad u from the radial and lateral
     rules' derivatives, the e_phi entry taken on the polar axis as its
-    limit along the meridian; every element boundary of every field is a
-    knot.  `GriddedDisplacement.sampled` builds one from any mapping.
+    limit along the meridian; every breakpoint of every field's
+    `radial_pieces` within the skeleton is a knot, the element boundaries
+    of a field read by the polynomial rule and all the nodes of one read
+    by the linear rule, where its radial derivative jumps.
+    `GriddedDisplacement.sampled` builds one from any mapping.
     """
 
     def __init__(self, skeleton: Skeleton, fields: Sequence[GriddedField]) -> None:
@@ -517,8 +523,8 @@ class GriddedDisplacement(MappingBase):
                 raise ValueError(f"field {i} lies on [{lo:g}, {hi:g}], its layer "
                                  f"on [{b[i]:g}, {b[i + 1]:g}]")
         self._sk, self._fields = skeleton, fields
-        breaks = np.unique(np.concatenate([f.breaks for f in fields]))
-        self.knots = tuple(float(k) for k in breaks[1:-1])
+        pieces = np.unique(np.concatenate([f.radial_pieces()[0] for f in fields]))
+        self.knots = tuple(float(k) for k in pieces[1:-1])
         self.rmax = float(b[-1])
         self.name = "gridded_displacement"
 

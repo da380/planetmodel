@@ -44,7 +44,10 @@ goes through `replaced`, a shallow copy with the changed parts swapped
 in, never through `__init__`, so a model type may give itself whatever
 constructor its construction needs and every surgery, conversion and
 freezing returns an instance of the same class carrying the same
-instance state.
+instance state.  `behaviours` names the mixins of a model's class, which
+a model file states so that a reader gives them back, and `restored` is
+how a reader makes a model of a type from the parts a file holds, with
+no constructor called.
 """
 from __future__ import annotations
 
@@ -59,7 +62,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .character import Character
-from .coordinates import Coordinates, coordinates_of, increases_outward
+from .coordinates import Coordinates, coordinates_of
 from .displacement import RadialDisplacement, SphericalFunction
 from .fields import Field, held
 from .geometry import Geometry, GeometryBase, LayerInfo, Names, Renames
@@ -70,7 +73,7 @@ from .skeleton import CoarseningMap, Skeleton
 from .units import EARTH_MEAN_DENSITY, LENGTH, Scales
 from .vocabulary import CONSTANTS, VOCABULARY, Constant, FieldSpec, family_spec
 
-__all__ = ["Layer", "ModelBase", "Model", "CoarseningFit", "cited"]
+__all__ = ["Layer", "ModelBase", "Model", "CoarseningFit", "cited", "restored"]
 
 #: What `extended` restates the last layer's fields by on the new layers.
 _EXTENSIONS = ("extrapolate", "hold")
@@ -232,6 +235,10 @@ class ModelBase:
     #: The class of geometry this leaf is built on.
     geometry_type: ClassVar[type[GeometryBase]] = GeometryBase
 
+    #: The behaviours a file named for the model, kept by `restored`;
+    #: empty for a model made any other way.
+    _named_behaviours: tuple[str, ...] = ()
+
     def __init__(self, geometry: GeometryBase,
                  layers: Iterable[abc.Mapping[str, Field]], *,
                  scales: Scales = Scales.SI,
@@ -330,6 +337,19 @@ class ModelBase:
     def citation(self) -> tuple[str, ...]:
         """The works the model rests on, one a string, in the order added."""
         return self._citation
+
+    @property
+    def behaviours(self) -> tuple[str, ...]:
+        """The names of the model's behaviours: the mixins of its class
+        (`planetmodel.behaviours`, or a model type's own), in the order of
+        its bases, which a model file states so that a reader gives them
+        back.  A model read from a file that names a behaviour the
+        reading program lacks has the methods of the others and keeps the
+        file's names whole, that one in its place, so that it is written
+        again as it was read."""
+        return self._named_behaviours or tuple(
+            c.__name__ for c in type(self).__mro__
+            if c is not object and not issubclass(c, ModelBase))
 
     def cite(self) -> str:
         """The works the model rests on, one a line: `print(model.cite())`.
@@ -529,9 +549,11 @@ class ModelBase:
                 out.append(dict(shells.pop(0)) if shells else {})
         return out
 
-    def refined(self, radii: ArrayLike, *, names: Names = None) -> "ModelBase":
-        """Interior boundaries inserted; a split layer's fields on each part."""
-        g = self._geometry.refined(radii, names=names)
+    def refined(self, radii: ArrayLike, *,
+                interface_names: Names = None) -> "ModelBase":
+        """Interior boundaries inserted, named by `interface_names`; a split
+        layer's fields on each part."""
+        g = self._geometry.refined(radii, interface_names=interface_names)
         return self.replaced(geometry=g, layers=self._carried(g))
 
     def truncated(self, radius: float, *, name: str | None = None) -> "ModelBase":
@@ -549,7 +571,8 @@ class ModelBase:
 
     def extended(self, radii: ArrayLike, *,
                  fields: str | Sequence[abc.Mapping[str, Field]] | None = None,
-                 names: Names = None, interface_names: Names = None) -> "ModelBase":
+                 layer_names: Names = None,
+                 interface_names: Names = None) -> "ModelBase":
         """Layers appended beyond the last boundary (outside a ball, below a
         box), holding the fields given.
 
@@ -558,9 +581,10 @@ class ModelBase:
         hold them at their values on the last boundary, constant along the
         layered coordinate (`fields.held`, exact for a radial field), which
         pads a box below its base with the lowest properties; or one
-        mapping of name to field per new layer.
+        mapping of name to field per new layer.  `layer_names` name the
+        new layers and `interface_names` the interfaces they bring.
         """
-        g = self._geometry.extended(radii, names=names,
+        g = self._geometry.extended(radii, layer_names=layer_names,
                                     interface_names=interface_names)
         n_new = g.nlayers - self.nlayers
         if fields is None:
@@ -576,7 +600,7 @@ class ModelBase:
                 shells = [{name: f.on_interval(*iv) for name, f in last.items()}
                           for iv in intervals]
             else:
-                shells = [{name: held(f, at, iv) for name, f in last.items()}
+                shells = [{name: held(iv, f, at) for name, f in last.items()}
                           for iv in intervals]
         else:
             shells = [dict(m) for m in fields]
@@ -608,7 +632,7 @@ class ModelBase:
         modulus beside its velocities) are more consistently derived
         again from the coarse model.
         """
-        geometry, cmap = self._coarsening(keep=keep, drop=drop)
+        geometry, cmap = self._geometry.coarsened(keep=keep, drop=drop)
         layers: list[dict[str, Field]] = []
         residuals: dict[tuple[int, str], float] = {}
         for j, group in enumerate(cmap.layers):
@@ -629,35 +653,6 @@ class ModelBase:
             layers.append(fields)
         coarse = self.replaced(geometry=geometry, layers=layers)
         return coarse, CoarseningFit(cmap, MappingProxyType(residuals))
-
-    def _coarsening(self, *, keep: Iterable[int | str] | None,
-                    drop: Iterable[int | str] | None
-                    ) -> tuple[GeometryBase, CoarseningMap]:
-        """`keep`/`drop` as interface names or indices, resolved onto
-        the geometry's interior boundaries and coarsened."""
-        if (keep is None) == (drop is None):
-            raise ValueError("give exactly one of keep and drop")
-        b = self.skeleton.boundaries
-        L = self.nlayers
-        outer = L if increases_outward(self._geometry.coordinates) else 0
-
-        def interior(w: int | str) -> int:
-            face = self._geometry.interface(w)
-            j = int(np.flatnonzero(b == face.radius)[0])
-            if j == outer:
-                raise ValueError(
-                    f"interface {face.name or face.index!r} is the outermost "
-                    "boundary and cannot be selected for coarsening")
-            if not 0 < j < L:
-                raise ValueError(
-                    f"interface {face.name or face.index!r} is the inner "
-                    "boundary of a hollow model and cannot be selected")
-            return j - 1
-
-        which = [interior(w) for w in (drop if keep is None else keep)]
-        if keep is None:
-            return self._geometry.coarsened(drop=which)
-        return self._geometry.coarsened(keep=which)
 
     def _require_mergeable(self, group: Sequence[int]) -> None:
         """Refuse a merge across the fluid-solid character."""
@@ -780,7 +775,7 @@ class Model(ModelBase):
     """A spherically layered model: a `ModelBase` on a spherical
     `Geometry`, placed by any mapping or by the radial stretch
     (`stretched`); see the module docstring.  Every model type of the
-    sphere (`PREM`, the deck models, a user's own) derives from it.
+    sphere (`PREM`, a user's own) derives from it.
     """
 
     geometry_type: ClassVar[type[GeometryBase]] = Geometry
@@ -792,3 +787,36 @@ class Model(ModelBase):
         return self.replaced(geometry=self._geometry.stretched(h, name=name,
                                                             check=check),
                              check=False)
+
+
+def restored(cls: type[ModelBase], geometry: GeometryBase,
+             layers: Iterable[abc.Mapping[str, Field]], *,
+             scales: Scales = Scales.SI,
+             specs: abc.Mapping[str, FieldSpec] | None = None,
+             constants: abc.Mapping[str, Constant] | None = None,
+             name: str | None = None, citation: Iterable[str] = (),
+             behaviours: Iterable[str] = (), check: bool = True) -> ModelBase:
+    """A model of the type `cls` holding the parts given, made without the
+    type's own constructor, as `replaced` makes a copy: what a reader makes
+    of a file, which cannot call a constructor written for other arguments.
+
+    The parts are `ModelBase`'s.  The model holds the fields given and no
+    others, nothing being derived as a constructor may derive it (the Love
+    moduli `behaviours.Elastic` completes), and none of the instance state
+    the type's constructor sets.  `behaviours` are the names a file stated
+    for the model, kept as `ModelBase.behaviours` gives them where they
+    name one the type lacks; they name the mixins of `cls` in its order,
+    with any others between.
+    """
+    if not (isinstance(cls, type) and issubclass(cls, ModelBase)):
+        raise TypeError(f"expected a model type, got {cls!r}")
+    out = object.__new__(cls)
+    ModelBase.__init__(out, geometry, layers, scales=scales, specs=specs,
+                       constants=constants, name=name, citation=citation, check=check)
+    named = tuple(str(b) for b in behaviours)
+    own = out.behaviours
+    if named and tuple(b for b in named if b in own) != own:
+        raise ValueError(f"the behaviours {named} do not name those of "
+                         f"{cls.__name__}, {own}, in its order")
+    out._named_behaviours = named
+    return out

@@ -24,7 +24,9 @@ reads one into a `GridData` in the library's form:
   where a node is off by more than half a step;
 - missing values (`_FillValue`, `missing_value`, NaN) become NaN, and
   `valid_range` is ignored, being in some files the rounded range of
-  the data;
+  the data; a packed variable (`scale_factor`, `add_offset`, an integer
+  marked `_Unsigned`) is unpacked, its missing values found among the
+  packed ones, which is where the file states them;
 - a seam column repeated at the end, and a pole row, are checked to hold
   one value to `SAME_RTOL` of the field's largest (the precision of a file
   written to five figures) and made exactly that; one that does not is
@@ -234,6 +236,32 @@ def _unwrapped(reduced: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate([reduced[start:], reduced[:start] + 360.0]), order
 
 
+def _goes_round(gaps: np.ndarray) -> bool:
+    """Whether longitudes go round the whole circle, by the gaps between
+    them in order, the one from the last back to the first among them:
+    none is wider than one and a half of their median."""
+    return bool(np.max(gaps) <= 1.5 * np.median(gaps))
+
+
+def _arc_distance(theta: np.ndarray, dphi: np.ndarray, t0: float, t1: float
+                  ) -> np.ndarray:
+    """The angle from points to the arc of a meridian between the
+    colatitudes `t0` and `t1`, the points at colatitude `theta` and at
+    `dphi` in longitude from it: along the great circle that meets the
+    meridian at right angles where its foot lies on the arc, and to the
+    nearer end of the arc otherwise."""
+    sn = np.sin(theta)
+    foot = np.arctan2(sn * np.cos(dphi), np.cos(theta))
+    across = np.arcsin(np.clip(sn * np.abs(np.sin(dphi)), 0.0, 1.0))
+
+    def to(end: float) -> np.ndarray:
+        h = (np.sin(0.5 * (theta - end)) ** 2
+             + sn * np.sin(end) * np.sin(0.5 * dphi) ** 2)
+        return 2.0 * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0)))
+
+    return np.where((foot >= t0) & (foot <= t1), across, np.minimum(to(t0), to(t1)))
+
+
 def _horizontal(path: str, lat: np.ndarray, lon: np.ndarray,
                 values: dict[str, np.ndarray], *, regular: bool, seam: str,
                 pole_rows: str
@@ -281,7 +309,7 @@ def _horizontal(path: str, lat: np.ndarray, lon: np.ndarray,
     lon_gaps = np.diff(np.concatenate([reduced, [reduced[0] + 360.0]]))
     lat_step = np.median(np.abs(np.diff(lat))) if lat.size > 1 else 180.0
     reaches = 90.0 - lat[0] <= 1.5 * lat_step and lat[-1] + 90.0 <= 1.5 * lat_step
-    is_global = bool(lon_gaps.max() <= 1.5 * np.median(lon_gaps) and reaches)
+    is_global = _goes_round(lon_gaps) and bool(reaches)
     grid = None
     if is_global:
         n, m = theta.size, reduced.size
@@ -349,6 +377,30 @@ def _plane(path: str, coords: Mapping[str, np.ndarray], unit: Mapping[str, str],
     return out[0], out[1], values
 
 
+def _unpacked(var: Any, raw: np.ndarray) -> np.ndarray:
+    """A netCDF variable's values from those stored (`raw`, read with
+    netCDF4's masking and scaling off): float32 where stored so and
+    unscaled, float64 otherwise; NaN where the stored value is the
+    variable's `_FillValue` or `missing_value`; a signed integer marked
+    `_Unsigned` read as unsigned; then times `scale_factor` plus
+    `add_offset` where the variable is packed."""
+    missing = np.zeros(raw.shape, dtype=bool)
+    for attr in ("_FillValue", "missing_value"):
+        if attr in var.ncattrs():
+            fill = np.asarray(var.getncattr(attr), dtype=var.dtype).ravel()[0]
+            missing |= raw == fill
+    unsigned = str(getattr(var, "_Unsigned", "false")).lower() == "true"
+    if unsigned and raw.dtype.kind == "i":
+        raw = raw.view(f"{raw.dtype.byteorder}u{raw.dtype.itemsize}")
+    a = raw.astype(np.float32 if raw.dtype == np.float32 else float, copy=False)
+    scale = float(np.ravel(getattr(var, "scale_factor", 1.0))[0])
+    offset = float(np.ravel(getattr(var, "add_offset", 0.0))[0])
+    if scale != 1.0 or offset != 0.0:
+        a = a * scale + offset
+    a[missing] = np.nan
+    return a
+
+
 def read_grid(source: str | os.PathLike[str], *,
               variables: tuple[str, ...] | None = None,
               surface: float | None = None, vertical_units: str | None = None,
@@ -413,12 +465,9 @@ def read_grid(source: str | os.PathLike[str], *,
             if set(var.dimensions) != set(dims):
                 raise ValueError(f"{path}: {n!r} lies on {var.dimensions}, not the "
                                  f"grid's axes {dims}")
-            a = np.asarray(var[tuple(take.get(d, slice(None)) for d in var.dimensions)])
-            a = a.astype(np.float32 if a.dtype == np.float32 else float, copy=False)
-            for attr in ("_FillValue", "missing_value"):
-                if attr in var.ncattrs():
-                    fill = np.asarray(var.getncattr(attr), dtype=var.dtype).ravel()[0]
-                    a[a == fill] = np.nan
+            var.set_auto_maskandscale(False)
+            a = _unpacked(var, np.asarray(var[tuple(take.get(d, slice(None))
+                                                    for d in var.dimensions)]))
             values[n] = np.transpose(a, [var.dimensions.index(d) for d in dims])
             units[n] = str(getattr(var, "units", ""))
             long_names[n] = str(getattr(var, "long_name", ""))
@@ -679,11 +728,16 @@ class RegionalGrid:
     for a projected grid (`ProjectedData`), reached from the library's
     angles by the grid's map, the identity or the projection; asked for
     the angle of a point inside its region's edge (`edge_distance`), a box
-    measures it along great circles to its sides, a projected grid on its
-    plane to the edge of the nodes holding a value at some radius, divided
-    by the projection's scale there.  `reference` names what a
-    perturbation is relative to, and `citation` holds the works it rests
-    on."""
+    measures it to the nearest of its sides, the parallels and the arcs
+    of the meridians between them, a projected grid on its plane to the
+    edge of the nodes holding a value at some radius, divided by the
+    projection's scale there.  A box whose longitudes go round the whole
+    circle (three at least, the gap from the last back to the first no
+    wider than one and a half of their median step, as a global grid's)
+    is a band: it has no sides in longitude and is read across the join,
+    from its last longitude to its first a turn on.  `reference` names
+    what a perturbation is relative to, and `citation` holds the works it
+    rests on."""
 
     def __init__(self, data: Gridded, variables: Variables, *,
                  units: Mapping[str, str] | None = None,
@@ -696,6 +750,15 @@ class RegionalGrid:
         self._kinds = {vocab: kind for vocab, kind in variables.values()}
         self._values = {vocab: _si(data, f, vocab, kind, units)
                         for f, (vocab, kind) in variables.items()}
+        self._second = data.x if self._projected else data.phi
+        if not self._projected:
+            turn = 2.0 * np.pi
+            closing = turn - float(data.phi[-1] - data.phi[0])
+            if (data.phi.size > 2 and closing > 1e-6 * turn
+                    and _goes_round(np.append(np.diff(data.phi), closing))):
+                self._second = np.append(data.phi, data.phi[0] + turn)
+                self._values = {name: np.concatenate([v, v[..., :1]], axis=-1)
+                                for name, v in self._values.items()}
         self._segments = _segments(data.radius)
         self.reference = reference
         self._citation = cited((), citation)
@@ -732,14 +795,18 @@ class RegionalGrid:
         return self._data.projection if self._projected else None
 
     def _axes(self) -> tuple[np.ndarray, np.ndarray]:
+        """The two horizontal coordinates its values are held on: northings
+        and eastings, or colatitudes and longitudes, a band's longitudes
+        closed by its first a turn on."""
         d = self._data
-        return (d.y, d.x) if self._projected else (d.theta, d.phi)
+        return (d.y if self._projected else d.theta), self._second
 
     @property
     def extent(self) -> tuple[tuple[float, float], tuple[float, float],
                               tuple[float, float]]:
         """The grid's box in its own coordinates: radii (m), then
-        colatitudes and longitudes (radians, the longitudes contiguous) for
+        colatitudes and longitudes (radians, the longitudes contiguous,
+        and a whole turn from the first for a band round the circle) for
         a box, northings and eastings (m) for a projected grid, each (low,
         high)."""
         a, b = self._axes()
@@ -772,9 +839,10 @@ class RegionalGrid:
 
     def edge_distance(self, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:
         """The angle (radians) of points inside the region's edge, by the
-        rule of the class docstring, zero outside it; a box's edge at a
-        pole, or its longitudes round the whole circle, is no edge
-        (infinity where nothing else is)."""
+        rule of the class docstring, zero outside it; a box's side at a
+        pole is no parallel but a point, the end of its meridian sides,
+        and a band round the whole circle has no sides in longitude
+        (infinity where a box has no side at all)."""
         if self._projected:
             return self._footprint_distance(theta, phi)
         (_, _), (t0, t1), (p0, p1) = self.extent
@@ -785,9 +853,8 @@ class RegionalGrid:
         if t1 < np.pi - 1e-12:
             d = np.minimum(d, t1 - t)
         if p1 - p0 < 2.0 * np.pi * (1.0 - 1e-6):
-            sn = np.sin(t)
-            d = np.minimum(d, np.arcsin(np.clip(sn * np.abs(np.sin(p - p0)), 0.0, 1.0)))
-            d = np.minimum(d, np.arcsin(np.clip(sn * np.abs(np.sin(p1 - p)), 0.0, 1.0)))
+            for side in (p0, p1):
+                d = np.minimum(d, _arc_distance(t, p - side, t0, t1))
         return np.where(self._in_box(t, p), d, 0.0)
 
     def _footprint_distance(self, theta: ArrayLike, phi: ArrayLike) -> np.ndarray:

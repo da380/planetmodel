@@ -45,7 +45,9 @@ the components in the local frame, the same at every point; its
 No grid has poles, a kind, a band or weights: none of `latitude`,
 `longitude`, `colatitude_weights`, `grid_kind`, `grid_lmax`, `pole`,
 `poles` or `*_poles` is in a flat file, nor `radius` nor
-`interface_radius`, and a reader refuses a file that has any of them.
+`interface_radius`, and a reader refuses a file that has any of them;
+the writer refuses a field that takes the name of a spherical file's
+variable (`SPHERICAL_NAMES`).
 
 **Fourier fields** are held as the sphere holds a harmonic field: their
 values on the part's grid, stating the rule `fourier` where the grid
@@ -61,8 +63,10 @@ function on an interface or as a relief is held the same way.
 in one of two forms, never both; the identity is neither, and a mapping
 of any other kind has no form in the file.  A stretch of boundary
 reliefs (`cartesian.layer_linear`) is the group `geometry`:
-`boundary_depth(boundary)`, the reference depths of the surfaces, the
-free surface first, and `boundary_displacement(boundary, x, y)`, each
+`boundary_depth(boundary)`, the reference depths of the surfaces, two
+or more and strictly increasing, the free surface first and none above
+it (a reader refuses a negative first depth, and depths that are not
+so), and `boundary_displacement(boundary, x, y)`, each
 surface's upward displacement, its height above its reference place
 (attribute `positive` `up`: the sign of `cartesian.displacement`), on
 the group's own grid, with `lateral_interpolation` and `between`
@@ -86,7 +90,7 @@ file is opened.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, NoReturn
 
 import numpy as np
@@ -94,12 +98,12 @@ from numpy.typing import ArrayLike
 
 from ..character import Character
 from ..fields import Field, RadialField
+from ..model import ModelBase
 from ..modelfile import (SCHEMA_FLAT, FileGeometry, Interpolation, ModelFile,
-                         displacement_fields, malformed, put_variable, read_file,
+                         displacement_fields, malformed, put_variable, read_with,
                          real_values, relief_grid, variable_values)
 from ..skeleton import Skeleton
 from ..units import BASE, LENGTH, scaled_unit
-from ..vocabulary import FieldSpec
 from .coordinates import FLAT
 from .domains import Box, Domain, Rectangle
 from .grid import Grid
@@ -116,6 +120,9 @@ LOCAL_FRAME_AXES = ("up", "x", "y")
 #: The kinds of lateral domain a flat file states, by `domain`.
 DOMAINS = ("box", "rectangle")
 
+#: The lateral domain of each kind.
+_KINDS = dict(zip(DOMAINS, (Box, Rectangle)))
+
 #: The statements of a spherical file a flat one never makes: dimensions,
 #: attributes and variables of a grid on the sphere, and of the radius.
 SPHERICAL_NAMES = {
@@ -125,10 +132,12 @@ SPHERICAL_NAMES = {
                   "interface_radius", "boundary_radius"),
 }
 
-#: Names the flat model file gives its own variables, which no field may take.
+#: Names no field of a flat model file may take: those the file gives its
+#: own variables, and those of a spherical file's variables, which a reader
+#: refuses in a flat one (`refuse_spherical`).
 _RESERVED = ("depth", "element_layer", "element_bounds", "x", "y", "displacement",
              "layer_bounds", "layer_name", "interface_depth", "interface_name",
-             "layer_part", "surface_interface")
+             "layer_part", "surface_interface", *SPHERICAL_NAMES["variables"])
 
 #: The rules a displacement states when the mapping states none.
 _DISPLACEMENT_RULES = ("polynomial", "cubic")
@@ -138,11 +147,13 @@ _DISPLACEMENT_RULES = ("polynomial", "cubic")
 
 def write_domain(group: Any, domain: Domain) -> None:
     """The statements of the lateral domain: `domain`, `box` or `rectangle`,
-    and `domain_bounds` and `domain_padding` as the domain holds them."""
-    group.setncattr("domain", DOMAINS[0] if domain.axes == ("x", "y") else DOMAINS[1])
+    and `domain_bounds` and `domain_padding` as the domain holds them, axis
+    after axis: (x0, x1, y0, y1) and (px, py) of a box, (x0, x1) and (px,)
+    of a rectangle."""
+    kinds = {kind.axes: name for name, kind in _KINDS.items()}
+    group.setncattr("domain", kinds[domain.axes])
     group.setncattr("domain_bounds", np.ravel(np.asarray(domain.bounds, dtype=float)))
-    group.setncattr("domain_padding",
-                    np.atleast_1d(np.asarray(domain.padding, dtype=float)))
+    group.setncattr("domain_padding", np.asarray(domain.padding, dtype=float))
 
 
 def read_domain(group: Any, fail: Callable[[str], NoReturn]) -> Domain:
@@ -162,14 +173,12 @@ def read_domain(group: Any, fail: Callable[[str], NoReturn]) -> Domain:
                                            dtype=float))
     except (TypeError, ValueError):
         fail("domain_bounds and domain_padding are numbers")
-    sizes = (4, 2) if kind == DOMAINS[0] else (2, 1)
-    if (bounds.size, padding.size) != sizes:
-        fail(f"a {kind} states {sizes[0]} bounds and {sizes[1]} padding, got "
+    d = len(_KINDS[kind].axes)
+    if (bounds.size, padding.size) != (2 * d, d):
+        fail(f"a {kind} states {2 * d} bounds and {d} padding, got "
              f"{bounds.size} and {padding.size}")
     try:
-        if kind == DOMAINS[0]:
-            return Box([bounds[:2], bounds[2:]], padding=tuple(padding))
-        return Rectangle(bounds, padding=float(padding[0]))
+        return _KINDS[kind](bounds.reshape(d, 2), padding=tuple(padding))
     except ValueError as error:
         fail(f"the domain is malformed: {error}")
 
@@ -306,6 +315,10 @@ class FlatLayout:
                 and getattr(w, "boundaries", None) is not None):
             return "stack"
         return "field"
+
+    def radial_grid(self, model: Any) -> Grid:
+        """The grid of one node over the model's domain."""
+        return Grid(model.geometry.domain, 1)
 
     def outer(self, parts: Sequence[tuple[list[int], Any]]) -> Grid:
         """The first part's grid, the part at the free surface."""
@@ -461,6 +474,13 @@ class FlatLayout:
         refuse_spherical(ds, fail)
         return read_domain(ds, fail)
 
+    def interfaces(self, skeleton: Skeleton, context: Domain) -> np.ndarray:
+        """The depths of the interfaces of a `cartesian.Geometry` over the
+        skeleton."""
+        from .geometry import Geometry
+        faces = Geometry(skeleton, context, check=False).interfaces
+        return np.array([face.radius for face in faces], dtype=float)
+
     def axes(self, context: Domain) -> tuple[str, ...]:
         """The domain's axes."""
         return axes_of(context)
@@ -484,8 +504,10 @@ class FlatLayout:
         return Grid(context, tuple(len(group.dimensions[a]) for a in axes_of(context)))
 
     def validate_stack(self, group: Any, path: object, context: Domain) -> None:
-        """The geometry group: the reference depths, the heights on a grid
-        over the domain, positive up, a flat rule and linear between."""
+        """The geometry group: the reference depths of two surfaces or
+        more, increasing strictly, the first at or below the free surface,
+        the heights on a grid over the domain, positive up, a flat rule
+        and linear between."""
         def fail(msg: str) -> NoReturn:
             malformed(path, f"geometry: {msg}")
 
@@ -494,7 +516,14 @@ class FlatLayout:
         for name in ("boundary_depth", "boundary_displacement"):
             if name not in group.variables:
                 fail(f"no variable {name!r}")
-        check_grid_variables(group, context, fail)
+        depths = np.ravel(variable_values(group.variables["boundary_depth"]))
+        if not np.all(np.diff(depths) > 0.0):
+            fail("boundary_depth does not increase strictly")
+        if depths.size < 2:
+            fail("boundary_depth is fewer than two surfaces")
+        if not depths[0] >= 0.0:
+            fail("boundary_depth starts above the free surface, at a negative depth")
+        grid = check_grid_variables(group, context, fail)
         var = group.variables["boundary_displacement"]
         if tuple(var.dimensions) != ("boundary",) + axes:
             fail(f"boundary_displacement does not run over {('boundary',) + axes}")
@@ -502,6 +531,11 @@ class FlatLayout:
         if "lateral_interpolation" not in a or var.getncattr(
                 "lateral_interpolation") not in METHODS:
             fail("boundary_displacement states no known lateral rule")
+        try:
+            check_rule(grid, var.getncattr("lateral_interpolation"))
+        except ValueError as error:
+            fail(f"boundary_displacement states a lateral rule its grid cannot "
+                 f"carry: {error}")
         if "between" not in a or var.getncattr("between") != "linear":
             fail("boundary_displacement states an unknown rule between surfaces")
         if "positive" not in a or var.getncattr("positive") != "up":
@@ -562,12 +596,10 @@ class FlatLayout:
                         layer_names=list(data.layer_names),
                         interface_names=list(data.interface_names), rtol=data.rtol)
 
-    def model(self, geometry: Any, layers: list[dict[str, Field]], *,
-              data: ModelFile, specs: Mapping[str, FieldSpec]) -> Any:
-        """A plain `cartesian.Model`."""
+    def leaf(self) -> type[ModelBase]:
+        """`cartesian.Model`."""
         from .model import Model
-        return Model(geometry, layers, scales=data.scales, specs=specs,
-                     name=data.name, constants=data.declared, citation=data.citation)
+        return Model
 
 
 #: The flat layout, the one of every file of `SCHEMA_FLAT`.
@@ -578,4 +610,4 @@ def read_model_file(path: str | os.PathLike[str]) -> ModelFile:
     """A flat model file's numbers and metadata, its structure validated
     first, its `domain` the file's; a spherical file is refused by its
     schema, naming its reader (`modelfile.read_model_file`)."""
-    return read_file(path, (LAYOUT,))
+    return read_with(path, (LAYOUT,))

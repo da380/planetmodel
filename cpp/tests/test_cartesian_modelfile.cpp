@@ -134,6 +134,10 @@ void ExpectAsThePython(const std::filesystem::path& expect, Agreement& worst) {
       auto joined = std::string{};
       for (const auto& work : file.Citation()) joined += (joined.empty() ? "" : "\n") + work;
       EXPECT_EQ(joined.empty() ? "-" : joined, rest[0] == "-" ? "-" : Unhex(rest[0]));
+    } else if (key == "behaviours") {
+      auto joined = std::string{};
+      for (const auto& name : file.Behaviours()) joined += (joined.empty() ? "" : " ") + name;
+      EXPECT_EQ(joined.empty() ? "-" : joined, rest[0] == "-" ? "-" : Unhex(rest[0]));
     } else if (key == "name") {
       EXPECT_EQ(file.Name().value_or("-"), rest[0] == "-" ? "-" : Unhex(rest[0]));
     } else if (key == "domain") {
@@ -591,4 +595,8 @@ TEST(CartesianModelFile, RefusesWhatThePythonRefusesAtItsPlace) {
   }
   EXPECT_GT(cases, 15);
   EXPECT_THROW(static_cast<void>(flat::ReadModelFile("/nonexistent.nc")), Error);
+  // the file a copy states the cubic rule on, a grid of two nodes along y,
+  // is read as it stands
+  const auto thin = flat::ReadModelFile(index.parent_path() / "thin.nc");
+  EXPECT_EQ(thin.PartOf(1).grid->NY(), 2u);
 }

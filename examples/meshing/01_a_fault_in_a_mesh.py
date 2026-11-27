@@ -91,18 +91,24 @@ faults = {"thrust": Fault([thrust]), "splay": Fault([splay])}
 # 0.05: by `EmbeddedFault`'s rule the size grows from it to the
 # background's by about 30 per cent an element, and the linear mesh is
 # relocated by gmsh's Relocate3D pass, which moves no node of a fault or
-# an interface. The validation report holds the faults' own checks
-# (every face a face of two cells, every face pointing into the hanging
-# wall) and the warnings beside the usual ones; the manifest, of the
-# schema of a mesh with faults, gains one record a fault, and each layer
-# the list of element attributes its cells carry, its collars' after its
-# own.
+# an interface. The surfaces are meshed by gmsh's Delaunay algorithm
+# (`algorithm_2d=5`) in place of its default, the frontal Delaunay one:
+# under the default the volume mesher leaves a nearly flat cell beside a
+# fault here, which the relocation does not remove, and under this one
+# it leaves none. The validation report gives the shape of the worst
+# cell as minSICN (gmsh's signed inverse condition number, 1 for a
+# regular tetrahedron, falling to 0 as a cell flattens) and holds the
+# faults' own checks (every face a face of two cells, every face
+# pointing into the hanging wall) and the warnings beside the usual
+# ones; the manifest, of the schema of a mesh with faults, gains one
+# record a fault, and each layer the list of element attributes its
+# cells carry, its collars' after its own.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_faults_"))
 size = 0.05
 result = build_layered_mesh(
-    MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2,
+    MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=2, algorithm_2d=5,
              faults=[EmbeddedFault(f, name=n, sizing=size) for n, f in faults.items()]),
     work / "faulted")
 print(f"{result.counts['elements']} elements, {result.counts['nodes']} nodes")

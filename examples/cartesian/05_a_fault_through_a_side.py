@@ -75,7 +75,9 @@ record = card.fault_record("fault")
 # What the manifest records: the fault's boundary attribute, and one
 # curve group of each kind it has, numbered 4k - 3 to 4k for the k-th
 # fault (tip, free edge, junction, face edge), None where it has none;
-# the box's faces after the interfaces, each with its plane.
+# its collars, the element attributes of the cells of its hanging wall
+# that touch its slip; the box's faces after the interfaces, each with
+# its plane.
 
 # %%
 print(f"fault {record['name']!r}: boundary attribute {record['attribute']}, tip "

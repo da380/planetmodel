@@ -475,7 +475,7 @@ def test_adgia_s_range_over_its_fault_at_unit_scale(tmp_path):
     assert np.all(side[walls == 1] > 0.0) and np.all(side[walls == -1] < 0.0)
     # measured: 2.1e-6 of the element size on the fault, 0.04
     assert gate(res, Fault([fault])) * H / 0.04 < 1e-5
-    assert res.counts["dim3"] < 5000
+    assert res.counts["elements"] < 5000
 
 
 # ------------------------------------------------------------ pictures

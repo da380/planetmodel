@@ -33,8 +33,10 @@ def test_the_model_readers_give_each_kind_its_own_model(model_files):
     ball, box = model_files
     assert modelfile.schema_of(ball) == modelfile.SCHEMA
     assert modelfile.schema_of(box) == modelfile.SCHEMA_FLAT
-    assert type(modelfile.read_model(ball)) is Model
-    assert type(modelfile.read_model(box)) is flat.Model
+    assert isinstance(modelfile.read_model(ball), Model)
+    assert isinstance(modelfile.read_model(box), flat.Model)
+    assert type(modelfile.read_model(ball, model_type=())) is Model
+    assert type(modelfile.read_model(box, model_type=())) is flat.Model
     modelfile.validate_structure(ball)
     modelfile.validate_structure(box)
     assert modelfile.read_surfaces(box) == {}

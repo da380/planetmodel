@@ -68,6 +68,8 @@ def test_mfem_reads_the_attributes_and_the_sides(delivered, name):
     export, card = out["physical"]
     assert card.schema == sc.SCHEMA_FLAT
     assert card.mesh["nodes"] == "reference"     # the identity moves nothing
+    for what in ("elements", "boundary_elements", "nodes"):
+        assert export.counts[what] == res.counts[what]
     assert out["referential"][1].faults == card.faults
     mesh = load(export)
     built = read_mesh(res.mesh_path)

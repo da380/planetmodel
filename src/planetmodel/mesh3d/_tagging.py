@@ -65,7 +65,8 @@ class Tagging:
     `directions` the outward direction of every boundary entity that has
     one in its own right, in the mesh's coordinates; a concentric domain
     has neither, its boundaries facing away from the centre they
-    enclose.
+    enclose, but for the inner boundary of a hollow one, which faces it
+    (`inward`).
     """
 
     dimension: int
@@ -79,6 +80,13 @@ class Tagging:
 
     #: The name of the layered coordinate an interface is placed by.
     coordinate = "radius"
+
+    @property
+    def inward(self) -> tuple[int, ...]:
+        """The boundary entities that face the centre they enclose: the
+        inner boundary of a hollow domain, the body's own boundary, which
+        points out of the body."""
+        return (self.faces[0],) if self.hollow else ()
 
     def distance(self, k: int, *, centre: ArrayLike = (0.0, 0.0, 0.0)) -> str:
         """The distance to interface k, an expression gmsh evaluates: to

@@ -14,7 +14,7 @@ the committed interface is three methods on Cartesian points of shape
         def jacobian(self, X)              -> J,     (...)
 
 Anything exposing these is a Mapping.  An optional tier, discovered by
-attribute, adds `displacement(X) = m(X) - X`, `is_valid(...)`,
+attribute, adds `displacement(X) = m(X) - X`, `validity(...)`,
 `inverse(x)`, `linearise(delta, X=...)`, `knots` (radii where F may
 jump), `is_identity`, and `scaled(k)`, the mapping k m(X / k) of a body
 k times the size in the mapping's own form; MappingBase provides
@@ -23,13 +23,14 @@ generic versions of the first two, and `scaled_mapping(m, k)` asks for
 carries `h`, its radial displacement, and
 `deformation_gradient_spherical(X)`.
 
-`is_valid` takes Cartesian points X or a sample of coordinates, which
-are spherical (r, theta, phi) unless `coordinates` names another system
-(`planetmodel.coordinates`); the sample's points and the worst point it
-reports are that system's, and a `ScaledMapping` scales the sample
-through it.  `validity` tells a mapping's own `is_valid` the system only
-when it is not the sphere, so one written for spherical samples alone
-keeps working there.
+A mapping's `validity` returns a `ValidityReport` on Cartesian points X
+or on a sample of coordinates, which are spherical (r, theta, phi)
+unless `coordinates` names another system (`planetmodel.coordinates`);
+the sample's points and the worst point it reports are that system's,
+and a `ScaledMapping` scales the sample through it.  The free function
+`validity(m, ...)` asks any mapping, with the method or without, and
+tells the method the system only when it is not the sphere, so one
+written for spherical samples alone keeps working there.
 
 Mappings are Cartesian-first because meshes and solvers are; the
 conversion to and from (r, theta, phi) happens once, through
@@ -61,8 +62,8 @@ __all__ = [
 ]
 
 #: A set of points given as (r, theta, phi) arrays that broadcast against
-#: one another, as `validity_lattice` builds and `is_valid(sample=...)`
-#: takes; (c, a, b) of another system where `is_valid` is told it.
+#: one another, as `validity_lattice` builds and `validity(sample=...)`
+#: takes; (c, a, b) of another system where `validity` is told it.
 type SphericalSample = tuple[ArrayLike, ArrayLike, ArrayLike]
 
 #: A point closer to the origin than this fraction of `rmax` is treated as
@@ -162,7 +163,7 @@ class MappingPerturbation:
 
 def validity_lattice(skeleton: Skeleton, *, n_r: int = 8, n_theta: int = 25,
                      n_phi: int = 16) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """A (r, theta, phi) sample covering a skeleton, for `is_valid(sample=...)`.
+    """A (r, theta, phi) sample covering a skeleton, for `validity(sample=...)`.
 
     `n_r` radii are laid strictly inside every layer of the skeleton, so
     a thin layer is sampled as densely as a thick one, and the centre is
@@ -188,7 +189,7 @@ def outer_radius_of(domain: float | Skeleton | Geometry) -> float:
 
 def _points_or_sample(X: ArrayLike | None, sample: SphericalSample | None,
                       coordinates: Coordinates | None) -> np.ndarray:
-    """Cartesian points from either argument of `is_valid`, the sample in
+    """Cartesian points from either argument of `validity`, the sample in
     `coordinates` (spherical when None), or ValueError."""
     if X is None and sample is not None:
         X = (cartesian_points(*sample) if coordinates is None
@@ -202,15 +203,15 @@ def _points_or_sample(X: ArrayLike | None, sample: SphericalSample | None,
 def validity(m: Mapping, *, X: ArrayLike | None = None,
              sample: SphericalSample | None = None,
              coordinates: Coordinates | None = None) -> ValidityReport:
-    """A mapping's verdict on the points or sample: its own `is_valid`
-    where it has one, else J > 0 there (`MappingBase.is_valid`).  The
-    sample is in `coordinates`, spherical when None; the mapping's own
-    `is_valid` is told the system only when it is not `SPHERICAL`."""
+    """A mapping's verdict on the points or sample: its own `validity`
+    method where it has one, else J > 0 there (`MappingBase.validity`).
+    The sample is in `coordinates`, spherical when None; the mapping's
+    own method is told the system only when it is not `SPHERICAL`."""
     told = {} if coordinates is None or coordinates == SPHERICAL else {
         "coordinates": coordinates}
-    if hasattr(m, "is_valid"):
-        return m.is_valid(X=X, sample=sample, **told)
-    return MappingBase.is_valid(m, X=X, sample=sample, **told)
+    if hasattr(m, "validity"):
+        return m.validity(X=X, sample=sample, **told)
+    return MappingBase.validity(m, X=X, sample=sample, **told)
 
 
 def scaled_mapping(m: Mapping, k: float) -> Mapping:
@@ -227,7 +228,7 @@ def scaled_mapping(m: Mapping, k: float) -> Mapping:
 class MappingBase:
     """Generic implementations of the optional tier, built on m, F and J.
 
-    Mix it in for `displacement`, `right_cauchy_green`, `is_valid`, and
+    Mix it in for `displacement`, `right_cauchy_green`, `validity`, and
     refusals of `inverse` and `linearise`; nothing requires it.
     """
 
@@ -253,7 +254,7 @@ class MappingBase:
         X = np.asarray(X, dtype=float)
         return np.asarray(self(X), dtype=float) - X
 
-    def is_valid(self, *, X: ArrayLike | None = None,
+    def validity(self, *, X: ArrayLike | None = None,
                  sample: SphericalSample | None = None,
                  coordinates: Coordinates | None = None) -> ValidityReport:
         """Whether J > 0 on the given points or on a sample of coordinates,
@@ -321,7 +322,7 @@ class IdentityMapping(MappingBase):
         """The identity, on a body of any size."""
         return self
 
-    def is_valid(self, *, X: ArrayLike | None = None,
+    def validity(self, *, X: ArrayLike | None = None,
                  sample: SphericalSample | None = None,
                  coordinates: Coordinates | None = None) -> ValidityReport:
         """Valid everywhere, whatever the sample and its system."""
@@ -421,7 +422,7 @@ class RadialStretch(MappingBase):
         h, dr = self._radial(r, theta, phi)
         return (1.0 + dr) * (1.0 + self._ratio(r, h, dr)) ** 2
 
-    def is_valid(self, *, X: ArrayLike | None = None,
+    def validity(self, *, X: ArrayLike | None = None,
                  sample: SphericalSample | None = None,
                  coordinates: Coordinates | None = None) -> ValidityReport:
         """The analytic conditions 1 + dh/dr > 0 and 1 + h/r > 0.
@@ -595,8 +596,8 @@ class ScaledMapping(MappingBase):
 
     Points of the scaled body are divided by k, mapped, and multiplied
     back.  F and J pass through unchanged, since both are dimensionless;
-    `knots` are multiplied by k.  `is_valid` is the underlying mapping's
-    `validity` in its own coordinates; `inverse` and `linearise` are its
+    `knots` are multiplied by k.  `validity` is the underlying mapping's
+    verdict in its own coordinates; `inverse` and `linearise` are its
     own where it has them (a perturbation delta of the scaled body is
     delta(k r) / k to it), refused otherwise.
     """
@@ -620,7 +621,7 @@ class ScaledMapping(MappingBase):
         """J of the underlying mapping at X / k."""
         return self.mapping.jacobian(np.asarray(X, dtype=float) / self.k)
 
-    def is_valid(self, *, X: ArrayLike | None = None,
+    def validity(self, *, X: ArrayLike | None = None,
                  sample: SphericalSample | None = None,
                  coordinates: Coordinates | None = None) -> ValidityReport:
         """The underlying mapping's verdict, in its own coordinates: the

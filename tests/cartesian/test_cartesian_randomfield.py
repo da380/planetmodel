@@ -1,7 +1,7 @@
 """Random fields of flat layers: the layer basis and its order, members
 shared between wavevectors of equal length, the exact marginal standard
 deviation, the Matern covariance along every direction of a box, and
-the samplers' views of a coefficient vector."""
+the samplers' views of a coefficient vector and of a batch of them."""
 import numpy as np
 import pytest
 from scipy.special import gamma, kv
@@ -125,7 +125,7 @@ def test_the_variance_rule_runs_over_the_whole_basis():
     several = [b.theta[-1] for b in basis if b.nmodes > 1]
     cut = max(several)
     for b in basis:
-        vals = family.eigvalsh(b.degree)
+        vals = family.eigvalsh(b.label)
         if b.nmodes < vals.size:
             assert vals[b.nmodes] >= cut * (1.0 - 1e-12)
     # short wavelengths keep fewer modes than the constant, one at least
@@ -300,8 +300,8 @@ def test_sample_statistics_agree_with_the_marginal():
     grid = flat.Grid(flat.Box([(0.0, 6.0), (0.0, 6.0)]), (8, 8))
     grf = flat.BoxGRF(0.0, 3.0, grid, 1.5, 0.8, sigma=2.0, tol=1e-4)
     draws = 200
-    c = grf.sample(rng=7, size=draws)
-    values = np.stack([grf.on_grid(v) for v in c])           # draws, depth, x, y
+    values = grf.on_grid(grf.sample(rng=7, size=draws))      # draws, depth, x, y
+    assert values.shape == (draws, grf.r.size, 8, 8)
     var = np.mean(values ** 2, axis=(0, 2, 3))
     np.testing.assert_allclose(var, 4.0, rtol=5.0 * np.sqrt(2.0 / draws))
 
@@ -386,7 +386,12 @@ def test_a_transform_or_a_padded_domain_names_the_lateral_grid():
                                  (8, 6))
     assert grf.transform.domain == domain and grf.transform.lengths == (6.0, 4.0)
     line = flat.BoxGRF(0.0, 2.0, fourier.Transform((8,), (5.0,)), 1.5, 0.8, tol=1e-3)
-    assert isinstance(line.grid.domain, flat.Rectangle)
+    assert line.grid == flat.Grid(flat.Rectangle((0.0, 5.0)), 8)
+    # a padded domain of one axis is a rectangle of its bounds and padding
+    padded = fourier.PaddedDomain([(1.0, 4.0)], padding=0.5)
+    line = flat.BoxGRF(0.0, 2.0, fourier.Transform((8,), padded), 1.5, 0.8, tol=1e-3)
+    assert line.grid == flat.Grid(flat.Rectangle((1.0, 4.0), padding=0.5), 8)
+    assert line.transform.domain == padded and line.transform.lengths == (4.0,)
     with pytest.raises(NotImplementedError, match="3 axes is not built"):
         flat.BoxGRF(0.0, 2.0, fourier.Transform((4, 4, 4), (1.0, 1.0, 1.0)), 1.5, 0.8)
     with pytest.raises(TypeError, match="lateral grid"):
@@ -426,6 +431,77 @@ def test_depth_sample_and_field():
                                atol=1e-12 * np.abs(values).max())
     np.testing.assert_allclose(grf.to_layer(c)(grf.r), values, rtol=0.0,
                                atol=1e-12 * np.abs(values).max())
+    for held in (grf.sigma, grf.scale, grf.coefficient_std):
+        assert not held.flags.writeable
+
+
+def test_a_batch_goes_through_every_method(small_grf):
+    """Whatever takes a coefficient vector takes a batch of them: an array
+    comes back with the batch axis leading and a field as a tuple over
+    the batch, each entry what the vector alone gives."""
+    grf, grid = small_grf, small_grf.grid
+    c = grf.sample(rng=5, size=3)
+    nodal, values, pp = grf.synthesise(c), grf.on_grid(c), grf.coefficient_functions(c)
+    assert nodal.shape == (3, grid.transform.size, grf.r.size)
+    assert values.shape == (3, grf.r.size) + grid.shape
+    np.testing.assert_array_equal(grf.sample_grid(rng=5, size=3), values)
+    assert pp(2.5).shape == (3, grid.transform.size)
+    fields = grf.to_field(c, name="dlnvs")
+    assert isinstance(fields, tuple) and len(fields) == 3
+    for k in range(3):
+        np.testing.assert_array_equal(nodal[k], grf.synthesise(c[k]))
+        np.testing.assert_array_equal(values[k], grf.on_grid(c[k]))
+        np.testing.assert_array_equal(pp(2.5)[k], grf.coefficient_functions(c[k])(2.5))
+        assert isinstance(fields[k], flat.FourierField) and fields[k].name == "dlnvs"
+        np.testing.assert_array_equal(fields[k].on_grid(grf.r, grid),
+                                      grf.to_field(c[k]).on_grid(grf.r, grid))
+    assert grf.on_grid(c[:0]).shape == (0, grf.r.size) + grid.shape
+    assert grf.to_field(c[:0]) == ()
+
+    depth = flat.DepthGRF(0.0, 4.0, 1.5, varying, sigma=sigma_of)
+    c = depth.sample(rng=5, size=3)
+    u = depth.synthesise(c)
+    assert u.shape == (3, depth.r.size)
+    layers, fields = depth.to_layer(c), depth.to_field(c, name="f")
+    assert isinstance(layers, tuple) and isinstance(fields, tuple)
+    assert len(layers) == len(fields) == 3
+    for k in range(3):
+        np.testing.assert_allclose(u[k], depth.synthesise(c[k]), rtol=1e-13,
+                                   atol=1e-18)
+        assert isinstance(fields[k], flat.DepthField) and fields[k].name == "f"
+        np.testing.assert_array_equal(layers[k](depth.r), depth.to_layer(c[k])(depth.r))
+        np.testing.assert_array_equal(fields[k].evaluate(depth.r, 0.3, 0.4),
+                                      depth.to_field(c[k]).evaluate(depth.r, 0.3, 0.4))
+
+    model = flat.CrustOverMantle(flat.Box([(0.0, 400e3), (0.0, 300e3)]))
+    nl = model.skeleton.nlayers
+    for lateral in (None, flat.Grid(model.geometry.domain, (6, 4))):
+        layered = flat.LayeredGRF(model, 1.5, 40e3, grid=lateral, sigma=0.03,
+                                  layers=[0, -1], tol=1e-3)
+        c = layered.sample(rng=3, size=2)
+        assert c.shape == (2, layered.size)
+        rng = np.random.default_rng(3)
+        for row in c:
+            np.testing.assert_array_equal(row, layered.sample(rng=rng))
+        both = layered.to_fields(c)
+        assert len(both) == 2 and all(len(fields) == nl for fields in both)
+        for k in range(2):
+            alone = layered.to_fields(c[k])
+            for i in range(nl):
+                d = np.linspace(*model.skeleton.interval(i), 5)
+                np.testing.assert_array_equal(both[k][i].evaluate(d, 1e3, 2e3),
+                                              alone[i].evaluate(d, 1e3, 2e3))
+
+    # one vector or a batch of them, and nothing else
+    for sampler, methods in (
+            (grf, ("synthesise", "on_grid", "coefficient_functions", "to_field")),
+            (depth, ("synthesise", "to_layer", "to_field")),
+            (layered, ("to_fields",))):
+        for method in methods:
+            for wrong in (np.zeros(sampler.size + 1), np.zeros((2, 3, sampler.size)),
+                          np.zeros((sampler.size, 2)), 0.0):
+                with pytest.raises(ValueError, match="coefficient vector"):
+                    getattr(sampler, method)(wrong)
 
 
 # -- the layers of a model ----------------------------------------------------------

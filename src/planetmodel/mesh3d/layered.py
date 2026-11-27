@@ -53,7 +53,9 @@ angle to an interface or to the outer boundary: such a mesh fails its
 validation or the check of its collars and is refused, never written.
 Whether one is left depends on the surface meshes, so another
 `algorithm_2d` (gmsh's Delaunay, 5, in place of its frontal Delaunay,
-6) or other sizes are what to try.
+6) or other sizes are what to try.  Neither algorithm is the better
+throughout: the Delaunay one has left no such element where the frontal
+one does, and gives cells of a slightly worse shape elsewhere.
 """
 from __future__ import annotations
 
@@ -68,7 +70,7 @@ from ._faults import (CollarTagging, add_surfaces, apply_fault_groups, assign_co
                       curve_names, fault_entries, fault_refinements, prepare_faults,
                       settle_faults)
 from ._layout import Layout, layout_of
-from ._orient import orient_mesh, raise_order
+from ._orient import orient_circles, orient_mesh, raise_order
 from ._session import session
 from ._sizing import (apply_mesh_options, apply_refinements, apply_size_fields,
                       check_sizing_resolves_spans)
@@ -174,8 +176,11 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
             timings["optimise"] = clock() - t0
 
         t0 = clock()
-        orient_mesh(d, directions=tagging.directions, faults=surfaces)
+        orient_mesh(d, directions=tagging.directions, inward=tagging.inward,
+                    faults=surfaces)
         raise_order(d, spec.order)
+        orient_circles(d, directions=tagging.directions, inward=tagging.inward,
+                       skip=surfaces)
         timings["orient"] = clock() - t0
 
         t0 = clock()
@@ -233,6 +238,7 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
         confirm_collars(msh_path, manifest_path)
         timings["collars"] += clock() - t0
 
+    counts["order"] = spec.order
     counts["layers"] = domain.nlayers
     counts["interfaces"] = len(domain.interfaces)
     if face_names:

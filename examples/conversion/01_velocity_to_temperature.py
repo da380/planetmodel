@@ -5,8 +5,8 @@
 # reference, dlnVs. Taken as purely thermal, it becomes a temperature
 # anomaly in one of two ways: divided by the sensitivity d ln Vs / dT, or
 # turned into a density anomaly and divided by the thermal expansivity,
-# as sl3d does. Here a made-up anomaly on PREM's lower mantle goes both
-# ways.
+# as the sea-level code sl3d does. Here a made-up anomaly on PREM's
+# lower mantle goes both ways.
 #
 # Needs: plot
 # Network: none

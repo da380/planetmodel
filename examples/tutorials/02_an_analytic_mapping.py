@@ -22,6 +22,7 @@ import numpy as np
 from planetmodel import (
     CallableDisplacement,
     Geometry,
+    RadialMesh,
     RadialStretch,
     Skeleton,
     testing,
@@ -131,14 +132,14 @@ print(
 # A mapping must preserve orientation, meaning `J > 0` everywhere;
 # otherwise the physical body folds over on itself. For a radial stretch
 # `J = (1 + dh/dr) (1 + h/r)^2`, so this is two conditions, `1 + dh/dr > 0`
-# and `1 + h/r > 0`, and `is_valid` checks them on a sample of points.
+# and `1 + h/r > 0`, and `validity` checks them on a sample of points.
 # `validity_lattice` builds a sample that covers every layer of a
 # skeleton, thin ones as densely as thick ones, and reaches both poles.
 # When the check fails, the report says which condition failed and where.
 
 # %%
 lattice = validity_lattice(sk)
-print(m.is_valid(sample=lattice))
+print(m.validity(sample=lattice))
 
 # Exaggerate the flattening until the poles move inward faster than the
 # radius grows, which happens when the amplitude a passes one.
@@ -146,15 +147,16 @@ for amp in (100.0, 250.0, 480.0):
     big = RadialStretch(
         CallableDisplacement(lambda r, t, p, a=amp: a * h(r, t, p)), rmax=sk
     )
-    print(f"{amp:5.0f} x:", big.is_valid(sample=lattice))
+    print(f"{amp:5.0f} x:", big.validity(sample=lattice))
 
 # %% [markdown]
 # ## A geometry with a mapping
 #
-# A geometry accepts a mapping only if three things hold: it is valid on
-# the lattice, it is continuous across every interior boundary, and any
-# jump in its gradient lies on a boundary of the skeleton. These are the
-# properties a mesher relies on, so it need not check them again.
+# A geometry accepts a mapping only if two things hold: it is valid on
+# the lattice, and it is continuous across every interior boundary. Its
+# gradient may jump, but only at the radii the mapping declares as its
+# knots. These are the properties a mesher relies on, so it need not
+# check them again.
 
 # %%
 g = Geometry(
@@ -174,12 +176,16 @@ print(same)
 
 # %% [markdown]
 # A displacement whose derivative with respect to `r` jumps at some
-# radius is allowed, but the jump must lie on a boundary, because a mesh
-# puts element edges on boundaries and nowhere else. The displacement
-# declares such radii as its knots. The example is relief confined to
-# the crust, growing in proportion to height above the Moho. Its
-# derivative jumps at the Moho, which is a boundary, so the geometry
-# accepts it. Move the jump into the mantle and the geometry refuses.
+# radius is allowed, as long as the displacement declares that radius as
+# one of its knots. A knot may be a boundary of the skeleton or a radius
+# inside a layer. The geometry reports the knots of its mapping, and a
+# radial mesh, the chain of elements along the radius that the next
+# tutorial builds, puts an element edge on each of them, so that no
+# element contains a jump. The example is relief that grows in
+# proportion to height above a chosen radius. With that radius on the
+# Moho the knot is a boundary, where the mesh has an edge already. With
+# it in the mantle the geometry is accepted just the same, and the mesh
+# gains an edge at the knot.
 
 
 # %%
@@ -190,12 +196,11 @@ def crustal_bulge(knot):
     return CallableDisplacement(hk, knots=[knot], name="crustal bulge")
 
 
-ok = Geometry(sk).stretched(crustal_bulge(0.99))
-print("kink on the Moho:", ok.knots(), "accepted")
-try:
-    Geometry(sk).stretched(crustal_bulge(0.9))
-except ValueError as err:
-    print("kink in the mantle:", err)
+for where, knot in (("on the Moho", 0.99), ("in the mantle", 0.9)):
+    kinked = Geometry(sk).stretched(crustal_bulge(knot))
+    mesh = RadialMesh(kinked, drmax=0.25)
+    edges = np.append(mesh.left, mesh.right[-1])
+    print(f"kink {where}: knots {kinked.knots} | element edges {np.round(edges, 3)}")
 
 # %% [markdown]
 # ## A mapping that is not radial
@@ -239,10 +244,10 @@ testing.check_geometry(squashed)
 # %% [markdown]
 # A geometry with a mapping can be refined, truncated or hollowed, since
 # the mapping stays continuous on the result. It cannot be extended or
-# coarsened: extending would ask the mapping about points it was not
-# built for, and coarsening would remove boundaries its gradient may jump
-# on. For those, change the skeleton first and build the mapping for the
-# result.
+# coarsened: the library allows those only while the mapping is the
+# identity, and extending would ask the mapping about points it was not
+# built for. For those, change the skeleton first and build the mapping
+# for the result.
 
 # %%
 print(g.refined([0.9]).nlayers, "layers after refining")

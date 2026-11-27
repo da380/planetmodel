@@ -49,8 +49,9 @@ A cell's nodes are in MFEM's order, the corners of a quadrilateral
 counter-clockwise and a hexahedron's bottom face then its top, and in a
 block the last local direction is the radial one.  The faces of a
 level's surface point away from the centre (in the plane, run
-counter-clockwise about it), as the interfaces of every mesh of this
-library do.
+counter-clockwise about it), or towards it where asked, which is how
+the inner boundary of a hollow body is written: out of the body, as
+every builder of this library writes it.
 
 Nothing here needs more than numpy, and nothing knows about units.
 """

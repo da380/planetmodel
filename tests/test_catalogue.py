@@ -168,6 +168,48 @@ def test_frozen_keeps_the_class_and_elastic_drops_the_rheology():
     assert fe.moduli("lower_mantle")["L"].dtype == np.complex128
 
 
+def test_prem_declares_its_reference_frequency_in_every_scale_and_copy():
+    """`omega_ref` is 2 pi rad/s, a period of 1 s, declared as a mineos
+    deck's model declares it; in other scales it is that frequency
+    converted, and the band is dispersed about it as about the default of
+    a model that declares none."""
+    from planetmodel.rheology import omega_ref_constant, reference_omega
+    from planetmodel.units import FREQUENCY
+    geo = Scales.geophysical(6371e3)
+    omega = 2 * np.pi / 300.0
+    for make in (PREM, lambda: PREM(ocean=False)):
+        m = make()
+        assert m.constants["omega_ref"] == omega_ref_constant(1.0)
+        assert m.constants["omega_ref"].dimensions == FREQUENCY
+        assert m.constants["omega_ref"].value_si == 2 * np.pi
+        assert m.constant("omega_ref") == m.reference_omega() == 2 * np.pi
+        for out in (m.nondimensionalised(), m.converted(geo),
+                    m.converted(geo).in_si(), m.truncated(6000e3),
+                    m.frozen(omega), m.elastic(), m.isotropic()):
+            assert out.constants["omega_ref"] == m.constants["omega_ref"]
+            unit = out.scales.factor(FREQUENCY)
+            assert out.reference_omega() == out.constant("omega_ref") == (
+                2 * np.pi / unit)
+            bare = out.replaced(constants={
+                k: c for k, c in out.constants.items() if k != "omega_ref"})
+            assert "omega_ref" not in bare.constants
+            assert reference_omega(bare) == out.reference_omega()
+        nd = m.nondimensionalised()
+        assert nd.constant("omega_ref") != 2 * np.pi
+        w = omega / nd.scales.factor(FREQUENCY)
+        bare = nd.replaced(constants={
+            k: c for k, c in nd.constants.items() if k != "omega_ref"})
+        for got, want in ((nd.frozen(w), bare.frozen(w)),
+                          (m.frozen(omega), m.frozen(
+                              omega, reference_omega=2 * np.pi))):
+            r = 0.5 * sum(got.layer("lower_mantle").interval)
+            for name in "ACFLN":
+                assert got.moduli("lower_mantle")[name](r) == (
+                    want.moduli("lower_mantle")[name](r))
+    with pytest.raises(ValueError, match="a reference period is positive"):
+        omega_ref_constant(0.0)
+
+
 def test_isotropic_is_the_voigt_average_and_keeps_the_rest():
     m = PREM()
     iso = m.isotropic()
@@ -302,6 +344,64 @@ def test_elastic_completes_the_description_in_both_directions():
     # a bare mapping through the free function, and a no-op where complete
     assert "vp" in with_velocities(dict(core.fields))
     assert with_velocities(dict(shell.fields)) == dict(shell.fields)
+
+
+def test_extended_completes_the_elastic_description_of_a_given_layer():
+    """A layer appended with its fields given holds the five Love moduli
+    beside them, as a layer given on construction does, on a model type
+    that is self-gravitating as well, whatever the order of its bases."""
+    from planetmodel import (DENSITY, Elastic, Model, SelfGravitating,
+                             constant_field)
+    from planetmodel.mesh1d.stratification import BULLEN_EXCESS
+
+    class ElasticFirst(Elastic, SelfGravitating, Model):
+        pass
+
+    class GravityFirst(SelfGravitating, Elastic, Model):
+        pass
+
+    base = LayeredIsotropicElastic([0.0, 1.0, 2.0], rho=[3.0, 2.0], vp=[2.0, 2.0],
+                                   vs=[0.0, 1.0])
+    iv, r = (2.0, 3.0), 2.5
+    given = {"rho": constant_field(iv, 1.5, character=DENSITY, name="rho"),
+             "vp": constant_field(iv, 2.0, name="vp"),
+             "vs": constant_field(iv, 1.0, name="vs")}
+    five = {"rho": given["rho"],
+            **{n: constant_field(iv, v, character=DENSITY, name=n)
+               for n, v in dict(A=6.0, C=6.0, F=3.0, L=1.5, N=1.5).items()}}
+    for cls in (ElasticFirst, GravityFirst):
+        m = cls(base.geometry, [layer.fields for layer in base.layers])
+        out = m.extended([3.0], fields=[given])
+        top = out.layer(-1)
+        assert type(out) is cls
+        assert set(top.names) == {"rho", "vp", "vs", "A", "C", "F", "L", "N"}
+        # A = C = rho vp^2, L = N = rho vs^2 and F = A - 2 L
+        assert top["A"](r) == top["C"](r) == 1.5 * 2.0 ** 2
+        assert top["L"](r) == top["N"](r) == 1.5 * 1.0 ** 2
+        assert top["F"](r) == 6.0 - 2.0 * 1.5
+        assert out.moduli(-1)["A"] is top["A"] and not out.is_fluid(-1)
+        assert np.isclose(out.mass() - m.mass(),
+                          4.0 * np.pi * 1.5 * (3.0 ** 3 - 2.0 ** 3) / 3.0, rtol=1e-13)
+        testing.check_model(out)
+        # rho with the five is completed the other way, by the velocities
+        other = m.extended([3.0], fields=[five]).layer(-1)
+        assert set(other.names) == {"rho", "A", "C", "F", "L", "N", "vp", "vs"}
+        assert np.isclose(other["vp"](r), 2.0) and np.isclose(other["vs"](r), 1.0)
+        # an empty layer stays empty, one too incomplete to describe the medium
+        # is left as given, and a continuation takes the last layer's
+        assert m.extended([3.0]).layer(-1).names == ()
+        assert m.extended([3.0], fields=[{"vp": given["vp"]}]).layer(-1).names \
+            == ("vp",)
+        for how in ("extrapolate", "hold"):
+            assert m.extended([3.0], fields=how).layer(-1).names == m.layer(-1).names
+        # the Bullen excess of a stratified fluid is not continued with it
+        fluid = m.truncated(1.0).with_bullen_excess(0, 0.02)
+        more = fluid.extended([1.5], fields="extrapolate")
+        assert BULLEN_EXCESS in more.layer(0) and BULLEN_EXCESS not in more.layer(1)
+        assert "A" in more.layer(1) and more.is_fluid(1)
+    # the catalogue's own type
+    grown = base.extended([3.0], fields=[given])
+    assert grown.layer(-1)["A"](r) == 6.0 and grown.layer(-1)["L"](r) == 1.5
 
 
 def test_with_field_on_an_elastic_name_re_derives_the_rest():
@@ -462,3 +562,52 @@ def test_replacing_rho_makes_the_velocities_the_description():
     assert np.isclose(lay["vs"](0.5), 1.0) and np.isclose(lay["L"](0.5), 4.0)
     assert "mu" not in lay and "kappa" not in lay      # the other families go
     testing.check_model(heavy)
+
+
+def test_a_model_type_is_the_behaviours_given_over_a_leaf():
+    """`model_type` is one class for each combination of behaviours over a
+    leaf, in the order given, and the leaf itself for none; its
+    constructor is the leaf's, with `Elastic`'s completion of the moduli;
+    a model names its behaviours in the order of its bases."""
+    from planetmodel import Model, cartesian
+    from planetmodel.behaviours import (BEHAVIOURS, ConstantQ, Elastic,
+                                        SelfGravitating, Viscoelastic, model_type)
+
+    assert BEHAVIOURS == (Elastic, ConstantQ, SelfGravitating, Viscoelastic)
+    assert PREM().behaviours == tuple(b.__name__ for b in BEHAVIOURS)
+    assert Model(Geometry(Skeleton([0.0, 1.0])), [{}]).behaviours == ()
+    cls = model_type(Model, (Elastic, SelfGravitating))
+    assert cls is model_type(Model, [Elastic, SelfGravitating])
+    assert cls.__mro__[:4] == (cls, Elastic, SelfGravitating, Model)
+    assert cls.__name__ == "ElasticSelfGravitatingModel"
+    other = model_type(Model, (SelfGravitating, Elastic))
+    assert other is not cls and other.__mro__[1] is SelfGravitating
+    assert model_type(Model, ()) is Model
+    flat = model_type(cartesian.Model, (Elastic,))
+    assert issubclass(flat, cartesian.Model) and flat is not model_type(Model,
+                                                                        (Elastic,))
+
+    base = LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[2.0, 1.0], vp=[3.0, 2.0],
+                                   vs=[0.0, 1.0])
+    given = [{n: layer[n] for n in ("rho", "vp", "vs")} for layer in base.layers]
+    m = cls(base.geometry, given, name="made")
+    assert type(m) is cls and m.behaviours == ("Elastic", "SelfGravitating")
+    assert other(base.geometry, given).behaviours == ("SelfGravitating", "Elastic")
+    assert set(m.layer(1).names) == {"rho", "vp", "vs", "A", "C", "F", "L", "N"}
+    assert m.mass() == pytest.approx(base.mass()) and m.is_fluid(0)
+    assert type(m.refined([0.25])) is cls and m.refined([0.25]).name == "made"
+    check_model(m)
+
+    class Tidal:
+        def love_number(self):
+            return 0.3
+
+    own = model_type(Model, (Elastic, Tidal))(base.geometry, given)
+    assert own.behaviours == ("Elastic", "Tidal") and own.love_number() == 0.3
+    with pytest.raises(TypeError, match="a behaviour is a mixin class"):
+        model_type(Model, ("Elastic",))
+    with pytest.raises(TypeError, match="not a model type"):
+        model_type(Model, (Elastic, PREM))
+    with pytest.raises(TypeError, match="expected a model type"):
+        model_type(Elastic, (SelfGravitating,))
+

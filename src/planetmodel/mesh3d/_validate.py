@@ -24,9 +24,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from . import manifest
-from ._orient import (Centres, Directions, FaultSurfaces, element_quality,
-                      facing_dots, fault_dots, node_positions, outward_dots,
-                      signed_measures)
+from ._orient import (Centres, Directions, FaultSurfaces, boundary_dots,
+                      element_quality, fault_dots, node_positions, signed_measures)
 from ._tagging import Tagging
 from .arrays import read_mesh
 from .spec import QUALITY_FLOOR, ValidationReport
@@ -197,24 +196,17 @@ def validate_mesh(tagging: Tagging, *, expected_radii: ArrayLike,
         rep.failures.append(
             f"{rep.negative_cells} cell(s) are negatively oriented; MFEM would "
             "report them as wrong orientation and silently fix them")
-    if d == 3 or directions:
-        centres = centres or {}
 
-        def inward(tag: int) -> int:
-            if tag in directions:
-                dots = facing_dots(d - 1, tag, pos, directions[tag])[1]
-            elif d == 3:
-                dots = outward_dots(tag, pos,
-                                    centre=centres.get(tag, (0.0, 0.0, 0.0)))[1]
-            else:
-                return 0
-            return int((dots < 0.0).sum())
+    def wrong_way(tag: int) -> int:
+        facing = boundary_dots(d, tag, pos, centres=centres, directions=directions,
+                               inward=tagging.inward)
+        return 0 if facing is None else int((facing[1] < 0.0).sum())
 
-        rep.inward_faces = sum(inward(tag) for _, tag in gmsh.model.getEntities(d - 1)
-                               if tag not in faults)
-        if rep.inward_faces:
-            rep.failures.append(
-                f"{rep.inward_faces} boundary face(s) point inward")
+    rep.inward_faces = sum(wrong_way(tag) for _, tag in gmsh.model.getEntities(d - 1)
+                           if tag not in faults)
+    if rep.inward_faces:
+        rep.failures.append(
+            f"{rep.inward_faces} boundary face(s) point the wrong way")
 
     # -- every fault is an oriented interior surface -----------------------
     if faults:

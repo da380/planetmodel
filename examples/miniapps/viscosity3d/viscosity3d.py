@@ -41,8 +41,8 @@ parser.add_argument("--law", choices=sorted(LAWS), default="sl3d",
 parser.add_argument("--renormalise", action="store_true",
                     help="keep each depth's mean viscosity the radial one")
 parser.add_argument("--burgers", action="store_true",
-                    help="a Burgers body (strength 5, viscosity ratio 5) in place of "
-                         "the Maxwell viscosity")
+                    help="a Burgers body (Kelvin modulus fraction 0.2, viscosity "
+                         "ratio 5) in place of the Maxwell viscosity")
 parser.add_argument("--lmax", type=int, default=None,
                     help="filter S40RTS to this degree (all 40 by default)")
 parser.add_argument("--published", default=None,
@@ -123,8 +123,8 @@ names = ["rho", "vpv", "vph", "vsv", "vsh", "eta", "viscosity"]
 if args.power_law is not None:
     names += ["stress_exponent", "transition_stress"]
 if args.burgers:
-    model = prony.with_branches(model, prony.burgers_series(strength=5.0,
-                                                            viscosity_ratio=5.0))
+    model = prony.with_branches(model, prony.burgers_series(
+        kelvin_modulus_fraction=0.2, viscosity_ratio=5.0))
     names = [n for n in names if n != "viscosity"] + [
         f"relaxation_{k}_{n}" for n in (1, 2) for k in ("strength", "time")]
 

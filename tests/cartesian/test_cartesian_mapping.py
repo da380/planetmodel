@@ -120,7 +120,7 @@ def test_the_vertical_stretch_holds_to_the_mapping_contract(w):
     _, x, y = g.lattice(n_c=3, n_a=6, n_b=5)
     d = np.array([0.05, 0.2, 0.35, 0.45, 0.7, 0.95])[:, None, None]
     testing.check_mapping(m, FLAT.points(d, x, y).reshape(-1, 3))
-    assert m.is_valid(sample=g.lattice(), coordinates=FLAT)
+    assert m.validity(sample=g.lattice(), coordinates=FLAT)
     assert isinstance(m.scaled(2.0), VerticalStretch) and m.scaled(2.0).base == 2.0
 
 
@@ -206,7 +206,7 @@ def test_a_stretched_geometry_holds_to_the_geometry_contract():
     interior boundaries; scaling keeps the stretch a stretch."""
     g = box().stretched(stack(), name="topography")
     assert isinstance(g.mapping, VerticalStretch) and g.mapping.base == 1.0
-    assert g.knots() == (0.4,) and g.mapping.name == "topography"
+    assert g.knots == (0.4,) and g.mapping.name == "topography"
     testing.check_geometry(g)
     testing.check_geometry(g.hollowed(0.1))
     testing.check_geometry(g.refined([0.7]))
@@ -250,12 +250,12 @@ def test_a_folding_stack_is_refused_by_name():
     assert not report and report.labels == ("depth", "x", "y")
     assert 0.0 < report.worst_point[0] < 0.4 and abs(report.worst_point[1] - 0.5) < 0.07
     m = VerticalStretch(over, base=1.0)
-    assert not m.is_valid(X=FLAT.points(0.2, 0.5, 0.0)[None])
-    assert m.is_valid(X=FLAT.points(0.6, 0.5, 0.0)[None])      # the mantle is fine
+    assert not m.validity(X=FLAT.points(0.2, 0.5, 0.0)[None])
+    assert m.validity(X=FLAT.points(0.6, 0.5, 0.0)[None])      # the mantle is fine
     # a sample without coordinates is spherical, as the protocol has it
-    assert m.is_valid(sample=(np.array([0.9]), np.array([0.0]), np.array([0.0])))
+    assert m.validity(sample=(np.array([0.9]), np.array([0.0]), np.array([0.0])))
     with pytest.raises(ValueError, match="give either points X"):
-        m.is_valid()
+        m.validity()
 
 
 def test_a_stretched_model_holds_to_the_model_contract():

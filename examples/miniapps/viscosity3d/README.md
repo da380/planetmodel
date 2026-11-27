@@ -46,7 +46,8 @@ Needs the `netcdf` and `maps` extras, and the network the first time
    the transition stress (Pa) on every viscous layer, for a code that
    steps in time (`conversion.building.with_power_law`).
 7. **Prony branches** (`--burgers`). The viscosity replaced by a Burgers
-   body (strength 5, viscosity ratio 5, the values of Caron et al. 2017)
+   body (Kelvin modulus fraction 0.2 and viscosity ratio 5, the
+   relaxation strength 5 and ratio 5 of Caron et al. 2017)
    as its two branches, `relaxation_strength_k` and `relaxation_time_k`,
    the times written as log perturbations.
 8. **The model file.** Written on a Gauss-Legendre grid of band 96

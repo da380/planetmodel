@@ -12,9 +12,13 @@ writes files that the Python reads. It reads and writes:
 - **surface files**, fields on one spherical surface, static or in time
   (`surfacefile.hpp`): reading gives the numbers as stored, held to the
   structure, writing builds a file from your own fields
-  (`SurfaceField`), whole or not at all, and `SurfaceHistory` serves a
-  field's values at any date by the field's own time rule, with the
-  Python's arithmetic;
+  (`SurfaceField`, a field's support and rules the enumerations
+  `TimeSupport`, `TimeRule` and `LateralRule`), whole or not at all, and
+  `SurfaceHistory` serves a field's values at any date by the field's
+  own time rule, with the Python's arithmetic, and the field there as a
+  function of (theta, phi) by its lateral rule, its stored polar values
+  carried along (`Function`); a date is read as `DateOptions` say, as a
+  fault's is;
 - **fault files**, a fault's patches of surface and the slip on them,
   static or in time (`faultfile.hpp`): `ReadFaultFile` makes the Python
   reader's checks and gives a `Fault` (`fault.hpp`) that evaluates as
@@ -36,31 +40,20 @@ writes files that the Python reads. It reads and writes:
   at the nearer end (a `none` slip refusing any date not stored either
   way);
 - **mesh manifests**, the JSON beside every mesh the Python's 3D mesher
-  writes (`manifest.hpp`), on a strict JSON reader of its own
-  (`json.hpp`), with the faults built into a mesh, the element
+  writes (`manifest.hpp`, `ReadMeshManifest`), on a strict JSON reader
+  of its own (`json.hpp`), with the faults built into a mesh, the element
   attributes of their hanging walls, and the three rules of their faces
   (`PlusCell`, `FaultCurves`, `FaultWalls`);
-- **decks**, mineos, Maxwell, prony and burgers tables of knots and
-  TauP's `.nd` and `.tvel` tables (`deck.hpp`), read and written as the
-  Python does, with the names their headers or labels give, a prony
-  deck's number of branches (`PronyBranches`), and the Python's checks
-  of a prony or burgers deck's values, each layer's columns joined into
-  functions of the radius, through the values or through their
-  logarithms (by default `MAXWELL_KINDS`, `PRONY_KINDS` and
-  `BURGERS_KINDS`: a Maxwell deck's viscosity, a prony deck's relaxation
-  times and a burgers deck's two viscosities by `log-linear`, the
-  strengths and the Kelvin modulus fraction by `linear`); a burgers
-  deck's Burgers body becomes its two Prony branches by `BurgersTerms`,
-  and two branches the body by `BurgersParameters` (`prony.hpp`), as the
-  Python's `conversion.prony` forms them;
 - the units, scales and vocabulary of the Python (`units.hpp`,
-  `vocabulary.hpp`);
+  `vocabulary.hpp`), and a Burgers body's two Prony branches
+  (`BurgersTerms`) and the body of two branches (`BurgersParameters`),
+  as the Python's `conversion.prony` forms them (`prony.hpp`);
 - **flat models**, the files of `planetmodel.cartesian`, a body layered
   in depth over a box or a rectangle, in the namespace
   `planetmodel::cartesian` under `planetmodel/cartesian/` (the section
   on flat models below): the flat model file and the flat surface file,
-  read, evaluated and written; the manifest of a flat mesh, with the
-  faces of the box and a fault's face edge; and decks of depths.
+  read, evaluated and written; and the manifest of a flat mesh, with
+  the faces of the box and a fault's face edge.
 
 The library knows no solver and no mesh library. Each code keeps its own
 glue: opening the mesh, sampling fields onto its own discretisation.
@@ -89,12 +82,13 @@ a code installing a library that links planetmodel can export it.
 It needs a C++23 compiler (GCC 13 or Clang 18 and later) and CMake 3.24
 or later. It fetches its one dependency,
 [Interpolation](https://github.com/da380/Interpolation), at the revision
-`PLANETMODEL_INTERPOLATION_TAG` names (`main` between releases; a release
-commit pins it).
+`PLANETMODEL_INTERPOLATION_TAG` names: by default a release tag of
+Interpolation, changed when planetmodel needs a newer one. Set the
+variable to build against another revision.
 The model file needs netCDF-C, found through its CMake package or
 pkg-config. The option `PLANETMODEL_WITH_NETCDF` is on by default, and
 configuring then fails, saying so, if netCDF-C is not found. A code that
-reads only manifests and decks can turn the option off.
+reads only manifests can turn the option off.
 
 ## Reading a model file
 
@@ -176,14 +170,60 @@ a code here builds a structured patch from its control positions
 (`FaultPatch::Structured`), or reads one from a fault file the Python
 wrote.
 
+## Reading and writing a surface file
+
+```cpp
+#include <planetmodel/surfacefile.hpp>
+
+namespace pm = planetmodel;
+const auto history = pm::SurfaceHistory(pm::ReadSurfaceFile("ice.nc"));
+
+// a field's values on the grid at a date, by its own time rule, and the
+// field there as a function of the angles, by its lateral rule
+const auto values = history.Values("ice_thickness", /*date=*/1.5);
+const auto ice = history.Function("ice_thickness", /*date=*/1.5);
+const auto thickness = ice.Value(theta, phi);
+
+// a date past the end of the time axis, held at the last node
+const auto late = history.Values("ice_thickness", /*date=*/9.0,
+                                 {.extrapolation = pm::Extrapolation::Hold});
+
+// a file of your own fields: the support and the rules are enumerations,
+// written as the names the format states them by
+auto file = pm::SurfaceFile{};
+file.grid = pm::GaussLegendre(64);
+file.time = std::vector<double>{0.0, 1.0, 2.5};
+file.variables.emplace(
+    "load", pm::SurfaceField("load", std::move(load),
+                             {.support = pm::TimeSupport::Node,
+                              .time_interpolation = pm::TimeRule::Linear,
+                              .lateral_interpolation = pm::LateralRule::Cubic}));
+pm::WriteSurfaceFile("load.nc", file);
+```
+
+`Function` reads the `linear` and the `cubic` rule. A field stating
+`harmonic` is refused by name, as a variable of a model file stating it
+is, and `Values` still gives its numbers; on a grid lacking a pole a
+field needs its stored polar values (`<name>_poles`) to be a function.
+A file written without a `source` is stamped with this library and its
+version, as a model file and a fault file are.
+
+A mesh manifest is read the same way, by a function:
+
+```cpp
+#include <planetmodel/manifest.hpp>
+
+const auto manifest = planetmodel::ReadMeshManifest("earth.json");
+```
+
 ## Flat models
 
 A flat model is layered in depth below one free surface, over a box, or
 over a rectangle, the cross-section of a body invariant along y. Its
 files are schemas of their own (`planetmodel.model/3`,
 `planetmodel.surface/2`, the manifest's schema 7), read by the headers
-under `planetmodel/cartesian/`, which also write the model file, the surface
-file and the decks, and leave the spherical library as it is.
+under `planetmodel/cartesian/`, which also write the model file and the
+surface file, and leave the spherical library as it is.
 Each reader refuses the other's files by their schema and names the
 reader that takes them.
 
@@ -238,18 +278,15 @@ const auto shift = file.SurfaceFieldOn(1, "shift").Value(x, y);
   positive up, and `flat::WriteModelFile`.
 - **Surface files** (`cartesian/surfacefile.hpp`): `ReadSurfaceFile`,
   `WriteSurfaceFile` and `SurfaceHistory`, which serves a field's values
-  at a date and the field there as a function of (x, y).
-- **Manifests** (`cartesian/manifest.hpp`): `cartesian::MeshManifest`
+  at a date and the field there as a function of (x, y), as the
+  spherical one does.
+- **Manifests** (`cartesian/manifest.hpp`): `cartesian::ReadMeshManifest`
   reads schema 7, the layers and interfaces by depth, the faces of the
   box (`Faces()`, `FaceAttributes()`), and the faults with their
   `face_edge`, the curve where a fault leaves the box through its base
   or a side, its sides free there. `cartesian::FaultCurves` tells that
   edge from the tip by the faces of the box; the other rules of a
   fault's faces are the spherical ones.
-- **Decks of depths** (`cartesian/deck.hpp`): `ELASTIC()`, `MAXWELL()`,
-  `PRONY()` and `BURGERS()` with `depth` for `r`, read and written by
-  `ReadDeck` and `WriteDeck` as the Python does, the layers and
-  interfaces named from the surface down (`DepthNames`).
 - **The fault file** serves as it is: its `cartesian` frame is the flat
   model's points.
 
@@ -330,8 +367,6 @@ tested by its own macro, which the header providing it defines:
 | --- | --- | --- |
 | `PLANETMODEL_HAS_FAULT_SLICE_QUADRATURE` | `fault.hpp` | `Fault::SliceQuadrature` and `FaultSliceQuadrature::SlipOf`; a fault's date read by `DateOptions` (`Fault::Rows`, `SlipVector`, `Quadrature`); `FaultSlip::FromRake` |
 | `PLANETMODEL_HAS_FAULT_FILE_WRITER` | `faultfile.hpp` | `WriteFaultFile` beside `ReadFaultFile` |
-| `PLANETMODEL_HAS_VISCOELASTIC_DECKS` | `deck.hpp` | `PRONY()` and `BURGERS()` beside `MAXWELL()`, their kinds `PRONY_KINDS` and `BURGERS_KINDS`, `PronyColumns`, `PronyBranches`, `PronyHeader`, `BurgersHeader`; `MAXWELL_KINDS` joining the viscosity by `log-linear` |
-| `PLANETMODEL_HAS_LOG_KINDS` | `radial.hpp` | the kinds through the logarithms, `KnotKind::LogCubic`, `LogNatural` and `LogLinear` |
 | `PLANETMODEL_HAS_LOG_RULES` | `rules.hpp` | the model file's radial rules in the logarithm, `RadialRule::LogPolynomial` and `LogLinear` |
 | `PLANETMODEL_HAS_BURGERS_TERMS` | `prony.hpp` | `BurgersTerms` and `BurgersParameters` |
 

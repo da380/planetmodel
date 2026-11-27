@@ -7,10 +7,11 @@ import sys
 import numpy as np
 import pytest
 
-from cubed_cases import COARSE, ball, flattening, shell
+from cubed_cases import COARSE, SPECS, ball, build, flattening, shell
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
-from planetmodel.mesh3d import (CubedSphereSpec, Shell, UniformInterfaces,
-                                build_cubed_sphere, manifest as sc)
+from planetmodel.mesh3d import (CubedSphereSpec, Shell, SquaredCircleSpec,
+                                UniformInterfaces, build_cubed_sphere,
+                                build_squared_circle, manifest as sc)
 from planetmodel.mesh3d import cubed
 from planetmodel.mesh3d.cubed import cell_volumes, volume_tolerance
 from planetmodel.mesh3d.export import (MESH_READ_OPTIONS, jacobian_report,
@@ -37,9 +38,9 @@ def built(tmp_path_factory):
     root = tmp_path_factory.mktemp("cubed")
     out = {}
     for name, (make, dimension, order, shells) in CASES.items():
-        spec = CubedSphereSpec(make(), EDGE, sizing=COARSE, dimension=dimension,
-                               order=order, shells=shells)
-        out[name] = build_cubed_sphere(spec, root / name)
+        spec = SPECS[dimension](make(), EDGE, sizing=COARSE, order=order,
+                                shells=shells)
+        out[name] = build(spec, root / name)
     return out
 
 
@@ -140,6 +141,9 @@ def test_the_report(built, name):
     assert v.group_counts == {"layers": domain.nlayers,
                               "interfaces": len(domain.interfaces)}
     assert res.counts["layers"] == domain.nlayers
+    # the report names its own measure, which is not gmsh's
+    assert v.measure == "shape" and f"shape {v.min_sicn:.3g}" in res.summary()
+    assert "minSICN" not in res.summary() and "minSICN" not in repr(v)
     assert res.counts["levels"] == res.spec.levels
     assert set(res.timings) == {"resolve", "cells", "curve", "validate", "write"}
     assert "elements" in res.summary() and res.mapping is domain.mapping
@@ -156,8 +160,8 @@ def exact_volumes(boundaries, d):
 def test_the_layers_volumes_converge_with_the_order(make, d, tmp_path):
     errors = []
     for order in (1, 2, 3, 4):
-        spec = CubedSphereSpec(make(), EDGE, sizing=COARSE, dimension=d, order=order)
-        res = build_cubed_sphere(spec, tmp_path / f"o{order}")
+        spec = SPECS[d](make(), EDGE, sizing=COARSE, order=order)
+        res = build(spec, tmp_path / f"o{order}")
         mesh = load(res.mesh_path)
         if mesh.GetNodes() is None:
             mesh.SetCurvature(1)
@@ -249,10 +253,45 @@ def test_the_mapping_must_cover_the_shells(tmp_path):
 def test_one_cell_an_edge_and_a_high_order(tmp_path):
     spec = CubedSphereSpec(Geometry(Skeleton([0.0, 1.0])), 1,
                            sizing=UniformInterfaces(1.0, 1.0, 1.0), order=6,
-                           aspect=None)
+                           elongation=None)
     res = build_cubed_sphere(spec, tmp_path / "one")
     assert res.counts["elements"] == 7 and res.validation.ok
     assert res.validation.max_layer_volume_error < 1e-4
+
+
+def test_each_builder_takes_its_own_spec(tmp_path):
+    with pytest.raises(TypeError, match="is built by build_squared_circle"):
+        build_cubed_sphere(SquaredCircleSpec(ball(), 2, sizing=COARSE), tmp_path / "a")
+    with pytest.raises(TypeError, match="is built by build_cubed_sphere"):
+        build_squared_circle(CubedSphereSpec(ball(), 2, sizing=COARSE), tmp_path / "b")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("dimension", [3, 2])
+def test_the_blend_as_the_knots_divide_it(dimension, tmp_path):
+    """The knots below the first sphere are the radii of the mesh's
+    vertices on the axis through the centre of a face, above the cube's;
+    the blend's cells are the innermost layer's, and its levels are no
+    interfaces."""
+    spec = SPECS[dimension](ball(), 4, knots=[0.22, 0.3, 0.4, 0.8, 1.0], order=3)
+    res = build(spec, tmp_path / "m")
+    assert res.validation.ok and res.counts["levels"] == spec.levels == 5
+    mesh = load(res.mesh_path)
+    vertices = np.array([mesh.GetVertexArray(v) for v in range(mesh.GetNV())])
+    on_axis = vertices[np.all(np.abs(vertices[:, 1:]) < 1e-14, axis=1)
+                       & (vertices[:, 0] > 0.0), 0]
+    a = spec.half_width
+    np.testing.assert_allclose(
+        np.sort(on_axis), [a * np.tan(np.pi / 8), a, 0.22, 0.3, 0.4, 0.8, 1.0],
+        atol=1e-14)
+    card = sc.read(res.manifest_path)
+    assert [e["radius"] for e in card.interfaces] == [0.4, 0.8, 1.0]
+    attributes = np.array([mesh.GetAttribute(e) for e in range(mesh.GetNE())])
+    lo, hi = element_radii(mesh)
+    assert hi[attributes == 1].max() == pytest.approx(0.4, abs=1e-13)
+    assert lo[attributes == 2].min() == pytest.approx(0.4, abs=1e-13)
+    assert np.count_nonzero(attributes == 1) == \
+        4 ** dimension + 2 * dimension * 4 ** (dimension - 1) * 3
 
 
 def test_the_meta_reaches_the_manifest(tmp_path):

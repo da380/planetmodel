@@ -7,7 +7,7 @@
 # fault is built three times: with no refinement towards it, its faces
 # conforming at whatever size the interfaces' rule gives there; refined
 # by a steep ramp of its own, a size on it growing to a far size over a
-# fixed width (an `InterfaceSizing`, the size more than doubling from
+# fixed width (an `InterfaceSizing`, the size nearly doubling from
 # one element to the next), the linear mesh left as the mesher made it
 # (`optimise=None`); and by the default, the size on it given alone
 # (`EmbeddedFault`'s rule), the size growing by about 30 per cent an

@@ -117,6 +117,10 @@ void ExpectAsThePython(const std::filesystem::path& expect) {
       auto joined = std::string{};
       for (const auto& work : file.Citation()) joined += (joined.empty() ? "" : "\n") + work;
       EXPECT_EQ(joined.empty() ? "-" : joined, rest[0] == "-" ? "-" : Unhex(rest[0]));
+    } else if (key == "behaviours") {
+      auto joined = std::string{};
+      for (const auto& name : file.Behaviours()) joined += (joined.empty() ? "" : " ") + name;
+      EXPECT_EQ(joined.empty() ? "-" : joined, rest[0] == "-" ? "-" : Unhex(rest[0]));
     } else if (key == "name") {
       EXPECT_EQ(file.Name().value_or("-"), rest[0] == "-" ? "-" : Unhex(rest[0]));
     } else if (key == "layer_name" || key == "interface_name") {
@@ -410,6 +414,56 @@ TEST(ModelFile, RefusesWhatThePythonRefusesAtItsPlace) {
   }
   EXPECT_GT(cases, 15);
   EXPECT_THROW(static_cast<void>(planetmodel::ReadModelFile("/nonexistent.nc")), Error);
+  // the file a copy states the cubic rule on, a grid of two longitudes, is
+  // read as it stands
+  const auto thin = planetmodel::ReadModelFile(index.parent_path() / "thin.nc");
+  EXPECT_EQ(thin.PartOf(1).grid->NPhi(), 2u);
+}
+
+TEST(ModelFile, ReadsAFillThatIsNotNaNAsAbsent) {
+  // the same file twice, the absent nodes of qmu marked by NaN in one and
+  // by `_FillValue = -999` in the other
+  PLANETMODEL_FIXTURE(prem, "model_prem.nc");
+  PLANETMODEL_FIXTURE(path, "model_fill.nc");
+  const auto marked = planetmodel::ReadModelFile(path);
+  const auto plain = planetmodel::ReadModelFile(prem);
+  const auto& got = marked.Parts().at(0).variables.at("qmu");
+  const auto& want = plain.Parts().at(0).variables.at("qmu");
+  ASSERT_TRUE(got.attributes.contains("_FillValue"));
+  EXPECT_EQ(planetmodel::netcdf::AsNumbers(got.attributes.at("_FillValue")),
+            (std::vector<double>{-999.0}));
+  ASSERT_EQ(got.values.size(), want.values.size());
+  auto absent = 0;
+  for (auto i = std::size_t{0}; i < want.values.size(); ++i) {
+    if (std::isnan(want.values[i])) {
+      EXPECT_TRUE(std::isnan(got.values[i])) << "node " << i << " holds " << got.values[i];
+      ++absent;
+    } else {
+      EXPECT_EQ(got.values[i], want.values[i]) << "node " << i;
+    }
+  }
+  EXPECT_GT(absent, 0);
+  auto lacking = 0;
+  for (auto layer = 0; layer < static_cast<int>(plain.GetSkeleton().NLayers()); ++layer) {
+    EXPECT_EQ(marked.HasField(layer, "qmu"), plain.HasField(layer, "qmu")) << "layer " << layer;
+    lacking += !plain.HasField(layer, "qmu");
+  }
+  EXPECT_EQ(lacking, 2);
+}
+
+TEST(ModelFile, TheNodesOfAnElementEndOnItsEndsToTheBit) {
+  // 0.3 + 2 * (0.5 * (0.9 - 0.3)) is not 0.9, and elements sharing an end
+  // must hold the one radius there
+  for (const auto ngll : {std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{7}}) {
+    for (const auto& [left, right] : std::vector<std::pair<double, double>>{
+             {0.0, 0.3}, {0.3, 0.9}, {0.9, 1.5}, {1221.5e3, 3480e3}, {0.1, 0.7}}) {
+      const auto nodes = planetmodel::GllNodes(left, right, ngll);
+      ASSERT_EQ(nodes.size(), ngll);
+      EXPECT_EQ(nodes.front(), left) << ngll;
+      EXPECT_EQ(nodes.back(), right) << ngll;
+      EXPECT_TRUE(std::ranges::is_sorted(nodes));
+    }
+  }
 }
 
 TEST(ModelFile, TheGllPointsAreThePythons) {

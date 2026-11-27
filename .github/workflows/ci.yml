@@ -220,7 +220,7 @@ jobs:
         env:
           PLANETMODEL_CPP_WRITTEN: build/cpp/tests/written
         run: >-
-          poetry run pytest -q tests/test_cpp_written.py tests/test_cpp_written_decks.py
+          poetry run pytest -q tests/test_cpp_written.py
           tests/test_cpp_written_cartesian.py
 
       # The example readers, on files the Python wrote.

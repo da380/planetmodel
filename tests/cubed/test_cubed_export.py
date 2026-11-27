@@ -6,14 +6,15 @@ import numpy as np
 import pytest
 from scipy.integrate import quad
 
-from cubed_cases import COARSE, ball, equatorial_stretch, flattening, shell
+from cubed_cases import (COARSE, SPECS, ball, build, equatorial_stretch, flattening,
+                         shell)
 from planetmodel import PREM
 from planetmodel.character import DENSITY, ELASTIC
 from planetmodel.fields import AnalyticField, constant_field
 from planetmodel.mesh1d import gravity
 from planetmodel.mesh3d import (CubedSphereSpec, Shell, UniformInterfaces,
                                 build_cubed_sphere, export_mfem, export_mfem_mesh,
-                                manifest as sc)
+                                manifest as sc, read_mesh)
 from planetmodel.mesh3d.export import (MESH_READ_OPTIONS, jacobian_report,
                                        node_array)
 from planetmodel.model import Model
@@ -38,9 +39,9 @@ def built(tmp_path_factory):
     root = tmp_path_factory.mktemp("cubed")
     out = {}
     for name, (make, dimension, order, shells) in CASES.items():
-        spec = CubedSphereSpec(make(), 4, sizing=COARSE, dimension=dimension,
-                               order=order, shells=shells)
-        out[name] = build_cubed_sphere(spec, root / name)
+        spec = SPECS[dimension](make(), 4, sizing=COARSE, order=order,
+                                shells=shells)
+        out[name] = build(spec, root / name)
     return out
 
 
@@ -79,6 +80,7 @@ def test_both_deliveries(built, name, tmp_path):
     gf = mfem.GridFunction(mesh, str(ref.displacement_path))
     np.testing.assert_allclose(node_array(gf), moved - X, atol=1e-14)
     assert ref.counts["elements"] == res.counts["elements"]
+    assert ref.counts["boundary_elements"] == res.counts["boundary_elements"]
     assert ref.counts["order"] == res.spec.order
 
     phys = export_mfem_mesh(res, tmp_path / "phys", delivery="physical")
@@ -92,6 +94,39 @@ def test_both_deliveries(built, name, tmp_path):
         range(1, res.counts["layers"] + 1))
     if not identity:
         assert np.abs(moved - X).max() > 1e-3
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_the_boundary_elements_face_as_mfem_holds_them(built, name, tmp_path):
+    """An interface's boundary elements point away from the centre and a
+    shell's inner boundary towards it, out of the body, in the reference
+    mesh as in its deliveries."""
+    res = built[name]
+    card = sc.read(res.manifest_path)
+    mesh = read_mesh(res.mesh_path)
+    d = mesh.dimension
+
+    def facing(mesh):
+        out = {}
+        for attribute in np.unique(mesh.face_attributes):
+            p = mesh.points[mesh.faces_with(attribute)]
+            if d == 3:
+                normal = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+            else:
+                t = p[:, 1] - p[:, 0]
+                normal = np.stack([t[:, 1], -t[:, 0], np.zeros(len(t))], axis=1)
+            away = np.einsum("ij,ij->i", normal, p.mean(axis=1)) > 0.0
+            out[int(attribute)] = (int(away.sum()), int((~away).sum()))
+        return out
+
+    written = facing(mesh)
+    for entry in card.interfaces:
+        away, towards = written[entry["attribute"]]
+        inner = entry["between_layers"][0] == -1
+        assert (away, towards)[0 if inner else 1] == 0 and away + towards > 0
+    for delivery in ("physical", "referential"):
+        export = export_mfem_mesh(res, tmp_path / delivery, delivery=delivery)
+        assert facing(read_mesh(export.mesh_path)) == written
 
 
 def test_a_delivery_may_not_replace_its_reference_mesh(built, tmp_path):

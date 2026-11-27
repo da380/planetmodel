@@ -40,7 +40,7 @@ using planetmodel::MeshVertex;
 ::testing::AssertionResult RefusedAt(const std::filesystem::path& path,
                                      const std::string& where, const std::string& phrase) {
   try {
-    static_cast<void>(MeshManifest(path));
+    static_cast<void>(flat::ReadMeshManifest(path));
   } catch (const Error& e) {
     if (e.Source() != path.string()) {
       return ::testing::AssertionFailure() << "names " << e.Source() << ": " << e.what();
@@ -360,6 +360,12 @@ TEST(CartesianManifest, ReadsTheBaseCaseAndItsVariants) {
   PLANETMODEL_FIXTURE(path, "flat_manifest_cases/base.json");
   const auto m = MeshManifest(path);
   ExpectAsWritten(m, planetmodel::ReadJsonFile(path), false);
+  // the function beside the other flat readers reads what the constructor
+  // does
+  const auto read = flat::ReadMeshManifest(path);
+  ExpectAsWritten(read, planetmodel::ReadJsonFile(path), false);
+  EXPECT_EQ(read.Path(), m.Path());
+  EXPECT_EQ(read.MeshFile(), m.MeshFile());
   EXPECT_EQ(m.SolidAttributes(), (std::vector<int>{1, 2}));
   EXPECT_EQ(m.BodyAttributes(), (std::vector<int>{1, 2}));
   EXPECT_TRUE(m.FluidSolidInterfaces().empty());

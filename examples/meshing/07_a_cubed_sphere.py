@@ -17,7 +17,9 @@
 # one. Here a three-layer unit ball, with cells 0.03 thick at the
 # surface growing to 0.2 below, drawn three ways: its disc, which is
 # the same construction in the plane, a central square and four
-# blocks; the ball cut by a plane through its centre; and its surface.
+# blocks, described by a `SquaredCircleSpec` and built by
+# `build_squared_circle`; the ball cut by a plane through its centre;
+# and its surface.
 #
 # Needs: mfem, plot
 # Network: none
@@ -35,9 +37,10 @@ from matplotlib.patches import Patch
 
 from planetmodel import Geometry, Skeleton
 from planetmodel.mesh3d import (CubedSphereSpec, InterfaceSizing, PerInterface,
-                                UniformInterfaces, build_cubed_sphere, manifest,
+                                SquaredCircleSpec, UniformInterfaces,
+                                build_cubed_sphere, build_squared_circle, manifest,
                                 read_mesh)
-from planetmodel.plotting import in_plane, mesh_section, plane_cut
+from planetmodel.plotting import in_plane, mesh_block, mesh_section, plane_cut
 
 FIGURES = Path(__file__).resolve().parents[1] / "figures"
 FIGURES.mkdir(exist_ok=True)
@@ -76,8 +79,8 @@ print(f"{spec.blend.size - 1} cells across the blend, {spec.levels} levels above
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_cubed_"))
 ball = build_cubed_sphere(spec, work / "ball")
-disc = build_cubed_sphere(CubedSphereSpec(geometry, EDGE, sizing=sizing, dimension=2),
-                          work / "disc")
+disc = build_squared_circle(SquaredCircleSpec(geometry, EDGE, sizing=sizing),
+                            work / "disc")
 for name, result in (("ball", ball), ("disc", disc)):
     report = result.validation
     print(f"{name}: {result.counts['elements']} cells, {result.counts['nodes']} "
@@ -89,7 +92,7 @@ for name, result in (("ball", ball), ("disc", disc)):
 # `read_mesh` reads either file as plain arrays, each cell by its
 # corners. The disc lies in a plane and is drawn whole; the ball is cut
 # by the plane through its centre normal to (1, 1, 1), which crosses
-# three of the six blocks, and the faces of each interface are cut by
+# all six blocks, and the faces of each interface are cut by
 # the same plane, which leaves the circles. The cells are drawn through
 # their corners, with straight sides.
 
@@ -150,6 +153,27 @@ axes[0].legend(handles=[Patch(facecolor=c, edgecolor=EDGES, label=name)
 fig.savefig(FIGURES / "meshing_07.png", dpi=120)
 
 # %% [markdown]
+# ## A cutaway
+#
+# `mesh_block` draws a block of the mesh in three dimensions: the box
+# given by its bounds, with the three walls nearest the viewer taken
+# away, so that the three walls behind show the cells they cut, each
+# cut through its corners as in a section. Here the box is the octant
+# of the ball whose far corner is the centre, so its three walls are
+# three planes through the centre, and the faces of the interfaces
+# leave their circles on them.
+
+# %%
+fig, ax = plt.subplots(figsize=(7.0, 7.0), subplot_kw={"projection": "3d"},
+                       layout="constrained")
+mesh_block(ax, solid.points, solid.cells, ((0.0, 1.0), (-1.0, 0.0), (0.0, 1.0)),
+           colours=shades[solid.layers(card) - 1], lines=solid.faces,
+           edgecolor=EDGES, linewidth=0.4)
+ax.set_axis_off()
+ax.set_title("an octant of the ball, seen from outside")
+fig.savefig(FIGURES / "meshing_07_cutaway.png", dpi=120)
+
+# %% [markdown]
 # ## The centre
 #
 # One cell across the blend is a needle pointing at the centre: its
@@ -157,29 +181,36 @@ fig.savefig(FIGURES / "meshing_07.png", dpi=120)
 # the whole distance from the cube to the first sphere. The finer the
 # mesh, the thinner the needle, about half of `edge` times longer than
 # it is wide. So a spec divides the blend until none of its cells is
-# more than `aspect` times longer radially than it is wide, 4 by
-# default; `aspect=None` leaves it as the sizing has it. Here the same
-# disc at 16 cells an edge both ways, with the radii of its spheres
-# given outright as `knots` in place of a sizing rule, and only its
-# core drawn.
+# more than `elongation` times longer radially than it is wide, 4 by
+# default; `elongation=None` leaves it as the sizing has it. The blend
+# can also be divided outright: `knots` gives the radial levels of the
+# mesh in place of a sizing rule, and those below the first sphere are
+# levels of the blend, each by its radius along the ray through the
+# centre of a face of the square. Here the same disc at 16 cells an
+# edge three ways, its spheres given as `knots`, and only its core
+# drawn: one cell across the blend, the blend under the cap, and the
+# blend cut once, at radius 0.35.
 
 # %%
-fig, axes = plt.subplots(1, 2, figsize=(11, 5.6), layout="constrained")
-for ax, aspect in zip(axes, (None, 4.0)):
-    fine = CubedSphereSpec(geometry, 16, knots=[0.5, 0.7, 0.9, 1.0], dimension=2,
-                           aspect=aspect)
-    result = build_cubed_sphere(fine, work / f"centre_{aspect}")
+SPHERES = [0.5, 0.7, 0.9, 1.0]
+cases = (("elongation=None", {"knots": SPHERES, "elongation": None}),
+         ("elongation=4", {"knots": SPHERES}),
+         ("a knot at 0.35", {"knots": [0.35, *SPHERES]}))
+fig, axes = plt.subplots(1, 3, figsize=(16, 6.2), layout="constrained")
+for k, (ax, (label, given)) in enumerate(zip(axes, cases)):
+    fine = SquaredCircleSpec(geometry, 16, **given)
+    result = build_squared_circle(fine, work / f"centre_{k}")
     mesh = read_mesh(result.mesh_path)
     layers = mesh.layers(manifest.read(result.manifest_path))
     core = layers == 1
     mesh_section(ax, in_plane(mesh.points, mesh.cells[core], origin, np.eye(3)[:2]),
                  colours=LAYERS["core"], edgecolor=INK, linewidth=0.5)
     cells = fine.blend.size - 1
-    ax.set_title(f"aspect={aspect}: {cells} cell{'s' if cells > 1 else ''} across "
-                 f"the blend,\naspect ratio up to "
+    ax.set_title(f"{label}: {cells} cell{'s' if cells > 1 else ''} across the "
+                 f"blend,\naspect ratio up to "
                  f"{result.validation.max_aspect_ratio:.1f}")
     ax.set_axis_off()
-    print(f"aspect={aspect}: {cells} across the blend, {result.counts['elements']} "
-          f"cells, aspect ratio up to {result.validation.max_aspect_ratio:.1f}")
+    print(f"{label}: {cells} across the blend, {result.counts['elements']} cells, "
+          f"aspect ratio up to {result.validation.max_aspect_ratio:.1f}")
 fig.savefig(FIGURES / "meshing_07_centre.png", dpi=120)
 shutil.rmtree(work)

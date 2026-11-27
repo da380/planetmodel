@@ -271,6 +271,27 @@ def test_a_gridded_function_refuses_what_it_cannot_hold():
                                            poles=[1.0, 1.0]))
 
 
+def test_a_scaled_gridded_function_is_held_to_the_rtol_it_was_built_with():
+    """A pole that is a node holds one value to `rtol` of the largest; the
+    function scaled, a relief whose geometry is rescaled, is held to the
+    same, so what was accepted stays accepted."""
+    grid = driscoll_healy(4)                       # the north pole is a node
+    assert grid.pole_nodes[0]
+    t, p = np.meshgrid(grid.colatitudes, grid.longitudes, indexing="ij")
+    values = 1.0 + 0.1 * np.cos(t) + 1e-6 * np.cos(p)
+    with pytest.raises(ValueError, match="north pole is a node"):
+        GriddedFunction(grid, values)
+    gf = GriddedFunction(grid, values, rtol=1e-3)
+    twice = gf.scaled(2.0)
+    assert np.array_equal(twice.values, 2.0 * gf.values)
+    assert np.array_equal(twice.poles, 2.0 * gf.poles)
+    rng = np.random.default_rng(6)
+    t, p = rng.uniform(0, np.pi, 50), rng.uniform(0, 2 * np.pi, 50)
+    assert np.allclose(twice(t, p), 2.0 * gf(t, p), rtol=1e-14)
+    # and again: the scaled function holds the tolerance too
+    assert np.array_equal(twice.scaled(0.5).values, gf.values)
+
+
 # -- GriddedDisplacement --------------------------------------------------------
 
 def relief_mapping(sk):
@@ -300,6 +321,51 @@ def test_a_gridded_displacement_reproduces_the_mapping_it_samples():
     check_mapping(gd, X[:50])
     g = Geometry(sk, mapping=gd)
     check_geometry(g)
+
+
+@pytest.mark.parametrize("radial", ["polynomial", "linear"])
+def test_a_gridded_displacement_declares_where_its_radial_derivative_jumps(radial):
+    """Read by straight lines between the nodes, a displacement's radial
+    derivative jumps at every node; read by the polynomial through an
+    element's nodes, at the element boundaries alone.  The radii where it
+    does jump are found from one-sided differences of the mapping along
+    a ray, and are knots; a radial mesh over the geometry has an edge at
+    every knot."""
+    from planetmodel import GriddedDisplacement, RadialMesh
+    from planetmodel.frames import cartesian_points
+    sk = Skeleton([0.0, 0.5, 1.0])
+
+    def radial_shift(r, t, p):
+        r, t, p = np.broadcast_arrays(r, t, p)
+        return np.stack([0.05 * r ** 2, 0.0 * r, 0.0 * r], axis=-1)
+
+    fields = [GriddedField.sampled(
+        AnalyticField((lo, hi), radial_shift, character=VECTOR, frame="spherical"),
+        gauss_legendre(6), breaks=[lo, 0.5 * (lo + hi), hi], ngll=4, radial=radial,
+        lateral="cubic") for lo, hi in zip(sk.boundaries[:-1], sk.boundaries[1:])]
+    gd = GriddedDisplacement(sk, fields)
+    nodes = np.unique(np.concatenate([f.radii.ravel() for f in fields]))
+    nodes = nodes[(nodes > 0.0) & (nodes < 1.0)]
+    assert nodes.size == 11
+    want = nodes if radial == "linear" else np.array([0.25, 0.5, 0.75])
+    assert np.allclose(gd.knots, want, rtol=0, atol=1e-14)
+    assert np.allclose(gd.scaled(3.0).knots, 3.0 * want, rtol=0, atol=1e-13)
+
+    theta, phi, h = 1.0, 0.5, 1e-6
+    e_r = cartesian_points(1.0, theta, phi)
+
+    def shift(r):
+        return gd.displacement(cartesian_points(r, theta, phi)) @ e_r
+
+    probes = np.concatenate([nodes, 0.5 * (nodes[:-1] + nodes[1:])])
+    jump = np.abs((shift(probes + h) - 2.0 * shift(probes) + shift(probes - h)) / h)
+    jumping = probes[jump > 1e-4]
+    assert all(np.min(np.abs(np.array(gd.knots) - r)) < 1e-12 for r in jumping)
+    if radial == "linear":
+        # 0.05 r^2 joined by straight lines turns at every node
+        assert np.array_equal(np.sort(jumping), nodes)
+    mesh = RadialMesh(Geometry(sk, mapping=gd), ngll=3, drmax=1.0)
+    assert all(np.min(np.abs(mesh.left - k)) < 1e-12 for k in gd.knots)
 
 
 def test_a_gridded_displacement_refuses_what_does_not_fit():

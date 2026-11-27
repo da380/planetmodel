@@ -62,9 +62,13 @@ geometry = Geometry(Skeleton([0.0, 0.55, 0.8, 1.0]), layer_names=list(LAYERS),
 # its free edge. The surfaces are meshed by gmsh's Delaunay algorithm
 # (`algorithm_2d=5`): a mesh with a fault is not optimised by Netgen,
 # and its relocation does not remove a flat element the volume mesher
-# leaves beside a shallow interface, so such an element stays, the mesh
-# then fails its validation and is refused, and the surface mesh decides
-# whether one is left.
+# leaves beside a shallow interface, so where one is left it stays, and
+# the mesh then fails its validation and is refused. Whether one is left
+# depends on the surface mesh and on rounding: under the default surface
+# algorithm this mesh builds on some machines and is refused on others,
+# and under the Delaunay one it builds. The summary gives the shape of
+# the worst element as minSICN: gmsh's signed inverse condition number,
+# 1 for a regular tetrahedron, falling to 0 as an element flattens.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_megathrust_"))

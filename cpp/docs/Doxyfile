@@ -8,7 +8,7 @@
 
 PROJECT_NAME           = "planetmodel C++"
 PROJECT_NUMBER         = "$(PLANETMODEL_VERSION)"
-PROJECT_BRIEF          = "Read and write planetmodel's model files, manifests and decks"
+PROJECT_BRIEF          = "Read and write planetmodel's model, surface and fault files, and read its mesh manifests"
 OUTPUT_DIRECTORY       = "$(PLANETMODEL_DOCS_OUTPUT)"
 CREATE_SUBDIRS         = NO
 

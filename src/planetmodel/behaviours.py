@@ -17,16 +17,25 @@ name) through `model.layer`.  A function of a model, such as
 `gravity(model, radii)` or `frozen(model, omega)`, needs no adaptor:
 assigned in a class body it is already a method.
 
-The mixins bundle the wrapped methods a kind of model exposes.  Each is
-a class body of such assignments and nothing else, with one exception:
-`Elastic` has a constructor hook that attaches the five Love moduli to
-every layer as first-class fields, since a spherically symmetric
-elastic medium is those five and there is no reason to hide them behind
-a call.  No mixin holds state of its own, so `class PREM(Elastic,
-ConstantQ, SelfGravitating, Viscoelastic, Model)` is still one model
-type derived from `Model` alone.  The transformations `isotropic`,
-`elastic` and `with_gravity` return copies of the same class through
-`Model.replaced`.
+The mixins bundle the methods a kind of model exposes.  Most are such
+assignments, the free function wrapped and nothing more.  The rest are
+written out as methods over the free functions.  The transformations
+build a copy of the same class through `Model.replaced`:
+`Elastic.with_field`, `extended`, `coarsened` and `isotropic`, which
+keep a layer's elastic description complete;
+`SelfGravitating.with_gravity`, `with_pressure`, `with_stratification`,
+`with_bullen_excess`, `stabilised`, `hollowed` and `extended`; and
+`Viscoelastic.elastic`.  `ConstantQ.moduli_at` and `elastic_moduli_at`
+read a layer at a frequency, about the model's reference frequency
+unless given another.  `Elastic` also has a constructor hook that
+attaches the five Love moduli to every layer as first-class fields,
+since a spherically symmetric elastic medium is those five and there is
+no reason to hide them behind a call.  No mixin holds state of its own,
+so `class PREM(Elastic, ConstantQ, SelfGravitating, Viscoelastic,
+Model)` is still one model type derived from `Model` alone.
+`extended`, which `Elastic` and `SelfGravitating` both define, calls
+the next in line through `super()`, so the two combine in either order
+of the bases.
 
 `Elastic`, `ConstantQ` and `Viscoelastic` read and build fields point by
 point, so they serve a flat model (`planetmodel.cartesian`) as they
@@ -35,6 +44,14 @@ does.  `SelfGravitating` computes gravity from the mass inside a
 radius, which is the sphere's alone: on a flat model its methods refuse
 by name, and a flat model's gravity is a prescribed field
 (`cartesian.Model.with_uniform_gravity`).
+
+A model file names the behaviours of the model written
+(`Model.behaviours`), and `modelfile.read_model` gives back those of
+`BEHAVIOURS`, the four here, by name.  `model_type(base, behaviours)` is
+the model type that has them over a leaf, one class for each
+combination, so that a model with given behaviours is made from a
+geometry and layers of fields with no class written for it:
+`model_type(Model, (Elastic, SelfGravitating))(geometry, layers)`.
 """
 from __future__ import annotations
 
@@ -78,7 +95,8 @@ if TYPE_CHECKING:
     from .model import CoarseningFit, Layer, Model
 
 __all__ = ["layer_method", "with_moduli", "with_velocities", "Elastic", "ConstantQ",
-           "SelfGravitating", "Viscoelastic", "ELASTIC_FAMILIES", "elastic_family"]
+           "SelfGravitating", "Viscoelastic", "ELASTIC_FAMILIES", "elastic_family",
+           "BEHAVIOURS", "model_type"]
 
 #: The velocity names an elastic description may be given in.
 VELOCITY_NAMES = materials.VELOCITY_NAMES
@@ -103,8 +121,12 @@ def elastic_family(name: str) -> tuple[str, ...]:
                    f"{list(materials.ELASTIC_NAMES)}")
 
 
-#: The fields a frozen layer's complex moduli were derived from.
-_FROZEN_FROM = ("rho",) + materials.ELASTIC_NAMES + rheology.RHEOLOGY_NAMES
+def _frozen_from(name: str) -> bool:
+    """Whether a frozen layer's complex moduli were derived from fields of
+    this name: rho, an elastic name, or a name a linear rheology is read
+    from (`rheology.is_linear_rheology_name`)."""
+    return (name == "rho" or name in materials.ELASTIC_NAMES
+            or rheology.is_linear_rheology_name(name))
 
 
 def _refuse_frozen(model: Model, why: str) -> None:
@@ -348,7 +370,11 @@ class Elastic:
     where those are polynomial, and the velocities where a layer was
     given rho with the five (`with_moduli`, `with_velocities`); a layer
     already holding both, or its tensor under `elastic_moduli`, is left
-    as it is.  The methods then read the fields: `moduli(which)` the
+    as it is; a layer appended by `extended` is completed in the same
+    way.  A model read from a file is not constructed
+    (`model.restored`) and holds the fields the file holds, the five
+    among them where the model written held them.  The methods then
+    read the fields: `moduli(which)` the
     five, `elastic_moduli` the tensor (the layer's own of any symmetry
     where it holds one), `kappa_mu` the Voigt average, `is_fluid` the
     vanishing of shear, and `isotropic()` the model re-described by its
@@ -398,9 +424,11 @@ class Elastic:
         symmetry on a layer holding velocities of the other is refused,
         added or replaced: no single velocity completes the other set,
         and `isotropic()` re-describes a layer by vp and vs.  On a frozen
-        model (`rheology.is_frozen`) rho, the elastic names and the
-        rheology names are refused, the frozen moduli having been derived
-        from them.
+        model (`rheology.is_frozen`) rho, the elastic names and the names
+        a linear rheology is read from (`rheology.is_linear_rheology_name`)
+        are refused, the frozen moduli having been derived from them; the
+        names of power-law creep, which freezing does not read, are
+        attached as any other field.
 
         On a self-gravitating model the densities derived from a Bullen
         excess follow.  A Bullen excess attached to a fluid layer derives
@@ -413,11 +441,10 @@ class Elastic:
         excess has its density derived again, keeping its own mass.
         """
         from .model import ModelBase
-        if (name in _FROZEN_FROM or name == BULLEN_EXCESS
-                or rheology.is_rheology_name(name)):
-            _refuse_frozen(self, f"its moduli were derived from {name!r}"
-                           if name != BULLEN_EXCESS else
-                           "the density is derived from the Bullen excess")
+        if _frozen_from(name):
+            _refuse_frozen(self, f"its moduli were derived from {name!r}")
+        elif name == BULLEN_EXCESS:
+            _refuse_frozen(self, "the density is derived from the Bullen excess")
         _refuse_other_symmetry(self.layer(which), name)
         out = ModelBase.with_field(self, which, name, field, replace=replace)
         i = self.layer(which).index
@@ -444,6 +471,30 @@ class Elastic:
             return out
         return out.replaced(layers=layers)
 
+    def extended(self: Model, radii: ArrayLike, *,
+                 fields: str | Sequence[Mapping[str, Field]] | None = None,
+                 layer_names: Names = None,
+                 interface_names: Names = None) -> Model:
+        """`Model.extended` with the elastic description of every new
+        layer completed in both directions, as on construction: a layer
+        given rho with velocities or kappa and mu holds the five Love
+        moduli as well, and one given rho with the five the velocities.
+        A layer that continues the last one ("extrapolate" or "hold")
+        takes its description whole, an empty one stays empty, and one
+        given a family too incomplete to describe the medium is left as
+        given, as `with_field` leaves it."""
+        out = super().extended(radii, fields=fields, layer_names=layer_names,
+                               interface_names=interface_names)
+        layers = [dict(layer.fields) for layer in out.layers]
+        completed = False
+        for j in range(self.nlayers, out.nlayers):
+            try:
+                layers[j] = with_velocities(with_moduli(layers[j]))
+            except KeyError:
+                continue
+            completed = completed or len(layers[j]) > len(out.layers[j].fields)
+        return out.replaced(layers=layers) if completed else out
+
     def coarsened(self: Model, *, keep: Iterable[int | str] | None = None,
                   drop: Iterable[int | str] | None = None, degree: int = 3,
                   n: int = 64) -> tuple[Model, CoarseningFit]:
@@ -467,7 +518,7 @@ class Elastic:
         """
         from .model import ModelBase
         _refuse_frozen(self, "coarsening refits the elastic description")
-        _, cmap = self._coarsening(keep=keep, drop=drop)
+        _, cmap = self.geometry.coarsened(keep=keep, drop=drop)
         layers = [dict(layer.fields) for layer in self.layers]
         merged = [group for group in cmap.layers if len(group) > 1]
         for group in merged:
@@ -730,11 +781,12 @@ class SelfGravitating:
 
     def extended(self: Model, radii: ArrayLike, *,
                  fields: str | Sequence[Mapping[str, Field]] | None = None,
-                 names: Names = None, interface_names: Names = None) -> Model:
+                 layer_names: Names = None,
+                 interface_names: Names = None) -> Model:
         """`Model.extended`; a layer made by continuing the last one
         outward ("extrapolate" or "hold") does not take its Bullen
         excess, its density being a continuation and not derived."""
-        out = super().extended(radii, fields=fields, names=names,
+        out = super().extended(radii, fields=fields, layer_names=layer_names,
                                interface_names=interface_names)
         new = range(self.nlayers, out.nlayers)
         if isinstance(fields, str) and any(BULLEN_EXCESS in out.layers[j]
@@ -823,3 +875,42 @@ class Viscoelastic:
         layers = [{k: f for k, f in layer.fields.items()
                    if not rheology.is_rheology_name(k)} for layer in self.layers]
         return self.replaced(layers=layers, check=False)
+
+
+#: The behaviours a model file restores by name: a file names those of the
+#: model written, and a reader gives back the ones here.
+BEHAVIOURS: tuple[type, ...] = (Elastic, ConstantQ, SelfGravitating, Viscoelastic)
+
+
+@functools.cache
+def _mixed(base: type[Model], behaviours: tuple[type, ...]) -> type[Model]:
+    """The one class of `behaviours` over `base`."""
+    names = [b.__name__ for b in behaviours]
+    return type("".join(names) + base.__name__, behaviours + (base,), {
+        "__doc__": f"A `{base.__module__}.{base.__name__}` with the behaviours "
+                   f"{', '.join(names)}: `behaviours.model_type`'s."})
+
+
+def model_type(base: type[Model], behaviours: Iterable[type]) -> type[Model]:
+    """The model type with `behaviours` mixed in over the leaf `base`.
+
+    `base` is `Model` or `cartesian.Model` and `behaviours` mixin classes,
+    those of this module or the caller's own, in the order of the bases
+    of `class _(*behaviours, base)`, which is the class returned: one
+    class for each combination, so that models of the same behaviours
+    are of the same type, and `base` itself where there are none.  Its
+    constructor is the leaf's, taking a geometry and layers of fields,
+    with `Elastic`'s completion of the moduli where `Elastic` is among
+    them.  A behaviour that is not a class, or is a model type, is
+    refused.
+    """
+    from .model import ModelBase
+    behaviours = tuple(behaviours)
+    if not (isinstance(base, type) and issubclass(base, ModelBase)):
+        raise TypeError(f"expected a model type to mix the behaviours into, got "
+                        f"{base!r}")
+    for b in behaviours:
+        if not isinstance(b, type) or issubclass(b, ModelBase):
+            raise TypeError(f"a behaviour is a mixin class, not a model type; got "
+                            f"{b!r}")
+    return _mixed(base, behaviours) if behaviours else base

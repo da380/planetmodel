@@ -12,16 +12,14 @@ and writes what it makes as lazy fields: a viscosity as a log
 perturbation of the layer's radial one, a density as a relative
 perturbation of its reference.  A viscosity becomes Prony branches
 (`prony`): a Maxwell, Burgers or fitted Andrade body put on a model as
-the strengths and times `rheology` reads, a Burgers body in named
+the strengths and times `rheology` reads, or a Burgers body in named
 layers from the model's own viscosity and a Kelvin element's
-(`with_burgers`), and a model as the prony and burgers decks hold it
-(`prony_deck`, `burgers_deck`).  A table of properties against
-temperature and pressure, written by an offline generator, gives a
-temperature anomaly by inversion (`tables`).  The base of the
-lithosphere is found in a model's fields, at an isotherm, a viscosity
-or a Maxwell time (`lithosphere`), and used as geometry
-(`datasets.building.moved`) or as a lid of high viscosity.  Nothing
-here is particular to the Earth.
+(`with_burgers`).  A table of properties against temperature and
+pressure, written by an offline generator, gives a temperature anomaly
+by inversion (`tables`).  The base of the lithosphere is found in a
+model's fields, at an isotherm, a viscosity or a Maxwell time
+(`lithosphere`), and used as geometry (`datasets.building.moved`) or as
+a lid of high viscosity.  Nothing here is particular to the Earth.
 
 Reached through its modules, off the top-level surface, with numpy and
 scipy alone::
@@ -49,16 +47,16 @@ from .parameters import (BetaViscosity, DensityLaw, DensityScaling, Expansivity,
                          ViscosityLaw)
 from .profiles import (Profile, ProfileLike, as_profile, constant, polynomial, spline,
                        tabulated)
-from .prony import (PronySeries, andrade_series, burgers_branches, burgers_deck,
-                    burgers_parameters, burgers_series, burgers_terms, fitted_series,
-                    maxwell_series, prony_deck, with_branches, with_burgers)
+from .prony import (PronySeries, andrade_series, burgers_branches, burgers_parameters,
+                    burgers_series, burgers_terms, fitted_series, maxwell_series,
+                    with_branches, with_burgers)
 
 __all__ = ["building", "laws", "lithosphere", "parameters", "profiles", "prony",
            "tables", "isotherm", "maxwell_threshold", "viscosity_threshold", "with_lid",
            "PropertyTable", "table_anomaly", "PronySeries",
            "andrade_series", "burgers_series", "fitted_series", "maxwell_series",
            "with_branches", "burgers_terms", "burgers_branches", "burgers_parameters",
-           "with_burgers", "prony_deck", "burgers_deck", "ANOMALIES", "Anomaly",
+           "with_burgers", "ANOMALIES", "Anomaly",
            "attached", "sl3d_viscosity", "temperature_anomaly", "velocity_anomaly",
            "with_density", "with_power_law",
            "with_viscosity", "DensityLaw", "ViscosityLaw", "GAS_CONSTANT",

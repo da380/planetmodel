@@ -7,7 +7,11 @@ outer boundary.  The mesh built from it is always the reference one;
 the mapping is applied at the MFEM export.  The computational
 domain is the geometry's layers followed by the shells, numbered from
 the centre; `MeshSpec.domain` is that domain as a Geometry under the
-geometry's own mapping, and is what the builder meshes.
+geometry's own mapping, and is what the builder meshes.  A mesh has
+faces on the boundaries of that domain and nowhere else, so a knot of
+the mapping that lies inside a layer, where its gradient jumps, falls
+inside elements, which carry the jump as well as their order allows;
+only a cubed sphere can be given a level there, among its `knots`.
 
 A flat geometry (`planetmodel.cartesian.Geometry`) is meshed as the
 box over its lateral domain, cut by the planes of its interfaces, or,
@@ -22,13 +26,16 @@ pulled back through it as on the sphere; over a rectangle they are not
 built.
 
 A CubedSphereSpec is the description of a mesh of hexahedra of a
-spherical geometry made with no mesher, a cubed sphere (`_cubed`): the
-same geometry, shells, order and outer boundary, with the number of
-cells along an edge for its lateral resolution and the sizing read as
-radial sizes, or the radii of its spheres given outright.  What the two
-specs share is here once: the computational domain
-(`computational_domain`), the shells' radii and names, and the checks
-of the mapping on the shells and on the outer boundary.
+spherical geometry made with no mesher, a cubed sphere (`_cubed`), and
+a SquaredCircleSpec that of its counterpart in two dimensions, a mesh
+of quadrilaterals of the geometry's disc; what those two share is
+`CubedSpec`: the same geometry, shells, order and outer boundary as a
+MeshSpec's, with the number of cells along an edge for the lateral
+resolution and the sizing read as radial sizes, or the radial levels
+given outright.  What all the specs share is here once: the
+computational domain (`computational_domain`), the shells' radii and
+names, and the checks of the mapping on the shells and on the outer
+boundary.
 
 Sizing is a callable, not a class hierarchy: a rule takes the
 interfaces of the computational domain and its last boundary (the
@@ -71,7 +78,7 @@ from collections.abc import Mapping as MappingOf
 from dataclasses import KW_ONLY, dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -81,7 +88,7 @@ from ..fault import Fault
 from ..frames import cartesian_points
 from ..geometry import Geometry, GeometryBase, InterfaceInfo, LayerInfo
 from ..mapping import Mapping, validity_lattice
-from ._cubed import DIMENSIONS, blend_fractions, sphere_knots
+from ._cubed import blend_fractions, sphere_knots
 from ._layout import layout_of
 
 if TYPE_CHECKING:
@@ -90,12 +97,14 @@ if TYPE_CHECKING:
 __all__ = [
     "Shell", "InterfaceSizing", "SizingRule", "AngularResolution",
     "UniformInterfaces", "CappedInterfaces", "PerInterface", "Refinement",
-    "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec", "CubedSphereSpec",
+    "NearPoints", "near_curve", "EmbeddedFault", "MeshSpec", "CubedSpec",
+    "CubedSphereSpec", "SquaredCircleSpec",
     "MeshResult", "ValidationReport", "optimise_methods", "largest_size",
     "shell_radii", "shell_names", "computational_domain", "check_shells",
     "check_sizing_scale", "require_mapping_on_shells",
     "require_spherical_outer_boundary",
     "DELIVERIES", "OUTER_BOUNDARIES", "QUALITY_FLOOR", "QUALITY_MEASURE",
+    "CORNER_MEASURE",
     "ASPECT_WARNING", "GRADIENT", "OPTIMISE", "OPTIMISE_WITH_FAULTS",
 ]
 
@@ -121,6 +130,11 @@ QUALITY_MEASURE = "minSICN"
 #: which `raise_order` runs gmsh's high-order optimiser and at which
 #: `validate_mesh` warns.  Elements at or below zero are folded and fail.
 QUALITY_FLOOR = 0.05
+
+#: The name of the shape of a cubed sphere's cell through its corners
+#: (`_cubed.cell_shapes`), 1 for a cube, which its report holds where a
+#: mesh gmsh built holds its `QUALITY_MEASURE`.
+CORNER_MEASURE = "shape"
 
 #: The aspect ratio of a cell of a cubed sphere (its greatest length
 #: over its least) above which its validation warns: a layer one cell
@@ -467,37 +481,40 @@ def optimise_methods(optimise: str | Sequence[str] | None, *,
 
 @dataclass(frozen=True)
 class AngularResolution:
-    """Equal angular resolution on every interface: h_i = h_ref r_i / r_ref.
+    """Equal angular resolution on every interface: the size on
+    interface i is size r_i / r_ref.
 
     A deep interface is smaller than a shallow one, so one absolute size
     everywhere resolves the deep one far more finely in angle than the
     shallow one.  Scaling with radius gives every boundary comparable
-    element counts, capped at `h_far`; the decay width is `fraction` of
-    each interface's radius.  `r_ref` defaults to the outer radius the
-    rule is called with.
+    element counts, capped at `far_size`; the decay width is `fraction`
+    of each interface's radius.  `size` is the size at the reference
+    radius `r_ref`, which defaults to the outer radius the rule is called
+    with.
     """
 
-    #: The element size at r_ref.
-    h_ref: float
-    #: The element size far from every interface, and the cap on h_i.
-    h_far: float
+    #: The element size at the reference radius r_ref.
+    size: float
+    #: The element size far from every interface, and the cap on the size
+    #: of each.
+    far_size: float
     _: KW_ONLY
-    #: The radius at which the size is h_ref; the outer radius if None.
+    #: The radius at which the size is `size`; the outer radius if None.
     r_ref: float | None = None
     #: The decay width as a fraction of each interface's radius.
     fraction: float = 0.2
 
     def __call__(self, interfaces: Sequence[InterfaceInfo],
                  outer_radius: float) -> dict[int, InterfaceSizing]:
-        """One sizing per interface: size h_ref r / r_ref capped at h_far;
-        an interface at radius zero is refused."""
+        """One sizing per interface: size `size` r / r_ref capped at
+        `far_size`; an interface at radius zero is refused."""
         _require_radii(self, interfaces)
         r_ref = float(outer_radius) if self.r_ref is None else float(self.r_ref)
         out = {}
         for face in interfaces:
-            h = self.h_ref * face.radius / r_ref
+            h = self.size * face.radius / r_ref
             out[face.index] = InterfaceSizing(
-                size=min(h, self.h_far), far_size=self.h_far,
+                size=min(h, self.far_size), far_size=self.far_size,
                 decay_width=self.fraction * face.radius)
         return out
 
@@ -507,16 +524,16 @@ class UniformInterfaces:
     """The same absolute size at every interface."""
 
     #: The element size on every interface.
-    h_min: float
+    size: float
     #: The element size far from every interface.
-    h_max: float
-    #: The distance over which the size grows from h_min to h_max.
+    far_size: float
+    #: The distance over which the size grows from `size` to `far_size`.
     decay_width: float
 
     def __call__(self, interfaces: Sequence[InterfaceInfo],
                  outer_radius: float) -> dict[int, InterfaceSizing]:
         """The same sizing for every interface."""
-        return {face.index: InterfaceSizing(self.h_min, self.h_max,
+        return {face.index: InterfaceSizing(self.size, self.far_size,
                                             self.decay_width)
                 for face in interfaces}
 
@@ -525,23 +542,23 @@ class UniformInterfaces:
 class CappedInterfaces:
     """One absolute size, capped in angle and against thin layers.
 
-    Each interface takes `size = min(h, angular * r, thin * s)`, with
+    Each interface takes `min(size, angular * r, thin * s)`, with
     `r` its radius and `s` the thinner of the layer spans it bounds:
     a small sphere is resolved in angle however deep it sits (0.3 rad
     is about twenty elements round a great circle), and a thin layer
     takes elements that fit inside it rather than failing in gmsh a
-    long way from the cause.  The far size is `max(h_far, size)`, and
-    the decay width the smaller of `decay_width` and `decay_factor`
-    times the size, so a size capped far below `h` relaxes over a
-    distance of its own scale instead of holding a fine mesh through
-    the body.
+    long way from the cause.  The far size is the larger of `far_size`
+    and that capped size, and the decay width the smaller of
+    `decay_width` and `decay_factor` times the capped size, so a size
+    capped far below `size` relaxes over a distance of its own scale
+    instead of holding a fine mesh through the body.
     """
 
     #: The element size at every interface, before the caps.
-    h: float
+    size: float
     #: The element size far from every interface.
-    h_far: float
-    #: The distance over which an uncapped size grows to `h_far`.
+    far_size: float
+    #: The distance over which an uncapped size grows to `far_size`.
     decay_width: float
     _: KW_ONLY
     #: The cap in angle: at most `angular * radius` on each interface,
@@ -568,10 +585,10 @@ class CappedInterfaces:
                 spans.append(radii[k] - (radii[k - 1] if k else 0.0))
             if above != -1 and k + 1 < len(radii):
                 spans.append(radii[k + 1] - radii[k])
-            size = min(self.h, self.angular * face.radius,
+            size = min(self.size, self.angular * face.radius,
                        self.thin * min(spans))
             out[face.index] = InterfaceSizing(
-                size=size, far_size=max(self.h_far, size),
+                size=size, far_size=max(self.far_size, size),
                 decay_width=min(self.decay_width, self.decay_factor * size))
         return out
 
@@ -807,13 +824,13 @@ def computational_domain(geometry: GeometryBase, shells: Sequence[Shell]
         rtol=geometry.rtol, check=False)
 
 
-def require_mapping_on_shells(spec: MeshSpec | CubedSphereSpec) -> None:
+def require_mapping_on_shells(spec: MeshSpec | CubedSpec) -> None:
     """Refuse a mapping that is not defined on the shells.
 
     The computational domain under the geometry's mapping must satisfy
-    every invariant of a Geometry: knots on boundaries, orientation
-    preserved on the validity lattice, continuity across every interior
-    boundary, the geometry's own outer boundary included.
+    every invariant of a Geometry: orientation preserved on the validity
+    lattice, and continuity across every interior boundary, the
+    geometry's own outer boundary included.
     """
     g = spec.geometry
     domain = spec.domain
@@ -827,7 +844,7 @@ def require_mapping_on_shells(spec: MeshSpec | CubedSphereSpec) -> None:
         ) from exc
 
 
-def require_spherical_outer_boundary(spec: MeshSpec | CubedSphereSpec) -> None:
+def require_spherical_outer_boundary(spec: MeshSpec | CubedSpec) -> None:
     """Refuse a mapping that moves the outer boundary of the domain.
 
     The mapping must be the identity on the outer boundary of the
@@ -919,7 +936,8 @@ class MeshSpec:
     #: "free": the outer boundary of the computational domain may carry
     #: topography; "spherical": the mapping must be the identity on it.
     outer_boundary: str = "free"
-    #: gmsh's Mesh.Algorithm.
+    #: gmsh's Mesh.Algorithm, the surface mesher: its frontal Delaunay,
+    #: 6, by default; 5 is its Delaunay.
     algorithm_2d: int = 6
     #: gmsh's Mesh.Algorithm3D.
     algorithm_3d: int = 1
@@ -952,8 +970,10 @@ class MeshSpec:
             allowed = " or ".join(map(str, sorted(layout.dimensions)))
             raise ValueError(f"dimension must be {allowed} for {layout.what}, got "
                              f"{self.dimension}")
-        if not 1 <= self.order <= 3:
-            raise ValueError(f"element order must be 1..3, got {self.order}")
+        if isinstance(self.order, bool) or int(self.order) != self.order \
+                or not 1 <= self.order <= 3:
+            raise ValueError(f"element order must be 1, 2 or 3, got {self.order!r}")
+        object.__setattr__(self, "order", int(self.order))
         if self.outer_boundary not in OUTER_BOUNDARIES:
             raise ValueError(
                 f"outer_boundary must be one of {OUTER_BOUNDARIES}, "
@@ -1058,17 +1078,17 @@ class MeshSpec:
 
 
 @dataclass(frozen=True)
-class CubedSphereSpec:
-    """The complete description of a cubed-sphere mesh to build.
+class CubedSpec:
+    """The complete description of a mesh of a spherical geometry made
+    with no mesher (`_cubed`), in the dimension its class fixes: a
+    `CubedSphereSpec` in three, a `SquaredCircleSpec` in two, and one of
+    those is what is made.  This is what the two share.
 
-    A conforming mesh of hexahedra of a spherical geometry, made with
-    no mesher (`_cubed`): a central cube of `edge`^3 cells and six
-    blocks of `edge` x `edge` columns above its faces, or for a hollow
-    geometry the six blocks alone; in two dimensions a central square
-    and four blocks of quadrilaterals, the disc or the annulus.  The
-    computational domain, its numbering and its shells are `MeshSpec`'s,
-    and so is the mesh built: the reference one, to which the mapping is
-    applied at the MFEM export.
+    The mesh is conforming: a central cube of `edge` cells each way and
+    a block of columns above each of its faces, or for a hollow geometry
+    the blocks alone.  The computational domain, its numbering and its
+    shells are `MeshSpec`'s, and so is the mesh built: the reference
+    one, to which the mapping is applied at the MFEM export.
 
     The lateral resolution is `edge` alone: a quarter of a great circle
     has `edge` cells, so a cell at radius r is (pi / 2) r / edge wide,
@@ -1076,18 +1096,24 @@ class CubedSphereSpec:
     rule's, read as radial sizes: the target at a radius is the
     smallest of the sizes the interfaces' sizings give at their
     distances (`InterfaceSizing.at`), and each layer takes the cells
-    that asks for, at least one.  `knots` gives the radii of the
-    spheres of the mesh outright in place of a rule: every interface of
-    the computational domain from the first sphere outward, and
-    whatever lies between them.
+    that asks for, at least one.  `knots` gives the radial levels of
+    the mesh outright in place of a rule: every interface of the
+    computational domain from the first sphere outward, and whatever
+    lies between them, a knot of the geometry's mapping inside a layer
+    among them where the mesh is to follow it: no level is put on one
+    unasked.
 
     The first sphere is the innermost interface, and the innermost
     layer of a ball is the cube, of half-width `cube` times that
     sphere's radius, and the blend from the cube's surface out to it.
-    The blend is divided as a layer is and then, where `aspect` is
-    given, more finely until none of its cells is more than `aspect`
+    The blend is divided as a layer is and then, where `elongation` is
+    given, more finely until none of its cells is more than `elongation`
     times longer radially than it is wide; one cell across it is about
-    half of `edge` times longer.
+    half of `edge` times longer.  Knots below the first sphere divide
+    the blend outright instead, each the radius of a level along the
+    ray through the centre of a face of the cube, where the cube's
+    surface is at its half-width; the blend is then as given, and
+    `elongation` adds nothing to it.
     """
 
     #: The geometry to mesh: a spherical one, a ball or a shell.
@@ -1099,11 +1125,10 @@ class CubedSphereSpec:
     #: The rule giving every interface of the computational domain its
     #: sizing, read radially; exactly one of `sizing` and `knots`.
     sizing: SizingRule | None = None
-    #: The radii of the spheres of the mesh, increasing, from the first
-    #: sphere to the outer boundary of the computational domain.
+    #: The radial levels of the mesh, increasing, up to the outer
+    #: boundary of the computational domain: from the first sphere, or
+    #: for a ball from within the blend, above the cube's half-width.
     knots: ArrayLike | None = None
-    #: 3 for a ball or a shell, 2 for its disc or annulus.
-    dimension: int = 3
     #: The order of the geometry, 1 or more.
     order: int = 2
     #: Shells appended outside the geometry, innermost first.
@@ -1115,18 +1140,25 @@ class CubedSphereSpec:
     #: sphere: below 1 / sqrt(dimension), where its corners reach it.
     cube: float = 0.45
     #: The most a cell of the blend may be longer radially than it is
-    #: wide; None for no cap.
-    aspect: float | None = 4.0
+    #: wide, where the knots do not divide the blend; None for no cap.
+    elongation: float | None = 4.0
     #: False writes a failing mesh; the failures are on the result's report.
     validate: bool = True
     #: Copied into the manifest's `meta` block, for the consumer's own use.
     meta: dict[str, Any] = field(default_factory=dict)
 
+    #: The dimension of the mesh: 3 or 2, by the class.
+    dimension: ClassVar[int]
+
     def __post_init__(self) -> None:
+        if not hasattr(type(self), "dimension"):
+            raise TypeError(
+                "a CubedSpec is made as a CubedSphereSpec, in three dimensions, or "
+                "as a SquaredCircleSpec, in two")
         if not isinstance(self.geometry, Geometry):
             raise TypeError(
-                "a cubed sphere is a mesh of a spherical geometry (Geometry), got "
-                f"{type(self.geometry).__name__}")
+                f"a {type(self).__name__} takes a spherical geometry (Geometry), "
+                f"got {type(self.geometry).__name__}")
         if isinstance(self.edge, bool) or int(self.edge) != self.edge \
                 or self.edge < 1:
             raise ValueError(f"edge must be a whole number of cells, at least 1, "
@@ -1136,8 +1168,6 @@ class CubedSphereSpec:
             raise ValueError("give exactly one of sizing and knots")
         if self.sizing is not None and not callable(self.sizing):
             raise TypeError("sizing must be a callable sizing rule")
-        if self.dimension not in DIMENSIONS:
-            raise ValueError(f"dimension must be 3 or 2, got {self.dimension}")
         if isinstance(self.order, bool) or int(self.order) != self.order \
                 or self.order < 1:
             raise ValueError(f"the order of the geometry is a whole number, at "
@@ -1155,17 +1185,19 @@ class CubedSphereSpec:
                 f"cube must lie between 0 and 1 / sqrt({self.dimension}) = "
                 f"{limit:.3f}, where the cube's corners reach the first sphere, "
                 f"got {self.cube}")
-        if self.aspect is not None and not self.aspect > 0.0:
-            raise ValueError(f"aspect must be positive, or None for no cap, got "
-                             f"{self.aspect}")
+        if self.elongation is not None and not self.elongation > 0.0:
+            raise ValueError(f"elongation must be positive, or None for no cap, "
+                             f"got {self.elongation}")
         domain = self.domain    # names must be unique across geometry and shells
         if self.knots is not None:
             object.__setattr__(self, "knots", self._checked_knots(domain))
 
     def _checked_knots(self, domain: GeometryBase) -> tuple[float, ...]:
-        """The knots given, as a tuple: increasing, from the first sphere to
-        the outer boundary, with every interface among them, each put on
-        its interface's own radius."""
+        """The knots given, as a tuple: increasing, up to the outer
+        boundary, from the first sphere or, for a ball, from above the
+        cube's half-width; with every interface among them, each put on
+        its interface's own radius; no two of them, nor the first and
+        the cube's surface, one radius to the geometry's tolerance."""
         knots = np.array(self.knots, dtype=float).ravel()
         if knots.size < 1 or not np.all(np.diff(knots) > 0.0):
             raise ValueError("knots must be increasing radii")
@@ -1179,11 +1211,26 @@ class CubedSphereSpec:
                     f"domain, and none is at r = {radius:g}; its interfaces are "
                     f"at {wanted}")
             knots[k] = radius
-        if knots[0] != self.first_sphere or knots[-1] != self.outer_radius:
+        close = np.flatnonzero(np.diff(knots) <= tol)
+        if close.size:
+            k = int(close[0])
             raise ValueError(
-                f"knots run from the first sphere at r = {self.first_sphere:g} to "
-                f"the outer boundary at r = {self.outer_radius:g}, got "
-                f"{knots[0]:g} to {knots[-1]:g}")
+                f"knots at r = {knots[k]:.17g} and {knots[k + 1]:.17g} are one "
+                f"radius to the geometry's tolerance {tol:.3g}: give each level "
+                f"once")
+        if self.hollow and knots[0] != self.first_sphere:
+            raise ValueError(
+                f"the knots of a shell run from its inner boundary at r = "
+                f"{self.first_sphere:g}, got one at r = {knots[0]:g}")
+        if not self.hollow and not knots[0] > self.half_width + tol:
+            raise ValueError(
+                f"knots lie above the cube, whose surface is at r = "
+                f"{self.half_width:g} along the ray through the centre of a face, "
+                f"got one at r = {knots[0]:g}")
+        if knots[-1] != self.outer_radius:
+            raise ValueError(
+                f"knots run to the outer boundary at r = {self.outer_radius:g}, "
+                f"got {knots[-1]:g}")
         return tuple(knots.tolist())
 
     @property
@@ -1263,10 +1310,11 @@ class CubedSphereSpec:
     @cached_property
     def spheres(self) -> np.ndarray:
         """The radii of the spheres of the mesh, from the first sphere to
-        the outer boundary: the knots given, or those the sizing asks for
-        (`_cubed.sphere_knots`)."""
+        the outer boundary: the knots given from there on, or those the
+        sizing asks for (`_cubed.sphere_knots`)."""
         if self.knots is not None:
-            spheres = np.array(self.knots, dtype=float)
+            knots = np.array(self.knots, dtype=float)
+            spheres = knots[knots >= self.first_sphere]
         else:
             radii, sizings = self._sized()
             spheres = sphere_knots(self.domain.skeleton.boundaries, radii, sizings)
@@ -1276,15 +1324,21 @@ class CubedSphereSpec:
     @cached_property
     def blend(self) -> np.ndarray | None:
         """The fractions of the blend's levels, from 0 on the cube's
-        surface to 1 on the first sphere (`_cubed.blend_fractions`); None
-        for a shell, which has no blend."""
+        surface to 1 on the first sphere: those of the knots below the
+        first sphere, where there are any, and else those the sizing and
+        the cap give (`_cubed.blend_fractions`); None for a shell, which
+        has no blend."""
         if self.hollow:
             return None
-        radii, sizings = self._sized()
-        blend = blend_fractions(
-            self.edge, half_width=self.half_width, radius=self.first_sphere,
-            radii=radii, sizings=sizings, elongation=self.aspect,
-            dimension=self.dimension)
+        a, R = self.half_width, self.first_sphere
+        below = [] if self.knots is None else [k for k in self.knots if k < R]
+        if below:
+            blend = np.concatenate([[0.0], (np.array(below) - a) / (R - a), [1.0]])
+        else:
+            radii, sizings = self._sized()
+            blend = blend_fractions(
+                self.edge, half_width=a, radius=R, radii=radii, sizings=sizings,
+                elongation=self.elongation, dimension=self.dimension)
         blend.flags.writeable = False
         return blend
 
@@ -1302,6 +1356,31 @@ class CubedSphereSpec:
         return (0 if self.hollow else n ** d) + 2 * d * n ** (d - 1) * self.levels
 
 
+@dataclass(frozen=True)
+class CubedSphereSpec(CubedSpec):
+    """The complete description of a cubed sphere to build: a spherical
+    geometry, a ball or a shell, meshed with hexahedra.  A central cube
+    of `edge`^3 cells and six blocks of `edge` x `edge` columns above
+    its faces, or for a shell the six blocks alone; what it is given
+    and what it answers are `CubedSpec`'s."""
+
+    dimension: ClassVar[int] = 3
+
+
+@dataclass(frozen=True)
+class SquaredCircleSpec(CubedSpec):
+    """The complete description of a squared circle to build, the cubed
+    sphere of two dimensions: the disc or the annulus in which the
+    equatorial plane cuts a spherical geometry, meshed with
+    quadrilaterals.  A central square of `edge`^2 cells and four blocks
+    of `edge` columns above its sides, or for an annulus the four blocks
+    alone; what it is given and what it answers are `CubedSpec`'s.  The
+    geometry's mapping must keep that plane in itself, which the MFEM
+    export checks."""
+
+    dimension: ClassVar[int] = 2
+
+
 @dataclass
 class ValidationReport:
     """The outcome of every check of a built mesh, whether or not any failed."""
@@ -1309,7 +1388,10 @@ class ValidationReport:
     #: The mesh dimension.
     dimension: int
     _: KW_ONLY
-    #: Elements whose minSICN is not positive.
+    #: Elements that fold: those whose minSICN is not positive, where
+    #: gmsh built the mesh, and for a cubed sphere those whose Jacobian
+    #: is not positive at every node and quadrature point
+    #: (`export.jacobian_report`).
     negative_jacobians: int = 0
     #: The worst shape of a cell, the signed inverse condition number of
     #: its Jacobian at its worst over the cell: gmsh's minSICN where
@@ -1318,10 +1400,15 @@ class ValidationReport:
     #: at its corners, 1 for a cube (`_cubed.cell_shapes`).  The two
     #: agree in kind and not to the digit.
     min_sicn: float = 0.0
+    #: The name of the measure `min_sicn` holds, as the report prints it:
+    #: gmsh's (`QUALITY_MEASURE`), or `CORNER_MEASURE` for a cubed sphere.
+    measure: str = QUALITY_MEASURE
     #: Cells with negative signed volume or area.
     negative_cells: int = 0
-    #: Boundary faces whose normal points towards the centre they enclose,
-    #: or against the outward direction a plane of a box states.
+    #: Boundary faces that point the wrong way: an interface's towards
+    #: the centre it encloses, the inner boundary of a hollow body's
+    #: away from it and so into the body, or a plane of a box's against
+    #: the outward direction it states.
     inward_faces: int = 0
     #: Faces of a fault whose normal does not run from its footwall into
     #: its hanging wall.
@@ -1372,7 +1459,7 @@ class ValidationReport:
 
     def __repr__(self) -> str:
         state = "ok" if self.ok else f"{len(self.failures)} FAILED"
-        return (f"ValidationReport({state}, minSICN {self.min_sicn:.4g}, "
+        return (f"ValidationReport({state}, {self.measure} {self.min_sicn:.4g}, "
                 f"max interface error {self.max_interface_radius_error:.3g}"
                 f"{self._faults_text()})")
 
@@ -1395,7 +1482,9 @@ class MeshResult:
     manifest_path: Path
     #: The geometry the mesh was built from; None for an offset mesh.
     geometry: GeometryBase | None
-    #: Element, node, layer and interface counts.
+    #: What the mesh counts: its `elements`, the cells; its
+    #: `boundary_elements`, the faces that carry attributes; its `nodes`,
+    #: its `order`, `layers` and `interfaces`; and what its builder adds.
     counts: dict[str, int]
     #: The checks the mesh passed or failed.
     validation: ValidationReport
@@ -1403,7 +1492,7 @@ class MeshResult:
     timings: dict[str, float]
     _: KW_ONLY
     #: The spec the mesh was built from, if any.
-    spec: MeshSpec | CubedSphereSpec | None = None
+    spec: MeshSpec | CubedSpec | None = None
     #: The geometry's mapping, or None where there was no geometry.
     mapping: Mapping | None = None
     #: Each fault's name -> the preimages of the surfaces built in: one a
@@ -1422,7 +1511,7 @@ class MeshResult:
         return (f"{self.counts.get('elements', '?')} elements, "
                 f"{self.counts.get('nodes', '?')} nodes in "
                 f"{self.counts.get('layers', '?')} layers; "
-                f"minSICN {v.min_sicn:.3g}, max interface error "
+                f"{v.measure} {v.min_sicn:.3g}, max interface error "
                 f"{v.max_interface_radius_error:.3g}{v._faults_text()}; "
                 f"{total:.3g} s ({stages})")
 

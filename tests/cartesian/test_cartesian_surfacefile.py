@@ -72,6 +72,15 @@ def test_every_support_comes_back(tmp_path, grid):
     assert data.grid.domain.padding == grid.domain.padding
     with netCDF4.Dataset(path) as ds:
         assert ds.getncattr("coordinate_system") == "flat"
+        # the domain as the file states it: its kind, then bounds and padding
+        # axis after axis
+        kind, bounds, padding = (
+            ("box", [0.0, 400e3, 0.0, 300e3], [50e3, 25e3]) if grid.dimension == 2
+            else ("rectangle", [-100e3, 100e3], [20e3]))
+        assert ds.getncattr("domain") == kind
+        for key, want in (("domain_bounds", bounds), ("domain_padding", padding)):
+            stored = np.atleast_1d(ds.getncattr(key))
+            assert stored.dtype == np.float64 and stored.tolist() == want
         assert ds["topography"].dimensions == grid_dims(grid)
         assert np.array_equal(ds["x"][:], grid.x)
         for name in ("latitude", "grid_kind", "radius", "pole"):
@@ -93,6 +102,18 @@ def test_a_plane_below_the_surface_and_none(tmp_path):
     assert read_surface_file(path).depth is None
 
 
+def test_a_writer_stamps_this_library_as_its_source_unless_given_one(tmp_path):
+    import planetmodel
+
+    grid = flat.Grid(BOX, 4)
+    fields = {"k": SurfaceVariable(np.ones(grid.shape))}
+    path = write_surface(tmp_path / "stamped.nc", grid, fields=fields)
+    assert read_surface_file(path).source == f"planetmodel {planetmodel.__version__}"
+    with pytest.raises(ValueError, match="source names the writing code"):
+        write_surface(tmp_path / "refused.nc", grid, fields=fields, source=3)
+    assert not (tmp_path / "refused.nc").exists()
+
+
 def test_the_history_serves_dates_and_flat_functions(tmp_path):
     """The shared time rules serve the flat fields; a field at a date is a
     flat gridded function by its rule, which the surface slice shows at
@@ -106,6 +127,8 @@ def test_the_history_serves_dates_and_flat_functions(tmp_path):
     assert isinstance(history, SurfaceHistory) and history.grid == grid
     assert set(history.names()) == set(fields)
     assert history.dimensions("ice_thickness") == Dimensions(length=1)
+    assert history.variable("ice_thickness").attributes["time_support"] == "node"
+    assert history.file.grid == grid
     base = topography(grid)
     # between the nodes at 1 and 2.5, holding 1 and 2 times the base
     assert np.allclose(history.values("ice_thickness", date=1.75), 1.5 * base,
@@ -145,6 +168,13 @@ def test_writing_refuses_what_a_flat_file_cannot_hold(tmp_path):
     refuse(ValueError, "lateral_interpolation 'harmonic'",
            {"a": SurfaceVariable(ones, lateral_interpolation="harmonic")})
     refuse(ValueError, "keeps for itself", {"x": SurfaceVariable(ones)})
+    # a spherical file's variable, which a reader refuses in a flat file
+    for name in ("radius", "latitude", "colatitude_weights"):
+        refuse(ValueError, f"'{name}' is a name the surface file keeps for itself",
+               {name: SurfaceVariable(ones)})
+    refuse(ValueError, "'a': the cubic rule needs at least 3 nodes",
+           {"a": SurfaceVariable(np.ones((2, 2)), lateral_interpolation="cubic")},
+           grid=flat.Grid(BOX, 2))
     refuse(ValueError, "depth must be finite and not negative",
            {"a": SurfaceVariable(ones)}, depth=-1.0)
     refuse(ValueError, "has shape", {"a": SurfaceVariable(np.ones((3, 3)))})
@@ -165,6 +195,16 @@ def test_writing_refuses_what_a_flat_file_cannot_hold(tmp_path):
     (lambda ds: ds["topography"].setncattr("lateral_interpolation", "harmonic"),
      "no known lateral rule"),
     (lambda ds: ds.setncattr("schema", "planetmodel.surface/1"), "grid_kind"),
+    (lambda ds: ds.setncattr("source", 3.0), ": source is missing or empty"),
+    (lambda ds: ds.setncattr("created", np.int32(2026)),
+     ": created is missing or empty"),
+    (lambda ds: ds["topography"].setncattr("dimensions", np.int32([0, 1, 0])),
+     ": topography declares dimensions that are not four exponents"),
+    (lambda ds: ds["topography"].setncattr("dimensions", "length"),
+     ": topography declares dimensions that are not four exponents"),
+    (lambda ds: ds["topography"].setncattr(
+        "dimensions", np.array([0.0, 0.5, 0.0, 0.0])),
+     ": topography declares dimensions that are not four exponents"),
 ])
 def test_a_damaged_flat_file_is_refused_by_name(tmp_path, edit, message):
     grid = flat.Grid(RECT, 10)

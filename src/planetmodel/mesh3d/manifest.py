@@ -150,8 +150,8 @@ the collar attributes of the fault's hanging wall; a split-node code
 takes the indicator of those as its chi_HW, and since the attributes
 are the cells' own they survive partitioning, uniform refinement (a
 child inherits its parent's) and pre-partitioned files.  A mesh
-without faults has no collars, and its manifest is schema 5 exactly
-as it was (a flat one's schema 7 without the faults' records).  A
+without faults has no collars, and its manifest is schema 5 (a flat
+one's schema 7 without the faults' records).  A
 fault's face edge carries slip in the classification as its free edge
 does: a consumer that pins it finds the collar cells there touching the
 fault only where its slip is zero, which a split-node sum takes as it

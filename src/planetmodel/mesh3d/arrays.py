@@ -201,10 +201,12 @@ class MeshArrays:
 
     def boundary_of(self, attributes: Sequence[int]) -> np.ndarray:
         """The corners of the boundary elements of any of the given
-        attributes, (b, dimension), in file order."""
+        attributes, in file order: (b, dimension) of simplices, and of
+        hexahedra or quadrilaterals (b, 2^(dimension - 1))."""
+        corners = 2 ** (self.dimension - 1) if self.tensor else self.dimension
         rows = self.faces[np.isin(self.face_attributes, list(attributes))]
-        return rows[:, :self.dimension] if len(rows) else np.empty(
-            (0, self.dimension), dtype=np.int64)
+        return rows[:, :corners] if len(rows) else np.empty(
+            (0, corners), dtype=np.int64)
 
     @cached_property
     def _sides(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

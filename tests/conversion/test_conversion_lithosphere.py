@@ -86,7 +86,7 @@ def test_the_base_as_geometry_and_as_a_lid():
     m = viscous(pm.PREM(ocean=False), scale=25e3)
     base = lithosphere.viscosity_threshold(m, 1e23, grid=GRID)
     plain, _ = pm.PREM(ocean=False).coarsened(drop=["d80", "d220", "moho", "d15"])
-    plain = plain.refined([6271e3], names=["lab"])
+    plain = plain.refined([6271e3], interface_names=["lab"])
     g = moved(plain, {"lab": base})
     pm.testing.check_geometry(g.geometry)
     t, p = np.meshgrid(GRID.colatitudes, GRID.longitudes, indexing="ij")

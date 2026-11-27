@@ -77,10 +77,12 @@ print("the splay's down-dip edge on the thrust, its tip",
 
 # %% [markdown]
 # The mesh of order 2, every fault's size 0.03 (graded to the background
-# and the linear mesh relocated, `EmbeddedFault`'s rule). Each fault's
-# record: its attribute, its
-# curve groups by kind (None where it has none), the faults it meets
-# and ends on, and its collars.
+# and the linear mesh relocated, `EmbeddedFault`'s rule). The summary's
+# minSICN is the shape of the worst cell: gmsh's signed inverse
+# condition number, 1 for a regular tetrahedron, falling to 0 as a cell
+# flattens. Each fault's record: its attribute, its curve groups by kind
+# (None where it has none), the faults it meets and ends on, and its
+# collars.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_faults_"))

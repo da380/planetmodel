@@ -1,12 +1,21 @@
 """Geometries and sizings the cubed-sphere tests share: unit sized and a
-few cells across."""
+few cells across; and the spec and the builder of each dimension."""
 import numpy as np
 
 from planetmodel import CallableDisplacement, Geometry, RadialStretch, Skeleton
-from planetmodel.mesh3d import UniformInterfaces
+from planetmodel.mesh3d import (CubedSphereSpec, SquaredCircleSpec, UniformInterfaces,
+                                build_cubed_sphere, build_squared_circle)
 
 #: A sizing asking for cells about 0.2 thick everywhere.
 COARSE = UniformInterfaces(0.2, 0.2, 0.2)
+
+#: The spec of each dimension: a cubed sphere's and a squared circle's.
+SPECS = {3: CubedSphereSpec, 2: SquaredCircleSpec}
+
+
+def build(spec, path):
+    """The mesh of a spec, by the builder of its dimension."""
+    return {3: build_cubed_sphere, 2: build_squared_circle}[spec.dimension](spec, path)
 
 
 def ball():

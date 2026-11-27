@@ -64,7 +64,7 @@ print("thin crust gets its own element:", mesh.left[-1], "to", mesh.right[-1])
 
 # %%
 print("nodal array shape:", mesh.r.shape, "| global nodes:", mesh.nglob)
-e = mesh.element_at(0.55)
+e = mesh.element_of(0.55)
 print(f"element at the CMB: {e}, its first node r = {mesh.r[e, 0]}")
 print(f"the element below ends at r = {mesh.r[e - 1, -1]}")
 print("global index of that shared node:", mesh.gmap[e - 1, -1], mesh.gmap[e, 0])

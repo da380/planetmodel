@@ -242,6 +242,7 @@ pm::ModelFile SiModel() {
   const auto& sk = file.GetSkeleton();
   file.SetName("written si");
   file.SetCitation({"A. Author (2026).  A written model.", "B. Author (2026).  Its source."});
+  file.SetBehaviours({"Elastic", "Tidal", "SelfGravitating"});
   file.AddPart(0, 0, pm::ElementEdges(sk, 0, 0, 0.1), 5, pm::DriscollHealy(6));
   file.AddPart(1, 1, pm::ElementEdges(sk, 1, 1, 0.15), 4, pm::GaussLegendre(5));
   file.AddPart(2, 2, pm::ElementEdges(sk, 2, 2, 0.2), 3, pm::Equiangular(9, 16, true));
@@ -507,6 +508,7 @@ TEST(Writer, WritesBackWhatItReads) {
     EXPECT_EQ(after.Schema(), before.Schema());
     EXPECT_EQ(after.Name(), before.Name());
     EXPECT_EQ(after.Citation(), before.Citation());
+    EXPECT_EQ(after.Behaviours(), before.Behaviours());
     EXPECT_EQ(after.GetScales(), before.GetScales());
     EXPECT_EQ(after.Rtol(), before.Rtol());
     EXPECT_EQ(after.Meta(), before.Meta());
@@ -610,6 +612,8 @@ TEST(Writer, WritesFieldsOnEveryShippedGridThatReadBackToThemselves) {
   EXPECT_NE(read.Created().find('T'), std::string::npos);
   EXPECT_EQ(read.Citation(), (std::vector<std::string>{"A. Author (2026).  A written model.",
                                                         "B. Author (2026).  Its source."}));
+  EXPECT_EQ(read.Behaviours(),
+            (std::vector<std::string>{"Elastic", "Tidal", "SelfGravitating"}));
   EXPECT_EQ(read.Parts()[0].grid->Kind(), "driscoll_healy");
   EXPECT_EQ(read.Parts()[1].grid->Kind(), "gauss_legendre");
   EXPECT_EQ(read.Parts()[2].grid->Kind(), "equiangular");
@@ -829,6 +833,47 @@ TEST(Writer, CitesEachWorkOnceOnALineOfItsOwn) {
   EXPECT_TRUE(file.Citation().empty());
 }
 
+TEST(Writer, NamesBehavioursEachOnceAndCarriesThoseItReads) {
+  auto file = pm::ModelFile(pm::Skeleton({0.0, 1.0}));
+  EXPECT_TRUE(file.Behaviours().empty());
+  const auto names = std::vector<std::string>{"SelfGravitating", "Tidal", "Elastic"};
+  file.SetBehaviours(names);
+  EXPECT_EQ(file.Behaviours(), names);
+  for (const auto& wrong : std::vector<std::vector<std::string>>{
+           {"Elastic", "Elastic"}, {"Elastic", ""}, {"Self Gravitating"}, {"Tidal\n"}}) {
+    try {
+      file.SetBehaviours(wrong);
+      ADD_FAILURE() << "accepted";
+    } catch (const Error& e) {
+      EXPECT_EQ(e.Where(), "behaviours");
+    }
+  }
+  EXPECT_EQ(file.Behaviours(), names);
+  file.SetBehaviours({});
+  EXPECT_TRUE(file.Behaviours().empty());
+
+  // a model of the radius alone, on the grid of one node, whose file names
+  // a behaviour the library has none of: read, and written back unchanged
+  PLANETMODEL_FIXTURE(radial, "model_radial.nc");
+  const auto before = pm::ReadModelFile(radial);
+  const auto stated = std::vector<std::string>{"Elastic", "Tidal", "SelfGravitating"};
+  EXPECT_EQ(before.Behaviours(), stated);
+  ASSERT_EQ(before.Parts().size(), 1u);
+  EXPECT_EQ(before.Parts()[0].grid->NTheta(), 1u);
+  EXPECT_EQ(before.Parts()[0].grid->NPhi(), 1u);
+  EXPECT_TRUE(before.FieldOn(1, "g").IsRadial());
+  const auto path = pm::testing::WrittenDir() / "behaviours_radial.nc";
+  pm::WriteModelFile(path, before);
+  EXPECT_EQ(pm::ReadModelFile(path).Behaviours(), stated);
+  // a file that names none states none when written back
+  PLANETMODEL_FIXTURE(lateral, "model_lateral.nc");
+  auto plain = pm::ReadModelFile(lateral);
+  plain.SetBehaviours({});
+  const auto bare = pm::testing::WrittenDir() / "behaviours_none.nc";
+  pm::WriteModelFile(bare, plain);
+  EXPECT_TRUE(pm::ReadModelFile(bare).Behaviours().empty());
+}
+
 // A viscosity the exponential of a quadratic on one layer and a constant
 // on the next, read in its logarithm; the closed forms the Python is held
 // to in test_cpp_written.py.
@@ -901,6 +946,28 @@ TEST(Writer, WritesAViscosityInItsLogarithmThatReadsBackExactly) {
   EXPECT_EQ(refused.Schema(), pm::MODEL_SCHEMA);
   refused.AddField("viscosity", {{0, LayerSource::Radial([](double r) { return 1.0 + r; })}}, log);
   EXPECT_EQ(refused.Schema(), pm::MODEL_SCHEMA_WITH_LOG_RULES);
+}
+
+TEST(Writer, WritesElementsBetweenAnyEdgesThatReadBackAndEvaluate) {
+  // edges whose elements' last nodes, mapped from the GLL points, round
+  // away from the edges: each element must still start where the one
+  // below ends
+  auto file = pm::ModelFile(pm::Skeleton({0.0, 1.5}));
+  file.AddPart(0, 0, {0.0, 0.3, 0.9, 1.5}, 3, pm::GaussLegendre(4));
+  file.AddField("rho", {{0, LayerSource::Radial([](double r) { return 1.0 + r; })}});
+  const auto& radius = file.Parts().front().radius;
+  ASSERT_EQ(radius.size(), 9u);
+  EXPECT_EQ(radius[2], radius[3]);
+  EXPECT_EQ(radius[5], radius[6]);
+  EXPECT_EQ(radius[5], 0.9);
+  EXPECT_EQ(radius.back(), 1.5);
+  const auto path = pm::testing::WrittenDir() / "edges.nc";
+  pm::WriteModelFile(path, file);
+  const auto back = pm::ReadModelFile(path);
+  const auto rho = back.FieldOn(0, "rho").AsScalar();
+  for (const auto r : {0.0, 0.15, 0.3, 0.6, 0.9, 1.0, 1.5}) {
+    EXPECT_NEAR(rho.Value(r, 0.3, 0.2), 1.0 + r, 1e-14) << r;
+  }
 }
 
 TEST(Writer, RefusesSourcesThatDoNotFitTheirLayers) {

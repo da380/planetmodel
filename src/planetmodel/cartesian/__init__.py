@@ -100,14 +100,14 @@ from the spherical file in `cartesian.modelfile`; fields on a horizontal
 plane are a flat surface file, `planetmodel.surface/2`
 (`cartesian.surfacefile`).  Both modules are reached by name.
 
-A flat model is read from and written to a deck of depths, its first
-column the depth from the surface down (`cartesian.deck`): the formats
-of the radius-first decks stated for `DEPTH`, one definition each, read
-and written by the library's `read_deck`, `write_deck` and
-`sample_deck`.  A deck holds no lateral extent, so the model types of
-the decks take the box beside the deck.  The catalogue
-(`cartesian.catalogue`) holds those, the flat `LayeredIsotropicElastic`
-and `CrustOverMantle`, the reference model of the tests and examples.
+A table of depths, its first column the depth from the surface down, is
+brought in as a flat model and a flat model written as one by the
+library's own `read_deck`, `model_from_deck`, `sample_deck` and
+`write_deck`, told the knots are depths by `DEPTH` (`cartesian.deck`).
+A table holds no lateral extent, so `model_from_deck` takes the box
+beside it.  The catalogue (`cartesian.catalogue`) holds the flat
+`LayeredIsotropicElastic` and `CrustOverMantle`, the reference model of
+the tests and examples.
 The behaviours that are pointwise (`Elastic`, `ConstantQ`,
 `Viscoelastic`) serve flat models unchanged; gravity from the mass
 inside a radius, a mean over the sphere and whatever else is the
@@ -147,22 +147,17 @@ the surface and below the base and the lateral period the grid's.
   Sample, sample           a model on depth by grid nodes     (sampling)
   horizontal_mean,         the mean over the period at every
   horizontally_averaged    depth, of a field and a model      (means)
-  DEPTH, ELASTIC, MAXWELL, the depth of a deck's knots and the
-  PRONY, BURGERS           formats of decks of depths         (deck)
-  depth_names              a deck's layer and interface names (deck)
+  DEPTH                    the depth of a deck's knots        (deck)
   LayeredIsotropicElastic  layers of rho, vp, vs              (catalogue)
   CrustOverMantle          the reference flat model           (catalogue)
-  ElasticDeckModel, MaxwellDeckModel, PronyDeckModel, BurgersDeckModel
-                           the models of the decks of depths  (catalogue)
   LayerBasis               the coefficient vector of a field
                            over a grid and a mesh in depth    (randomfield)
   DepthGRF, BoxGRF,        Matern random fields of depth, of a
   LayeredGRF               box and of the layers              (randomfield)
 """
-from .catalogue import (BurgersDeckModel, CrustOverMantle, ElasticDeckModel,
-                        LayeredIsotropicElastic, MaxwellDeckModel, PronyDeckModel)
+from .catalogue import CrustOverMantle, LayeredIsotropicElastic
 from .coordinates import FLAT, FlatCoordinates
-from .deck import BURGERS, DEPTH, ELASTIC, MAXWELL, PRONY, depth_names
+from .deck import DEPTH
 from .displacement import (CallableDisplacement, VerticalDisplacement, ZeroDisplacement,
                            as_displacement, layer_linear)
 from .domains import Box, Rectangle
@@ -178,10 +173,9 @@ from .randomfield import BoxGRF, DepthGRF, LayerBasis, LayeredGRF
 from .sampling import Sample, sample
 
 __all__ = ["FLAT", "FlatCoordinates", "Box", "Rectangle", "Geometry", "Model",
-           "DepthField", "AnalyticField", "constant_field", "DEPTH", "ELASTIC",
-           "MAXWELL", "PRONY", "BURGERS", "depth_names", "LayeredIsotropicElastic",
-           "CrustOverMantle", "ElasticDeckModel", "MaxwellDeckModel", "PronyDeckModel",
-           "BurgersDeckModel", "VerticalStretch", "VerticalDisplacement",
+           "DepthField", "AnalyticField", "constant_field", "DEPTH",
+           "LayeredIsotropicElastic", "CrustOverMantle", "VerticalStretch",
+           "VerticalDisplacement",
            "ZeroDisplacement", "CallableDisplacement", "as_displacement",
            "layer_linear", "Grid", "FourierField", "FourierFunction", "GriddedField",
            "GriddedFunction", "GriddedDisplacement", "Sample", "sample",

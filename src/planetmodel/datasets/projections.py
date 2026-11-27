@@ -128,7 +128,7 @@ class PolarStereographic:
 
     def inverse(self, x: ArrayLike, y: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
         """Geodetic latitudes and longitudes (degrees, the longitudes in
-        (-180, 180] about none in particular) of points (x, y) in metres,
+        [-180, 180) about none in particular) of points (x, y) in metres,
         broadcast together, by the closed form of the module docstring."""
         x, y = np.broadcast_arrays(np.asarray(x, dtype=float),
                                    np.asarray(y, dtype=float))

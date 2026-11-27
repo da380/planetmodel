@@ -90,7 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--deep-km", type=float, default=600.0,
                     help="radial size at the centre, km")
     ap.add_argument("--order", type=int, default=2, help="order of the geometry")
-    ap.add_argument("--aspect", type=float, default=4.0,
+    ap.add_argument("--elongation", type=float, default=4.0,
                     help="cap on the blend's cells; 0 for none")
     ap.add_argument("--relief-km", type=float, default=3.0,
                     help="amplitude of the surface relief, km; 0 for none")
@@ -107,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.relief_km:
         geometry = geometry.with_mapping(surface_relief(args.relief_km * km, a, b))
     spec = CubedSphereSpec(
-        geometry, args.edge, order=args.order, aspect=args.aspect or None,
+        geometry, args.edge, order=args.order, elongation=args.elongation or None,
         sizing=sizes_growing_with_depth(args.surface_km * km, args.deep_km * km, a),
         shells=(Shell(ratio=BUFFER_RATIO),))
 

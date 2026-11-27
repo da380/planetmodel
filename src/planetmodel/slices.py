@@ -21,7 +21,9 @@ field's spherical mean at each point's reference radius (`"mean"`, by
 perturbed field's own reference (`"reference"`), or from the same field
 of another model (a `Model`), as `departure="percent"` (100 (v / ref -
 1), the default), `"difference"` (v - ref) or `"log10"` (log10(v /
-ref)).  Every slice records what it shows (`Shown`) and labels itself.
+ref)).  Another model is compared at the same place in the same units:
+one in other scales is converted to the model's (`in_scales_of`).  Every
+slice records what it shows (`Shown`) and labels itself.
 
 **Reference or physical.**  A slice is taken at reference points, where
 the fields live (`at="reference"`), and gives besides where the mapping
@@ -41,7 +43,13 @@ it is lowered, nothing outside the body sampled.  `radii` bound the
 runs, and on a ray where a layer has nothing within them its values are
 NaN.  Points are given as the library gives them, colatitude and
 longitude in radians; `frames.from_geographic` converts latitudes and
-longitudes.
+longitudes.  Where a point's position does not fix its angles (the
+longitude on the polar axis, both at the centre) and a component is
+read in the frame there, a profile is at the angles it was given, a
+node of a sphere's grid at its own, and a point of a section at those
+of the arc beside it: on the polar axis the longitude the arc leaves
+along at its start and arrives along elsewhere, so that a component is
+continuous along the arc up to a pole and from one it starts at.
 
 **Spectra.**  `spectrum` analyses a sphere slice into the library's
 real orthonormal harmonics (`planetmodel.harmonics`: the integral of
@@ -57,7 +65,9 @@ so that a field not limited to the band does not alias into it.
 by degree, r_l = sum_m a_lm b_lm / sqrt(sum_m a_lm^2 sum_m b_lm^2), and
 over the degrees from 1 to `lmax`, NaN where a degree has no power in
 either (its amplitude below `NO_POWER` of the field's); the fields may be
-two models' or two of one model's.
+two models' or two of one model's, the other model converted to the
+first's scales where it is in others, so that a radius is one place in
+both.
 
 **Kernels and other signed fields.**  `integrated` maps a field
 integrated along each radius over a span of reference radii, the
@@ -66,12 +76,17 @@ the field's volume integral: a sensitivity kernel's column) or of f dr
 (`weight="radius"`); within a layer it is Gauss-Legendre on each of the
 field's radial pieces, exact for a piecewise polynomial of their degree
 with the weight, or on the whole layer for a field that declares none,
-and a layer lacking the field adds nothing.  `mean_profile(...,
-total=True)` gives r^2 times the field's integral over the sphere, the
-one-dimensional kernel K_1D whose integral with dm dr is that of K dm dV
-for a radial dm.  `surface` is a sphere slice of a function of the
-angles on one of the model's interfaces (a field on interfaces from a
-model file, a shift of a boundary), on its own grid where it has one;
+and a layer lacking the field adds nothing.  A field held as parts, whose
+pieces hold each part, states the degree of its values on them
+(`quadrature_degree`: the sum of its parts' for a relative
+perturbation), and one whose values are no polynomial there (a
+logarithmic perturbation) takes the points asked for on each piece.
+`mean_profile(..., total=True)` gives r^2 times the field's integral
+over the sphere, the one-dimensional kernel K_1D whose integral with
+dm dr is that of K dm dV for a radial dm.  `surface` is a sphere slice
+of a function of the angles on one of the model's interfaces (a field
+on interfaces from a model file, a shift of a boundary), on its own
+grid where it has one;
 `spectrum_of` analyses any sphere slice, a surface's or an integral's
 among them.  `normalised` divides a slice by its largest absolute
 value, its label saying so.
@@ -112,13 +127,16 @@ model (`planetmodel.cartesian.slices`) take it from here: `evaluator`
 gives a layer's values at reference points (c, a, b) of the model's own
 system, the departure from the mean asked of the averaging operator it
 is handed (`MeanOf`: the spherical mean here, the horizontal mean in a
-box); `layers_of` the layer holding each value of the layered
-coordinate, the side of an interface taken as the body is (below is
-toward the centre on the sphere and deeper in a box); `to_reference`
+box); `in_scales_of` another model in the model's scales; `layers_of`
+the layer holding each value of the layered coordinate, the side of an
+interface taken as the body is (below is toward the centre on the
+sphere and deeper in a box); `to_reference`
 and `to_physical` the passage through the mapping; `evaluate_layers`
-the values at points each in its layer; `runs` each layer's part of a
-section or a profile along its lines, rays or verticals, at reference
-or physical points (`Lines`); `layer_quadrature` the
+the values at points each in its layer, read at the coordinates
+`read_at` gives them (a slice's `lateral` where a point fixes none);
+`runs` each layer's part of a section or a profile along its lines,
+rays or verticals, at reference or physical points (`Lines`);
+`layer_quadrature` the
 quadrature of a layer's field along its layered coordinate;
 `SliceLayer`, `Shown` and `normalised` the parts of a slice.  Every
 slice states its `coordinates`, so that a picture asks it which way
@@ -134,9 +152,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .coordinates import (SPHERICAL, Coordinates, coordinates_of, increases_outward,
-                          resolve_frame)
+                          require_coordinates, resolve_frame)
 from .fields import Field, stored_shape
 from .frames import cartesian_points, spherical_coordinates, wrapped
+from .mapping import SIN_FLOOR
 from .means import spherical_mean
 from .model import ModelBase
 from .units import Dimensions, Scales, scaled_unit
@@ -153,7 +172,8 @@ __all__ = ["AT", "SIDES", "DEPARTURES", "WEIGHTS", "NO_POWER", "Fields", "Relati
            "mean_profile", "integrated", "surface", "cutaway", "discs", "normalised",
            "evaluate",
            "spectrum", "spectrum_of", "correlation", "Values", "MeanOf", "evaluator",
-           "field_of", "layers_of", "to_reference", "to_physical", "evaluate_layers",
+           "field_of", "in_scales_of", "layers_of", "to_reference", "to_physical",
+           "evaluate_layers", "read_at",
            "Lines", "runs", "layer_quadrature"]
 
 #: Where a slice's points are: in the reference body, or the physical one.
@@ -288,6 +308,13 @@ class SphereSlice:
         """The label of what the slice shows."""
         return self.shown.label
 
+    @property
+    def lateral(self) -> tuple[np.ndarray, np.ndarray]:
+        """The angles (theta, phi) the slice's points are read at where
+        their positions fix none (`read_at`): its grid's, (ntheta, 1) and
+        (1, nphi), so that a node at a pole keeps its own longitude."""
+        return self.grid.colatitudes[:, None], self.grid.longitudes[None, :]
+
 
 @dataclass(frozen=True)
 class SliceLayer:
@@ -313,7 +340,8 @@ class SectionSlice:
     """A field on a great-circle section, layer by layer.
 
     `distance` (m,) is the angle along the arc from its start, in
-    radians; `path` (m, 3) the unit vectors of the arc's points; `plane`
+    radians; `path` (m, 3) the unit vectors of the arc's points, one
+    within `mapping.SIN_FLOOR` of the polar axis lying on it; `plane`
     (2, 3) the start and the direction of travel there, an orthonormal
     basis of the section's plane, for drawing positions in it; `layers`
     each layer's points and values.
@@ -334,6 +362,15 @@ class SectionSlice:
     def label(self) -> str:
         """The label of what the slice shows."""
         return self.shown.label
+
+    @property
+    def lateral(self) -> tuple[np.ndarray, np.ndarray]:
+        """The angles (theta, phi), each (m,), the slice's rays are read at
+        where their points fix none (`read_at`): those of `path`, and for
+        a ray along the polar axis the longitude of the arc beside it, the
+        one the arc leaves along at its start and arrives along
+        elsewhere."""
+        return _arc_angles(self.distance, self.path, self.plane)
 
     @property
     def length(self) -> float:
@@ -361,6 +398,13 @@ class ProfileSlice:
     def label(self) -> str:
         """The label of what the slice shows."""
         return self.shown.label
+
+    @property
+    def lateral(self) -> tuple[float, float] | None:
+        """The angles (theta, phi) the slice's points are read at where
+        their positions fix none (`read_at`), at a pole and at the centre:
+        its own; None for a mean profile, which has no place."""
+        return None if self.theta is None else (self.theta, self.phi)
 
 
 #: What a pixel of a cutaway looks at, by its code in `CutawaySlice.face`:
@@ -608,6 +652,51 @@ def _other_layer(model: ModelBase, r: np.ndarray, toward: float) -> np.ndarray:
     return np.clip(np.searchsorted(b, nudged, side="right") - 1, 0, b.size - 2)
 
 
+def _snapped(model: ModelBase, layer: int, c: np.ndarray) -> np.ndarray:
+    """Values of the layered coordinate read in a layer, those beyond an end
+    of its interval by no more than the geometry's tolerance moved onto that
+    end: the geometry takes them to lie on the boundary, and a field is
+    asked within its interval.  One farther out is left as it is, for the
+    field to refuse."""
+    lo, hi = model.skeleton.interval(layer)
+    tol = model.geometry.rtol * model.skeleton.span
+    return np.where((c >= lo - tol) & (c <= hi + tol), np.clip(c, lo, hi), c)
+
+
+def in_scales_of(model: ModelBase, other: ModelBase, fields: Fields) -> ModelBase:
+    """`other`, a model compared with `model` point by point (departed from,
+    correlated with), in `model`'s scales: itself where the two state the
+    same, and `other.converted(model.scales)` otherwise, so that a value of
+    the layered coordinate is one place in both and the fields' numbers are
+    in one unit.
+
+    `fields` is what is read of `other`.  Fields given by layer are numbers
+    in no stated scales, so they are refused where the scales differ, and
+    so is a model that cannot be converted (one holding a field without
+    dimensions), the refusal naming both scales.
+    """
+    if other.scales == model.scales:
+        return other
+    if not isinstance(fields, str):
+        raise ValueError(
+            f"the other model is in {other.scales!r} and this one in "
+            f"{model.scales!r}: fields given by layer state no scales to convert "
+            "them by, so name the field, or convert the other model and its "
+            "fields first")
+    try:
+        return other.converted(model.scales)
+    except ValueError as error:
+        raise ValueError(
+            f"the other model is in {other.scales!r} and this one in "
+            f"{model.scales!r}, and it cannot be converted: {error}") from error
+
+
+def _spherical(model: ModelBase) -> None:
+    """Refuse a model of another coordinate system than the sphere's."""
+    require_coordinates(model, SPHERICAL, "a slice of planetmodel.slices (on a "
+                        "sphere, a great circle or a radius)")
+
+
 def _spherical_means(mean_grid: AngularGrid | None) -> MeanOf:
     """The spherical mean of a layer's field, its own or by `mean_grid`'s
     quadrature, a field with neither refused by name."""
@@ -624,7 +713,9 @@ def _spherical_means(mean_grid: AngularGrid | None) -> MeanOf:
 def _evaluator(model: Model, fields: Fields, *, component: int | str | None,
                frame: str | None, relative_to: RelativeTo, departure: str | None,
                mean_grid: AngularGrid | None) -> tuple[Values, Shown]:
-    """`evaluator` with the spherical mean."""
+    """`evaluator` with the spherical mean, of a model on the sphere: one
+    of another coordinate system is refused."""
+    _spherical(model)
     return evaluator(model, fields, component=component, frame=frame,
                      relative_to=relative_to, departure=departure,
                      mean=_spherical_means(mean_grid))
@@ -642,7 +733,11 @@ def evaluator(model: ModelBase, fields: Fields, *,
     `mean` is the averaging of a departure from the mean (the spherical
     mean, or the horizontal one in a box), a departure from the mean
     being refused without it.  Another model departed from is in the
-    model's coordinates.
+    model's coordinates, and is read in the model's scales
+    (`in_scales_of`).  A value of the layered coordinate beyond an end of
+    the layer's interval by no more than the geometry's tolerance, which
+    the geometry takes to lie on the boundary, is read on that end; one
+    farther out is the field's to refuse.
     """
     if departure is not None and departure not in DEPARTURES:
         raise ValueError(f"departure must be one of {DEPARTURES}, got {departure!r}")
@@ -662,6 +757,7 @@ def evaluator(model: ModelBase, fields: Fields, *,
                 f"a departure from another model is from one in the same coordinates; "
                 f"this model is in {model.coordinates.name!r} and the other in "
                 f"{relative_to.coordinates.name!r}")
+        relative_to = in_scales_of(model, relative_to, fields)
     if isinstance(relative_to, str) and relative_to == "mean" and mean is None:
         raise ValueError("a departure from the mean needs the averaging of the "
                          "model's coordinates")
@@ -722,7 +818,7 @@ def evaluator(model: ModelBase, fields: Fields, *,
                         continue
                     k = which == j
                     f = _components(held[name], int(j), component, frame)
-                    out[k] = f(r[k], t[k], p[k])
+                    out[k] = f(_snapped(other, int(j), r[k]), t[k], p[k])
                 return out
         against[layer] = fn
         return fn
@@ -732,6 +828,7 @@ def evaluator(model: ModelBase, fields: Fields, *,
         f = value(layer)
         if f is None:
             return np.full(r.shape, np.nan)
+        r = _snapped(model, layer, r)
         v = np.broadcast_to(f(r, t, p), r.shape)
         if relative_to is None:
             return np.array(v, dtype=float)
@@ -821,11 +918,37 @@ def layers_of(model: ModelBase, s: np.ndarray, side: str | None
     return np.where(outside, -1, out), bool(np.any(interior))
 
 
+def read_at(coordinates: Coordinates, X: np.ndarray,
+            near: tuple[ArrayLike, ArrayLike] | None
+            ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The coordinates (c, a, b) that reference points X (..., 3) are read
+    at: the points' own, but for a point that is the one `near` (a, b)
+    gives at its c, to `mapping.SIN_FLOOR` of its distance from the
+    origin, which is read at `near`.  Where a point fixes its lateral
+    coordinates the two agree; where it fixes none (on the sphere a
+    longitude on the polar axis, both angles at the centre) `near` names
+    them, and the frame of a component with them.  `near` broadcasts
+    against the points; a slice's `lateral` is its own."""
+    c, a, b, _ = coordinates.split(X)
+    if near is None:
+        return c, a, b
+    na, nb = (np.broadcast_to(np.asarray(v, dtype=float), c.shape) for v in near)
+    apart = np.linalg.norm(np.asarray(coordinates.points(c, na, nb)) - X, axis=-1)
+    same = apart <= SIN_FLOOR * np.linalg.norm(X, axis=-1)
+    return c, np.where(same, na, a), np.where(same, nb, b)
+
+
 def evaluate_layers(values: Values, layers: np.ndarray, X: np.ndarray,
-                    coordinates: Coordinates) -> np.ndarray:
+                    coordinates: Coordinates, *,
+                    near: tuple[ArrayLike, ArrayLike] | None = None) -> np.ndarray:
     """The values at reference points X (..., 3) of a system of
-    `coordinates`, each from its layer in `layers` (...), NaN at -1."""
-    s, t, p, _ = coordinates.split(X)
+    `coordinates`, each from its layer in `layers` (...), NaN at -1.
+    `near` (a, b), broadcasting against the points, gives lateral
+    coordinates the points were meant at (those of the physical points
+    they are pulled back from): a point that is theirs to rounding is
+    read at them, which names its longitude on the polar axis and both
+    its angles at the centre, where its position fixes none."""
+    s, t, p = read_at(coordinates, X, near)
     out = np.full(s.shape, np.nan)
     for layer in np.unique(layers):
         if layer < 0:
@@ -837,14 +960,23 @@ def evaluate_layers(values: Values, layers: np.ndarray, X: np.ndarray,
 
 def runs(model: ModelBase, values: Values, path: np.ndarray, lines: Lines,
          bounds: tuple[float, float] | None, n: int, at: str, *,
-         keeps: Callable[[ModelBase, np.ndarray], None]) -> tuple[SliceLayer, ...]:
+         keeps: Callable[[ModelBase, np.ndarray], None],
+         lateral: tuple[ArrayLike, ArrayLike] | None = None
+         ) -> tuple[SliceLayer, ...]:
     """Each layer's part of a section or a profile, `n` points on each of
     its lines, the ends included: the rule of the module docstring in
     either system.
 
     `path` (m, 3) holds a point of each line, whose lateral coordinates
     the line keeps, and `lines` the points along them; `bounds` (lo, hi)
-    bounds the layered coordinate.  At reference points a layer runs
+    bounds the layered coordinate.  `lateral` (a, b), each (m,), gives
+    the lines' lateral coordinates, read from `path` by default: a line
+    through a point that fixes none (a ray along the polar axis, whose
+    longitude is the caller's) is given by them, and a point of a line
+    is read at its line's, the centre among them, unless the mapping
+    took it off the line.
+
+    At reference points a layer runs
     over its reference interval within `bounds`, the reference body's
     span by default, the same on every line, and is left out where it
     has nothing within them.  At physical points it runs on each line
@@ -871,7 +1003,11 @@ def runs(model: ModelBase, values: Values, path: np.ndarray, lines: Lines,
         lo, hi = ((float(edges[0]), float(edges[-1])) if at == "reference"
                   else (-np.inf, np.inf))
     coordinates = model.coordinates
-    _, a, b, _ = coordinates.split(path)
+    if lateral is None:
+        _, a, b, _ = coordinates.split(path)
+    else:
+        a, b = (np.broadcast_to(np.asarray(v, dtype=float), path.shape[:1])
+                for v in lateral)
     out = []
     for layer in range(model.nlayers):
         b0, b1 = float(edges[layer]), float(edges[layer + 1])
@@ -895,7 +1031,7 @@ def runs(model: ModelBase, values: Values, path: np.ndarray, lines: Lines,
         c = c0[None, :] + frac * np.maximum(c1 - c0, 0.0)[None, :]
         x = lines(c)
         X = to_reference(model, x)
-        s, sa, sb, _ = coordinates.split(X)
+        s, sa, sb = read_at(coordinates, X, (a, b))
         v = values(layer, np.clip(s, b0, b1), sa, sb)
         v = np.where((c1 > c0)[None, :], v, np.nan)
         out.append(SliceLayer(layer, c, v, X, x))
@@ -953,7 +1089,7 @@ def sphere(model: Model, fields: Fields, *, radius: float | None = None,
         layers, sided = layers_of(model, s, side)
         if np.all(layers < 0):
             raise ValueError(f"the physical sphere of radius {r} lies outside the body")
-        v = evaluate_layers(values, layers, reference, SPHERICAL)
+        v = evaluate_layers(values, layers, reference, SPHERICAL, near=(theta, phi))
         taken = side if sided else None
     return SphereSlice(r, grid, v, reference, physical, shown, at=at, side=taken)
 
@@ -962,14 +1098,19 @@ def _arc(start: tuple[float, float], end: tuple[float, float] | None,
          azimuth: float | None, length: float | None, m: int
          ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The distance along the arc, its points' unit vectors and the plane's
-    basis (the start and the direction of travel there)."""
-    a = cartesian_points(1.0, start[0], start[1])
+    basis (the start and the direction of travel there).  An azimuth is
+    counted in the frame at the start's angles as given, from -e_theta
+    toward e_phi: at a pole, where the position fixes no longitude, from
+    the meridian of the longitude given, north being the way a point
+    travelling up that meridian leaves the pole.  A point of the arc
+    within `mapping.SIN_FLOOR` of the polar axis is put on it."""
+    a = _on_axis(cartesian_points(1.0, start[0], start[1]))
     if (end is None) == (azimuth is None):
         raise ValueError("give the arc's end, or its azimuth= and length=")
     if end is not None:
         if length is not None:
             raise ValueError("the arc's length follows from its end; give one")
-        b = cartesian_points(1.0, end[0], end[1])
+        b = _on_axis(cartesian_points(1.0, end[0], end[1]))
         along = b - np.dot(a, b) * a
         span = float(np.arctan2(np.linalg.norm(along), np.dot(a, b)))
         if np.linalg.norm(along) <= 1e-12:
@@ -986,16 +1127,36 @@ def _arc(start: tuple[float, float], end: tuple[float, float] | None,
                            -np.sin(theta)])
         east = np.array([-np.sin(phi), np.cos(phi), 0.0])
         t = np.cos(azimuth) * north + np.sin(azimuth) * east
-        if np.linalg.norm(t) < 0.5:
-            raise ValueError("at a pole the azimuth has no north to count from; start "
-                             "the arc elsewhere or give its end")
         t = t / np.linalg.norm(t)
     if int(m) < 2:
         raise ValueError(f"m must be at least 2, got {m}")
     distance = np.linspace(0.0, span, int(m))
-    path = (np.cos(distance)[:, None] * a[None, :]
-            + np.sin(distance)[:, None] * t[None, :])
+    path = _on_axis(np.cos(distance)[:, None] * a[None, :]
+                    + np.sin(distance)[:, None] * t[None, :])
     return distance, path, np.stack([a, t])
+
+
+def _on_axis(points: np.ndarray) -> np.ndarray:
+    """Unit vectors (..., 3), those within `mapping.SIN_FLOOR` of the polar
+    axis put on it, so that every point along their rays is on it too."""
+    out = np.array(points, dtype=float)
+    out[np.hypot(out[..., 0], out[..., 1]) < SIN_FLOOR, :2] = 0.0
+    return out
+
+
+def _arc_angles(distance: np.ndarray, path: np.ndarray, plane: np.ndarray
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """The colatitude and longitude of an arc's points, each (m,).  A point
+    on the polar axis fixes no longitude and takes that of the arc beside
+    it: the one the arc leaves along at its start, and the one it arrives
+    along elsewhere."""
+    _, theta, phi, _ = spherical_coordinates(path)
+    travel = (-np.sin(distance)[:, None] * plane[0][None, :]
+              + np.cos(distance)[:, None] * plane[1][None, :])
+    toward = np.where(np.arange(distance.size) == 0, 1.0, -1.0)
+    beside = np.arctan2(toward * travel[:, 1], toward * travel[:, 0])
+    on_axis = np.hypot(path[:, 0], path[:, 1]) == 0.0
+    return theta, np.where(on_axis, beside, phi)
 
 
 def _keeps_rays(model: Model, X: np.ndarray) -> None:
@@ -1014,14 +1175,15 @@ def _keeps_rays(model: Model, X: np.ndarray) -> None:
 
 
 def _runs(model: Model, values: Values, path: np.ndarray,
-          radii: tuple[float, float] | None, n: int, at: str
-          ) -> tuple[SliceLayer, ...]:
+          radii: tuple[float, float] | None, n: int, at: str,
+          angles: tuple[ArrayLike, ArrayLike]) -> tuple[SliceLayer, ...]:
     """Each layer's points and values along the rays through the unit
-    vectors `path` (m, 3): `runs` on the sphere."""
+    vectors `path` (m, 3): `runs` on the sphere, the rays at the `angles`
+    (theta, phi), each (m,)."""
     if radii is not None and not float(radii[0]) < float(radii[1]):
         raise ValueError(f"radii must be (lo, hi) with lo < hi, got {radii}")
     return runs(model, values, path, lambda r: r[..., None] * path[None, :, :], radii,
-                n, at, keeps=_keeps_rays)
+                n, at, keeps=_keeps_rays, lateral=angles)
 
 
 def section(model: Model, fields: Fields, start: tuple[float, float], *,
@@ -1041,14 +1203,21 @@ def section(model: Model, fields: Fields, start: tuple[float, float], *,
     points as the mapping shapes it, from its mapped inner boundary to its
     mapped surface on each ray; `n` points per layer, its ends included,
     and `m` along the arc; `at`, the component, frame and departure as the
-    module docstring says.
+    module docstring says.  From a pole, where the position fixes no
+    longitude, the azimuth is counted from the meridian of the longitude
+    given with `start`, north the way a point travelling up that meridian
+    leaves the pole, so that an azimuth of pi runs down it.  A component
+    in the spherical frame at a point of the arc on the polar axis is
+    read at the longitude of the arc beside it, as the module docstring
+    says, whatever longitude the point was given with.
     """
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
                                relative_to=relative_to, departure=departure,
                                mean_grid=mean_grid)
     distance, path, plane = _arc(start, end, azimuth, length, m)
-    layers = _runs(model, values, path, radii, n, at)
+    layers = _runs(model, values, path, radii, n, at,
+                   _arc_angles(distance, path, plane))
     return SectionSlice(distance, path, plane, layers, shown, at=at)
 
 
@@ -1060,7 +1229,9 @@ def profile(model: Model, fields: Fields, theta: float, phi: float, *, n: int = 
     """A field along the radius at (theta, phi), by the rules of the
     module docstring: `n` points per layer, its ends included, within
     `radii` (lo, hi), the whole body by default, at physical points from
-    its mapped inner boundary to its mapped surface."""
+    its mapped inner boundary to its mapped surface.  The points are at
+    the angles given, at a pole and at the centre too, where the position
+    fixes none: a component is read in the frame at (theta, phi)."""
     _check(at, None)
     values, shown = _evaluator(model, fields, component=component, frame=frame,
                                relative_to=relative_to, departure=departure,
@@ -1068,7 +1239,8 @@ def profile(model: Model, fields: Fields, theta: float, phi: float, *, n: int = 
     path = cartesian_points(1.0, theta, phi)[None, :]
     layers = tuple(SliceLayer(lay.index, lay.radius[:, 0], lay.values[:, 0],
                               lay.reference[:, 0], lay.physical[:, 0])
-                   for lay in _runs(model, values, path, radii, n, at))
+                   for lay in _runs(model, values, path, radii, n, at,
+                                    ([float(theta)], [float(phi)])))
     return ProfileSlice(float(theta), float(phi), layers, shown, at=at)
 
 
@@ -1080,6 +1252,7 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
     it on `mean_grid`.  With `total`, r^2 times the integral over the
     sphere, 4 pi r^2 times the mean: the one-dimensional kernel of the
     module docstring."""
+    _spherical(model)
     if int(n) < 2:
         raise ValueError(f"n must be at least 2, got {n}")
     name = fields if isinstance(fields, str) else None
@@ -1121,18 +1294,28 @@ def layer_quadrature(field: Field, lo: float, hi: float, n: int
                      ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Gauss-Legendre nodes and weights of the layered coordinate on [lo,
     hi] within a field's layer, piece by piece: on each of its radial
-    pieces, with points enough to be exact for their degree times r^2
-    (and so for the degree alone), or `n` points on the whole span for a
-    field that declares none."""
+    pieces, with points enough to be exact for the degree of its values
+    there times r^2 (and so for the degree alone), or `n` points on the
+    whole span for a field that declares none.
+
+    The degree is the pieces' own (`radial_pieces`), unless the field
+    states another as `quadrature_degree()`: a field held as parts, whose
+    pieces hold each part (a perturbed field), states the degree of its
+    values on a piece, and where it states None, its values no
+    polynomial there, each piece takes `n` points.
+    """
     pieces = getattr(field, "radial_pieces", lambda: None)()
     if pieces is None:
         breaks, count = np.array([lo, hi]), int(n)
     else:
         b, degree = pieces
+        stated = getattr(field, "quadrature_degree", None)
+        if stated is not None:
+            degree = stated()
         inside = np.asarray(b, dtype=float)
         breaks = np.unique(np.concatenate([[lo, hi], inside[(inside > lo)
                                                             & (inside < hi)]]))
-        count = (int(degree) + 2) // 2 + 1
+        count = int(n) if degree is None else (int(degree) + 2) // 2 + 1
     x, w = np.polynomial.legendre.leggauss(count)
     out = []
     for a, b in zip(breaks[:-1], breaks[1:]):
@@ -1149,8 +1332,9 @@ def integrated(model: Model, fields: Fields, *,
     module docstring: over the reference radii `radii` (lo, hi), the whole
     body by default, with `weight` one of `WEIGHTS`, on `grid`
     (equiangular at one degree by default); `n` Gauss-Legendre points on
-    a layer whose field declares no radial pieces; a component and frame
-    as for a sphere.  The slice's radius is the span's outer end, its
+    a layer whose field declares no radial pieces, and on each piece of
+    one whose values are no polynomial there; a component and frame as
+    for a sphere.  The slice's radius is the span's outer end, its
     points there."""
     from .sampling import equiangular
     if weight not in WEIGHTS:
@@ -1201,6 +1385,7 @@ def surface(model: Model, function: Callable[[np.ndarray, np.ndarray], ArrayLike
     one degree otherwise; `name` the function's, its unit the model's
     spec of it."""
     from .sampling import equiangular
+    _spherical(model)
     face = model.geometry.interface(interface)
     own = getattr(function, "grid", None)
     grid = own if grid is None else grid
@@ -1560,7 +1745,10 @@ def discs(model: Model, fields: Fields, *, poles: Sequence[tuple[float, float]],
 def normalised(slice_: Slice) -> Slice:
     """The slice divided by its largest absolute finite value, its label
     saying so; a slice whose values are all zero is refused.  Any slice
-    with `values`, or with `layers`, each a `SliceLayer`, of either system."""
+    with `values`, or with `layers`, each a `SliceLayer`, of either
+    system; one that holds `bands` about its layers' values (a flat mean
+    profile's spread, each layer's (low, high) or None) has them divided
+    by the same number, so that they stay about the values."""
     from dataclasses import replace
     layered = getattr(slice_, "layers", None)
     parts = ([slice_.values] if layered is None
@@ -1573,7 +1761,12 @@ def normalised(slice_: Slice) -> Slice:
     if layered is None:
         return replace(slice_, values=slice_.values / scale, shown=shown)
     layers = tuple(replace(lay, values=lay.values / scale) for lay in layered)
-    return replace(slice_, layers=layers, shown=shown)
+    bands = getattr(slice_, "bands", None)
+    if bands is None:
+        return replace(slice_, layers=layers, shown=shown)
+    bands = tuple(None if band is None else tuple(edge / scale for edge in band)
+                  for band in bands)
+    return replace(slice_, layers=layers, shown=shown, bands=bands)
 
 
 def evaluate(model: Model, fields: Fields, layer: int, r: ArrayLike, theta: ArrayLike,
@@ -1662,7 +1855,9 @@ def correlation(model: Model, fields: Fields, other: Model, *,
     """Two fields' correlation by degree and radius, by the rules of the
     module docstring: `fields` of `model` against `other_fields` (the
     same by default) of `other`, which may be `model` itself, at each of
-    `radii` or `depths`; both sliced with the same choices."""
+    `radii` or `depths`, radii of `model`; both sliced with the same
+    choices, `other` in `model`'s scales (`in_scales_of`), so that a
+    radius is one place in both."""
     if (radii is None) == (depths is None):
         raise ValueError("give exactly one of radii= and depths=")
     outer = float(model.skeleton.boundaries[-1])
@@ -1670,6 +1865,7 @@ def correlation(model: Model, fields: Fields, other: Model, *,
           else outer - np.atleast_1d(np.asarray(depths, dtype=float)))
     grid = _band_grid(lmax, grid)
     other_fields = fields if other_fields is None else other_fields
+    other = in_scales_of(model, other, other_fields)
     kw = dict(lmax=lmax, grid=grid, side=side, at=at, component=component,
               frame=frame, relative_to=relative_to, departure=departure,
               mean_grid=mean_grid)

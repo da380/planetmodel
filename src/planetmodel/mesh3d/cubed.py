@@ -1,7 +1,8 @@
-"""A CubedSphereSpec becomes a mesh on disk.
+"""A CubedSphereSpec or a SquaredCircleSpec becomes a mesh on disk.
 
-A spherical geometry is meshed with hexahedra (in two dimensions,
-quadrilaterals) as a cubed sphere, by construction and with no mesher:
+A spherical geometry is meshed with hexahedra as a cubed sphere
+(`build_cubed_sphere`), or its disc with quadrilaterals as a squared
+circle (`build_squared_circle`), by construction and with no mesher:
 the cells are made in a parameter space of nested cubes (`_cubed`),
 given the nodes of the chosen order there, where the mesh is
 straight-sided and so exact, and the nodes are then moved by the
@@ -20,7 +21,9 @@ away from the centre, a shell's inner boundary pointing out of the body
 towards it.
 
 Before anything is written the mesh is checked: MFEM's own verdict on
-the orientation of its elements and boundary elements; the Jacobian of
+the orientation of its elements (it has none to give on its boundary
+elements, which it turns to its own rule as it finalises a mesh, so
+those are held to the faces they were made from); the Jacobian of
 every cell at its nodes and quadrature points, none folded
 (`export.jacobian_report`), and the shape of every cell through its
 corners (`_cubed.cell_shapes`); each interface's faces facing
@@ -60,12 +63,13 @@ from ._cubed import (CubedTopology, aspect_ratios, cell_shapes, cubed_map,
 from ._extra import require_mfem
 from ._layout import Concentric
 from .export import (MESH_READ_OPTIONS, PRECISION, jacobian_report, load_mesh,
-                     mesh_order, node_array, write_vector)
-from .spec import (ASPECT_WARNING, QUALITY_FLOOR, CubedSphereSpec, MeshResult,
-                   ValidationReport, require_mapping_on_shells,
-                   require_spherical_outer_boundary)
+                     mesh_counts, mesh_order, node_array, write_vector)
+from .spec import (ASPECT_WARNING, CORNER_MEASURE, QUALITY_FLOOR, CubedSpec,
+                   CubedSphereSpec, MeshResult, SquaredCircleSpec, ValidationReport,
+                   require_mapping_on_shells, require_spherical_outer_boundary)
 
-__all__ = ["build_cubed_sphere", "cell_volumes", "volume_tolerance", "RADIUS_RTOL"]
+__all__ = ["build_cubed_sphere", "build_squared_circle", "cell_volumes",
+           "volume_tolerance", "RADIUS_RTOL"]
 
 #: The distance an interface's nodes may lie from its radius, over the
 #: outer radius of the mesh: they are put on it to rounding.
@@ -81,7 +85,7 @@ def volume_tolerance(edge: int) -> float:
     return 0.6 * (0.5 * np.pi / edge) ** 2
 
 
-def _attributes(spec: CubedSphereSpec, topology: CubedTopology
+def _attributes(spec: CubedSpec, topology: CubedTopology
                 ) -> tuple[np.ndarray, list[tuple[int, np.ndarray]]]:
     """Each cell's element attribute, and each interface's boundary
     attribute with its faces.
@@ -161,21 +165,19 @@ def _shell_volume(inner: float, outer: float, dimension: int) -> float:
     return np.pi * (outer ** 2 - inner ** 2)
 
 
-def _validate(spec: CubedSphereSpec, mesh: Any, topology: CubedTopology,
+def _validate(spec: CubedSpec, mesh: Any, topology: CubedTopology,
               corners: np.ndarray, attributes: np.ndarray,
               faces: list[tuple[int, np.ndarray]]) -> ValidationReport:
     """Every check of the built mesh (module docstring); `corners` are the
     mapped positions of the topology's points."""
     d = spec.dimension
     domain = spec.domain
-    report = ValidationReport(dimension=d)
+    report = ValidationReport(dimension=d, measure=CORNER_MEASURE)
     fail = report.failures.append
 
     report.negative_cells = int(mesh.CheckElementOrientation(False))
-    wrong_faces = int(mesh.CheckBdrElementOrientation(False))
-    if report.negative_cells or wrong_faces:
-        fail(f"MFEM finds {report.negative_cells} wrongly oriented elements and "
-             f"{wrong_faces} wrongly oriented boundary elements")
+    if report.negative_cells:
+        fail(f"MFEM finds {report.negative_cells} wrongly oriented elements")
 
     report.min_sicn = float(cell_shapes(corners, topology.cells).min())
     report.negative_jacobians = int(jacobian_report(mesh)["negative_jacobians"])
@@ -252,13 +254,39 @@ def _confirm_reread(mesh_path: Path, manifest_path: Path, *, cells: np.ndarray,
 
 
 def build_cubed_sphere(spec: CubedSphereSpec, path: str | Path) -> MeshResult:
-    """Build, check and write the cubed sphere a CubedSphereSpec describes.
+    """Build, check and write the cubed sphere a CubedSphereSpec describes,
+    a mesh of hexahedra.
 
     `path` is the basename: `<path>.mesh`, the reference mesh in MFEM's
     format with its nodes of the spec's order, and `<path>.json`, its
     manifest, are written.  A delivery of it (`export_mfem_mesh`,
     `export_mfem`) takes another basename.
     """
+    if not isinstance(spec, CubedSphereSpec):
+        raise TypeError(
+            f"build_cubed_sphere takes a CubedSphereSpec, got "
+            f"{type(spec).__name__}; a SquaredCircleSpec is built by "
+            f"build_squared_circle")
+    return _build(spec, path)
+
+
+def build_squared_circle(spec: SquaredCircleSpec, path: str | Path) -> MeshResult:
+    """Build, check and write the squared circle a SquaredCircleSpec
+    describes, a mesh of quadrilaterals in the plane.
+
+    `path` is the basename, and what is written is what
+    `build_cubed_sphere` writes: `<path>.mesh` and `<path>.json`.
+    """
+    if not isinstance(spec, SquaredCircleSpec):
+        raise TypeError(
+            f"build_squared_circle takes a SquaredCircleSpec, got "
+            f"{type(spec).__name__}; a CubedSphereSpec is built by "
+            f"build_cubed_sphere")
+    return _build(spec, path)
+
+
+def _build(spec: CubedSpec, path: str | Path) -> MeshResult:
+    """The mesh a spec describes, in its dimension, checked and written."""
     mfem = require_mfem()
     path = Path(path)
     timings: dict[str, float] = {}
@@ -322,10 +350,8 @@ def build_cubed_sphere(spec: CubedSphereSpec, path: str | Path) -> MeshResult:
     _confirm_reread(mesh_path, manifest_path, cells=attributes, faces=face_attributes)
     timings["write"] = clock() - t0
 
-    counts = {"elements": mesh.GetNE(), "boundary_elements": mesh.GetNBE(),
-              "nodes": nodes.FESpace().GetNDofs(), "order": spec.order,
-              "levels": spec.levels, "layers": domain.nlayers,
-              "interfaces": len(domain.interfaces)}
+    counts = mesh_counts(mesh) | {"levels": spec.levels, "layers": domain.nlayers,
+                                  "interfaces": len(domain.interfaces)}
     return MeshResult(mesh_path=mesh_path, manifest_path=manifest_path,
                       geometry=geometry, counts=counts, validation=report,
                       timings=timings, spec=spec, mapping=domain.mapping)

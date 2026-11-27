@@ -82,6 +82,8 @@ def test_the_faults_are_boundary_elements_of_their_attributes(exported, delivery
     card = sc.read(out[delivery].manifest_path)
     assert card.faults == built.faults
     mesh = load(out[delivery])
+    for what in ("elements", "boundary_elements", "nodes"):
+        assert out[delivery].counts[what] == res.counts[what]
     attributes = np.array([mesh.GetBdrAttribute(i) for i in range(mesh.GetNBE())])
     for record in card.faults:
         assert np.count_nonzero(attributes == record["attribute"]) > 0

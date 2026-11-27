@@ -392,7 +392,7 @@ def test_model_file_true_writes_a_radial_model_and_refuses_one_that_varies(
         built, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     res, model = built["full3"]
-    with pytest.raises(ValueError, match="give the angular grid"):
+    with pytest.raises(ValueError, match="give the grid"):
         export_mfem(res, tmp_path / "a", model=model, model_file=True)
     radial = Model(model.geometry, [
         {"rho": constant_field(lay.interval, 1.0 + lay.index, character=DENSITY)}
@@ -430,7 +430,7 @@ def test_a_re_export_without_a_model_says_nothing_a_model_said(built, tmp_path):
 def test_a_refused_model_file_leaves_nothing_written(built, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     res, model = built["shells3"]
-    with pytest.raises(ValueError, match="give the angular grid"):
+    with pytest.raises(ValueError, match="give the grid"):
         export_mfem(res, tmp_path / "mf", model=model, model_file=True)
     assert list(tmp_path.iterdir()) == []
 

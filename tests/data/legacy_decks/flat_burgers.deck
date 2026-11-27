@@ -1,0 +1,16 @@
+crust over mantle (Maxwell asthenosphere)
+depth rho vpv vsv vph vsh eta viscosity kelvin_viscosity kelvin_modulus_fraction
+# layers crust lithospheric_mantle asthenosphere
+# interfaces surface moho lab
+         0.000            2800            6400            3700            6400            3700               1             nan             nan             nan
+     10000.000            2800            6400            3700            6400            3700               1             nan             nan             nan
+     20000.000            2800            6400            3700            6400            3700               1             nan             nan             nan
+     30000.000            2800            6400            3700            6400            3700               1             nan             nan             nan
+     30000.000            3300            8000            4500            8000            4500               1             nan             nan             nan
+     53333.333            3300            8000            4500            8000            4500               1             nan             nan             nan
+     76666.667            3300            8000            4500            8000            4500               1             nan             nan             nan
+    100000.000            3300            8000            4500            8000            4500               1             nan             nan             nan
+    100000.000            3300            8000            4500            8000            4500               1           1e+20           1e+19             0.5
+    133333.333            3300            8000            4500            8000            4500               1   4.6415888e+19           1e+19             0.5
+    166666.667            3300            8000            4500            8000            4500               1   2.1544347e+19           1e+19             0.5
+    200000.000            3300            8000            4500            8000            4500               1           1e+19           1e+19             0.5

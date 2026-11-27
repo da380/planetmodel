@@ -242,7 +242,7 @@ def test_a_flat_model_file_is_written_beside_the_mesh_and_named_in_the_manifest(
                                                           for e in card.layers]
     assert np.array_equal(back.skeleton.boundaries, card.boundaries)
     # True takes a model that does not vary laterally, on the smallest grid
-    with pytest.raises(ValueError, match="does not vary with direction"):
+    with pytest.raises(ValueError, match=r"depends on \(x, y\).*give the grid"):
         export_mfem(res, tmp_path / "varies", model=model, model_file=True)
     assert not (tmp_path / "varies.model.nc").exists()
     layered = export_mfem(res, tmp_path / "layered", model=model, fields=["rho", "q"],

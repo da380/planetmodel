@@ -138,7 +138,7 @@ class VerticalStretch(MappingBase):
         return 1.0 - np.asarray(self.w.depth_derivative(*self._columns(X)),
                                 dtype=float)
 
-    def is_valid(self, *, X: ArrayLike | None = None,
+    def validity(self, *, X: ArrayLike | None = None,
                  sample: SphericalSample | None = None,
                  coordinates: Coordinates | None = None) -> ValidityReport:
         """The analytic condition 1 - dw/d depth > 0, checked at the given

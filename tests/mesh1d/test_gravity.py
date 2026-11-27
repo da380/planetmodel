@@ -73,6 +73,50 @@ def test_an_analytic_density_integrates_by_quadrature():
     assert np.isclose(gravity(m, 0.7), 4.0 * np.pi * G_SI * want / 0.49, rtol=1e-9)
 
 
+def test_a_radial_density_that_is_not_a_radial_field_integrates_by_quadrature():
+    """A density that is radial without being a `RadialField` (a
+    perturbed, a composed or a held one) is integrated by quadrature,
+    and gives what the same density gives written as a polynomial."""
+    from planetmodel import ComposedField, RadialMesh, perturbed
+    from planetmodel.fields import HeldField
+    from planetmodel.mesh1d.gravity import layer_masses, pressure
+    prem = PREM()
+    lower = prem.layer("lower_mantle")
+    i, iv, rho = lower.index, lower.interval, lower["rho"]
+    exact = prem.with_field(i, "rho", 1.01 * rho, replace=True)
+    composed = ComposedField(lambda x: 1.01 * x, (rho,), character=DENSITY,
+                             name="rho")
+    plain = Model(prem.geometry, [{"rho": layer["rho"]} for layer in prem.layers])
+    r = np.array([0.0, 3000e3, iv[0], 4800e3, iv[1], 6000e3, 6371e3])
+    for model in (perturbed(prem, "rho", RadialField(iv, 0.01), kind="relative"),
+                  plain.with_field(i, "rho", composed, replace=True)):
+        field = model.layer(i)["rho"]
+        assert field.is_radial and not isinstance(field, RadialField)
+        assert np.allclose(gravity(model, r), gravity(exact, r), rtol=1e-9)
+        assert np.allclose(gravity(model, r), gauss_gravity(model, r), rtol=1e-9)
+        assert np.allclose(layer_masses(model), layer_masses(exact), rtol=1e-9)
+        assert np.isclose(mass(model), mass(exact), rtol=1e-9)
+        assert np.isclose(mass(model, radius=4800e3), mass(exact, radius=4800e3),
+                          rtol=1e-9)
+        assert np.allclose(pressure(model, r), pressure(exact, r), rtol=1e-9,
+                           atol=1e-9 * float(pressure(exact, 0.0)))
+    model = perturbed(prem, "rho", RadialField(iv, 0.01), kind="relative")
+    inside = np.array([iv[0], 4800e3, iv[1]])
+    assert np.allclose(model.with_gravity().layer(i)["g"](inside),
+                       gravity(exact, inside), rtol=1e-9)
+    mesh = RadialMesh(model, ngll=3, drmax=1500e3)
+    assert np.allclose(mesh.nodal_gravity(model), gravity(exact, mesh.r), rtol=1e-9)
+    # a radial density held beyond the surface, a `HeldField`
+    a = float(prem.skeleton.boundaries[-1])
+    top = ComposedField(lambda x: x, (prem.layer(-1)["rho"],), character=DENSITY,
+                        name="rho")
+    shell = plain.with_field(-1, "rho", top, replace=True).extended(
+        [a + 100e3], fields="hold")
+    assert isinstance(shell.layer(-1)["rho"], HeldField)
+    want = mass(prem) + 4.0 * np.pi * float(top(a)) * ((a + 100e3) ** 3 - a ** 3) / 3.0
+    assert np.isclose(mass(shell), want, rtol=1e-12)
+
+
 def test_non_dimensional_gravity_redimensionalises_exactly():
     m = PREM()
     nd = m.nondimensionalised()

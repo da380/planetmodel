@@ -57,7 +57,9 @@ its faces exactly instead of in whole elements.  `mesh_block` draws such
 a block of a volume mesh on three-dimensional axes, the box (x0, x1) x
 (y0, y1) x (z0, z1): the cells' sections by its three walls away from
 the viewer, clipped to it and each the colour of its cell, with the
-curves other simplices (an interface's faces) leave on them; whatever
+curves other elements (an interface's faces) leave on them, the cells
+tetrahedra and those faces triangles, or hexahedra and quadrilaterals;
+whatever
 the caller draws inside the block afterwards (a fault's faces, clipped
 by `block_planes`, its curves) is seen against those walls, drawn in
 the order drawn, matplotlib's own depth sorting off.
@@ -200,13 +202,13 @@ _CUT_EDGES = {
 }
 
 
-def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
+def plane_cut(points: ArrayLike, elements: ArrayLike, origin: ArrayLike,
               axes: ArrayLike, *, kind: str = "cut", tensor: bool = False
               ) -> PlaneCut:
     """The elements cut by the plane through `origin` spanned by `axes`
     (module docstring).
 
-    `points` are the vertices, (n, 3); `simplices` the corners of each
+    `points` are the vertices, (n, 3); `elements` the corners of each
     element as indices into them, (m, 4) tetrahedra or (m, 3) triangles
     (a curved element's corners: its first columns as a mesh holds
     them), or (m, 8) hexahedra, and with `tensor` (m, 4) quadrilaterals,
@@ -219,17 +221,17 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     if kind not in ("cut", "crinkle"):
         raise ValueError(f"kind is 'cut' or 'crinkle', got {kind!r}")
     x = np.asarray(points, dtype=float)
-    s = np.asarray(simplices)
+    s = np.asarray(elements)
     o = np.asarray(origin, dtype=float)
     if x.ndim != 2 or x.shape[1] != 3:
         raise ValueError(f"points have shape (n, 3), got {x.shape}")
     if s.ndim != 2 or s.shape[1] not in (3, 4, 8) or not (
             np.issubdtype(s.dtype, np.integer) or s.size == 0):
-        raise ValueError(f"simplices are rows of 3 or 4 corner indices, or of 8 "
+        raise ValueError(f"elements are rows of 3 or 4 corner indices, or of 8 "
                          f"for hexahedra, got {s.shape} of {s.dtype}")
     s = s.astype(np.int64)
     if s.size and (s.min() < 0 or s.max() >= len(x)):
-        raise ValueError(f"simplices index vertices outside 0..{len(x) - 1}")
+        raise ValueError(f"elements index vertices outside 0..{len(x) - 1}")
     if o.shape != (3,) or not np.all(np.isfinite(o)):
         raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
     ab = _plane_axes(axes)
@@ -240,8 +242,9 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
                          "elements: tensor reads rows of 4 as quadrilaterals")
     if kind == "crinkle":
         if k != 4 or tensor:
-            raise ValueError("a crinkle is a section of tetrahedra; cut a surface's "
-                             "triangles with kind='cut'")
+            given = {3: "triangles", 4: "quadrilaterals", 8: "hexahedra"}[k]
+            raise ValueError("a crinkle is a section of tetrahedra, and these are "
+                             f"{given}; cut them with kind='cut'")
         return _crinkle(x, s, o, ab)
     d = (x - o) @ np.cross(ab[0], ab[1])
     D = d[s]
@@ -332,7 +335,7 @@ def _crinkle(x: np.ndarray, cells: np.ndarray, o: np.ndarray,
                     index=owner[row[shown]])
 
 
-def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
+def in_plane(points: ArrayLike, elements: ArrayLike, origin: ArrayLike,
              axes: ArrayLike, *, rtol: float = 1e-9) -> PlaneCut:
     """The elements of a mesh lying in the plane through `origin` spanned
     by `axes`, each kept whole as a piece of a `PlaneCut` (module
@@ -340,7 +343,7 @@ def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     quadrilateral as the polygon of its corners, a line element as a
     segment.
 
-    `points` are the vertices, (n, 3); `simplices` the corners of each
+    `points` are the vertices, (n, 3); `elements` the corners of each
     element as indices into them, (m, 3) triangles, (m, 4)
     quadrilaterals, their corners in order round them, or (m, 2) line
     elements (a curved element's corners: its first columns as a mesh
@@ -349,17 +352,17 @@ def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     distance between the corners given.
     """
     x = np.asarray(points, dtype=float)
-    s = np.asarray(simplices)
+    s = np.asarray(elements)
     o = np.asarray(origin, dtype=float)
     if x.ndim != 2 or x.shape[1] != 3:
         raise ValueError(f"points have shape (n, 3), got {x.shape}")
     if s.ndim != 2 or s.shape[1] not in (2, 3, 4) or not (
             np.issubdtype(s.dtype, np.integer) or s.size == 0):
-        raise ValueError(f"simplices are rows of 2, 3 or 4 corner indices, got "
+        raise ValueError(f"elements are rows of 2, 3 or 4 corner indices, got "
                          f"{s.shape} of {s.dtype}")
     s = s.astype(np.int64)
     if s.size and (s.min() < 0 or s.max() >= len(x)):
-        raise ValueError(f"simplices index vertices outside 0..{len(x) - 1}")
+        raise ValueError(f"elements index vertices outside 0..{len(x) - 1}")
     if o.shape != (3,) or not np.all(np.isfinite(o)):
         raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
     ab = _plane_axes(axes)
@@ -368,7 +371,7 @@ def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     size = float(np.ptp(corners.reshape(-1, 3), axis=0).max()) if s.size else 0.0
     if s.size and off.max() > rtol * size:
         raise ValueError(f"a corner lies {off.max():.3g} off the plane: the "
-                         "simplices are not in it")
+                         "elements are not in it")
     st = (corners - o) @ ab.T
     if s.shape[1] == 3:
         st = np.concatenate([st, st[:, 2:]], axis=1)
@@ -381,7 +384,7 @@ def mesh_section(ax: Any, cut: PlaneCut, *, colours: Any = None,
     setting their aspect equal and their limits to what is drawn.
 
     `colours` is one colour for every piece, or one for each element
-    that was cut (a row for each row of `plane_cut`'s `simplices`),
+    that was cut (a row for each row of `plane_cut`'s `elements`),
     indexed by the piece's `index`; None leaves matplotlib's own.  The
     pieces of cells, polygons, are a `PolyCollection`, `colours` their
     faces, and those of faces, segments, a `LineCollection`, `colours`
@@ -508,11 +511,13 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
     box aspect to its proportions and their view.
 
     `points` are the vertices, (n, 3); `cells` the corners of the
-    tetrahedra, (m, 4) (a curved element's first four columns);
-    `bounds` the block, ((x0, x1), (y0, y1), (z0, z1)); `colours` one
-    colour, or one for each cell, of the pieces cut from it; `lines`
-    triangles, (k, 3) corner indices, whose sections by the walls are
-    drawn over them as curves in `line_style` (a dark line by default);
+    tetrahedra, (m, 4) (a curved element's first four columns), or of
+    hexahedra, rows of exactly eight; `bounds` the block, ((x0, x1),
+    (y0, y1), (z0, z1)); `colours` one colour, or one for each cell, of
+    the pieces cut from it; `lines` triangles, (k, 3) corner indices,
+    or beside hexahedra quadrilaterals, (k, 4), whose sections by the
+    walls are drawn over them as curves in `line_style` (a dark line by
+    default);
     `view` the (elevation, azimuth) in degrees, which also chooses the
     walls drawn, those whose outward normal points away from the viewer;
     `zoom` matplotlib's zoom of the box; `style` goes to the walls'
@@ -528,7 +533,11 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
     c = np.asarray(cells)
     b = _bounds(bounds)
     if c.ndim != 2 or c.shape[1] < 4:
-        raise ValueError(f"cells are rows of 4 corner indices, got {c.shape}")
+        raise ValueError(f"cells are rows of 4 corner indices, or of 8 for "
+                         f"hexahedra, got {c.shape}")
+    hexahedra = c.shape[1] == 8
+    corners = c if hexahedra else c[:, :4]
+    sides = 4 if hexahedra else 3
     eye = _eye(view)
     normals, offsets = block_planes(b)
     walls, owner, curves = [], [], []
@@ -543,12 +552,13 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
         pair = np.eye(3)[[k for k in range(3) if k != axis]]
         if np.cross(*pair) @ normal > 0.0:
             pair = pair[::-1]
-        cut = plane_cut(x, c[:, :4], origin, pair)
+        cut = plane_cut(x, corners, origin, pair)
         parts, index = clip_polygons(cut.in_space(), normals, offsets)
         walls += parts
         owner.append(cut.index[index])
         if lines is not None and len(lines):
-            rim = plane_cut(x, np.asarray(lines)[:, :3], origin, pair)
+            rim = plane_cut(x, np.asarray(lines)[:, :sides], origin, pair,
+                            tensor=hexahedra)
             curves += clip_polygons(rim.in_space(), normals, offsets)[0]
     owner = np.concatenate(owner) if owner else np.empty(0, dtype=np.int64)
     if colours is not None:

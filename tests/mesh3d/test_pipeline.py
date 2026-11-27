@@ -337,10 +337,17 @@ def test_raise_order_leaves_every_element_valid(order):
 def test_validate_mesh_passes_a_clean_mesh(boundaries):
     with session(name="ok"):
         t = build_and_mesh(boundaries, 3)
-        orient_mesh(3)
+        orient_mesh(3, inward=t.inward)
         raise_order(3, 2)
         rep = validate_mesh(t, expected_radii=faces_of(boundaries))
         assert rep.ok, rep.failures
+        # the inner boundary of a hollow domain faces the centre, every
+        # other interface away from it
+        pos = node_positions()
+        for k, tag in enumerate(t.faces):
+            dots = outward_dots(tag, pos)[1]
+            assert np.all(dots < 0.0 if t.hollow and k == 0 else dots > 0.0)
+        assert t.inward == ((t.faces[0],) if t.hollow else ())
         assert rep.negative_jacobians == 0 and rep.inward_faces == 0
         assert rep.max_interface_radius_error < 1e-3
         assert rep.group_counts == {"layers": len(t.cells),
@@ -389,6 +396,4 @@ def test_written_mesh_reads_back_with_its_groups(dimension, tmp_path):
         assert groups[dimension] == {1: "lower", 2: "upper"}
         assert groups[dimension - 1] == {1: "inner", 2: "mid", 3: "outer"}
         reread = element_counts(dimension=dimension)
-        for d in (dimension, dimension - 1):
-            assert reread[f"dim{d}"] == written[f"dim{d}"]
-        assert reread["elements"] == written["elements"]
+        assert reread == written

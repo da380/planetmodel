@@ -10,11 +10,13 @@
 # into two pieces, one in each layer, pulls each back through one
 # control grid, and builds them in joined along that curve, which lies
 # on the reference Moho. One fault in the mesh: one attribute, a collar
-# in each layer, its tip the plane's edge alone, the join a curve inside
-# it. Here the section across the plane, in the body's shape; the
-# fault's faces seen square on in its plane, by piece, with the join and
-# the true crossing of the Moho's relief; and every node of its faces,
-# moved, by its distance from the plane, on either side of the join.
+# in each layer (the cells of its hanging wall that touch its slip,
+# under an element attribute of their own), its tip the plane's edge
+# alone, the join a curve inside it. Here the section across the plane,
+# in the body's shape; the fault's faces seen square on in its plane, by
+# piece, with the join and the true crossing of the Moho's relief; and
+# every node of its faces, moved, by its distance from the plane, on
+# either side of the join.
 #
 # Needs: meshing, plot
 # Network: none
@@ -189,12 +191,11 @@ for name, colour in (("crust", PIECES["crust"]), ("mantle", PIECES["mantle"]),
                      ("join", JOIN)):
     hist.hist(np.maximum(distance[name], 1e-14), bins=bins, histtype="step", lw=1.8,
               color=colour, label=f"{name}: up to {distance[name].max():.1g}")
-hist.axvline(record["offset"], color=INK, lw=0.8, ls=":")
-hist.text(0.8 * record["offset"], hist.get_ylim()[1] * 0.97, "the pull-back's\noffset",
-          ha="right", va="top", fontsize=8, color=INK)
+hist.axvline(record["offset"], color=INK, lw=0.8, ls=":",
+             label="the pull-back's offset")
 hist.set(xscale="log", xlabel="distance from the plane (unit lengths)",
          ylabel="nodes", title="Every node of the fault, moved")
-hist.legend(loc="center left", frameon=False, fontsize=9)
+hist.legend(loc="upper left", frameon=False, fontsize=9)
 fig.legend(handles=[Patch(facecolor=c, edgecolor=EDGES, label=n)
                     for n, c in LAYERS.items()]
            + [Patch(facecolor=COLLARS[n], edgecolor=EDGES, label=f"collar in the {n}")

@@ -55,6 +55,14 @@ a layer whose reference vanishes (a fluid's shear velocity) is left as
 it is.
 
 `raised_cosine` is the one taper all of them use.
+
+Every length and every value is in the units of the model the result
+goes onto.  A source model, and its reference, in other scales than
+that model are converted to its scales first (`rereferenced`, and so
+`transplanted`); a regional grid is SI, and its radii and values are
+put in the model's units (`merged`); a `Perturbation` carries no
+scales, so the fields given to `spread` are in the model's units, as
+`rereferenced` gives them.
 """
 from __future__ import annotations
 
@@ -74,6 +82,7 @@ from ..layerfunction import same_interval
 from ..model import Model
 from ..perturbation import KINDS, PerturbedField
 from ..sampling import AngularGrid
+from ..units import LENGTH
 from .grids import RegionalGrid
 from .models import reference_field
 
@@ -152,11 +161,17 @@ def rereferenced(source: Model, onto: Model, *, names: Sequence[str] | None = No
     `source_reference` the reference of a data set of values under
     `mode="relative"`, and `kind` the kind a data set of values is
     expressed in (a perturbed source keeps its own), and `span` the radii
-    (lo, hi) of the source taken, all of its support by default."""
+    (lo, hi) of the source taken, all of its support by default.  The
+    perturbations are in `onto`'s units, `span` too: a source or a
+    `source_reference` in other scales is converted to `onto`'s first."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+    if source.scales != onto.scales:
+        source = source.converted(onto.scales)
+    if source_reference is not None and source_reference.scales != onto.scales:
+        source_reference = source_reference.converted(onto.scales)
     if names is None:
         names = sorted({n for layer in source.layers for n in layer.names})
     out = {}
@@ -232,7 +247,9 @@ def spread(perturbation: Perturbation, onto: Model, *,
            ends: tuple[int | str, int | str] | None = None, extend: bool = False,
            taper: float | tuple[float, float] | None = None) -> dict[int, Field]:
     """The perturbation on whole layers of `onto`, by layer index, by the
-    rule of the module docstring."""
+    rule of the module docstring.  The perturbation's fields, and the
+    widths of `taper`, are in `onto`'s units, as `rereferenced` gives
+    them: a `Perturbation` carries no scales to convert it by."""
     segs = perturbation.segments
     lo, hi = perturbation.support
     if ends is not None:
@@ -420,6 +437,20 @@ def filtered(field: Field, *, lmax: int, lmin: int = 0, roll_off: int | None = N
                     "sample it onto a grid first (GriddedField.sampled)")
 
 
+def _unit(model: Model, name: str) -> float:
+    """One of the model's units of its field `name`, in SI: the factor of
+    the dimensions its spec gives the name, refused where a model in other
+    scales than SI gives it none."""
+    if model.scales.is_si:
+        return 1.0
+    spec = model.spec(name)
+    if spec is None or spec.dimensions is None:
+        raise ValueError(f"{name!r} has no dimensions in the model, so a regional "
+                         "grid's SI values cannot be put in the model's units: give "
+                         "it a spec")
+    return model.scales.factor(spec.dimensions)
+
+
 def _edge_weight(regional: RegionalGrid, theta: np.ndarray, phi: np.ndarray,
                  width: float) -> np.ndarray:
     """The raised cosine of the angle inside the region's edge
@@ -434,8 +465,10 @@ def merged(model: Model, regional: RegionalGrid, *, name: str, width: float,
            source_name: str | None = None, lateral: str = "linear") -> Model:
     """The model with the regional grid's `source_name` (`name` by default)
     blended into its field `name`, by the rule of the module docstring:
-    `width` an angle in radians, `radial_width` a radius (a bottom and a
-    top one), `grid` the angular grid of the result."""
+    `width` an angle in radians, `radial_width` a length in the model's
+    units (a bottom and a top one), `grid` the angular grid of the result.
+    The regional grid is SI; its radii, and its values or its absolute
+    perturbation, are put in the model's units by the model's scales."""
     source_name = name if source_name is None else source_name
     if source_name not in regional.names:
         raise ValueError(f"the regional grid holds {regional.names}, not "
@@ -443,7 +476,9 @@ def merged(model: Model, regional: RegionalGrid, *, name: str, width: float,
     if not width >= 0.0:
         raise ValueError(f"width must be a non-negative angle, got {width}")
     regional_kind = regional.kinds[source_name]
-    (r0, r1), _, _ = regional.extent
+    length = model.scales.factor(LENGTH)
+    unit = 1.0 if regional_kind in ("relative", "log") else _unit(model, name)
+    r0, r1 = (x / length for x in regional.extent[0])
     w_lo, w_hi = _widths(radial_width)
     tol = model.geometry.rtol * model.skeleton.span
     out = model.with_citation(*regional.citation)
@@ -476,7 +511,7 @@ def merged(model: Model, regional: RegionalGrid, *, name: str, width: float,
             r, theta, phi = np.broadcast_arrays(np.asarray(r, dtype=float), theta, phi)
             g = (pert.evaluate(r, theta, phi) if pert is not None
                  else np.zeros(r.shape))
-            v = regional(source_name, r, theta, phi)
+            v = regional(source_name, r * length, theta, phi) / unit
             local = (v if regional_kind is not None
                      else against(v, ref.evaluate(r, theta, phi)))
             w = _edge_weight(regional, theta, phi, width)
@@ -487,7 +522,7 @@ def merged(model: Model, regional: RegionalGrid, *, name: str, width: float,
             w = np.where(np.isfinite(local) & (r >= r0) & (r <= r1), w, 0.0)
             return g + w * np.where(np.isfinite(local), local - g, 0.0)
 
-        radii = regional.radii
+        radii = regional.radii / length
         breaks = np.unique(np.concatenate([[a, b], radii[(radii > a) & (radii < b)]]))
         sampled = GriddedField.sampled(AnalyticField((a, b), blend, name=name), grid,
                                        breaks=breaks, ngll=2, radial="linear",

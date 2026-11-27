@@ -234,6 +234,27 @@ def test_composed_field_is_pointwise_and_never_sampled():
         ComposedField(bulk, (rho(), RadialField((0.0, 1.0), 1.0)), character=SCALAR)
 
 
+def test_a_radial_scalar_composed_of_radial_tensors_is_called_with_r_alone():
+    """A rank-0 composition is radial when its sources are, whatever their
+    rank, and is then a function of the radius alone."""
+    v = RadialField(IV, [polynomial_layer(IV, [1.0, 1.0e-6]), 0.0, 2.0],
+                    character=VECTOR)
+    s = RadialField(IV, [3.0, 1.0, polynomial_layer(IV, [0.0, 1.0e-6]), 0.0, 0.0, 0.5],
+                    character=STRESS)
+    c = ComposedField(lambda a, b: np.sum(a * a, axis=-1) + b[..., :3].sum(axis=-1),
+                      (v, s), character=SCALAR)
+    r = r_in(7)
+    want = (1.0 + 1.0e-6 * r) ** 2 + 4.0 + (4.0 + 1.0e-6 * r)
+    assert c.is_radial
+    assert c(r).shape == r.shape and np.allclose(c(r), want, rtol=1e-14)
+    assert np.allclose(c(r, 0.7, 2.1), want, rtol=1e-14)
+    assert np.isclose(c(r[3]), want[3], rtol=1e-14)
+    # a composition with components of its own still needs the angles
+    w = ComposedField(lambda a: 2.0 * a, (v,), character=VECTOR)
+    with pytest.raises(ValueError, match="needs theta and phi"):
+        w(r)
+
+
 # -------------------------------------------------------------- constants
 
 def test_constant_field():

@@ -56,7 +56,9 @@ fault = Fault([plane])
 # fault. By `EmbeddedFault`'s rule the size grows from it by about 30
 # per cent an element until it meets the interfaces' sizing; either way
 # the linear mesh is relocated by gmsh's Relocate3D pass, which moves no
-# node of a fault or an interface.
+# node of a fault or an interface. The minSICN printed is the shape of
+# the worst cell: gmsh's signed inverse condition number, 1 for a
+# regular tetrahedron, falling to 0 as a cell flattens.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_section_"))

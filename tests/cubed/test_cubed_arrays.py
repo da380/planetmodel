@@ -4,7 +4,7 @@ simplices alone."""
 import numpy as np
 import pytest
 
-from cubed_cases import COARSE, ball, shell
+from cubed_cases import COARSE, SPECS, ball, build, shell
 from planetmodel.mesh3d import (CubedSphereSpec, Shell, build_cubed_sphere,
                                 cell_quality, export_mfem_mesh, manifest as sc,
                                 read_mesh)
@@ -18,9 +18,9 @@ pytestmark = pytest.mark.mfem
 @pytest.mark.parametrize("dimension", [3, 2])
 @pytest.mark.parametrize("make", [ball, shell])
 def test_a_cubed_sphere_as_arrays(make, dimension, tmp_path):
-    spec = CubedSphereSpec(make(), 3, sizing=COARSE, dimension=dimension, order=2,
-                           shells=(Shell(ratio=0.2),))
-    res = build_cubed_sphere(spec, tmp_path / "m")
+    spec = SPECS[dimension](make(), 3, sizing=COARSE, order=2,
+                            shells=(Shell(ratio=0.2),))
+    res = build(spec, tmp_path / "m")
     card = sc.read(res.manifest_path)
     mesh = read_mesh(res.mesh_path)
     d = dimension
@@ -30,6 +30,11 @@ def test_a_cubed_sphere_as_arrays(make, dimension, tmp_path):
     assert mesh.faces.shape == (len(card.interfaces) * 2 * d * 3 ** (d - 1),
                                 2 ** (d - 1))
     assert not mesh.curves and not mesh.names
+    # an interface's faces whole, a quadrilateral's four corners among them
+    surface = mesh.boundary_of([card.surface_attribute])
+    np.testing.assert_array_equal(surface,
+                                  mesh.faces_with(card.surface_attribute))
+    assert mesh.boundary_of([]).shape == (0, 2 ** (d - 1))
     if d == 2:
         assert np.all(mesh.points[:, 2] == 0.0)
     # the cells are the topology's, corner for corner, at the mapped points

@@ -58,9 +58,9 @@ from ..surfacefile import (SCHEMA_FLAT, TIME_RTOL, HistoryBase, SurfaceVariable,
 from ..units import LENGTH, Scales, scaled_unit
 from .coordinates import FLAT
 from .grid import Grid
-from .lateral import METHODS
-from .modelfile import (axes_of, check_grid_variables, grid_variables, read_domain,
-                        refuse_spherical, write_domain)
+from .lateral import METHODS, check_rule
+from .modelfile import (SPHERICAL_NAMES, axes_of, check_grid_variables,
+                        grid_variables, read_domain, refuse_spherical, write_domain)
 
 if TYPE_CHECKING:
     from .gridded import GriddedFunction
@@ -96,7 +96,9 @@ class FlatSurfaceLayout:
     docstring's plane and grid.  Its context is the file's grid."""
 
     schema = SCHEMA_FLAT
-    reserved = ("x", "y", "time", "instant")
+    #: The grid's and the time axes' variables, and those of a spherical
+    #: file's variables, which a reader refuses in a flat one.
+    reserved = ("x", "y", "time", "instant", *SPHERICAL_NAMES["variables"])
     methods = METHODS
     place = "depth"
 
@@ -104,6 +106,10 @@ class FlatSurfaceLayout:
         """A `cartesian.Grid`."""
         if not isinstance(grid, Grid):
             raise TypeError(f"expected a cartesian.Grid, got {type(grid).__name__}")
+
+    def check_rule(self, grid: Grid, rule: str) -> None:
+        """`cartesian.lateral.check_rule`."""
+        check_rule(grid, rule)
 
     def check_place(self, value: object) -> None:
         """A finite depth, not negative."""
@@ -185,12 +191,12 @@ class SurfaceHistory(HistoryBase):
     @property
     def file(self) -> SurfaceFile:
         """The file's numbers and metadata, as read."""
-        return self._file
+        return super().file
 
     @property
     def grid(self) -> Grid:
         """The horizontal grid every field is on."""
-        return self._file.grid
+        return self.file.grid
 
     def function(self, name: str, *, date: float | None = None,
                  extrapolation: str = "refuse",
@@ -199,7 +205,7 @@ class SurfaceHistory(HistoryBase):
         file's grid by its stated lateral rule; a field with NaN cannot be
         one.  `extrapolation` and `time_rtol` are `values`'."""
         from .gridded import GriddedFunction
-        lateral = str(self._variable(name).attributes["lateral_interpolation"])
+        lateral = str(self.variable(name).attributes["lateral_interpolation"])
         return GriddedFunction(self.grid, self.values(name, date=date,
                                                      extrapolation=extrapolation,
                                                      time_rtol=time_rtol),
@@ -207,7 +213,7 @@ class SurfaceHistory(HistoryBase):
 
 
 def write_surface(path: str | os.PathLike[str], grid: Grid, *,
-                  fields: Mapping[str, SurfaceVariable], source: str,
+                  fields: Mapping[str, SurfaceVariable], source: str | None = None,
                   time: ArrayLike | None = None, instant: ArrayLike | None = None,
                   depth: float | None = None, scales: Scales = Scales.SI,
                   title: str | None = None, meta: Mapping[str, Any] | None = None,

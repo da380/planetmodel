@@ -74,13 +74,13 @@ option(PLANETMODEL_WARNINGS_AS_ERRORS
 # the same reason, so the whole chain lands in the code's prefix.
 option(PLANETMODEL_INSTALL "Generate the install and export rules" ON)
 
-# The Interpolation revision fetched when none is installed. The default is
-# main: the libraries are one author's and move together, so on a development
-# branch tracking main is the point. A release must name a state that can be
-# rebuilt, so the commit that tags a release sets this default to the commit
-# it was tested against, and the commit after it sets it back to main. From
-# outside: cmake -DPLANETMODEL_INTERPOLATION_TAG=<commit>
-set(PLANETMODEL_INTERPOLATION_TAG main CACHE STRING
+# The Interpolation revision fetched when none is installed. The default is a
+# release tag of Interpolation, so that every state of planetmodel names one
+# that can be rebuilt (Interpolation fetches NumericConcepts at a tag of its
+# own); it is changed when planetmodel needs a newer Interpolation. The
+# variable is there for building against another revision:
+# cmake -DPLANETMODEL_INTERPOLATION_TAG=<tag, branch or commit>
+set(PLANETMODEL_INTERPOLATION_TAG v1.1.2 CACHE STRING
     "The da380/Interpolation revision to fetch if none is installed")
 mark_as_advanced(PLANETMODEL_INTERPOLATION_TAG)
 

@@ -10,7 +10,12 @@ the origin, so "outward" means "away from the origin" and is
 unambiguous; OCC orients a surface that bounds shells on both sides by
 its own convention, which can point inward, and consistency here is
 what lets a consumer treat interface i as the outer boundary of layer i
-without inspecting normals itself.  A plane of a box encloses nothing,
+without inspecting normals itself.  The one exception is the inner
+boundary of a hollow domain, which is the body's own boundary and
+points out of the body, towards the centre: MFEM turns every element
+on a mesh's true boundary that way as it reads it, so no other rule
+could hold in a file MFEM has read, and a mesh is written as MFEM will
+hold it.  A plane of a box encloses nothing,
 so each states its own outward direction (`Directions`): up for the
 free surface and every interface, which point out of the layer below
 them as a sphere's do, down for the base, away from the body for a
@@ -26,7 +31,8 @@ vertices say which of its two cells is on the hanging-wall side, which
 MFEM, reading an interior boundary element, neither checks nor
 changes.
 
-All of it runs at element order 1, before the order is raised:
+All of it but a circle's lines (`circles_wait`) runs at element order
+1, before the order is raised:
 permuting the vertices of a straight simplex is trivial, permuting a
 curved element's interior nodes consistently is not.  `raise_order`
 then curves the mesh and repairs what curving folded.
@@ -47,8 +53,11 @@ if TYPE_CHECKING:
     from ..fault import Patch
 
 __all__ = ["OrientationReport", "node_positions", "signed_measures",
-           "outward_dots", "facing_dots", "fault_dots", "orient_cells",
-           "orient_boundary", "orient_faults", "orient_mesh", "raise_order",
+           "outward_dots", "facing_dots", "boundary_dots", "circles_wait",
+           "fault_dots",
+           "orient_cells",
+           "orient_boundary", "orient_faults", "orient_mesh", "orient_circles",
+           "raise_order",
            "element_quality", "Centres", "Directions", "FaultSurfaces"]
 
 #: The point each surface encloses, by entity tag, where it is not the
@@ -156,24 +165,37 @@ def orient_cells(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None
 
 
 def outward_dots(tag: int, pos: Mapping[int, np.ndarray], *,
-                 centre: ArrayLike = (0.0, 0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
-    """(element tags, normal . (centroid - centre)) for a 3D surface.
+                 centre: ArrayLike = (0.0, 0.0, 0.0), dim: int = 2
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """(element tags, normal . (centroid - centre)) for a surface (`dim`
+    2) or a curve of a two-dimensional mesh (`dim` 1), the normals as
+    `facing_dots` has them.
 
-    Positive means the face normal points away from `centre`.  This is
-    well posed only for a surface that encloses `centre`: a concentric
+    Positive means the normal points away from `centre`.  This is well
+    posed only for a boundary that encloses `centre`: a concentric
     interface encloses the origin, an offset inclusion encloses its own
     centre and nothing else.
     """
     centre = np.asarray(centre, dtype=float)
     all_tags, all_dots = [], []
-    for tags, pts in _corner_blocks(2, tag, pos):
-        normal = np.cross(pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0])
+    for tags, pts in _corner_blocks(dim, tag, pos):
+        normal = _normals(dim, pts)
         centroid = pts.mean(axis=1) - centre
         all_tags.append(tags)
         all_dots.append(np.einsum("ij,ij->i", normal, centroid))
     if not all_tags:
         return np.empty(0, dtype=np.int64), np.empty(0)
     return np.concatenate(all_tags), np.concatenate(all_dots)
+
+
+def _normals(dim: int, pts: np.ndarray) -> np.ndarray:
+    """The normal of each boundary element by its corners, (n, 3): a
+    triangle's (v1 - v0) x (v2 - v0), and a line's its direction v1 - v0
+    turned clockwise in the mesh's plane."""
+    if dim == 2:
+        return np.cross(pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0])
+    t = pts[:, 1] - pts[:, 0]
+    return np.stack([t[:, 1], -t[:, 0], np.zeros(len(t))], axis=1)
 
 
 def facing_dots(dim: int, tag: int, pos: Mapping[int, np.ndarray],
@@ -189,13 +211,8 @@ def facing_dots(dim: int, tag: int, pos: Mapping[int, np.ndarray],
     direction = np.asarray(direction, dtype=float)
     all_tags, all_dots = [], []
     for tags, pts in _corner_blocks(dim, tag, pos):
-        if dim == 2:
-            normal = np.cross(pts[:, 1] - pts[:, 0], pts[:, 2] - pts[:, 0])
-        else:
-            t = pts[:, 1] - pts[:, 0]
-            normal = np.stack([t[:, 1], -t[:, 0], np.zeros(len(t))], axis=1)
         all_tags.append(tags)
-        all_dots.append(normal @ direction)
+        all_dots.append(_normals(dim, pts) @ direction)
     if not all_tags:
         return np.empty(0, dtype=np.int64), np.empty(0)
     return np.concatenate(all_tags), np.concatenate(all_dots)
@@ -239,37 +256,69 @@ def orient_faults(faults: FaultSurfaces, *,
     return checked, flipped
 
 
+def circles_wait(dimension: int, tag: int, directions: Directions | None) -> bool:
+    """Whether a boundary entity is turned only once the order is raised:
+    a curve of a two-dimensional mesh with no direction of its own, which
+    is a circle about a centre.  gmsh raises the order of a mesh whose
+    lines on a closed curve were reversed into cells its optimiser cannot
+    repair, and ends the process; a curved line it reverses whole, its
+    nodes with it, so a circle's lines are turned afterwards."""
+    return dimension == 2 and not (directions and tag in directions)
+
+
+def boundary_dots(dimension: int, tag: int, pos: Mapping[int, np.ndarray], *,
+                  centres: Centres | None = None,
+                  directions: Directions | None = None,
+                  inward: Collection[int] = ()
+                  ) -> tuple[np.ndarray, np.ndarray] | None:
+    """(element tags, how far each element of a boundary entity faces as
+    the rule of the module docstring has it), positive where it does:
+    along the entity's own direction where `directions` states one, else
+    away from the centre it encloses (`centres`, the origin by default),
+    or towards it where the entity is in `inward`, the inner boundary of
+    a hollow domain.  None for an entity the rule does not reach: a
+    curve without a direction of its own in a two-dimensional mesh whose
+    boundaries state theirs, a flat one, which has no centre to face."""
+    if directions and tag in directions:
+        return facing_dots(dimension - 1, tag, pos, directions[tag])
+    if directions and dimension != 3:
+        return None
+    centre = (centres or {}).get(tag, (0.0, 0.0, 0.0))
+    tags, dots = outward_dots(tag, pos, centre=centre, dim=dimension - 1)
+    return tags, (-dots if tag in inward else dots)
+
+
 def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = None,
                     centres: Centres | None = None,
                     directions: Directions | None = None,
-                    skip: Collection[int] = ()) -> tuple[int, int]:
-    """Point every surface's normals outward: along its own direction
-    where `directions` states one, away from the centre it encloses
-    otherwise.
+                    inward: Collection[int] = (),
+                    skip: Collection[int] = (), curved: bool = False
+                    ) -> tuple[int, int]:
+    """Turn every boundary element to face as the rule of the module
+    docstring has it (`boundary_dots`), a surface's or, in two
+    dimensions, a curve's.
 
-    `centres` maps a surface's entity tag to the point it encloses; the
-    origin otherwise.  `skip` names surfaces that enclose nothing, a
-    fault's faces, which keep the orientation they have.  In 2D a curve
-    with a stated direction is oriented (`facing_dots`) and any other
-    skipped: a circle's orientation carries no outward normal in the
-    same sense, and no consumer asks for one.
+    `centres` maps a boundary's entity tag to the point it encloses; the
+    origin otherwise.  `inward` names the entities that face the centre
+    they enclose, the inner boundary of a hollow domain.  `skip` names
+    surfaces that enclose nothing, a fault's faces, which keep the
+    orientation they have.
+
+    The curves of a two-dimensional mesh that face a centre, its
+    circles, are turned in a pass of their own, `curved`, made once the
+    order is raised (`circles_wait`): every other entity is turned at
+    order 1 and left alone in that pass.
     """
-    directions = directions or {}
-    if dimension != 3 and not directions:
-        return 0, 0
     pos = node_positions() if pos is None else pos
-    centres = centres or {}
     checked = flipped = 0
     for _, tag in gmsh.model.getEntities(dimension - 1):
-        if tag in skip:
+        if tag in skip or circles_wait(dimension, tag, directions) != curved:
             continue
-        if tag in directions:
-            tags, dots = facing_dots(dimension - 1, tag, pos, directions[tag])
-        elif dimension == 3:
-            tags, dots = outward_dots(tag, pos,
-                                      centre=centres.get(tag, (0.0, 0.0, 0.0)))
-        else:
+        facing = boundary_dots(dimension, tag, pos, centres=centres,
+                               directions=directions, inward=inward)
+        if facing is None:
             continue
+        tags, dots = facing
         checked += tags.size
         bad = tags[dots < 0.0]
         if bad.size:
@@ -280,16 +329,18 @@ def orient_boundary(dimension: int, *, pos: Mapping[int, np.ndarray] | None = No
 
 def orient_mesh(dimension: int, *, centres: Centres | None = None,
                 directions: Directions | None = None,
+                inward: Collection[int] = (),
                 faults: FaultSurfaces | None = None) -> OrientationReport:
     """Repair cell and boundary orientation, and orient the faults' faces
-    with their normals (`orient_faults`); call before raising the order."""
+    with their normals (`orient_faults`); call before raising the order,
+    and `orient_circles` after it."""
     pos = node_positions()
     faults = faults or {}
     cells_checked, cells_flipped = orient_cells(dimension, pos=pos)
     faces_checked, faces_flipped = orient_boundary(dimension, pos=pos,
                                                    centres=centres,
                                                    directions=directions,
-                                                   skip=faults)
+                                                   inward=inward, skip=faults)
     fault_checked, fault_flipped = orient_faults(faults, pos=pos)
     return OrientationReport(cells_checked=cells_checked,
                              cells_flipped=cells_flipped,
@@ -297,6 +348,18 @@ def orient_mesh(dimension: int, *, centres: Centres | None = None,
                              faces_flipped=faces_flipped,
                              fault_faces_checked=fault_checked,
                              fault_faces_flipped=fault_flipped)
+
+
+def orient_circles(dimension: int, *, centres: Centres | None = None,
+                   directions: Directions | None = None,
+                   inward: Collection[int] = (), skip: Collection[int] = ()
+                   ) -> tuple[int, int]:
+    """Turn the lines on the circles of a two-dimensional mesh to face as
+    the rule of the module docstring has it, the pass `orient_boundary`
+    leaves until the order is raised (`circles_wait`); call after raising
+    it.  Nothing in three dimensions.  Returns (lines checked, turned)."""
+    return orient_boundary(dimension, centres=centres, directions=directions,
+                           inward=inward, skip=skip, curved=True)
 
 
 def element_quality(dimension: int) -> tuple[float, int, int]:

@@ -149,7 +149,7 @@ def test_every_configuration_holds_to_the_contract(built, name):
     card = sc.read(res.manifest_path)
     assert card.schema == sc.SCHEMA_FLAT
     assert res.counts["faults"] == len(faults) and res.counts["faces"] == 5
-    assert 100 < res.counts["dim3"] < 5000
+    assert 100 < res.counts["elements"] < 5000
 
 
 @pytest.mark.parametrize("name", list(CASES))
@@ -545,7 +545,7 @@ def test_adgia_s_faulted_box_at_unit_scale(tmp_path):
     walls = mesh.walls(card)[0]
     assert np.all(side[walls == 1] > 0.0) and np.all(side[walls == -1] < 0.0)
     assert np.array_equal(mesh.cell_attributes == 2, walls == 1)
-    assert res.counts["dim3"] < 5000
+    assert res.counts["elements"] < 5000
 
 
 # ------------------------------------------------------------ pictures

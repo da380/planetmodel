@@ -128,7 +128,7 @@ def test_a_box_and_a_rectangle_build_checked_at_every_order(built, kind, order):
                               "faces": res.counts["faces"]}
     assert res.mapping.is_identity and res.geometry is res.spec.geometry
     # a few elements across, as every meshing test is
-    assert 10 < res.counts[f"dim{d}"] < 3000
+    assert 10 < res.counts["elements"] < 3000
 
 
 @pytest.mark.parametrize("kind", list(GEOMETRIES))

@@ -24,8 +24,9 @@ count and digest, never the points), so a consumer can tell whether a
 mesh on disk was built towards the features it now wants.
 
 **Elements.**  A mesh gmsh built is of tetrahedra, in two dimensions
-triangles; a cubed sphere (``build_cubed_sphere``) is of hexahedra, in
-two dimensions quadrilaterals, and lists no ``refinements``.  The
+triangles; a cubed sphere (``build_cubed_sphere``) is of hexahedra and
+a squared circle (``build_squared_circle``), its counterpart in two
+dimensions, of quadrilaterals, and neither lists ``refinements``.  The
 manifest is the same for both and does not say which: the mesh file
 holds what its elements are, and a consumer asks the mesh.
 
@@ -43,8 +44,8 @@ carry attributes beyond its layers' (the collars, below): a reader of
 schema 5 would ignore the faults and meet cells of no layer, so it
 refuses the file instead.  Schema 6 is schema 5 with ``faults[]``,
 ``layers[].attributes``, and every cell's attribute one of its layer's
-list; a mesh without faults is written as schema 5, byte for byte the
-manifest it always had, and a schema-5 manifest lists no faults.  A
+list; a mesh without faults is written as schema 5, and a schema-5
+manifest lists no faults.  A
 flat mesh is schema 7 because its layers run in depth from the surface
 down where a spherical mesh's run in radius from the centre: a reader
 of schema 5 would take the top for the centre.  Schema 7 has
@@ -87,7 +88,14 @@ is made from those lists.
 ``between_layers`` gives 0-based layer indices, with -1 for the
 outside; a full mesh has one interface per layer and a hollow mesh
 (inner radius above zero) one more, its inner boundary being interface
-1 with ``between_layers = [-1, 0]``.  A flat mesh numbers its layers and
+1 with ``between_layers = [-1, 0]``.  The boundary elements of an
+interface point away from the centre, out of the layer below them: a
+face's ``(v1 - v0) x (v2 - v0)``, and in two dimensions an edge's
+direction ``v1 - v0`` turned clockwise.  The inner boundary of a hollow
+mesh is the one exception: it is the body's own boundary and points out
+of the body, towards the centre.  That is how MFEM holds every element
+on a mesh's true boundary once it has read it, so the reference mesh
+and its deliveries agree, whichever builder made the mesh.  A flat mesh numbers its layers and
 interfaces from the surface down and its faces after the interfaces
 (Flat meshes, below).
 
@@ -310,10 +318,10 @@ never "no": a manifest from the mesher, or from ``export_mfem_mesh``
 without a model, carries null throughout.
 
 - ``layers[].fluid``: whether every shear-bearing field of the model's
-  layer vanishes throughout it (``materials.is_fluid``).  This is a
-  statement about the exported model's description, the vanishing of
-  shear in the fields written beside the mesh, not about any one
-  timescale; a solver decides what fluidity means for its own problem.
+  layer vanishes throughout it (``materials.is_fluid``), whichever of
+  its fields are written beside the mesh.  This is a statement about
+  the model's description, not about any one timescale; a solver
+  decides what fluidity means for its own problem.
   False for a shell; null where the layer's fields do not say.
 - ``interfaces[].kind``: one of ``solid-solid``, ``fluid-solid``,
   ``fluid-fluid`` (the fluidity of the two model layers it separates),
@@ -345,11 +353,13 @@ space from before it opens the file, and what the values in it are:
   its space.  Every field ``export_mfem`` writes is in an L2 space of
   the mesh, one set of dofs per element, so the two sides of an
   interface carry their own layer's value and nothing is averaged.  The
-  displacement is in the mesh's own nodal (H1) space.
+  displacement is in the mesh's own nodal (H1) space, so it has as many
+  components as the mesh has dimensions and that space's ``ordering``,
+  which is ``byVDIM``.
 - ``rank``, ``weight``, ``voigt``: the field's character, its law under
   a mapping.  ``vdim`` is the number of stored components: 1 for a
-  scalar, 3 for a vector, 6 for a Voigt rank-2 and 36 for a Voigt
-  rank-4 field.  Components are Cartesian, in the order ``(x, y, z)``,
+  scalar, 3 for a vector (2 for the displacement of a two-dimensional
+  mesh), 6 for a Voigt rank-2 and 36 for a Voigt rank-4 field.  Components are Cartesian, in the order ``(x, y, z)``,
   with Voigt order ``(11, 22, 33, 23, 13, 12)`` and no
   engineering factors.
 - ``unit``: a udunits-style string under the manifest's scales
@@ -666,7 +676,7 @@ An example
      ],
      "fields": [
        {"name": "displacement", "file": "earth.displacement.gf",
-        "fe_space": "H1_3D_P2", "vdim": 3, "ordering": "byNODES", "rank": 1,
+        "fe_space": "H1_3D_P2", "vdim": 3, "ordering": "byVDIM", "rank": 1,
         "weight": 0, "voigt": false, "unit": "1", "layers": [1, 2, 3],
         "radial_degree": null},
        {"name": "rho", "file": "earth.rho.gf", "fe_space": "L2_3D_P2",

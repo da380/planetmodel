@@ -35,7 +35,7 @@ def test_identity_geometry_and_names():
         g.layer("ocean")
     with pytest.raises(IndexError):
         g.interface(3)
-    assert g.knots() == ()
+    assert g.knots == ()
     assert g.validity()
     testing.check_geometry(g)
 
@@ -71,17 +71,17 @@ def test_renamed():
 def test_a_valid_mapping_with_a_kink_on_a_boundary_is_accepted():
     g = Geometry(SK, mapping=stretch(knot=0.8), **NAMES)
     assert not g.is_identity
-    assert g.knots() == (0.8,)
+    assert g.knots == (0.8,)
     assert g.validity().margin > 0
     testing.check_geometry(g)
 
 
 def test_invariant_refusals():
-    assert Geometry(SK, mapping=stretch(knot=0.7)).knots() == (0.7,)
+    assert Geometry(SK, mapping=stretch(knot=0.7)).knots == (0.7,)
     # a knot beyond the skeleton is the mapping's business, not the body's
-    assert Geometry(SK, mapping=stretch(knot=1.7)).knots() == ()
+    assert Geometry(SK, mapping=stretch(knot=1.7)).knots == ()
     truncated = Geometry(SK, mapping=stretch(knot=0.8)).truncated(0.7)
-    assert truncated.knots() == ()
+    assert truncated.knots == ()
     testing.check_geometry(truncated)
     with pytest.raises(ValueError, match="does not preserve orientation"):
         Geometry(SK, mapping=stretch(amp=-3.0))
@@ -135,7 +135,7 @@ def test_stretched():
 
 def test_refined_keeps_the_mapping_and_carries_names():
     g = Geometry(SK, mapping=stretch(knot=0.8), **NAMES)
-    fine = g.refined([0.6], names=["floor"])
+    fine = g.refined([0.6], interface_names=["floor"])
     assert fine.nlayers == 4
     assert [lay.name for lay in fine.layers] == ["core", None, None, "crust"]
     assert [f.name for f in fine.interfaces] == ["cmb", "floor", "moho", "surface"]
@@ -171,14 +171,14 @@ def test_hollowed_keeps_the_mapping():
 
 def test_extended_and_coarsened_need_the_identity():
     g = Geometry(SK, **NAMES)
-    grown = g.extended([1.2], names=["buffer"], interface_names=["outer"])
+    grown = g.extended([1.2], layer_names=["buffer"], interface_names=["outer"])
     assert grown.layer("buffer").interval == (1.0, 1.2)
     assert grown.interface("outer").between == (3, -1)
     assert grown.interface("surface").between == (2, 3)
     coarse, cmap = g.coarsened(drop=[0])
     assert [lay.name for lay in coarse.layers] == [None, "crust"]
     assert [f.name for f in coarse.interfaces] == ["moho", "surface"]
-    assert cmap.dropped_interfaces == (0,)
+    assert cmap.dropped_interior == (0,)
     deformed = g.with_mapping(stretch())
     with pytest.raises(ValueError, match="only be extended while"):
         deformed.extended([1.2])
@@ -202,7 +202,7 @@ def test_a_relief_inside_a_layer_declares_a_knot_the_geometry_admits():
     assert set(h.knots) == {0.25, 0.4, 0.6, 0.8}
     testing.check_displacement(h, SK)
     g = Geometry(SK, mapping=RadialStretch(h, rmax=1.0), **NAMES)
-    assert set(g.knots()) == {0.25, 0.4, 0.6, 0.8}
+    assert set(g.knots) == {0.25, 0.4, 0.6, 0.8}
     testing.check_geometry(g)
     mesh = RadialMesh(g, ngll=3, drmax=0.3)
     edges = np.append(mesh.left, mesh.right[-1])

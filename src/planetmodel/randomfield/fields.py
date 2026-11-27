@@ -40,14 +40,34 @@ boundary condition.  Robin coefficients can be added on top via
 `robin="auto"`, which sets gamma = 1 / lambda(boundary) at each
 artificial boundary, or explicitly.
 
-`SphericalGRF` samples are coefficient arrays with respect to the real
-orthonormal harmonics of `planetmodel.harmonics`, with a trailing radial
-axis over the physical nodes `r`; `to_field` wraps one as a
-`HarmonicField` on the shell, and `sample_grid` synthesises one on a
-grid of a shipped kind through ducc0's grid transforms.
-`LayeredGRF` draws an independent `RadialGRF` on each chosen layer of a
-skeleton and returns one `RadialField` per layer.  All fields are real
-and zero-mean.
+**Coefficients first.**  A sample of `RadialGRF` or `SphericalGRF` is
+the coefficient vector, in the order of its basis (a `SpectralBasis`, a
+`SphericalBasis`), with independent entries of standard deviation
+`coefficient_std`, theta^-beta.  The field of a vector is its synthesis
+times `scale`, the factor sigma / sigma_raw of radius above.  The views
+of a vector are derived from it: `synthesise` (the nodal values of a
+field of radius; of a shell the coefficient functions with respect to
+the real orthonormal harmonics of `planetmodel.harmonics`, with a
+trailing radial axis over the physical nodes `r`), `to_field` (a
+`RadialField`, or a `HarmonicField` on the shell) and, of a shell,
+`on_grid` (values on an angular grid of a shipped kind, through ducc0's
+grid transforms).  `LayeredGRF` holds an independent `RadialGRF` on each
+chosen layer of a skeleton: its sample is their vectors end to end, and
+`to_fields` gives one `RadialField` per layer.  All fields are real and
+zero-mean.
+
+**Batches.**  `sample(size=k)` draws k vectors, shape (k, size), the
+k successive draws of the generator.  Every method that takes a vector
+takes such a batch too: an array comes back with the batch axis leading,
+and a field (`to_layer`, `to_field`, `to_fields`) as a tuple over the
+batch.
+
+The samplers of flat layers (`planetmodel.cartesian.randomfield`) have
+the same methods with the same meanings and the same arguments.  One
+difference is the geometry's: a sampler of a box holds its lateral grid,
+which is also its band, while a shell's band is `lmax` and any angular
+grid of that band or more will do, so `on_grid` and `sample_grid` of
+`SphericalGRF` are given the grid.
 """
 from __future__ import annotations
 
@@ -62,7 +82,7 @@ from scipy.interpolate import PPoly
 from ..character import SCALAR, Character
 from ..expansions import HarmonicField
 from ..fields import RadialField
-from ..harmonics import synthesise_grid
+from ..harmonics import packing, real_harmonics, synthesise_grid
 from ..layerfunction import PolynomialLayer, constant_layer
 from ..mesh1d import Mesh1D
 from ..skeleton import Skeleton
@@ -77,7 +97,8 @@ if TYPE_CHECKING:
 
 __all__ = ["RadialGRF", "SphericalGRF", "LayeredGRF", "Profile",
            "profile_function", "sampler_mesh", "robin_spec", "matern_exponent",
-           "marginal_scale", "layer_indices", "per_layer"]
+           "marginal_scale", "coefficient_vectors", "nodal_ppoly",
+           "layer_indices", "per_layer"]
 
 #: A parameter of a field that may vary with radius: a number, or a
 #: callable of the radius.
@@ -145,18 +166,41 @@ def matern_exponent(nu: float, d: int) -> float:
 def marginal_scale(sigma: Profile, r: np.ndarray, var_raw: np.ndarray
                    ) -> tuple[np.ndarray, np.ndarray]:
     """The exact normalisation of the marginal standard deviation: the
-    wanted `sigma` at the nodes `r`, read-only, and the factor
-    sigma / sqrt(var_raw) by which the nodal values of the truncated
-    expansion, of raw pointwise variance `var_raw` there, are scaled so
-    that their standard deviation is sigma to rounding.  Refuses a raw
-    variance that vanishes at a node and a negative sigma."""
+    wanted `sigma` at the nodes `r`, and the factor sigma / sqrt(var_raw)
+    by which the nodal values of the truncated expansion, of raw
+    pointwise variance `var_raw` there, are scaled so that their
+    standard deviation is sigma to rounding; both read-only.  Refuses a
+    raw variance that vanishes at a node and a negative sigma."""
     if np.any(var_raw <= 0.0):
         raise RuntimeError("vanishing raw variance at a physical node")
     sig = profile_function(sigma)(r)
     if np.any(sig < 0.0):
         raise ValueError("sigma must be non-negative")
+    scale = sig / np.sqrt(var_raw)
     sig.setflags(write=False)
-    return sig, sig / np.sqrt(var_raw)
+    scale.setflags(write=False)
+    return sig, scale
+
+
+def coefficient_vectors(vector: ArrayLike, size: int) -> np.ndarray:
+    """What a sampler's method is given as coefficients, as floats: one
+    vector, shape (size,), or a batch of them, shape (k, size), as
+    `sample(size=k)` draws it.  Any other shape is refused."""
+    c = np.asarray(vector, dtype=float)
+    if c.ndim not in (1, 2) or c.shape[-1] != size:
+        raise ValueError(f"expected a coefficient vector of length {size}, or a "
+                         f"batch of them of shape (k, {size}), got shape {c.shape}")
+    return c
+
+
+def nodal_ppoly(mesh: Mesh1D, restriction: Restriction, nodal: np.ndarray) -> PPoly:
+    """The piecewise polynomial of the layered coordinate on the physical
+    interval through values at its nodes, leading axis the nodes: on
+    each element the polynomial through the values at its nodes, its
+    values of shape nodal.shape[1:]."""
+    full = np.zeros((mesh.nglob,) + nodal.shape[1:])
+    full[restriction.nodes] = nodal
+    return mesh.to_ppoly(full[mesh.gmap], elements=restriction.elements)
 
 
 def layer_indices(layers: Iterable[int] | None, nlayers: int) -> tuple[int, ...]:
@@ -184,15 +228,24 @@ def per_layer(spec: Any, i: int, nlayers: int) -> Any:
 # -- fields of radius alone -------------------------------------------------
 
 class RadialGRF:
-    """A real, zero-mean Gaussian random field of radius on [r1, r2].
+    """A real, zero-mean Gaussian random field of radius on [r1, r2], in
+    coefficients.
 
     Matern-type with smoothness `nu` > 0, length scale `lam` (a scalar
     or a callable of radius) and marginal standard deviation `sigma`
     (likewise), via C = A^-2 beta with 2 beta = nu + 1/2; r1 = 0 gives
     a field of the whole ball.  `ngll`, `drmax`, `pad_factor`, `robin`
-    and the truncation tolerance `tol` tune the discretisation.  Samples
-    are nodal values at the physical GLL nodes `r`; `to_layer` turns any
-    such vector into an exact `PolynomialLayer` on [r1, r2].
+    and the truncation tolerance `tol` (the omitted share of the
+    variance trace) tune the discretisation.
+
+    A sample is a vector of coefficients in `basis`, a `SpectralBasis`,
+    independent with standard deviations `coefficient_std`; the field
+    of a vector is `scale` times its synthesis, whose standard deviation
+    at the nodes `r` is `sigma` to rounding.  Wherever a vector is taken
+    a batch of them, shape (k, nmodes), is taken too.  Attributes:
+    `interval`, `nu`, `beta`, `mesh`, `drmax`, `restriction`, `family`,
+    `basis`, `r` (the physical nodes), `sigma`, `scale` and
+    `coefficient_std`, the last three read-only.
     """
 
     def __init__(self, r1: float, r2: float, nu: float, lam: Profile, *,
@@ -220,57 +273,70 @@ class RadialGRF:
 
         self.basis = SpectralBasis(self.family, 0, restrict=self.restriction,
                                    power=2.0 * self.beta, tol=tol)
-        theta = self.basis.theta
-        Phi = self.basis.modes()[self.restriction.nodes]
-        var_raw = self.basis.pointwise_variance(2.0 * self.beta)
-        self.sigma, scale = marginal_scale(sigma, self.r, var_raw)
-        self._B = scale[:, None] * Phi * theta[None, :] ** (-self.beta)
+        self.coefficient_std = self.basis.theta ** (-self.beta)
+        self.coefficient_std.setflags(write=False)
+        self.sigma, self.scale = marginal_scale(
+            sigma, self.r, self.basis.pointwise_variance(2.0 * self.beta))
 
     @property
     def nmodes(self) -> int:
-        """Number of Karhunen-Loeve modes kept."""
-        return self._B.shape[1]
+        """The number of coefficients: of Karhunen-Loeve modes kept."""
+        return self.basis.nmodes
 
     @property
-    def factor(self) -> np.ndarray:
-        """The covariance factor B, shape (r.size, nmodes): samples are
-        B z with z standard normal, and the covariance is B B^T."""
-        return self._B
+    def size(self) -> int:
+        """The length of the coefficient vector, `nmodes`."""
+        return self.basis.nmodes
 
     def sample(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
-        """A sample (or `size` of them) at the physical nodes: shape
-        (r.size,) or (size, r.size), a batch being `size` successive
-        draws from the generator.  `rng` is anything
-        `np.random.default_rng` accepts."""
+        """A coefficient vector (or `size` of them): shape (nmodes,) or
+        (size, nmodes), a batch being `size` successive draws from the
+        generator.  `rng` is anything `np.random.default_rng` accepts."""
         rng = np.random.default_rng(rng)
-        if size is None:
-            return self._B @ rng.standard_normal(self.nmodes)
-        return rng.standard_normal((int(size), self.nmodes)) @ self._B.T
+        shape = (self.nmodes,) if size is None else (int(size), self.nmodes)
+        return rng.standard_normal(shape) * self.coefficient_std
+
+    def synthesise(self, vector: ArrayLike) -> np.ndarray:
+        """The field of a coefficient vector at the physical nodes, shape
+        (r.size,), `scale` applied; of a batch, shape (k, r.size)."""
+        c = coefficient_vectors(vector, self.nmodes)
+        return (c @ self.basis.modes()[self.restriction.nodes].T) * self.scale
+
+    def factor(self) -> np.ndarray:
+        """The covariance factor B, shape (r.size, nmodes): the field at
+        the nodes of standard normal z is B z, and its covariance B B^T."""
+        return self.synthesise(np.diag(self.coefficient_std)).T
 
     def covariance(self) -> np.ndarray:
-        """Dense covariance of the nodal values (diagonal sigma^2)."""
-        return self._B @ self._B.T
+        """Dense covariance of the field at the nodes (diagonal sigma^2)."""
+        B = self.factor()
+        return B @ B.T
 
     def std(self) -> np.ndarray:
         """Marginal standard deviation at the nodes (exact by design)."""
         return self.sigma.copy()
 
-    def to_layer(self, values: ArrayLike) -> PolynomialLayer:
-        """The exact `PolynomialLayer` on [r1, r2] of nodal values."""
-        v = np.asarray(values, dtype=float)
-        if v.shape != self.r.shape:
-            raise ValueError(f"expected {self.r.shape} nodal values, got {v.shape}")
-        full = np.zeros(self.mesh.nglob)
-        full[self.restriction.nodes] = v
-        return PolynomialLayer(self.interval,
-                               self.mesh.to_ppoly(full[self.mesh.gmap],
-                                                  elements=self.restriction.elements))
+    def to_layer(self, vector: ArrayLike
+                 ) -> PolynomialLayer | tuple[PolynomialLayer, ...]:
+        """The field of a coefficient vector as an exact `PolynomialLayer`
+        on [r1, r2], through its nodal values; of a batch, one for each
+        of its vectors."""
+        c = coefficient_vectors(vector, self.nmodes)
+        if c.ndim == 2:
+            return tuple(self.to_layer(v) for v in c)
+        return PolynomialLayer(self.interval, nodal_ppoly(
+            self.mesh, self.restriction, self.synthesise(c)))
 
-    def to_field(self, values: ArrayLike, *, character: Character = SCALAR,
-                 name: str | None = None) -> RadialField:
-        """A sample as a `RadialField` on [r1, r2]."""
-        return RadialField(self.interval, self.to_layer(values),
-                           character=character, name=name)
+    def to_field(self, vector: ArrayLike, *, character: Character = SCALAR,
+                 name: str | None = None) -> RadialField | tuple[RadialField, ...]:
+        """The field of a coefficient vector as a `RadialField` on
+        [r1, r2]; of a batch, one for each of its vectors."""
+        c = coefficient_vectors(vector, self.nmodes)
+        if c.ndim == 2:
+            return tuple(self.to_field(v, character=character, name=name)
+                         for v in c)
+        return RadialField(self.interval, self.to_layer(c), character=character,
+                           name=name)
 
     def __repr__(self) -> str:
         r1, r2 = self.interval
@@ -282,7 +348,7 @@ class RadialGRF:
 
 class SphericalGRF:
     """A real, zero-mean Gaussian random field of a spherical annulus (or
-    ball, r1 = 0), delivered as spherical-harmonic coefficient functions.
+    ball, r1 = 0), in coefficients.
 
     Matern-type with C = A^-2 beta, 2 beta = nu + 3/2; `lam` is the
     length scale (scalar or callable of radius), `lam_h` an optional
@@ -290,10 +356,22 @@ class SphericalGRF:
     `lmax=None` chooses the degree cut automatically: degrees are added
     until their variance trace stays below `tol` times the running
     total for two degrees in a row (`lmax_cap` bounds the scan, with a
-    warning if it bites).  `sample()` returns coefficients of shape
-    (2, lmax + 1, lmax + 1, r.size) in the layout of
-    `planetmodel.harmonics`, and the pointwise standard deviation of the
-    truncated synthesis is exactly sigma(r).
+    warning if it bites).  `ngll`, `drmax`, `pad_factor` and `robin`
+    are those of `RadialGRF`; `tol` is also the share of its variance
+    trace each degree's truncation omits.
+
+    A sample is a vector of coefficients in `basis`, a `SphericalBasis`
+    (by degree, the cosine harmonics of orders 0 ... l and then the
+    sine ones of orders 1 ... l, the radial modes ascending within each),
+    independent with standard deviations `coefficient_std`; the field
+    of a vector is `scale` (a factor of radius) times its synthesis,
+    whose standard deviation at every point of a sphere through a node
+    of `r` is `sigma` to rounding.  Wherever a vector is taken a batch
+    of them, shape (k, size), is taken too.  Attributes: `interval`,
+    `nu`, `beta`, `lmax`, `mesh`, `drmax`, `restriction`, `family`,
+    `basis`, `nmodes` (the modes kept at each degree), `r` (the physical
+    nodes), `sigma`, `scale` and `coefficient_std`, the last three
+    read-only.
     """
 
     def __init__(self, r1: float, r2: float, nu: float, lam: Profile, *,
@@ -345,92 +423,178 @@ class SphericalGRF:
                 raise ValueError("lmax must be non-negative")
             self.lmax = int(lmax)
 
-        sl = self.restriction.nodes
         self.r = self.restriction.r
 
         self.basis = SphericalBasis([
             SpectralBasis(self.family, l, restrict=self.restriction, power=p, tol=tol)
             for l in range(self.lmax + 1)])
-        var_raw = np.zeros(self.r.size)
-        self._B: list[np.ndarray] = []
-        for b in self.basis:
-            l, theta, Phi = b.degree, b.theta, b.modes()[sl]
-            B = Phi * theta[None, :] ** (-self.beta)
-            var_raw += (2 * l + 1) / (4.0 * np.pi) * (B ** 2).sum(axis=1)
-            self._B.append(B)
-        self.sigma, self._scale = marginal_scale(sigma, self.r, var_raw)
         self.nmodes = self.basis.nmodes
+        self.coefficient_std = self.basis.theta ** (-self.beta)
+        self.coefficient_std.setflags(write=False)
+
+        var_raw = np.zeros(self.r.size)
+        for b in self.basis:
+            var_raw += (2 * b.label + 1) / (4.0 * np.pi) * b.pointwise_variance(p)
+        self.sigma, self.scale = marginal_scale(sigma, self.r, var_raw)
+
+        #: for each entry of the vector, the normal of a draw that it takes
+        draw, start = [], 0
+        for l, n in enumerate(self.nmodes):
+            count = (2 * l + 1) * int(n)
+            draw.append(start + np.arange(count).reshape(int(n), 2 * l + 1).T.ravel())
+            start += count
+        self._draw = np.concatenate(draw)
+        self._interpolant: PPoly | None = None
 
     @property
     def degrees(self) -> np.ndarray:
         """The spherical-harmonic degrees included, 0 ... lmax."""
         return np.arange(self.lmax + 1)
 
+    @property
+    def size(self) -> int:
+        """The length of the coefficient vector."""
+        return self.basis.size
+
+    def sample(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
+        """A coefficient vector (or `size` of them) in the order of
+        `basis`: shape (basis.size,) or (size, basis.size), a batch being
+        `size` successive draws from the generator.  `rng` is anything
+        `np.random.default_rng` accepts.  A draw takes the generator's
+        normals degree by degree and, within a degree, mode by mode
+        across its harmonics."""
+        rng = np.random.default_rng(rng)
+        shape = (self.size,) if size is None else (int(size), self.size)
+        return rng.standard_normal(shape)[..., self._draw] * self.coefficient_std
+
+    def synthesise(self, vector: ArrayLike) -> np.ndarray:
+        """The coefficient functions of the field of a coefficient vector
+        at the physical nodes: shape (2, lmax + 1, lmax + 1, r.size) in
+        the layout of `planetmodel.harmonics`, the radial axis last,
+        `scale` applied; of a batch, that with a leading axis over it.
+        For a ball, those of every l >= 1 vanish at r = 0."""
+        c = coefficient_vectors(vector, self.size)
+        rows = c.reshape(-1, self.size)
+        L = self.lmax
+        out = np.empty((rows.shape[0], 2, L + 1, L + 1, self.r.size))
+        for k, row in enumerate(rows):
+            out[k] = self.basis.synthesise(row)
+        out *= self.scale
+        return out.reshape(c.shape[:-1] + out.shape[1:])
+
+    def on_grid(self, vector: ArrayLike, grid: AngularGrid) -> np.ndarray:
+        """The field of a coefficient vector at the nodes `r` and the
+        nodes of an angular grid of a shipped kind and band at least
+        `lmax`: shape (r.size, ntheta, nphi), through `synthesise_grid`;
+        of a batch, that with a leading axis over it.  The grid is an
+        argument because the sampler holds a band, `lmax`, and no grid."""
+        c = self.synthesise(vector)
+        return synthesise_grid(np.moveaxis(c, 0, 3) if c.ndim == 5 else c, grid)
+
+    def sample_grid(self, grid: AngularGrid, *, rng: Any = None,
+                    size: int | None = None) -> np.ndarray:
+        """One sample (or `size` of them) at the nodes `r` and the nodes
+        of an angular grid, `on_grid` of `sample`: shape
+        (r.size, ntheta, nphi), or that with a leading axis of `size`."""
+        return self.on_grid(self.sample(rng=rng, size=size), grid)
+
     def factor(self, l: int) -> np.ndarray:
         """The covariance factor of degree l, shape (r.size, nmodes[l]),
-        with the marginal normalisation applied: the coefficient
-        functions of every order m of degree l are B_l z."""
-        return self._scale[:, None] * self._B[l]
-
-    def sample(self, *, rng: Any = None) -> np.ndarray:
-        """One sample of the coefficient functions at the physical nodes:
-        shape (2, lmax + 1, lmax + 1, r.size).  For a ball, coefficients
-        of every l >= 1 vanish at r = 0."""
-        rng = np.random.default_rng(rng)
-        L = self.lmax
-        c = np.zeros((2, L + 1, L + 1, self.r.size))
-        for l, B in enumerate(self._B):
-            U = B @ rng.standard_normal((B.shape[1], 2 * l + 1))
-            c[0, l, :l + 1] = U[:, :l + 1].T
-            if l:
-                c[1, l, 1:l + 1] = U[:, l + 1:].T
-        c *= self._scale
-        return c
-
-    def sample_grid(self, grid: AngularGrid, *, rng: Any = None) -> np.ndarray:
-        """One sample synthesised on a grid of a shipped kind and band at
-        least `lmax`: values of shape (r.size, ntheta, nphi), the layout
-        of a sample, through `synthesise_grid`."""
-        return synthesise_grid(self.sample(rng=rng), grid)
+        with the marginal normalisation applied: the coefficient function
+        of every harmonic of degree l is B_l z with z standard normal."""
+        b = self.basis[l]
+        return (self.scale[:, None] * b.modes()[self.restriction.nodes]
+                * b.theta[None, :] ** (-self.beta))
 
     def variance(self) -> np.ndarray:
-        """Pointwise variance sigma(r)^2 of the truncated field (exact)."""
+        """Pointwise variance sigma(r)^2 of the truncated field at the
+        nodes (exact)."""
         return self.sigma ** 2
 
     def std(self) -> np.ndarray:
-        """Pointwise standard deviation sigma(r) (exact by design)."""
+        """Pointwise standard deviation sigma(r) at the nodes (exact by
+        design)."""
         return self.sigma.copy()
 
-    def coefficient_functions(self, coeffs: ArrayLike) -> PPoly:
-        """A coefficient sample as one `PPoly` of radius on [r1, r2] whose
-        values have shape (2, lmax + 1, lmax + 1)."""
-        c = np.asarray(coeffs, dtype=float)
-        want = (2, self.lmax + 1, self.lmax + 1, self.r.size)
-        if c.shape != want:
-            raise ValueError(f"expected coefficients of shape {want}, got {c.shape}")
-        full = np.zeros((self.mesh.nglob,) + want[:3])
-        full[self.restriction.nodes] = np.moveaxis(c, -1, 0)
-        return self.mesh.to_ppoly(full[self.mesh.gmap],
-                                  elements=self.restriction.elements)
+    def coefficient_functions(self, vector: ArrayLike) -> PPoly:
+        """The coefficient functions of the field of a coefficient vector
+        as one `PPoly` of radius on [r1, r2] whose values have shape
+        (2, lmax + 1, lmax + 1), or (k, 2, lmax + 1, lmax + 1) of a batch:
+        the polynomial of each element through `synthesise`'s values at
+        its nodes."""
+        return nodal_ppoly(self.mesh, self.restriction,
+                           np.moveaxis(self.synthesise(vector), -1, 0))
 
-    def to_field(self, coeffs: ArrayLike, *, character: Character = SCALAR,
-                 name: str | None = None) -> HarmonicField:
-        """A coefficient sample as a `HarmonicField` on [r1, r2], its
-        coefficients the piecewise polynomials of `coefficient_functions`."""
-        return HarmonicField(self.interval, self.coefficient_functions(coeffs),
+    def to_field(self, vector: ArrayLike, *, character: Character = SCALAR,
+                 name: str | None = None
+                 ) -> HarmonicField | tuple[HarmonicField, ...]:
+        """The field of a coefficient vector as a `HarmonicField` on
+        [r1, r2], its coefficients the piecewise polynomials of
+        `coefficient_functions`; of a batch, one for each of its vectors."""
+        c = coefficient_vectors(vector, self.size)
+        if c.ndim == 2:
+            return tuple(self.to_field(v, character=character, name=name)
+                         for v in c)
+        return HarmonicField(self.interval, self.coefficient_functions(c),
                              character=character, name=name)
+
+    def _at_radii(self, r: np.ndarray) -> np.ndarray:
+        """The weights (r.size, self.r.size) that read the polynomial
+        through nodal values at radii of the interval."""
+        if self._interpolant is None:
+            self._interpolant = nodal_ppoly(self.mesh, self.restriction,
+                                            np.eye(self.r.size))
+        return self._interpolant(r)
+
+    def covariance(self, a: ArrayLike, b: ArrayLike) -> np.ndarray:
+        """The covariance of the field (as `to_field` gives it) between
+        points `a` and points `b`, each of shape (..., 3) holding
+        (r, theta, phi), radii within the interval and colatitudes in
+        [0, pi]: shape a.shape[:-1] + b.shape[:-1].
+
+        Exact, from the basis: the sum over the coefficients of their
+        variance times the synthesised mode at the two points, the
+        harmonics by `harmonics.real_harmonics`.  It costs the harmonics
+        to `lmax` for each point and is meant for a few points; the
+        marginal variance at the nodes is `variance`.
+        """
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        for pts in (a, b):
+            if pts.ndim == 0 or pts.shape[-1] != 3:
+                raise ValueError(f"points have 3 coordinates each, (r, theta, phi), "
+                                 f"along the last axis; got shape {pts.shape}")
+        r1, r2 = self.interval
+        fa, fb = a.reshape(-1, 3), b.reshape(-1, 3)
+        slack = 1e-12 * (r2 - r1)
+        for pts in (fa, fb):
+            if np.any(pts[:, 0] < r1 - slack) or np.any(pts[:, 0] > r2 + slack):
+                raise ValueError(f"radii must lie in the physical interval "
+                                 f"[{r1:g}, {r2:g}]")
+        Wa = self._at_radii(np.clip(fa[:, 0], r1, r2))
+        Wb = self._at_radii(np.clip(fb[:, 0], r1, r2))
+        harmonic = packing(self.lmax)
+        Ya = real_harmonics(self.lmax, fa[:, 1], fa[:, 2])[harmonic]
+        Yb = real_harmonics(self.lmax, fb[:, 1], fb[:, 2])[harmonic]
+        out = np.zeros((fa.shape[0], fb.shape[0]))
+        for l in range(self.lmax + 1):
+            B = self.factor(l)
+            which = slice(l * l, (l + 1) * (l + 1))
+            out += ((Wa @ B) @ (Wb @ B).T) * (Ya[which].T @ Yb[which])
+        return out.reshape(a.shape[:-1] + b.shape[:-1])
 
     def __repr__(self) -> str:
         r1, r2 = self.interval
         return (f"SphericalGRF([{r1:g}, {r2:g}], nu={self.nu:g}, "
-                f"lmax={self.lmax}, {int(self.nmodes.sum())} radial modes "
-                f"on {self.r.size} nodes)")
+                f"lmax={self.lmax}, {self.size} coefficients on {self.r.size} "
+                f"nodes)")
 
 
 # -- layered fields: direct sums over a skeleton ----------------------------------
 
 class LayeredGRF:
-    """Independent radial Gaussian fields per layer of a skeleton.
+    """Independent radial Gaussian fields on the layers of a skeleton, in
+    coefficients.
 
     Every included layer carries its own `RadialGRF` on its interval
     (each padded beyond the layer's boundaries; the pads are fictitious
@@ -439,9 +603,15 @@ class LayeredGRF:
     boundaries.  `nu`, `lam`, `sigma` and `drmax` are shared across
     layers when scalars or callables, or per-layer when sequences of
     length `skeleton.nlayers`.  `layers` restricts the sum to the given
-    layer indices; excluded layers contribute exactly zero.  `sample()`
-    returns one `RadialField` per layer, ready for `Model.with_field`.
-    A Geometry or Model is accepted in place of a skeleton.
+    layer indices.  A Geometry or Model is accepted in place of a
+    skeleton.
+
+    A sample is one vector, the coefficient vectors of the included
+    layers in ascending order of layer (`block`), of length `size`;
+    `to_fields` gives the field of a vector on every layer of the
+    skeleton, zero on the excluded ones, ready for `Model.with_field`.
+    Wherever a vector is taken a batch of them, shape (k, size), is
+    taken too.
     """
 
     def __init__(self, skeleton: Skeleton | Geometry | Model,
@@ -457,31 +627,55 @@ class LayeredGRF:
         self.skeleton = sk
         self.name = name
         nl = sk.nlayers
-        idx = layer_indices(layers, nl)
-        self.layers = idx
+        self.layers = layer_indices(layers, nl)
         self._grfs = {
             i: RadialGRF(*sk.interval(i), per_layer(nu, i, nl), per_layer(lam, i, nl),
                          sigma=per_layer(sigma, i, nl), ngll=ngll,
                          drmax=per_layer(drmax, i, nl), pad_factor=pad_factor,
                          robin=robin, tol=tol)
-            for i in idx}
+            for i in self.layers}
+        sizes = [self._grfs[i].size for i in self.layers]
+        self._starts = dict(zip(self.layers, np.cumsum([0] + sizes[:-1]).tolist()))
+        self.size = int(sum(sizes))
 
     def __getitem__(self, i: int) -> RadialGRF:
         """The `RadialGRF` of layer i (KeyError if excluded)."""
         return self._grfs[i]
 
-    def sample(self, *, rng: Any = None, character: Character = SCALAR
-               ) -> tuple[RadialField, ...]:
-        """One sample as a `RadialField` per layer of the skeleton, zero
-        on the excluded layers."""
+    def block(self, i: int) -> slice:
+        """Where the coefficient vector of layer i sits in the vector
+        (KeyError if excluded)."""
+        start = self._starts[i]
+        return slice(start, start + self._grfs[i].size)
+
+    def sample(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
+        """One coefficient vector (or `size` of them), shape (self.size,)
+        or (size, self.size): the layers' samples in ascending order of
+        layer, drawn in that order from the generator, a batch being
+        `size` successive draws.  `rng` is anything
+        `np.random.default_rng` accepts."""
         rng = np.random.default_rng(rng)
+        out = np.empty((1 if size is None else int(size), self.size))
+        for row in out:
+            for i in self.layers:
+                row[self.block(i)] = self._grfs[i].sample(rng=rng)
+        return out[0] if size is None else out
+
+    def to_fields(self, vector: ArrayLike, *, character: Character = SCALAR
+                  ) -> tuple[RadialField, ...] | tuple[tuple[RadialField, ...], ...]:
+        """The field of a coefficient vector on every layer of the
+        skeleton: a `RadialField` each, zero on the excluded layers.  Of
+        a batch, one such tuple for each of its vectors."""
+        v = coefficient_vectors(vector, self.size)
+        if v.ndim == 2:
+            return tuple(self.to_fields(row, character=character) for row in v)
         out = []
         for i in range(self.skeleton.nlayers):
             iv = self.skeleton.interval(i)
             if i in self._grfs:
-                g = self._grfs[i]
-                out.append(g.to_field(g.sample(rng=rng), character=character,
-                                      name=self.name))
+                out.append(self._grfs[i].to_field(v[self.block(i)],
+                                                  character=character,
+                                                  name=self.name))
             else:
                 out.append(RadialField(iv, constant_layer(iv, 0.0),
                                        character=character, name=self.name))

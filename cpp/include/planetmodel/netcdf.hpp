@@ -161,8 +161,58 @@ struct Array {
   return id;
 }
 
+namespace detail {
+
+/// The fill of a variable whose type is `T`, as a double: its
+/// `_FillValue`, or the default of its type.
+template <class T>
+double FillAs(int group, int var, std::string_view name, const std::string& source) {
+  auto fill = T{};
+  Check(nc_inq_var_fill(group, var, nullptr, &fill), source, name);
+  return static_cast<double>(fill);
+}
+
+/// The number that marks a value of a numeric variable as absent, as
+/// netCDF4-python masks one: its `_FillValue`, or the default fill of its
+/// type; empty for a variable of bytes that was written without filling and
+/// has no `_FillValue`, and for a variable that is not of numbers.
+inline std::optional<double> Fill(int group, int var, std::string_view name,
+                                  const std::string& source) {
+  auto type = nc_type{};
+  Check(nc_inq_vartype(group, var, &type), source, name);
+  if (type == NC_BYTE || type == NC_UBYTE) {
+    auto no_fill = 0;
+    auto length = std::size_t{0};
+    Check(nc_inq_var_fill(group, var, &no_fill, nullptr), source, name);
+    if (no_fill == 1 && nc_inq_attlen(group, var, "_FillValue", &length) != NC_NOERR) {
+      return std::nullopt;
+    }
+  }
+  switch (type) {
+    case NC_BYTE: return FillAs<signed char>(group, var, name, source);
+    case NC_UBYTE: return FillAs<unsigned char>(group, var, name, source);
+    case NC_SHORT: return FillAs<short>(group, var, name, source);
+    case NC_USHORT: return FillAs<unsigned short>(group, var, name, source);
+    case NC_INT: return FillAs<int>(group, var, name, source);
+    case NC_UINT: return FillAs<unsigned int>(group, var, name, source);
+    case NC_INT64: return FillAs<long long>(group, var, name, source);
+    case NC_UINT64: return FillAs<unsigned long long>(group, var, name, source);
+    case NC_FLOAT: return FillAs<float>(group, var, name, source);
+    case NC_DOUBLE: return FillAs<double>(group, var, name, source);
+    default: return std::nullopt;
+  }
+}
+
+}  // namespace detail
+
 /**
- * @brief A variable's values as doubles, and its shape.
+ * @brief A variable's values as doubles, NaN where it holds its fill, and
+ * its shape.
+ *
+ * The fill is the variable's `_FillValue`, or the default of its type
+ * where it has none, as netCDF4-python masks a variable: a value equal to
+ * it is absent, whatever number marks it.
+ *
  * @param group The group, or the file's id.
  * @param name The variable.
  * @param source The file, as an error names it.
@@ -186,6 +236,11 @@ struct Array {
   }
   out.values.resize(size);
   if (size > 0) Check(nc_get_var_double(group, var, out.values.data()), source, name);
+  if (const auto fill = detail::Fill(group, var, name, source)) {
+    for (auto& value : out.values) {
+      if (value == *fill) value = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
   return out;
 }
 
@@ -205,7 +260,9 @@ inline constexpr auto GLOBAL = NC_GLOBAL;
 }
 
 /**
- * @brief An attribute as text, from a character or a string attribute.
+ * @brief An attribute as text, from a character or a string attribute,
+ * without its NUL bytes, as netCDF4-python reads one: an attribute written
+ * as the empty string, which is stored as one NUL, is empty.
  * @param group The group, or the file's id.
  * @param var The variable's id, or `GLOBAL`.
  * @param name The attribute.
@@ -223,6 +280,7 @@ inline constexpr auto GLOBAL = NC_GLOBAL;
   if (type == NC_CHAR) {
     auto text = std::string(length, '\0');
     Check(nc_get_att_text(group, var, key.c_str(), text.data()), source, name);
+    std::erase(text, '\0');
     return text;
   }
   if (type == NC_STRING && length == 1) {

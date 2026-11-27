@@ -1,4 +1,4 @@
-"""A model read from a deck of depths, meshed and exported for MFEM as a
+"""A model built from a table of depths, meshed and exported for MFEM as a
 consumer takes it: a unit box a few elements across, built from the
 model's own geometry, every field written by layer, each dof holding the
 model's value at its depth, the viscosity zero where a layer has none,
@@ -8,7 +8,8 @@ import pytest
 
 pytest.importorskip("gmsh", reason="needs the planetmodel[meshing] extra")
 
-from planetmodel import Deck, cartesian, write_deck  # noqa: E402
+from planetmodel import (Deck, Elastic, Viscoelastic, cartesian,  # noqa: E402
+                         model_from_deck, read_deck, write_deck)
 from planetmodel.mesh3d import (MeshSpec, UniformInterfaces,  # noqa: E402
                                 build_layered_mesh, export_mfem, manifest as sc)
 from planetmodel.mesh3d.export import MESH_READ_OPTIONS, node_array  # noqa: E402
@@ -31,14 +32,17 @@ def unit_deck() -> Deck:
     eta = np.array([np.nan] * 6 + [1e20] * 3)
     columns = {"rho": rho, "vpv": vp, "vsv": vs, "vph": vp, "vsh": vs,
                "eta": np.ones(depth.size), "viscosity": eta}
-    return Deck(depth, columns, header={"name": "unit", "layers": ("a", "b", "c"),
-                                        "interfaces": ("surface", "ab", "bc")})
+    return Deck(depth, columns)
 
 
-def test_a_deck_read_flat_model_is_exported_by_layer(tmp_path):
-    path = write_deck(tmp_path / "unit.deck", unit_deck(), cartesian.MAXWELL)
-    model = cartesian.MaxwellDeckModel(path, cartesian.Box([(0.0, 1.0), (-0.5, 0.5)]),
-                                       kind="linear")
+def test_a_flat_model_of_a_table_is_exported_by_layer(tmp_path):
+    columns = unit_deck().names
+    path = write_deck(tmp_path / "unit.deck", unit_deck(), columns)
+    model = model_from_deck(
+        read_deck(path, columns), behaviours=[Elastic, Viscoelastic], kind="linear",
+        coordinate=cartesian.DEPTH, domain=cartesian.Box([(0.0, 1.0), (-0.5, 0.5)]),
+        layer_names=["a", "b", "c"], interface_names=["surface", "ab", "bc"],
+        name="unit")
     res = build_layered_mesh(MeshSpec(model.geometry, SIZING), tmp_path / "unit")
     export = export_mfem(res, tmp_path / "out", model=model,
                          fields=["rho", "N", "viscosity"])

@@ -1,9 +1,10 @@
 # %% [markdown]
 # # sl3d's chain on S20RTS
 #
-# sl3d builds its 3D viscosity from S20RTS without its degree 0: the
-# velocity anomaly, a density anomaly by a radial scaling, a temperature
-# anomaly by the expansivity, and eta = eta_0 exp(-0.01 dT).
+# sl3d, a sea-level code, builds its 3D viscosity from S20RTS without
+# its degree 0: the velocity anomaly, a density anomaly by a radial
+# scaling, a temperature anomaly by the expansivity, and
+# eta = eta_0 exp(-0.01 dT).
 # `sl3d_viscosity` is that chain in one call, held in the tests to sl3d's
 # own output.
 #

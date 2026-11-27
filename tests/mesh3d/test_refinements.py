@@ -319,7 +319,7 @@ def test_a_refinement_no_finer_than_the_sizing_changes_nothing(tmp_path):
     g = full_geometry()
     base = build_layered_mesh(MeshSpec(g, COARSE, dimension=2),
                               tmp_path / "base")
-    ceiling = NearPoints([[0.0, 1.0]], COARSE.h_max, COARSE.h_max, 0.3)
+    ceiling = NearPoints([[0.0, 1.0]], COARSE.far_size, COARSE.far_size, 0.3)
     same = build_layered_mesh(MeshSpec(g, COARSE, dimension=2,
                                        refinements=[ceiling]),
                               tmp_path / "same")

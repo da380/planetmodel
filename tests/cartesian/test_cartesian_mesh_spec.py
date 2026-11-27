@@ -133,3 +133,21 @@ def test_a_flat_spec_reads_its_dimension_from_the_domain():
     assert MeshSpec(rectangle, sizing).dimension == 2
     assert MeshSpec(rectangle, sizing).domain is rectangle
     assert MeshSpec(box, sizing).outer_radius == 1.0
+
+
+@pytest.mark.parametrize("domain", [
+    cartesian.Box([(0.0, 2.0), (-1.0, 1.0)], padding=(0.5, 0.25)),
+    cartesian.Rectangle((0.0, 2.0), padding=0.5)], ids=repr)
+def test_a_flat_layout_puts_a_side_at_each_end_of_each_axis_s_extent(domain):
+    from planetmodel.mesh3d._layout import layout_of
+    g = cartesian.Geometry(Skeleton([0.0, 0.4, 1.0]), domain)
+    spec = MeshSpec(g, UniformInterfaces(0.2, 0.3, 0.3))
+    layout = layout_of(g)
+    assert layout.coordinates == domain.axes + ("z",)
+    assert layout.bounds() == dict(zip(domain.axes, domain.extent))
+    sides = {f"{axis}_{end}": value
+             for axis, pair in zip(domain.axes, domain.extent)
+             for end, value in zip(("min", "max"), pair)}
+    assert {name: value for name, _, _, value in layout.faces(spec)} == (
+        {"base": -1.0} | sides)
+    assert layout.scale(spec) == max(domain.lengths)

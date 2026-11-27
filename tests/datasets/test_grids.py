@@ -251,6 +251,146 @@ def test_a_regional_grid_evaluates_inside_its_box(tmp_path):
         grid_model(g, {"vs": ("vs", None)})
 
 
+def boundary_angle(theta, phi, lat, lon, n=20001):
+    """The least great-circle angle from points to the sides of a box of
+    latitudes and longitudes (degrees, each a low and a high): its two
+    parallels and its two meridian arcs sampled at `n` points each, the
+    angle from the dot products of unit vectors."""
+    def unit(t, f):
+        return np.stack([np.sin(t) * np.cos(f), np.sin(t) * np.sin(f), np.cos(t)], -1)
+
+    la, lo = np.radians(np.linspace(*lat, n)), np.radians(np.linspace(*lon, n))
+    sides = [unit(0.5 * np.pi - np.full(n, np.radians(x)), lo) for x in lat]
+    sides += [unit(0.5 * np.pi - la, np.full(n, np.radians(x))) for x in lon]
+    edge = np.concatenate(sides)
+    points = unit(np.asarray(theta), np.asarray(phi))
+    return np.array([np.arccos(np.clip(np.max(edge @ p), -1.0, 1.0)) for p in points])
+
+
+def box_grid(lat, lon, step=1.0):
+    """A regional grid of constant vs over a box of latitudes and longitudes
+    (degrees, each a low and a high), from 50 to 150 km depth."""
+    lats = np.arange(lat[1], lat[0] - 1e-9, -step)
+    lons = np.arange(lon[0], lon[1] + 1e-9, step)
+    radius = R - np.array([150e3, 50e3])
+    data = datasets.GridData(np.radians(90.0 - lats), np.radians(lons), radius,
+                             {"vs": np.full((2, lats.size, lons.size), 4.5)},
+                             {"vs": "km/s"})
+    return RegionalGrid(data, {"vs": ("vs", None)})
+
+
+@pytest.mark.parametrize("lat, lon", [
+    ((50.0, 70.0), (-20.0, 20.0)), ((60.0, 80.0), (0.0, 200.0)),
+    ((40.0, 90.0), (10.0, 260.0)), ((-90.0, -55.0), (-170.0, 100.0)),
+    ((-30.0, 40.0), (-100.0, 170.0))],
+    ids=["narrow", "wider than 180", "to the north pole", "to the south pole",
+         "across the equator"])
+def test_a_box_s_edge_distance_is_the_angle_to_its_nearest_side(lat, lon):
+    """Against the box's sides sampled densely, the least angle to any of
+    their points: 20001 points a side, less than 1e-4 radians apart."""
+    rg = box_grid(lat, lon)
+    rng = np.random.default_rng(12)
+    la = rng.uniform(lat[0] + 0.01, lat[1] - 0.01, 300)
+    lo = rng.uniform(lon[0] + 0.01, lon[1] - 0.01, 300)
+    theta, phi = pm.from_geographic(la, lo)
+    assert rg.contains(theta, phi).all()
+    got = rg.edge_distance(theta, phi)
+    assert np.allclose(got, boundary_angle(theta, phi, lat, lon), rtol=0.0, atol=1e-4)
+    outside = pm.from_geographic(np.full(3, 0.5 * sum(lat)),
+                                 lon[1] + np.array([1.0, 30.0, 60.0]))
+    assert not rg.contains(*outside).any()
+    assert np.all(rg.edge_distance(*outside) == 0.0)
+    pm.testing.check_regional(rg)
+
+
+def test_a_band_round_the_circle_has_no_sides_in_longitude(tmp_path):
+    """Longitudes that close the circle between latitudes short of the
+    poles: a regional grid with no seam, read across the join by the two
+    columns either side of it, its edge the two parallels."""
+    lat, lon = np.arange(60.0, 80.01, 1.0), np.arange(0.0, 360.0, 1.0)
+    g = read_grid(write(tmp_path / "band.nc", lat=lat, lon=lon, depth=DEPTHS[:4]))
+    assert not g.is_global and g.phi.size == 360
+    rg = RegionalGrid(g, {"vs": ("vs", None)})
+    (_, _), _, (p0, p1) = rg.extent
+    assert p1 - p0 == pytest.approx(2.0 * np.pi, rel=1e-12)
+    rng = np.random.default_rng(13)
+    la, lo = rng.uniform(60.0, 80.0, 200), rng.uniform(-360.0, 720.0, 200)
+    theta, phi = pm.from_geographic(la, lo)
+    assert rg.contains(theta, phi).all()
+    want = np.radians(np.minimum(la - 60.0, 80.0 - la))
+    assert np.allclose(rg.edge_distance(theta, phi), want, rtol=0.0, atol=1e-12)
+    # across the join, half way between the last column and the first
+    for where in (359.5, -0.5, 719.5):
+        got = rg("vs", R - 100e3, *pm.from_geographic(65.0, where))
+        ends = np.float32(field(100.0, 65.0, np.array([359.0, 0.0])))
+        assert got == pytest.approx(1e3 * float(np.mean(ends.astype(float))),
+                                    rel=1e-12)
+    # at a node of every column, the join's two among them
+    nodes = pm.from_geographic(np.full(lon.size, 70.0), lon)
+    assert np.allclose(rg("vs", R - 100e3, *nodes),
+                       1e3 * np.float32(field(100.0, 70.0, lon)).astype(float),
+                       rtol=1e-12)
+    pm.testing.check_regional(rg)
+    # a box short of the circle keeps its sides
+    part = RegionalGrid(read_grid(write(tmp_path / "part.nc", lat=lat,
+                                        lon=np.arange(0.0, 300.0, 1.0),
+                                        depth=DEPTHS[:4])), {"vs": ("vs", None)})
+    assert not part.contains(*pm.from_geographic(70.0, 330.0))
+    assert np.isnan(part("vs", R - 100e3, *pm.from_geographic(70.0, 330.0)))
+    # as do two columns, which have no median step to close a circle by
+    two = box_grid((60.0, 80.0), (0.0, 100.0), step=100.0)
+    assert not two.contains(*pm.from_geographic(70.0, 200.0))
+    assert two.extent[2] == pytest.approx((0.0, np.radians(100.0)))
+
+
+def test_a_packed_variable_is_unpacked_and_its_missing_values_found(tmp_path):
+    """A variable stored as scaled integers: the values are the stored
+    ones times `scale_factor` plus `add_offset`, a signed integer marked
+    `_Unsigned` read as unsigned first, and a missing value is the stored
+    integer the file names, not its scaled value."""
+    lat, lon = np.arange(50.0, 60.01, 1.0), np.arange(0.0, 20.01, 1.0)
+    depth = np.array([50.0, 100.0, 150.0])
+    shape = (depth.size, lat.size, lon.size)
+    rng = np.random.default_rng(14)
+    packed = rng.integers(-2000, 2000, shape).astype("i2")
+    packed[0, 0, 0] = packed[2, 5, 7] = -32768
+    small = rng.integers(-128, 127, shape).astype("i1")
+    small[1, 2, 3] = -1                                  # 255 unsigned: missing
+    path = tmp_path / "packed.nc"
+    with netCDF4.Dataset(path, "w") as ds:
+        for name, c, unit in (("depth", depth, "km"),
+                              ("latitude", lat, "degrees_north"),
+                              ("longitude", lon, "degrees_east")):
+            ds.createDimension(name, c.size)
+            var = ds.createVariable(name, "f8", (name,))
+            var[:], var.units = c, unit
+        dims = ("depth", "latitude", "longitude")
+        vs = ds.createVariable("vs", "i2", dims, fill_value=-32768)
+        vs.set_auto_maskandscale(False)
+        vs.scale_factor, vs.add_offset, vs.units = 0.001, 4.0, "km/s"
+        vs[:] = packed
+        rho = ds.createVariable("rho", "i1", dims, fill_value=-1)
+        rho.set_auto_maskandscale(False)
+        rho.scale_factor, rho.units = 0.02, "g/cm3"
+        rho.setncattr("_Unsigned", "true")
+        rho[:] = small
+    g = read_grid(path)
+    order = np.argsort(-lat)                             # colatitude from the north
+    for name, stored, missing, scale, offset in (
+            ("vs", packed.astype(float), packed == -32768, 0.001, 4.0),
+            ("rho", small.astype(float) % 256.0, small == -1, 0.02, 0.0)):
+        want = np.where(missing, np.nan, stored * scale + offset)[::-1][:, order]
+        got = g.values[name]
+        assert got.dtype == np.float64
+        assert np.array_equal(np.isnan(got), np.isnan(want)), name
+        assert np.isnan(got).sum() == missing.sum() > 0
+        assert np.allclose(got, want, rtol=1e-14, atol=0, equal_nan=True), name
+    rg = RegionalGrid(g, {"vs": ("vs", None)})
+    at = pm.from_geographic(lat[3], lon[4])
+    assert rg("vs", R - 100e3, *at) == pytest.approx(
+        1e3 * (float(packed[1, 3, 4]) * 0.001 + 4.0), rel=1e-12)
+
+
 def test_a_reader_gives_a_model_over_its_reference_or_a_regional_grid(tmp_path,
                                                                      monkeypatch):
     monkeypatch.setenv("PLANETMODEL_DATA", str(tmp_path / "cache"))

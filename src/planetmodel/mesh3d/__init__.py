@@ -21,11 +21,13 @@ may also leave through the base or a side, where its edge is a curve of
 its own, its face edge.
 A spherical geometry may instead be meshed with hexahedra, with no
 mesher: a CubedSphereSpec describes a cubed sphere, a central cube and
-six blocks above its faces that conform to every interface (in two
-dimensions a central square and four blocks of quadrilaterals), by the
-number of cells along an edge and the sizing read radially, and
-`build_cubed_sphere` writes its reference mesh in MFEM's format, with
-the same manifest and the same MeshResult.
+six blocks above its faces that conform to every interface, by the
+number of cells along an edge and the sizing read radially or the
+radial levels given outright, and `build_cubed_sphere` writes its
+reference mesh in MFEM's format, with the same manifest and the same
+MeshResult.  A SquaredCircleSpec and `build_squared_circle` are the
+same in two dimensions: the geometry's disc, a central square and four
+blocks of quadrilaterals.
 `export_mfem_mesh` turns any of them into an MFEM delivery, where the
 geometry's mapping is applied, moving the nodes or written beside them
 as a field, and `export_mfem` adds the fields of a model to a layered
@@ -44,7 +46,8 @@ manifest and its rules, the spec, the arrays and the MFEM export import
 without gmsh, and a code holding an MFEM delivery needs no gmsh to read
 its manifest; reaching a builder without gmsh raises an ImportError
 naming the `meshing` extra.  PyMFEM is imported inside the export
-functions, where a cubed sphere is built, which needs no gmsh, and
+functions, where a cubed sphere or a squared circle is built, which needs
+no gmsh, and
 where `read_mesh` reads a file in MFEM's format.
 """
 from __future__ import annotations
@@ -54,20 +57,21 @@ import importlib
 from . import manifest
 from ._extra import GMSH_MISSING, missing_gmsh
 from .arrays import MeshArrays, cell_quality, read_mesh
-from .cubed import build_cubed_sphere
+from .cubed import build_cubed_sphere, build_squared_circle
 from .export import ExportResult, export_mfem, export_mfem_mesh
 from .spec import (AngularResolution, CappedInterfaces, CubedSphereSpec,
                    EmbeddedFault, InterfaceSizing, MeshResult, MeshSpec, NearPoints,
-                   PerInterface, Refinement, Shell, SizingRule, UniformInterfaces,
-                   ValidationReport, near_curve)
+                   PerInterface, Refinement, Shell, SizingRule, SquaredCircleSpec,
+                   UniformInterfaces, ValidationReport, near_curve)
 
 __all__ = [
-    "MeshSpec", "CubedSphereSpec", "MeshResult", "Shell", "InterfaceSizing",
-    "SizingRule",
+    "MeshSpec", "CubedSphereSpec", "SquaredCircleSpec", "MeshResult", "Shell",
+    "InterfaceSizing", "SizingRule",
     "AngularResolution", "UniformInterfaces", "CappedInterfaces",
     "PerInterface", "Refinement", "NearPoints", "near_curve", "EmbeddedFault",
     "ValidationReport", "build_layered_mesh",
-    "build_offset_mesh", "build_cubed_sphere", "export_mfem_mesh", "export_mfem",
+    "build_offset_mesh", "build_cubed_sphere", "build_squared_circle",
+    "export_mfem_mesh", "export_mfem",
     "ExportResult",
     "manifest", "read_mesh", "MeshArrays", "cell_quality",
 ]

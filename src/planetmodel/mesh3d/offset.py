@@ -26,7 +26,7 @@ import numpy as np
 
 from ..geometry import InterfaceInfo
 from . import manifest
-from ._orient import orient_mesh, raise_order
+from ._orient import orient_circles, orient_mesh, raise_order
 from ._session import session
 from ._sizing import apply_mesh_options, apply_size_fields
 from ._tagging import Tagging, mean_radius_of_entity
@@ -113,8 +113,9 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
             timings["optimise"] = clock() - t0
 
         t0 = clock()
-        orient_mesh(dimension, centres=centres)
+        orient_mesh(dimension, centres=centres, inward=tagging.inward)
         raise_order(dimension, order)
+        orient_circles(dimension, centres=centres, inward=tagging.inward)
         timings["orient"] = clock() - t0
 
         measured = _confirm_by_node_average(tagging)
@@ -152,6 +153,7 @@ def build_offset_mesh(path: str | Path, *, inner_radius: float, outer_radius: fl
     confirm_reread(msh_path, manifest_path, dimension, layer_names,
                    interface_names)
 
+    counts["order"] = order
     counts["layers"] = 2
     counts["interfaces"] = 2
     return MeshResult(mesh_path=msh_path, manifest_path=manifest_path,

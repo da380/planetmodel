@@ -192,6 +192,23 @@ TEST(Faults, TheWallsAreRefusedWhereTheSidesCannotBeTold) {
   const auto outside = std::vector<MeshEdge>{{1, 9}};
   EXPECT_TRUE(RefusedBy([&] { return FaultWalls(FAN, FAN_CELLS, FAN_FACES, outside, "fan"); },
                         "FaultWalls", "fan"));
+  // a cell indexing no vertex is refused wherever the index stands among
+  // its corners: here after a corner that carries slip, in two cells that
+  // share the face holding it
+  const auto vertices = std::vector<MeshVertex>{
+      {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {0, 0, -1}, {2, 2, 2}, {3, 2, 2}};
+  const auto face = std::vector<MeshTriangle>{{0, 1, 2}};
+  const auto cells = std::vector<MeshTetrahedron>{
+      {0, 1, 2, 3}, {0, 1, 2, 4}, {0, 5, 6, 7}, {1, 5, 6, 7}};
+  try {
+    static_cast<void>(FaultWalls(vertices, cells, face, {}, "plane"));
+    ADD_FAILURE() << "a cell indexing vertex 7 of 7 was accepted";
+  } catch (const Error& e) {
+    EXPECT_EQ(e.Where(), "plane");
+    EXPECT_NE(std::string{e.what()}.find("indexes vertex 7, outside the 7 given"),
+              std::string::npos)
+        << e.what();
+  }
   try {
     static_cast<void>(FaultWalls(FAN, FAN_CELLS, turned, FAN_RIM, "fan"));
   } catch (const Error& e) {

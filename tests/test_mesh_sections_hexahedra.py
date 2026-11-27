@@ -17,8 +17,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import LineCollection, PolyCollection  # noqa: E402
 
 from planetmodel.mesh3d._cubed import cubed_map, cubed_topology  # noqa: E402
-from planetmodel.plotting import in_plane, mesh_section, plane_cut  # noqa: E402
-from test_mesh_sections import CORNERS, area, kuhn, length  # noqa: E402
+from planetmodel.plotting import (block_planes, clip_polygons, in_plane,  # noqa: E402
+                                  mesh_block, mesh_section, plane_cut)
+from test_mesh_sections import CORNERS, area, area3, kuhn, length  # noqa: E402
 
 HEX = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
                 [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])
@@ -109,6 +110,8 @@ def test_a_mesh_of_quadrilaterals_in_a_plane_is_its_own_section():
     x[:, :2] = cubed_map(t.points, spheres=[0.6, 1.0], blend=[0.0, 1.0],
                          half_width=0.25)
     flat = in_plane(x, t.cells, np.zeros(3), np.eye(3)[:2])
+    named = in_plane(x, elements=t.cells, origin=np.zeros(3), axes=np.eye(3)[:2])
+    assert np.array_equal(named.pieces, flat.pieces)
     assert flat.pieces.shape == (t.cells.shape[0], 4, 2)
     assert np.array_equal(flat.index, np.arange(t.cells.shape[0]))
     assert np.array_equal(flat.pieces, x[t.cells][..., :2])
@@ -164,16 +167,68 @@ def test_a_cubed_sphere_cut_through_its_centre(axes):
     plt.close(fig)
 
 
+@pytest.mark.parametrize("view", [(25.0, -60.0), (25.0, 120.0), (-30.0, 30.0)])
+def test_a_block_of_hexahedra(view):
+    """A block inside a jittered lattice of hexahedra: each of the three
+    walls drawn is tiled by the cells' sections, clipped to the block,
+    each piece its cell's colour, and the boundary's quadrilaterals
+    leave nothing on walls inside the body."""
+    points, cells, faces = lattice(4, jitter=0.3)
+    bounds = [[0.1, 0.8], [0.2, 0.9], [0.15, 0.6]]
+    colours = plt.get_cmap("viridis")(np.linspace(0.0, 1.0, len(cells)))
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    walls = mesh_block(ax, points, cells, bounds, colours=colours, lines=faces,
+                       view=view)
+    fig.canvas.draw()
+    pieces = walls.get_paths()
+    assert len(ax.collections) == 1
+    plt.close(fig)
+    # the pieces are the cells' sections by the walls away from the viewer
+    b = np.array(bounds)
+    normals, offsets = block_planes(bounds)
+    theta, phi = np.deg2rad(view)
+    eye = np.array([np.cos(theta) * np.cos(phi), np.cos(theta) * np.sin(phi),
+                    np.sin(theta)])
+    total, count, want = 0.0, 0, 0.0
+    for axis in range(3):
+        side = 0 if eye[axis] > 0.0 else 1
+        origin = np.zeros(3)
+        origin[axis] = b[axis, side]
+        others = [k for k in range(3) if k != axis]
+        cut = plane_cut(points, cells, origin, np.eye(3)[others])
+        parts, _ = clip_polygons(cut.in_space(), normals, offsets)
+        total += area3(parts).sum()
+        count += len(parts)
+        want += np.prod(b[others, 1] - b[others, 0])
+    assert np.isclose(total, want, rtol=1e-12) and count == len(pieces)
+
+
+def test_a_block_on_the_faces_of_a_mesh_of_hexahedra():
+    """Bounds that are the lattice's own faces: each wall drawn is a face
+    of the cube, tiled by the quadrilaterals of the cells inside it, and
+    the boundary's faces leave their edges on it."""
+    points, cells, faces = lattice(3)
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    walls = mesh_block(ax, points, cells, [[0, 1]] * 3, lines=faces)
+    fig.canvas.draw()
+    assert len(walls.get_paths()) == 3 * 9
+    assert len(ax.collections) == 2 and len(ax.collections[1].get_segments())
+    plt.close(fig)
+
+
 def test_what_is_refused():
     points, cells, faces = lattice(1)
-    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra"):
+    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra, and "
+                       "these are hexahedra"):
         plane_cut(points, cells, np.full(3, 0.5), np.eye(3)[:2], kind="crinkle")
-    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra"):
+    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra, and "
+                       "these are quadrilaterals"):
         plane_cut(points, faces, np.full(3, 0.5), np.eye(3)[:2], kind="crinkle",
                   tensor=True)
     with pytest.raises(ValueError, match="no tensor elements"):
         plane_cut(points, faces[:, :3], np.full(3, 0.5), np.eye(3)[:2], tensor=True)
-    with pytest.raises(ValueError, match="or of 8 for hexahedra"):
-        plane_cut(points, cells[:, :6], np.full(3, 0.5), np.eye(3)[:2])
+    with pytest.raises(ValueError, match="elements are rows .* or of 8 for hexahedra"):
+        plane_cut(points, elements=cells[:, :6], origin=np.full(3, 0.5),
+                  axes=np.eye(3)[:2])
     with pytest.raises(ValueError, match="2, 3 or 4"):
         in_plane(points, cells, np.zeros(3), np.eye(3)[:2])

@@ -32,11 +32,13 @@ grid has weights.  One grid per file, and one surface per file.
 
 **Time**: the optional coordinate `time(time)`, strictly increasing in
 the file's units, and the optional coordinate `instant(instant)`, a
-second strictly increasing set for fields tied to observation times.
-The dimension `interval`, present where any field needs it, is of size
-one less than `time`: interval k spans `time[k]` to `time[k + 1]`.  How
-the stored times map onto a calendar (years before present, say) is the
-writer's provenance, not the format's.
+second strictly increasing set for fields tied to observation times; a
+file holding a `node` or an `interval` field has `time`, and one holding
+an `instant` field has `instant`.  The dimension `interval`, present
+where any field needs it, is of size one less than `time`: interval k
+spans `time[k]` to `time[k + 1]`.  How the stored times map onto a
+calendar (years before present, say) is the writer's provenance, not
+the format's.
 
 **Fields**: one float64 variable per name, NaN marking the points a
 field does not cover, its dimensions by its `time_support` attribute —
@@ -47,10 +49,14 @@ field does not cover, its dimensions by its `time_support` attribute —
 `units.BASE`, where declared), `time_interpolation` (`linear` or
 `previous` for a `node` field a reader may sample between nodes,
 `none` otherwise, and always `none` for the other supports) and
-`lateral_interpolation`.  Where the grid lacks either pole, a field
-may carry `name_poles`, north then south, on its leading time shape;
-a reader without it falls back to its lateral rule.  Values are real;
-complex fields are refused.
+`lateral_interpolation`, a rule the grid can carry (`lateral.check_rule`:
+`harmonic` only on a grid of a shipped kind with its band).  Where the
+grid lacks either pole, a field may carry `name_poles`, north then
+south, over its support's leading dimension and the dimension `pole`
+(two); a reader without it falls back to its lateral rule.  On a grid
+that holds both poles a field carries none: the writer refuses them, and
+a reader a file that has them.  Values are real; complex fields are
+refused.
 
 `write_surface` writes a file from variables (`SurfaceVariable`) and
 `read_surface_file` gives one back as a `SurfaceFile` of numbers and
@@ -103,8 +109,10 @@ from numpy.typing import ArrayLike
 
 from .files import written_whole
 from .lateral import METHODS as LATERAL_METHODS
-from .modelfile import (CONVENTIONS, FileVariable, grid_degrees, grid_of_group,
-                        netcdf_module, put_variable, variable_attributes,
+from .lateral import check_rule
+from .modelfile import (CONVENTIONS, FileVariable, attribute_number,
+                        attribute_text, grid_degrees, grid_of_group, netcdf_module,
+                        put_variable, stamped_source, variable_attributes,
                         variable_values)
 from .sampling import KINDS as GRID_KINDS
 from .sampling import AngularGrid
@@ -145,6 +153,10 @@ _RESERVED = ("latitude", "longitude", "colatitude_weights", "time", "instant")
 #: The leading dimensions of each support's variables.
 _LEADING = {"static": (), "node": ("time",), "interval": ("interval",),
             "instant": ("instant",)}
+
+#: The coordinate variable the values of each support in time are read
+#: against.
+_AXIS = {"node": "time", "interval": "time", "instant": "instant"}
 
 
 @dataclass(frozen=True)
@@ -216,6 +228,10 @@ class SurfaceLayout(Protocol):
         """Refuse, by name, a grid the layout does not take."""
         ...
 
+    def check_rule(self, grid: Any, rule: str) -> None:
+        """Refuse, by name, a lateral rule the grid cannot carry."""
+        ...
+
     def check_place(self, value: object) -> None:
         """Refuse, by name, a place that is not one."""
         ...
@@ -279,6 +295,10 @@ class SphericalSurfaceLayout:
         if not isinstance(grid, AngularGrid):
             raise TypeError(f"expected an AngularGrid, got {type(grid).__name__}")
 
+    def check_rule(self, grid: AngularGrid, rule: str) -> None:
+        """`lateral.check_rule`."""
+        check_rule(grid, rule)
+
     def check_place(self, value: object) -> None:
         """A positive finite radius."""
         if not (isinstance(value, numbers.Real) and np.isfinite(value)
@@ -331,8 +351,7 @@ class SphericalSurfaceLayout:
 
     def validate_grid(self, ds: Any, path: object) -> None:
         """`grid_kind` one of `sampling.KINDS`, and the coordinates."""
-        attrs = ds.ncattrs()
-        if "grid_kind" not in attrs or ds.getncattr("grid_kind") not in GRID_KINDS:
+        if attribute_text(ds, "grid_kind") not in GRID_KINDS:
             _fail(path, f"grid_kind is missing or not a kind of grid, one of "
                         f"{GRID_KINDS}")
         for name in ("latitude", "longitude"):
@@ -450,8 +469,8 @@ def leading_shape(support: str, *, time: np.ndarray | None,
 
 
 def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
-                  fields: Mapping[str, SurfaceVariable], source: str,
-                  time: ArrayLike | None = None,
+                  fields: Mapping[str, SurfaceVariable],
+                  source: str | None = None, time: ArrayLike | None = None,
                   instant: ArrayLike | None = None,
                   radius: float | None = None, scales: Scales = Scales.SI,
                   title: str | None = None,
@@ -459,11 +478,13 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
                   citation: Sequence[str] = ()) -> Path:
     """Write `fields` on `grid` to a surface file at `path`, returned.
 
-    `source` names the writing code and version; `time` and `instant`
+    `source` names the writing code and version, this library and its
+    version unless given (`modelfile.stamped_source`); `time` and `instant`
     are the axes of the module docstring, given where a field needs
     one; `radius` is the surface's radius and every number is in
-    `scales`' units; `meta` becomes `meta_<key>` attributes.  The file
-    is written whole or not at all, with the permissions a plain
+    `scales`' units; `meta` becomes `meta_<key>` attributes, and
+    `citation` is the works cited, one line each (`model.cited`).  The
+    file is written whole or not at all, with the permissions a plain
     `open(path, "w")` would give it (`files.written_whole`).  A flat
     surface file is written by `cartesian.surfacefile.write_surface`.
     """
@@ -473,7 +494,7 @@ def write_surface(path: str | os.PathLike[str], grid: AngularGrid, *,
 
 
 def write_with(path: str | os.PathLike[str], grid: Any, layout: SurfaceLayout, *,
-               fields: Mapping[str, SurfaceVariable], source: str,
+               fields: Mapping[str, SurfaceVariable], source: str | None = None,
                time: ArrayLike | None = None, instant: ArrayLike | None = None,
                place: float | None = None, scales: Scales = Scales.SI,
                title: str | None = None, meta: Mapping[str, Any] | None = None,
@@ -481,10 +502,12 @@ def write_with(path: str | os.PathLike[str], grid: Any, layout: SurfaceLayout, *
     """Write `fields` on `grid` to a surface file of `layout` at `path`,
     returned: `write_surface`'s, the surface's `place` the layout's (a
     sphere's radius, a plane's depth)."""
+    from .model import cited
+
     nc = netcdf_module()
     layout.check_grid(grid)
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("source names the writing code and version")
+    source = stamped_source(source)
+    citation = cited(citation, ())
     if not isinstance(scales, Scales):
         raise TypeError(f"expected Scales, got {type(scales).__name__}")
     if isinstance(fields, str) or not isinstance(fields, Mapping) or not fields:
@@ -500,6 +523,10 @@ def write_with(path: str | os.PathLike[str], grid: Any, layout: SurfaceLayout, *
     prepared: dict[str, tuple[SurfaceVariable, np.ndarray, np.ndarray | None]] = {}
     for name, field in fields.items():
         _checked(name, field, layout)
+        try:
+            layout.check_rule(grid, field.lateral_interpolation)
+        except ValueError as error:
+            raise ValueError(f"{name!r}: {error}") from None
         leading = leading_shape(field.support, time=t, instant=s, name=name)
         values = _real_values(field.values, leading + layout.lateral_shape(grid),
                               name, "its values")
@@ -514,7 +541,7 @@ def write_with(path: str | os.PathLike[str], grid: Any, layout: SurfaceLayout, *
     with written_whole(path) as partial:
         _write_file(nc, partial, grid, prepared, source, t, s,
                     needs_interval, needs_pole, place, scales, title, meta,
-                    tuple(citation), layout)
+                    citation, layout)
     return path
 
 
@@ -591,6 +618,17 @@ def malformed(path: object, msg: str) -> NoReturn:
 _fail = malformed
 
 
+def _exponents(value: Any) -> Dimensions | None:
+    """The dimensions a field's `dimensions` attribute states: four whole
+    numbers, the exponents of `units.BASE` in its order; None where the
+    attribute holds anything else."""
+    stated = np.asarray(value)
+    if (stated.dtype.kind not in "iuf" or stated.shape != (len(BASE),)
+            or not np.all(stated == np.round(stated))):
+        return None
+    return Dimensions(**{b: int(e) for b, e in zip(BASE, stated)})
+
+
 def validate_structure(source: str | os.PathLike[str] | Any) -> None:
     """Check that a file, by path or as an open netCDF4 Dataset, has the
     structure its schema defines (the module docstring's for a spherical
@@ -622,13 +660,14 @@ def _layout_of_file(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
     if "schema" not in ds.ncattrs():
         _fail(path, "no schema attribute: not a planetmodel surface file")
     schema = ds.getncattr("schema")
+    text = isinstance(schema, str)
     seen = []
     for layout in layouts:
-        if schema == layout.schema:
+        if text and schema == layout.schema:
             return layout
         seen.append(repr(layout.schema))
     other = (f"; a file of {schema!r} is read by {_READERS[schema]}"
-             if isinstance(schema, str) and schema in _READERS else "")
+             if text and schema in _READERS else "")
     _fail(path, f"schema is {schema!r}, this reader reads "
                 f"{', '.join(seen[:-1]) + ' and ' if len(seen) > 1 else ''}"
                 f"{seen[-1]}{other}")
@@ -637,19 +676,23 @@ def _layout_of_file(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
 def _validate(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
               ) -> tuple[SurfaceLayout, Any]:
     """The checks of `validate_structure` on an open dataset, by the layout
-    among `layouts` whose schema it states; that layout, and the context
-    of its reading."""
+    among `layouts` whose schema it states; that layout, and the grid the
+    file holds."""
     layout = _layout_of_file(ds, path, layouts)
-    attrs = set(ds.ncattrs())
     for key in ("source", "created"):
-        if key not in attrs or not str(ds.getncattr(key)).strip():
+        if not (attribute_text(ds, key) or "").strip():
             _fail(path, f"{key} is missing or empty")
     for base in ("length", "mass", "time", "temperature"):
         key = f"scale_{base}"
-        if key not in attrs or not float(ds.getncattr(key)) > 0.0:
-            _fail(path, f"{key} is missing or not positive")
+        scale = attribute_number(ds, key)
+        if scale is None or not scale > 0.0:
+            _fail(path, f"{key} is missing or not positive and finite")
     layout.validate_place(ds, path)
     context = layout.validate_grid(ds, path)
+    try:
+        grid = layout.read_grid(ds, context)
+    except (TypeError, ValueError) as error:
+        _fail(path, f"the grid is malformed: {error}")
     ntime = None
     for name in ("time", "instant"):
         if name not in ds.variables:
@@ -664,34 +707,50 @@ def _validate(ds: Any, path: object, layouts: Iterable[SurfaceLayout]
     if "interval" in ds.dimensions:
         if ntime is None or len(ds.dimensions["interval"]) != ntime - 1:
             _fail(path, "the interval dimension is not one shorter than time")
-    has_pole_dim = "pole" in ds.dimensions
+    if "pole" in ds.dimensions and len(ds.dimensions["pole"]) != 2:
+        _fail(path, "the pole dimension does not run over the two poles")
     for name, var in ds.variables.items():
         if name in layout.reserved:
             continue
         if name.endswith("_poles"):
             base_name = name[:-len("_poles")]
-            if base_name not in ds.variables or base_name in layout.reserved:
+            if (base_name not in ds.variables or base_name in layout.reserved
+                    or base_name.endswith("_poles")):
                 _fail(path, f"{name} accompanies no field {base_name!r}")
-            if not has_pole_dim or var.dimensions[-1] != "pole":
-                _fail(path, f"{name} does not end on the pole dimension")
+            try:
+                layout.check_poles(grid, base_name)
+            except ValueError as error:
+                _fail(path, f"{name}: {error}")
             continue
-        a = set(var.ncattrs())
-        if "time_support" not in a or var.getncattr(
-                "time_support") not in TIME_SUPPORTS:
+        support = attribute_text(var, "time_support")
+        if support not in TIME_SUPPORTS:
             _fail(path, f"{name} states no time support, one of {TIME_SUPPORTS}")
-        support = str(var.getncattr("time_support"))
         want = _LEADING[support] + layout.axes(context)
         if tuple(var.dimensions) != want:
             _fail(path, f"{name} is {support!r} and does not run over {want}")
-        if "lateral_interpolation" not in a or var.getncattr(
-                "lateral_interpolation") not in layout.methods:
+        axis = _AXIS.get(support)
+        if axis is not None and axis not in ds.variables:
+            _fail(path, f"{name} is {support!r}, and the file has no coordinate "
+                        f"variable {axis!r}")
+        lateral = attribute_text(var, "lateral_interpolation")
+        if lateral not in layout.methods:
             _fail(path, f"{name} states no known lateral rule")
-        rule = var.getncattr("time_interpolation") if "time_interpolation" in a \
-            else None
+        try:
+            layout.check_rule(grid, lateral)
+        except ValueError as error:
+            _fail(path, f"{name} states the lateral rule {lateral!r}, and {error}")
+        rule = attribute_text(var, "time_interpolation")
         if rule not in TIME_METHODS or (support != "node" and rule != "none"):
             _fail(path, f"{name} is {support!r} and states the time rule "
                         f"{rule!r}")
-    return layout, context
+        want = _LEADING[support] + ("pole",)
+        if f"{name}_poles" in ds.variables and tuple(
+                ds.variables[f"{name}_poles"].dimensions) != want:
+            _fail(path, f"{name}_poles does not run over {want}")
+        if "dimensions" in var.ncattrs() and _exponents(
+                var.getncattr("dimensions")) is None:
+            _fail(path, f"{name} declares dimensions that are not four exponents")
+    return layout, grid
 
 
 def read_surface_file(path: str | os.PathLike[str]) -> SurfaceFile:
@@ -707,7 +766,7 @@ def read_with(path: str | os.PathLike[str], layouts: Iterable[SurfaceLayout]) ->
     first: the layout's file (`SurfaceFile` on the sphere)."""
     nc = netcdf_module()
     with nc.Dataset(path, "r") as ds:
-        layout, context = _validate(ds, path, layouts)
+        layout, grid = _validate(ds, path, layouts)
         attrs = {k: ds.getncattr(k) for k in ds.ncattrs()}
         scales = Scales(**{b: float(attrs[f"scale_{b}"])
                            for b in ("length", "mass", "time", "temperature")})
@@ -721,7 +780,6 @@ def read_with(path: str | os.PathLike[str], layouts: Iterable[SurfaceLayout]) ->
                                         variable_attributes(var))
                      for name, var in ds.variables.items()
                      if name not in layout.reserved}
-        grid = layout.read_grid(ds, context)
     place = attrs.get(layout.place)
     title = attrs.get("title")
     return layout.file(str(attrs["schema"]), grid, MappingProxyType(variables),
@@ -877,14 +935,12 @@ class HistoryBase:
 
     def support(self, name: str) -> str:
         """How a field sits in time, one of `TIME_SUPPORTS`."""
-        return str(self._variable(name).attributes["time_support"])
+        return str(self.variable(name).attributes["time_support"])
 
     def dimensions(self, name: str) -> Dimensions | None:
         """A field's dimensions, where the file declares them."""
-        exps = self._variable(name).attributes.get("dimensions")
-        if exps is None:
-            return None
-        return Dimensions(**{b: int(e) for b, e in zip(BASE, np.atleast_1d(exps))})
+        stated = self.variable(name).attributes.get("dimensions")
+        return None if stated is None else _exponents(stated)
 
     def values(self, name: str, *, date: float | None = None,
                extrapolation: str = "refuse",
@@ -896,14 +952,15 @@ class HistoryBase:
         or `interval` field outside its span; `time_rtol` is the date's
         tolerance on a stored time (`time_rows`)."""
         rows = self._rows(name, date, extrapolation, time_rtol)
-        values = self._variable(name).values
+        values = self.variable(name).values
         if rows is None:
             return values.copy()
         (k0, w0), (k1, w1) = rows
         return w0 * values[k0] + w1 * values[k1]
 
-    def _variable(self, name: str) -> FileVariable:
-        """The variable of a field, polar values and reserved names refused."""
+    def variable(self, name: str) -> FileVariable:
+        """The variable of a field, its values as stored and its attributes;
+        KeyError for polar values and for a name the file does not hold."""
         if name.endswith("_poles") or name not in self._file.variables:
             raise KeyError(f"the file holds no field {name!r}")
         return self._file.variables[name]
@@ -912,7 +969,7 @@ class HistoryBase:
               time_rtol: float) -> TimeRows | None:
         """The leading rows a date reads, with their weights (`time_rows`);
         None for a static field, whose values are the answer whole."""
-        variable = self._variable(name)
+        variable = self.variable(name)
         return time_rows(self.support(name),
                          str(variable.attributes["time_interpolation"]), date,
                          time=self._file.time, instant=self._file.instant,
@@ -941,13 +998,12 @@ class SurfaceHistory(HistoryBase):
                  extrapolation: str = "refuse", rtol: float = 1e-9,
                  time_rtol: float = TIME_RTOL) -> GriddedFunction:
         """The field at `date` as a `GriddedFunction` by its stated lateral
-        rule (`harmonic` read as `cubic`, this library evaluating no
-        harmonic rule), its stored polar values carried along where the
-        file holds them; a field with NaN cannot be one.  `rtol` is the
-        function's, `time_rtol` the date's (`time_rows`)."""
+        rule, its stored polar values carried along where the file holds
+        them; a field with NaN cannot be one.  `rtol` is the function's,
+        `time_rtol` the date's (`time_rows`)."""
         from .gridded import GriddedFunction
 
-        lateral = str(self._variable(name).attributes["lateral_interpolation"])
+        lateral = str(self.variable(name).attributes["lateral_interpolation"])
         poles = None
         held = self._file.variables.get(f"{name}_poles")
         if held is not None:
@@ -960,8 +1016,7 @@ class SurfaceHistory(HistoryBase):
         return GriddedFunction(self.grid, self.values(name, date=date,
                                                       extrapolation=extrapolation,
                                                       time_rtol=time_rtol),
-                               lateral="cubic" if lateral == "harmonic" else lateral,
-                               poles=poles, rtol=rtol)
+                               lateral=lateral, poles=poles, rtol=rtol)
 
 
 def read_surface(path: str | os.PathLike[str]) -> HistoryBase:

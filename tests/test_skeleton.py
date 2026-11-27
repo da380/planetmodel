@@ -111,8 +111,8 @@ def test_coarsened(sk):
     assert np.array_equal(coarse.boundaries, [0.0, 2.0, 3.0])
     assert isinstance(cmap, CoarseningMap)
     assert cmap.layers == ((0, 1), (2,))
-    assert cmap.kept_interfaces == (1,)
-    assert cmap.dropped_interfaces == (0,)
+    assert cmap.kept_interior == (1,)
+    assert cmap.dropped_interior == (0,)
     assert cmap.fine_layer(0.5) == 0 and cmap.fine_layer(1.0) == 1
     same, _ = sk.coarsened(keep=[1])
     assert same == coarse

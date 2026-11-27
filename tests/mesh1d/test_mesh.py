@@ -166,8 +166,7 @@ def test_truncation_rule():
     assert m.truncation_radius(0) == pytest.approx(1e-8)
     r7 = m.truncation_radius(7)
     assert r7 == pytest.approx(1e-8 ** (1.0 / 8))
-    assert m.element_at(r7) == m.start_element(7)
-    assert m.element_at(0.3) == m.element_of(0.3)
+    assert m.element_of(r7) == m.start_element(7)
     assert m.start_element(0) == 0
     with pytest.raises(ValueError, match="non-negative"):
         m.truncation_radius(-1)
@@ -211,6 +210,23 @@ def test_edges_are_held_to_the_skeleton_to_the_tolerance():
     assert mesh.right[-1] == 1.0
     with pytest.raises(ValueError, match="within the skeleton"):
         RadialMesh(sk, edges=[0.0, 0.5, 1.01])
+
+
+def test_a_pin_within_the_tolerance_of_a_boundary_is_the_boundary():
+    sk = Skeleton([0.0, 0.5, 1.0])
+    for near in (0.5 - 4e-10, 0.5 + 4e-10):
+        mesh = RadialMesh(sk, edges=[0.0, 0.25, near, 1.0])
+        assert list(mesh.left) == [0.0, 0.25, 0.5]
+        assert list(mesh.right) == [0.25, 0.5, 1.0]
+        assert list(mesh.layer) == [0, 0, 1]
+    # the tolerance is rtol of the mesh's range
+    part = RadialMesh(sk, edges=[0.5 + 4e-10, 0.75])
+    assert part.left[0] == 0.5 + 4e-10 and list(part.layer) == [1]
+    wide = RadialMesh(sk, edges=[0.0, 0.5 + 1e-6, 1.0], rtol=1e-5)
+    assert list(wide.left) == [0.0, 0.5]
+    # a pin beyond it is kept, and an element that then crosses is refused
+    with pytest.raises(ValueError, match="straddles"):
+        RadialMesh(sk, edges=[0.0, 0.25, 0.5 + 1e-6, 1.0])
 
 
 def test_to_ppoly_keeps_complex_values():
