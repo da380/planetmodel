@@ -181,7 +181,8 @@ def test_a_scaled_harmonic_relief_is_a_harmonic_function_still():
     assert not big.coefficients.flags.writeable
     assert np.array_equal(rel.coefficients, c)                # the original is kept
     t, p = rng.uniform(0.0, np.pi, 30), rng.uniform(0, 2 * np.pi, 30)
-    assert np.allclose(big(t, p), k * rel(t, p), rtol=1e-13, atol=0)
+    want = k * rel(t, p)                  # compared on the field's scale: it has zeros
+    assert np.allclose(big(t, p), want, rtol=0, atol=1e-13 * np.abs(want).max())
     for got, want in zip(big.angular_gradient(t, p), rel.angular_gradient(t, p)):
         assert np.allclose(got, k * want, rtol=1e-12, atol=1e-12 * k * 0.01)
     assert big.mean() == pytest.approx(k * rel.mean(), rel=1e-14)

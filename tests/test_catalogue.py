@@ -610,4 +610,3 @@ def test_a_model_type_is_the_behaviours_given_over_a_leaf():
         model_type(Model, (Elastic, PREM))
     with pytest.raises(TypeError, match="expected a model type"):
         model_type(Elastic, (SelfGravitating,))
-
