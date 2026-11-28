@@ -8,13 +8,14 @@ and geometry pass their contracts.
 """
 import numpy as np
 import pytest
-from scipy.interpolate import CubicSpline, PPoly, make_interp_spline
+from scipy.interpolate import BSpline, CubicSpline, PPoly, make_interp_spline
 
 from planetmodel import (Geometry, GriddedField, HarmonicField, HarmonicFunction,
                          RadialStretch, Skeleton, gauss_legendre, layer_linear,
                          sample, synthesise)
 from planetmodel.catalogue import LayeredIsotropicElastic
 from planetmodel.character import DENSITY, VECTOR
+from planetmodel.expansions import ppoly_of
 from planetmodel.harmonics import packing
 from planetmodel.testing import (check_displacement, check_field, check_geometry,
                                  check_sample)
@@ -44,6 +45,23 @@ def test_a_b_spline_is_taken_as_its_pieces():
     f = HarmonicField(INTERVAL, spl)
     x = rng.uniform(*INTERVAL, 20)
     assert np.allclose(np.moveaxis(f.coefficients_at(x), -1, 0), spl(x), atol=1e-12)
+
+
+@pytest.mark.parametrize("degree", [0, 1, 2])
+def test_a_b_spline_of_any_degree_is_its_pieces(degree):
+    """Degree zero among them, whose knots are its breakpoints alone: the
+    pieces are the spline's, and their values the spline's own."""
+    rng = np.random.default_rng(8)
+    inside = np.array([0.6, 0.75, 0.9])
+    t = np.concatenate([[INTERVAL[0]] * (degree + 1), inside,
+                        [INTERVAL[1]] * (degree + 1)])
+    spl = BSpline(t, rng.standard_normal((t.size - degree - 1, 2)), degree)
+    pp = ppoly_of(spl)
+    assert np.array_equal(pp.x, np.concatenate([[INTERVAL[0]], inside,
+                                                [INTERVAL[1]]]))
+    assert pp.c.shape == (degree + 1, 4, 2)
+    x = rng.uniform(*INTERVAL, 40)
+    assert np.allclose(pp(x), spl(x), rtol=0, atol=1e-13)
 
 
 def test_the_field_contract():
@@ -150,6 +168,37 @@ def test_a_harmonic_function_is_a_relief_whose_geometry_holds():
     h = layer_linear(sk, [None, rel, rel])
     check_displacement(h, sk)
     check_geometry(Geometry(sk, mapping=RadialStretch(h, rmax=1.0)))
+
+
+def test_a_scaled_harmonic_relief_is_a_harmonic_function_still():
+    rng = np.random.default_rng(11)
+    c = 0.01 * random_coefficients(5, rng)
+    rel = HarmonicFunction(c)
+    k = 6.371e6
+    big = rel.scaled(k)
+    assert type(big) is HarmonicFunction and big.lmax == rel.lmax
+    assert np.array_equal(big.coefficients, k * c)
+    assert not big.coefficients.flags.writeable
+    assert np.array_equal(rel.coefficients, c)                # the original is kept
+    t, p = rng.uniform(0.0, np.pi, 30), rng.uniform(0, 2 * np.pi, 30)
+    want = k * rel(t, p)                  # compared on the field's scale: it has zeros
+    assert np.allclose(big(t, p), want, rtol=0, atol=1e-13 * np.abs(want).max())
+    for got, want in zip(big.angular_gradient(t, p), rel.angular_gradient(t, p)):
+        assert np.allclose(got, k * want, rtol=1e-12, atol=1e-12 * k * 0.01)
+    assert big.mean() == pytest.approx(k * rel.mean(), rel=1e-14)
+    assert np.allclose(big.scaled(1.0 / k).coefficients, c, rtol=1e-15, atol=0)
+    # a stack of harmonic reliefs scaled with its body holds harmonic reliefs
+    sk = Skeleton([0.0, 0.5, 1.0])
+    h = layer_linear(sk, [None, rel, rel])
+    stack = h.scaled(k)
+    assert stack.reliefs[0] is None
+    for scaled in stack.reliefs[1:]:
+        assert type(scaled) is HarmonicFunction
+        assert np.array_equal(scaled.coefficients, k * c)
+    geometry = Geometry(sk, mapping=RadialStretch(h, rmax=1.0)).scaled(k)
+    assert all(type(r) is HarmonicFunction for r in geometry.mapping.h.reliefs[1:])
+    check_displacement(stack, Skeleton(k * sk.boundaries))
+    check_geometry(geometry)
 
 
 def test_on_grid_holds_the_radius_and_takes_ducc0_on_any_grid():

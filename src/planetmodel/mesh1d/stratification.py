@@ -79,7 +79,7 @@ from ..layerfunction import (
     as_layer_function,
     polynomial_layer,
 )
-from .gravity import _within, gravity, gravity_fields
+from .gravity import gravity, gravity_fields, radii_within
 
 if TYPE_CHECKING:
     from ..model import Model
@@ -110,7 +110,7 @@ def _on_layers(model: Model, radii: ArrayLike
                ) -> tuple[np.ndarray, list[tuple[np.ndarray, int]]]:
     """The radii held to the model, flattened, and for each layer that
     holds some of them the mask of those it holds and its index."""
-    r = _within(model, np.asarray(radii, dtype=float))
+    r = radii_within(model, np.asarray(radii, dtype=float))
     flat = r.reshape(-1)
     b = model.skeleton.boundaries
     idx = np.clip(np.searchsorted(b, flat, side="right") - 1, 0, model.nlayers - 1)

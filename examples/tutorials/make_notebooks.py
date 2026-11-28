@@ -57,6 +57,7 @@ REPOSITORY = "da380/planetmodel"
 EXTRAS = {
     "04_a_mesh_for_mfem": "meshing,mfem",
     "09_fields_for_mfem": "meshing,mfem",
+    "11_models_from_decks": "netcdf,plot",
     "12_a_laterally_varying_model": "netcdf,maps",
     "13_pictures": "maps",
     "14_published_models": "netcdf,maps",
@@ -72,7 +73,7 @@ NOTES = {
 
 #: The files under `examples/data` each tutorial reads, fetched on Colab.
 DATA = {
-    "11_models_from_decks": ("prem.200", "prem.nocrust"),
+    "11_models_from_decks": ("prem.200",),
 }
 
 INSTALL = """\

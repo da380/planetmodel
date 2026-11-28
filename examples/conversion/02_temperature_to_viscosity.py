@@ -3,9 +3,9 @@
 #
 # The exponential law takes a temperature anomaly to a viscosity,
 # eta = eta_0 exp(-eps dT), as a log perturbation of the layer's own
-# radial viscosity. sl3d takes eps = 0.01 per kelvin, Milne et al. (2018)
-# 0.04; Latychev et al. (2005) also rescale each depth so that its mean
-# viscosity stays the radial one.
+# radial viscosity. The sea-level code sl3d takes eps = 0.01 per kelvin,
+# Milne et al. (2018) 0.04; Latychev et al. (2005) also rescale each
+# depth so that its mean viscosity stays the radial one.
 #
 # Needs: plot
 # Network: none

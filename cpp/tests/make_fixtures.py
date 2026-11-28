@@ -20,15 +20,28 @@ with that viscosity made a Burgers body's two Prony branches and
 power-law creep beside them (`model_prony.nc`); and PREM with its
 outer core made stable, described by its Bullen excess, zero on the
 stretches made neutral, with the density that excess derives
-(`model_stratified.nc`).  A Maxwell deck's model
-whose viscosity changes by three decades between knots, joined in its
-logarithm, one viscosity through another layer and none in the core and
-crust, every field written (`model_log.nc`, of `planetmodel.model/2`,
-the viscosity stating `log-polynomial`), its prony deck's model, a
-relaxation time so joined (`model_log_prony.nc`), and the Maxwell model
-with that viscosity perturbed in its logarithm by a gridded field and
-placed by a flattening (`model_log_lateral.nc`, the reference stating
-`log-polynomial`).
+(`model_stratified.nc`); and a two-layer model of the radius alone,
+written with no grid given, on the grid of one node, whose type has a
+behaviour of its own beside the library's (`model_radial.nc`, its
+`behaviours` attribute naming `Tidal` between them).  A Maxwell model
+built from a table whose viscosity changes by three decades between
+knots, joined in its logarithm, one viscosity through another layer and
+none in the core and crust, every field written (`model_log.nc`, of
+`planetmodel.model/2`, the viscosity stating `log-polynomial`); the
+same with each viscosity made its one Prony branch and tabulated on the
+knots, a relaxation time so joined (`model_log_prony.nc`); and the
+Maxwell model with that viscosity perturbed in its logarithm by a
+gridded field and placed by a flattening (`model_log_lateral.nc`, the
+reference stating `log-polynomial`).  The Maxwell model with its layer
+of one viscosity made a Burgers body, written with no grid, the branches
+functions of the layer's fields held as sampled beside the graded
+viscosity (`model_log_burgers.nc`); and the one whose viscosity varies
+laterally with that layer a Burgers body, each relaxation time a
+reference asked to state `log-polynomial` and a perturbation in its
+logarithm (`model_log_burgers_lateral.nc`).  PREM's file again with the
+absent values of one variable marked by a fill that is not NaN
+(`model_fill.nc`, the `qmu` of its part holding `_FillValue = -999` on
+the layers that lack it).
 
 Beside them, `model_kinds.nc` (an absolute perturbation of `rho` and a
 log one of `viscosity`), `model_tensors.nc` (a rank-2 `stress`, radial
@@ -36,9 +49,9 @@ on one layer and gridded on the other, and a rank-4 `elastic`) and
 `model_harmonic.nc` (a copy of the lateral one stating the harmonic
 rule, which the C++ refuses); and for every model file but that one
 `<model>.expect`, from the Python's own reading of the file, one fact
-per line: `scales`, `rtol`, `name`, `citation` (its works a line each)
-and the `layer_name` and `interface_name`s (UTF-8 in hexadecimal, `-`
-for none), each `constant`
+per line: `scales`, `rtol`, `name`, `citation` (its works a line each),
+`behaviours` (the names, a space between them) and the `layer_name` and
+`interface_name`s (UTF-8 in hexadecimal, `-` for none), each `constant`
 with its dimensions, `value <layer> <name> <s|c> r theta phi` and the
 stored components in the spherical or Cartesian frame, `gradient
 <layer> <name> r theta phi` and the derivatives in r, theta and phi of
@@ -49,13 +62,27 @@ interfaces `surface <interface> <name> theta phi` and its value,
 theta and phi, or `surface_absent <interface> <name>`.  **Model files to refuse**
 (`model_cases/bad_*.nc`): malformed copies, listed in `bad.txt` as the
 case, a tab, the place the fault lies, a tab, and a phrase the refusal
-says.  **GLL points** (`gll.txt`): `gll <ngll>` and the points on [-1,
-1].
+says; a structural variable holding its fill, an element given to a
+layer its bounds lie outside, a scale that is not finite, interface radii
+that are not the skeleton's, a fractional `ngll`, a `behaviours` that
+is a number or names a behaviour twice, a lateral rule the
+grid of its group cannot carry (the harmonic rule on a grid that is custom
+or states no band, and the bicubic rule on `model_cases/thin.nc`, a valid
+file on a grid of two longitudes), polar values that are absent, of the
+wrong size or over the wrong dimensions on a grid lacking a pole (of a
+variable of a part, of a displacement, of the stack and of a field on
+interfaces), a stack of one surface or of radii that do not increase,
+and layer bounds that are negative, not finite or none at all are among
+them; a copy that no edit in place makes (a variable or a dimension
+left out, a dimension made shorter) is rebuilt by `_Rebuilding`.  **GLL points**
+(`gll.txt`): `gll <ngll>` and the points on [-1, 1].
 
 **Surface files** (`surface_basic.nc`): one surface file with a field
-of every time support on a Gauss-Legendre grid, polar values on two of
-them, a NaN-marked point, geophysical scales, a radius, meta and a
-citation; beside it `surface_basic.expect`, one fact per line:
+of every time support on a Gauss-Legendre grid, polar values on three of
+them (a static field, and two node fields, one read by the bilinear rule
+and one by the bicubic), a NaN-marked point, geophysical scales, a
+radius, meta and a citation; beside it `surface_basic.expect`, one fact
+per line:
 `scales`, `radius`, `grid <kind> <lmax> <ntheta> <nphi>`,
 `time <k> <value>` and `instant <k> <value>`, per field
 `variable <name> <support> <time rule> <lateral rule> <m l t T | ->`,
@@ -64,7 +91,22 @@ the point is NaN), `poles <name> <k|-> <north> <south>`, and the
 history's reading
 `sample <name> <date|-> <refuse|hold> <i> <j> <value>`, from
 `SurfaceHistory.values` at dates between nodes, at nodes, held outside
-the span, inside and closing an interval, and at an instant.
+the span, inside and closing an interval, and at an instant, and
+`function <name> <date|-> <refuse|hold> <theta> <phi> <value> <dtheta>
+<dphi>`, from `SurfaceHistory.function`, a field at a date read by its
+lateral rule with its stored polar values, at the poles, the seam, a
+node and between nodes.  Beside it `surface_poles.nc`, a static field
+and a node field on an equiangular grid holding both poles, which carry
+no polar values, in SI and without a radius, with its expectations.
+**Surface files to refuse** (`surface_cases/bad_*.nc`): copies of the
+first with a field
+that does not run over its support's dimension and the grid's (the grid's
+two transposed, another dimension as long as `time`), polar values
+that do not run over their field's, a scale that is not finite, and a
+field stating the harmonic rule on a grid that is custom or states no
+band, and copies of the second with polar values on its grid, which holds
+both poles, and with a dimension `pole` of three, listed in `bad.txt` as
+the model cases are.
 
 **Interpolation cases** (`case_lateral_*.nc`, `case_radial_*.nc`), one
 netCDF file each: for a lateral case the grid (`colatitude`,
@@ -100,30 +142,13 @@ its path from the root as the C++ reader writes it, a tab, its type
 (`null`, `bool`, `number`, `string`, `array`, `object`), a tab, and its
 value as Python's `json` reads it (`true` or `false`; a number written
 to round-trip; a string's UTF-8 bytes in hexadecimal; the length of an
-array or an object).
-
-**Decks** (`deck_*.txt`): the two shipped mineos decks as they are
-(nine and six columns), a Maxwell deck naming its layers and
-interfaces, its viscosity varying by two orders of magnitude across a
-layer, a prony deck of three branches on the same knots (layers of
-three branches with a relaxed part, one of two without, one of one
-branch the writer completed, elastic and fluid layers), a burgers deck
-on them (Maxwell, Burgers and elastic layers), a TauP `.nd` table with
-labels and comments of the three kinds and a `.tvel` one, and a small
-custom one with layers of two, three, four and six knots; each with
-`<deck>.expect` beside it, one fact per line: `knots`, `boundaries`, a
-TauP table's `label`s (radius and label), the mineos `header` fields (a
-string in hexadecimal), the `layer_name` and `interface_name` of every
-layer and interface that `mineos_names`, `maxwell_names` or `nd_names`
-gives (`-` for none) and the count of what the first `ignored`, and for
-each kind the C++ reads (and for a Maxwell, prony or burgers deck
-`maxwell`, `prony` or `burgers`, the default kind with the format's
-kinds; and each kind after `log-` on every column positive wherever it
-is not NaN), `value <kind> <layer> <column> <r> <value> <derivative>` at
-the layer's ends and between its knots, or `absent <layer> <column>`.  The
-C++ tests write each deck back, and `tests/test_cpp_written_decks.py`
-holds what they wrote to the Python's own writing, character for
-character.
+array or an object).  **Manifests of cubed meshes**
+(`cubed_manifests/<case>/`, which need PyMFEM and no gmsh, and are left
+out with a note without it): the manifest `build_cubed_sphere` writes
+beside its mesh of hexahedra for a unit ball of three layers
+(`cubed_sphere`), and the one `build_squared_circle` writes for a hollow
+disc of two layers under a shell, at order two (`squared_circle`), each
+with its walk.
 
 **Manifests to refuse** (`manifest_cases/`): a valid manifest, the
 format page's example with a refinement and a model file, as
@@ -215,13 +240,20 @@ expectations); topography as a stack of reliefs over a box and over a
 rectangle (`stacked`, `stacked_rectangle`, the `geometry` group) and a
 vertical stretch that is no stack (`stretched`, the `displacement`
 variable); fields on interfaces (`surfaces`); a model padded below its
-base with its lowest properties held (`held`); and a viscosity read in
-its logarithm (`log`).  Their expectations have `domain <box|rectangle>
+base with its lowest properties held (`held`); a viscosity read in
+its logarithm (`log`); and fields of depth alone written with no grid
+given, on the grid of one node, the model's type having a behaviour of
+its own (`depth`).  Their expectations have `domain <box|rectangle>
 <bounds> <padding>`, a point is `depth x y`, a frame `l` (local, up x y)
 or `c` (Cartesian, z up), a `gradient` the derivatives in depth, x and y,
 `displacement x y z` the stretch's u(X), and a field on an interface is
 of `x y`.  **Flat model files to refuse** (`flat_model_cases/`), listed
-in `bad.txt` as the model cases are.  **Flat interpolation cases**
+in `bad.txt` as the model cases are, an element given to a layer its
+bounds lie outside, a stack whose first surface lies above the free
+surface, whose depths do not increase or which has one surface, interface
+depths that are not the skeleton's and the bicubic rule
+on `flat_model_cases/thin.nc`, a valid file on a grid of two nodes along
+y, among them.  **Flat interpolation cases**
 (`flat_case_lateral_<grid>_<rule>.nc`): the domain's `bounds` and
 `padding`, the grid's `x` (and `y`), the `values`, the query points
 `query_x` and `query_y` over several periods and at the seam, and the
@@ -231,10 +263,7 @@ on it, schema `planetmodel.surface/2`), their expectations those of the
 surface file with `depth`, `domain`, `grid <shape>`, an index `i j` into
 (nx, ny) (`j` 0 over a rectangle), and `function <name> <date|-> x y value
 dx dy`, a field at a date read by its lateral rule; and the malformed
-copies (`flat_surface_cases/`).  **Decks of depths**
-(`flat_deck_<case>.txt`): an elastic deck of each set of columns, a
-Maxwell, a prony and a burgers deck, each with its expectations, the
-layers and interfaces named from the surface down.  **Flat manifests**
+copies (`flat_surface_cases/`).  **Flat manifests**
 (schema 7): `flat_manifest_cases/`, a base (a box exported with a model),
 accepted variants (a rectangle, a top below the surface, faults with a
 face edge) and malformed copies listed in `bad.txt`, none needing gmsh;
@@ -268,6 +297,8 @@ from scipy.interpolate import PPoly
 
 import planetmodel as pm
 from planetmodel import units
+from planetmodel.behaviours import model_type
+from planetmodel.deck import deck_knots
 from planetmodel.lateral import LateralInterpolant
 from planetmodel.layerfunction import ExponentialLayer
 from planetmodel.mesh1d import Mesh1D
@@ -369,6 +400,11 @@ def radial_cases(directory: Path) -> list[Path]:
     return out
 
 
+class Tidal:
+    """A behaviour of a program's own: a model file names it, and a reader
+    that lacks it carries the name."""
+
+
 def model_files(directory: Path) -> list[Path]:
     """The model files of the module docstring."""
     prem = pm.PREM()
@@ -443,7 +479,10 @@ def model_files(directory: Path) -> list[Path]:
         pm.SCALAR, pm.Dimensions(length=-2), meaning="a shape kernel")})
     on_faces = {"K_shape": {0: lambda t, p: smooth(t, p) - 0.4 * np.cos(t), 1: smooth},
                 "shift": {1: pm.GriddedFunction.sampled(bump, pm.gauss_legendre(8))}}
+    radial = model_type(pm.Model, (pm.Elastic, Tidal, pm.SelfGravitating))(
+        two.geometry, [layer.fields for layer in two.layers], name="radial")
     return [
+        write_model(directory / "model_radial.nc", radial.with_gravity()),
         write_model(directory / "model_prem.nc", prem.with_pressure(),
                     grid=pm.gauss_legendre(2)),
         write_model(directory / "model_kinds.nc", kinds, grid=pm.gauss_legendre(6)),
@@ -470,13 +509,66 @@ def model_files(directory: Path) -> list[Path]:
                     prem.stabilised(layers=["outer_core"])[0],
                     grid=pm.gauss_legendre(2),
                     fields=["rho", "vpv", "vsv", "bullen_excess"]),
-    ] + log_model_files(directory)
+    ] + log_model_files(directory) + [
+        _refilled(directory / "model_prem.nc", directory / "model_fill.nc",
+                  group="part_0", variable="qmu", fill=-999.0)]
 
 
-def graded_maxwell() -> pm.MaxwellDeckModel:
-    """A Maxwell deck's model: a fluid core, a mantle whose viscosity
-    changes by three decades between knots, up and down, joined in its
-    logarithm, a mantle of one viscosity and an elastic crust."""
+def _refilled(source: Path, target: Path, *, group: str, variable: str,
+              fill: float) -> Path:
+    """A copy of a netCDF file in which one variable of a group marks its
+    absent values by `fill` and not by NaN: `fill` is its `_FillValue`, and
+    the value stored wherever the source holds NaN."""
+    import netCDF4
+
+    def copy(old: Any, new: Any, marked: bool) -> None:
+        new.setncatts({key: old.getncattr(key) for key in old.ncattrs()})
+        for name, dim in old.dimensions.items():
+            new.createDimension(name, len(dim))
+        for name, var in old.variables.items():
+            var.set_auto_mask(False)
+            values = var[...]
+            attrs = {key: var.getncattr(key) for key in var.ncattrs()}
+            kept = attrs.pop("_FillValue", None)
+            if marked and name == variable:
+                absent = np.isnan(values)
+                if not absent.any() or absent.all():
+                    raise AssertionError(f"{variable} is absent from no layer, or all")
+                values, kept = np.where(absent, fill, values), fill
+            out = new.createVariable(name, var.dtype, var.dimensions, fill_value=kept)
+            out.set_auto_mask(False)
+            out[...] = values
+            out.setncatts(attrs)
+        for name, sub in old.groups.items():
+            copy(sub, new.createGroup(name), name == group)
+
+    with netCDF4.Dataset(source) as old, netCDF4.Dataset(target, "w") as new:
+        copy(old, new, False)
+    return target
+
+
+#: The behaviours of the models built from tables of the graded viscosity.
+_VISCOELASTIC = (pm.Elastic, pm.SelfGravitating, pm.Viscoelastic)
+
+#: The interface names of those models: the outermost alone is named.
+_GRADED_FACES = (None, None, None, "surface")
+
+#: The elastic columns of those tables.
+_ELASTIC_COLUMNS = ("rho", "vpv", "vsv", "vph", "vsh", "eta")
+
+#: The Kelvin element of the layers of those models made Burgers bodies.
+_KELVIN = {"kelvin_viscosity": 1e20, "kelvin_modulus_fraction": 0.5}
+
+#: The two Prony branches of a Burgers body, as a model holds them.
+_BRANCHES = ("relaxation_strength_1", "relaxation_time_1",
+             "relaxation_strength_2", "relaxation_time_2")
+
+
+def graded_maxwell() -> tuple[pm.Model, tuple[np.ndarray, ...]]:
+    """A Maxwell model built from a table, and the table's knots by layer:
+    a fluid core, a mantle whose viscosity changes by three decades
+    between knots, up and down, joined in its logarithm, a mantle of one
+    viscosity and an elastic crust."""
     knots = [np.linspace(0.0, 1.2e6, 3), np.linspace(1.2e6, 5.0e6, 6),
              np.linspace(5.0e6, 6.2e6, 4), np.linspace(6.2e6, 6.371e6, 2)]
     ends = {"rho": [(11000, 10000), (5500, 4500), (4000, 3500), (2900, 2700)],
@@ -491,13 +583,32 @@ def graded_maxwell() -> pm.MaxwellDeckModel:
     columns["viscosity"] = np.concatenate([
         np.full(3, np.nan), 10.0 ** (20.0 + 3.0 * np.array([0, 1, 0, 1, 0, 1])),
         np.full(4, 1e21), np.full(2, np.nan)])
-    return pm.MaxwellDeckModel(pm.Deck(np.concatenate(knots), columns))
+    deck = pm.Deck(np.concatenate(knots), columns)
+    model = pm.model_from_deck(deck, behaviours=_VISCOELASTIC,
+                               kinds={"viscosity": "log-linear"},
+                               interface_names=_GRADED_FACES)
+    return model, deck_knots(deck)
+
+
+def graded_prony(maxwell: pm.Model, knots: tuple[np.ndarray, ...]) -> pm.Model:
+    """`maxwell` with each viscosity made the one Prony branch it is,
+    tabulated on `knots` and brought in again as a table: the strength
+    joined by straight lines and the relaxation time, eta / mu at the
+    knots, in its logarithm."""
+    from planetmodel.conversion import prony
+    branched = prony.with_branches(maxwell, prony.maxwell_series())
+    branch = ("relaxation_strength_1", "relaxation_time_1")
+    deck = pm.sample_deck(branched, _ELASTIC_COLUMNS + branch, knots=knots)
+    return pm.model_from_deck(deck, behaviours=_VISCOELASTIC,
+                              kinds={"relaxation_strength": "linear",
+                                     "relaxation_time": "log-linear"},
+                              interface_names=_GRADED_FACES)
 
 
 def log_model_files(directory: Path) -> list[Path]:
     """The model files stating a rule in the logarithm."""
     from planetmodel.conversion import prony
-    maxwell = graded_maxwell()
+    maxwell, knots = graded_maxwell()
     lo, hi = maxwell.layer(1).interval
 
     def dlneta(r: np.ndarray, t: np.ndarray, p: np.ndarray) -> np.ndarray:
@@ -512,19 +623,25 @@ def log_model_files(directory: Path) -> list[Path]:
         lateral.skeleton, [None, relief, None, None, relief]))
     return [
         write_model(directory / "model_log.nc", maxwell, grid=pm.gauss_legendre(2)),
-        write_model(directory / "model_log_prony.nc",
-                    pm.PronyDeckModel(prony.prony_deck(maxwell)),
+        write_model(directory / "model_log_prony.nc", graded_prony(maxwell, knots),
                     grid=pm.gauss_legendre(2)),
         write_model(directory / "model_log_lateral.nc", lateral, grid=grid,
                     fields=["rho", "vsv", "viscosity"]),
+        write_model(directory / "model_log_burgers.nc",
+                    prony.with_burgers(maxwell, [2], **_KELVIN)),
+        write_model(directory / "model_log_burgers_lateral.nc",
+                    prony.with_burgers(lateral, [1], **_KELVIN), grid=grid,
+                    fields=["rho", "vsv", "viscosity", *_BRANCHES],
+                    interpolation={name: ("log-polynomial", "cubic")
+                                   for name in _BRANCHES if "time" in name}),
     ]
 
 
 def with_burgers(model: pm.Model) -> pm.Model:
     """The model with its viscosity made a Burgers body's two branches."""
     from planetmodel.conversion import building, prony
-    burgers = prony.with_branches(model, prony.burgers_series(strength=5.0,
-                                                              viscosity_ratio=5.0))
+    burgers = prony.with_branches(model, prony.burgers_series(
+        kelvin_modulus_fraction=0.2, viscosity_ratio=5.0))
     return building.with_power_law(burgers, exponent=3.5, transition_stress=1e6)
 
 
@@ -681,6 +798,40 @@ def manifests(directory: Path) -> list[Path]:
     return written
 
 
+def cubed_manifests(directory: Path) -> list[Path]:
+    """The manifests the builders of cubed meshes write, each with its mesh
+    and its walk: a cubed sphere's, of a unit ball of three layers, and a
+    squared circle's, of a hollow disc of two layers under a shell at order
+    two.  None without PyMFEM; gmsh is not needed."""
+    try:
+        import mfem.ser  # noqa: F401
+
+        from planetmodel.mesh3d import (CubedSphereSpec, Shell, SquaredCircleSpec,
+                                        UniformInterfaces, build_cubed_sphere,
+                                        build_squared_circle)
+    except ImportError as error:
+        print(f"no manifests of cubed meshes without PyMFEM: {error}", file=sys.stderr)
+        return []
+    root = directory / "cubed_manifests"
+    shutil.rmtree(root, ignore_errors=True)
+    ball = pm.Geometry(pm.Skeleton([0.0, 0.4, 0.8, 1.0]),
+                       layer_names=["core", "mantle", "crust"],
+                       interface_names=["cmb", "moho", "surface"])
+    hollow = pm.Geometry(pm.Skeleton([0.5, 0.8, 1.0]), layer_names=["lower", "upper"],
+                         interface_names=["inner", "mid", "outer"])
+    coarse = UniformInterfaces(0.5, 0.5, 0.5)
+    written = []
+    for label, build, spec in (
+            ("cubed_sphere", build_cubed_sphere,
+             CubedSphereSpec(ball, 2, sizing=coarse)),
+            ("squared_circle", build_squared_circle,
+             SquaredCircleSpec(hollow, 2, sizing=coarse, order=2,
+                               shells=(Shell(ratio=0.3),)))):
+        path = build(spec, root / label / label).manifest_path
+        written += [path, _write_walk(path)]
+    return written
+
+
 def _fault_cases() -> dict[str, dict[str, Any]]:
     """The faults of the meshes with faults, by case and name: planes and
     a bilinear patch on a unit sphere, with no slip."""
@@ -747,10 +898,10 @@ def fault_meshes(directory: Path) -> list[Path]:
                                     for n, f in faults.items()])
             res = build_layered_mesh(spec, Path(scratch) / label / label)
             offset = max(p.offset for v in res.preimages.values() for p in v)
-            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+            testing.check_fault_mesh(res.mesh_path, faults, mapping=res.mapping,
                                      distance=2.0 * offset + 1e-12)
             card = mf.read(res.manifest_path)
-            mesh = read_mesh(res.msh_path)
+            mesh = read_mesh(res.mesh_path)
             cells, layers = mesh.cells, mesh.cell_attributes
             boundary, attributes = mesh.faces, mesh.face_attributes
             x = np.asarray(res.mapping(mesh.points), dtype=float)
@@ -790,213 +941,6 @@ def fault_meshes(directory: Path) -> list[Path]:
             expect_path.write_text("\n".join(expect) + "\n")
             written += [manifest_path, mesh_path, expect_path]
     return written
-
-
-#: The kinds of deck interpolant the C++ reads, of `deck.KINDS`.
-_CPP_KINDS = ("cubic", "natural", "linear")
-
-#: The same through the logarithms, of `deck.LOG_KINDS`.
-_CPP_LOG_KINDS = tuple(f"log-{kind}" for kind in _CPP_KINDS)
-
-
-def _positive_columns(deck: Any) -> list[str]:
-    """The columns of a deck positive and finite wherever they are not
-    NaN, and not NaN throughout: those a kind of `_CPP_LOG_KINDS` joins
-    in the expectations (the C++ test finds the same)."""
-    out = []
-    for name in deck.names:
-        v = deck[name]
-        if (not np.isnan(v).all()
-                and np.all(np.isnan(v) | (np.isfinite(v) & (v > 0.0)))):
-            out.append(name)
-    return out
-
-
-def _expect_deck(path: Path, deck: Any, *, names: str | None,
-                 depth: bool = False) -> Path:
-    """The expectation file of a deck, by the module docstring; `names` is
-    the format whose header or labels name its layers, `mineos`, `maxwell`,
-    `prony`, `burgers` or `nd`, and `depth` says the knots are depths, a
-    flat model's deck, named from the surface down."""
-    import warnings
-
-    from planetmodel.deck import (BURGERS_KINDS, MAXWELL_KINDS, PRONY_KINDS,
-                                  deck_layers, maxwell_names, mineos_names, nd_names)
-    of = {}
-    if depth:
-        from planetmodel.cartesian import DEPTH, depth_names
-        of = {"coordinate": DEPTH}
-    own_kinds = {"maxwell": MAXWELL_KINDS, "prony": PRONY_KINDS,
-                 "burgers": BURGERS_KINDS}
-    lines = [f"knots {deck.nknots}",
-             "boundaries " + " ".join(repr(float(b)) for b in deck.boundaries)]
-    if names == "nd":
-        lines += [f"label {float(r)!r} {label}" for r, label in deck.header["labels"]]
-    if depth:
-        layers, faces = depth_names(deck)
-        lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
-        lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
-    elif names in ("nd", *own_kinds):
-        layers, faces = (nd_names if names == "nd" else maxwell_names)(deck)
-        lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
-        lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
-    if names == "mineos":
-        h = deck.header
-        lines.append(f"header name {h['name'].encode('utf-8').hex()}")
-        lines += [f"header {k} {h[k]!r}" for k in
-                  ("ifanis", "tref", "ifdeck", "nknot", "nic", "noc")]
-        lines.append("extras2 " + " ".join(h["extras"][0]))
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            layers, faces = mineos_names(deck)
-        lines += [f"layer_name {i} {n or '-'}" for i, n in enumerate(layers)]
-        lines += [f"interface_name {i} {n or '-'}" for i, n in enumerate(faces)]
-        lines.append(f"ignored {len(caught)}")
-    rng = np.random.default_rng(len(deck.radius))
-    joined = [(kind, kind, {}, deck.names) for kind in _CPP_KINDS]
-    if names in own_kinds:
-        joined.append((names, "cubic", dict(own_kinds[names]), deck.names))
-    positive = _positive_columns(deck)
-    joined += [(kind, "cubic", {n: kind for n in positive}, positive)
-               for kind in _CPP_LOG_KINDS]
-    for label, kind, kinds, columns in joined:
-        _, fields = deck_layers(deck, kind=kind, kinds=kinds, **of)
-        for i, s in enumerate(deck.layers()):
-            r = deck.radius[s]
-            between = np.sort(rng.uniform(r[0], r[-1], 3))
-            radii = np.concatenate(([r[0]], between, [r[-1]]))
-            for name in columns:
-                if name not in fields[i]:
-                    lines.append(f"absent {i} {name}")
-                    continue
-                f, df = fields[i][name], fields[i][name].derivative()
-                for x in radii:
-                    lines.append(f"value {label} {i} {name} {float(x)!r} "
-                                 f"{float(f(x))!r} {float(df(x))!r}")
-    out = path.with_name(path.name.removesuffix(".txt") + ".expect")
-    out.write_text("\n".join(lines) + "\n")
-    return out
-
-
-#: A small body in TauP's form: a label before the first row, labels
-#: between repeated depths (TauP's own and one of words), an unlabelled
-#: repeat, comments of the three kinds, six numbers a row.
-_ND_LINES = (
-    "# a test body, 100 km in radius", "/* a block", "   comment */", "crust",
-    "0 5.8 3.4 2.7 1400 600   // a row", "10 5.8 3.4 2.7 1400 600", "mantle",
-    "10 7.8 4.4 3.3 1000 400", "40 7.9 4.5 3.4 1000 400", "40 8 4.6 3.45 900 350",
-    "60 8.1 4.7 3.5 900 350", "Lower Mantle", "60 8.2 4.8 3.6 800 300",
-    "80 8.3 4.9 3.7 800 300", "outer-core", "80 6 0 9 50000 0",
-    "95 6.5 0 9.5 50000 0", "inner-core", "95 7 3 11 500 100",
-    "100 7.1 3.1 11.1 500 100")
-
-#: The same body's tabled velocities: two header lines, four numbers a
-#: row, the cores labelled.
-_TVEL_LINES = (
-    "a P model", "an S model", "0 5.8 3.4 2.7", "10 5.8 3.4 2.7", "10 7.8 4.4 3.3",
-    "80 8.3 4.9 3.7", "outer-core", "80 6 0 9", "95 6.5 0 9.5", "inner-core",
-    "95 7 3 11", "100 7.1 3.1 11.1")
-
-
-def _prony_branches(prem: Any) -> dict[str, np.ndarray]:
-    """Three Prony branches on the knots of PREM's deck: the three layers
-    above the core-mantle boundary with a relaxed part, strengths and times
-    varying across each (the times by orders of magnitude); the next of one
-    branch, NaN in the other two for the writer to complete; the three
-    above it of two branches without a relaxed part; the rest NaN."""
-    out = {f"{stem}_{k}": np.full(prem.nknots, np.nan)
-           for k in (1, 2, 3) for stem in ("relaxation_strength", "relaxation_time")}
-    for i, s in enumerate(prem.layers()):
-        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
-        if 2 <= i <= 4:
-            branches = ((0.3 + 0.1 * x, 10.0 ** (8.0 + x)), (0.2 + 0.0 * x,
-                        10.0 ** (10.0 + 2.0 * x)), (0.1 * x * x, 10.0 ** (12.0 - x)))
-        elif i == 5:
-            branches = ((1.0 + 0.0 * x, 10.0 ** (11.0 + 2.0 * x * x)),)
-        elif 6 <= i <= 8:
-            w = 0.4 + 0.2 * x
-            branches = ((w, 1e8 * 10.0 ** x), (1.0 - w, 1e11 * 10.0 ** (2.0 * x)))
-        else:
-            continue
-        for k, (w, t) in enumerate(branches, start=1):
-            out[f"relaxation_strength_{k}"][s] = w
-            out[f"relaxation_time_{k}"][s] = t
-    return out
-
-
-def _burgers_columns(prem: Any) -> dict[str, np.ndarray]:
-    """A burgers deck's three columns on the knots of PREM's deck: the
-    three layers above the core-mantle boundary Maxwell bodies, the four
-    above them Burgers bodies, every value varying across a layer, the
-    rest NaN."""
-    out = {n: np.full(prem.nknots, np.nan)
-           for n in ("viscosity", "kelvin_viscosity", "kelvin_modulus_fraction")}
-    for i, s in enumerate(prem.layers()):
-        x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
-        if 2 <= i <= 4:
-            out["viscosity"][s] = 10.0 ** (21.0 + 2.0 * x ** 2)
-        elif 5 <= i <= 8:
-            out["viscosity"][s] = 10.0 ** (20.0 + x)
-            out["kelvin_viscosity"][s] = 10.0 ** (19.0 + x)
-            out["kelvin_modulus_fraction"][s] = 0.5 + 0.5 * x
-    return out
-
-
-def decks(directory: Path) -> list[Path]:
-    """The decks of the module docstring, each with its expectations."""
-    from planetmodel.deck import (BURGERS, MAXWELL, MINEOS, ND, PRONY, TVEL, Deck,
-                                  DeckFormat, read_deck, write_deck)
-    data = Path(__file__).resolve().parents[2] / "examples" / "data"
-    out = []
-    for label, source in (("prem200", "prem.200"), ("nocrust", "prem.nocrust")):
-        path = directory / f"deck_{label}.txt"
-        shutil.copyfile(data / source, path)
-        out += [path, _expect_deck(path, read_deck(path, MINEOS), names="mineos")]
-    prem = read_deck(data / "prem.200", MINEOS)
-    viscosity = np.full(prem.nknots, np.nan)
-    for i, s in enumerate(prem.layers()):
-        if i >= 2:          # 1e21 to 1e23 Pa s across each solid layer
-            x = (prem.radius[s] - prem.radius[s][0]) / np.ptp(prem.radius[s])
-            viscosity[s] = 10.0 ** (21.0 + 2.0 * x ** 2)
-    layer_names = [None] * prem.nlayers
-    layer_names[:4] = ["inner_core", "outer_core", "lowermost_mantle", None]
-    faces = [None] * prem.nlayers
-    faces[:2], faces[-1] = ["icb", "cmb"], "surface"
-    maxwell = Deck(prem.radius,
-                   {**{n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta")},
-                    "viscosity": viscosity},
-                   header={"name": "a Maxwell deck", "layers": tuple(layer_names),
-                           "interfaces": tuple(faces)})
-    path = write_deck(directory / "deck_maxwell.txt", maxwell, MAXWELL)
-    out += [path, _expect_deck(path, read_deck(path, MAXWELL), names="maxwell")]
-    elastic = {n: prem[n] for n in ("rho", "vpv", "vsv", "vph", "vsh", "eta")}
-    named = {"layers": tuple(layer_names), "interfaces": tuple(faces)}
-    prony = Deck(prem.radius, {**elastic, **_prony_branches(prem)},
-                 header={"name": "a prony deck", **named})
-    path = write_deck(directory / "deck_prony.txt", prony, PRONY)
-    out += [path, _expect_deck(path, read_deck(path, PRONY), names="prony")]
-    burgers = Deck(prem.radius, {**elastic, **_burgers_columns(prem)},
-                   header={"name": "a burgers deck", **named})
-    path = write_deck(directory / "deck_burgers.txt", burgers, BURGERS)
-    out += [path, _expect_deck(path, read_deck(path, BURGERS), names="burgers")]
-    knots = Deck([0.0, 0.4, 0.4, 0.5, 0.7, 0.7, 0.75, 0.8, 0.9, 0.9, 0.92, 0.94, 0.95,
-                  0.97, 0.98, 1.0],
-                 {"rho": [9.0, 8.5, 6.0, 5.8, 5.5, 4.0, 3.9, 3.8, 3.6, 3.0, 2.95, 2.9,
-                          2.85, 2.8, 2.7, 2.6],
-                  "vp": [10.0, 9.9, 8.0, 8.1, 7.9, 7.0, 7.05, 6.9, 6.8, 6.0, 6.01, 5.99,
-                         5.97, 5.9, 5.8, 5.7]},
-                 header={"lines": ("layers of two, three, four and six knots",)})
-    path = directory / "deck_nd.txt"
-    path.write_text("\n".join(_ND_LINES) + "\n")
-    out += [path, _expect_deck(path, read_deck(path, ND), names="nd")]
-    path = directory / "deck_tvel.txt"
-    path.write_text("\n".join(_TVEL_LINES) + "\n")
-    out += [path, _expect_deck(path, read_deck(path, TVEL), names="nd")]
-    custom = DeckFormat(("rho", "vp"), header_lines=1)
-    path = write_deck(directory / "deck_knots.txt", knots, custom)
-    out += [path, _expect_deck(path, read_deck(path, ("rho", "vp"), header_lines=1),
-                               names=None)]
-    return out
 
 
 #: The valid manifest the refusal cases are made from.
@@ -1398,12 +1342,13 @@ def _scalar_gradient(f: Any, r: float, t: float, p: float) -> np.ndarray:
 def _expect_model(path: Path) -> Path:
     """The expectations of a model file, by the module docstring."""
     from planetmodel.modelfile import read_model, read_model_file, read_surfaces
-    data, model = read_model_file(path), read_model(path)
+    data, model = read_model_file(path), read_model(path, model_type=())
     hexed = (lambda x: "-" if not x else x.encode("utf-8").hex())
     s = data.scales
     lines = [f"scales {s.length!r} {s.mass!r} {s.time!r} {s.temperature!r}",
              f"rtol {data.rtol!r}", f"name {hexed(data.name)}",
-             f"citation {hexed(chr(10).join(data.citation))}"]
+             f"citation {hexed(chr(10).join(data.citation))}",
+             f"behaviours {hexed(' '.join(data.behaviours))}"]
     lines += [f"layer_name {i} {hexed(n)}" for i, n in enumerate(data.layer_names)]
     lines += [f"interface_name {i} {hexed(n)}"
               for i, n in enumerate(data.interface_names)]
@@ -1493,6 +1438,14 @@ def _storing(index: tuple[int, ...], value: float, *, variable: str,
     return edit
 
 
+def _adding_half(key: str, *, group: str) -> Any:
+    """An edit adding a half to a whole number a group states."""
+    def edit(ds: Any) -> None:
+        g = ds.groups[group]
+        g.setncattr(key, float(g.getncattr(key)) + 0.5)
+    return edit
+
+
 def _renaming(old: str, new: str, *, group: str) -> Any:
     """An edit renaming a variable of a group."""
     return lambda ds: ds.groups[group].renameVariable(old, new)
@@ -1507,10 +1460,108 @@ def _negating(*, variable: str, group: str) -> Any:
     return edit
 
 
+def _relabelling(*, group: str) -> Any:
+    """An edit giving the first element of a part's second layer to its
+    first: `element_layer` stays sorted and holds the part's layers, and
+    gives that element a layer its bounds lie outside."""
+    def edit(ds: Any) -> None:
+        var = ds.groups[group].variables["element_layer"]
+        layers = np.asarray(var[:], dtype=int)
+        second = np.flatnonzero(layers == np.unique(layers)[1])
+        if second.size < 2:
+            raise AssertionError(f"the second layer of {group} has one element")
+        var[int(second[0])] = layers[0]
+    return edit
+
+
+def _unwriting(index: tuple[int, ...], *, variable: str, group: str | None = None
+               ) -> Any:
+    """An edit storing a variable's fill at one place, as if no value had
+    been written there."""
+    def edit(ds: Any) -> None:
+        import netCDF4
+        var = (ds if group is None else ds.groups[group]).variables[variable]
+        var.set_auto_mask(False)
+        var[index] = (var.getncattr("_FillValue") if "_FillValue" in var.ncattrs()
+                      else netCDF4.default_fillvals[var.dtype.str[1:]])
+    return edit
+
+
+def _creating(name: str, dims: tuple[str, ...], *, group: str | None = None,
+              attributes: dict[str, Any] | None = None,
+              sizes: dict[str, int] | None = None) -> Any:
+    """An edit creating a real variable of zeros over dimensions of the
+    root or a group, those of `sizes` created first."""
+    def edit(ds: Any) -> None:
+        g = ds if group is None else ds.groups[group]
+        for dim, n in (sizes or {}).items():
+            g.createDimension(dim, n)
+        var = g.createVariable(name, "f8", dims)
+        var[...] = 0.0
+        for key, value in (attributes or {}).items():
+            var.setncattr(key, value)
+    return edit
+
+
+def _adding_dimension(name: str, *, group: str | None = None, size: int = 2) -> Any:
+    """An edit adding a dimension of `size` to the root or a group."""
+    return lambda ds: (ds if group is None else ds.groups[group]).createDimension(
+        name, size)
+
+
+class _Rebuilding:
+    """A malformed copy that no edit in place makes, netCDF holding on to
+    what a file has: the file copied by netCDF4 without the variables and
+    dimensions `without` names (`<group>/<name>`, or `<name>` at the
+    root), each dimension of `sizes` (named the same way) made that long
+    and the variables over it cut to fit, and `then`, an edit, applied to
+    the copy.  A length of zero makes the dimension unlimited and empty."""
+
+    def __init__(self, *without: str, sizes: dict[str, int] | None = None,
+                 then: Any = None) -> None:
+        self.without, self.sizes, self.then = set(without), dict(sizes or {}), then
+
+    def __call__(self, source: Path, target: Path) -> None:
+        import netCDF4
+
+        def copy(old: Any, new: Any, prefix: str) -> None:
+            new.setncatts({key: old.getncattr(key) for key in old.ncattrs()})
+            for name, dim in old.dimensions.items():
+                if prefix + name not in self.without:
+                    new.createDimension(name, self.sizes.get(prefix + name, len(dim)))
+            for name, var in old.variables.items():
+                if prefix + name in self.without:
+                    continue
+                var.set_auto_mask(False)
+                attrs = {key: var.getncattr(key) for key in var.ncattrs()}
+                out = new.createVariable(name, var.dtype, var.dimensions,
+                                         fill_value=attrs.pop("_FillValue", None))
+                out.set_auto_mask(False)
+                kept = tuple(slice(0, self.sizes.get(prefix + d, len(old.dimensions[d]))
+                                   if d in old.dimensions else None)
+                             for d in var.dimensions)
+                out[...] = var[...][kept]
+                out.setncatts(attrs)
+            for name, sub in old.groups.items():
+                copy(sub, new.createGroup(name), f"{prefix}{name}/")
+
+        with netCDF4.Dataset(source) as old, netCDF4.Dataset(target, "w") as new:
+            copy(old, new, "")
+            if self.then is not None:
+                self.then(new)
+
+
 _P = {"group": "part_0"}
 _RHO = {"group": "part_0", "variable": "rho"}
 _BETWEEN = {"group": "geometry", "variable": "boundary_displacement"}
 _S = {"group": "surfaces"}
+
+#: What the refusal of a grid with a latitude beyond a pole says.
+_LATITUDES = "the grid is malformed: latitudes must lie in [-90, 90]"
+
+#: What the refusal of a field's `dimensions` that are not four whole
+#: numbers says.
+_EXPONENTS = "declares dimensions that are not four exponents"
 
 #: The malformed model files: (the file copied, an edit by netCDF4, where
 #: the fault lies, what the refusal says).
@@ -1523,6 +1574,11 @@ _BAD_MODELS: dict[str, tuple[str, Any, str, str]] = {
                       "not a tolerance"),
     "rtol_text": ("model_lateral.nc", _setting("rtol", "loose"), "rtol",
                   "not a tolerance"),
+    "behaviours_number": ("model_lateral.nc", _setting("behaviours", np.int32(4)),
+                          "behaviours", "not the names of the model's behaviours"),
+    "behaviours_twice": ("model_lateral.nc",
+                         _setting("behaviours", "Elastic Tidal Elastic"),
+                         "behaviours", "each once"),
     "no_scale_mass": ("model_lateral.nc", _deleting("scale_mass"), "scale_mass",
                       "missing or not positive"),
     "layer_bounds": ("model_lateral.nc",
@@ -1609,12 +1665,166 @@ _BAD_MODELS: dict[str, tuple[str, Any, str, str]] = {
                          "part_0/rho", "rank 0 of the radius alone"),
     "log_rule_value": ("model_log.nc", _negating(variable="viscosity", group="part_0"),
                        "part_0/viscosity", "not positive"),
+    "layer_part_fill": ("model_prem.nc", _unwriting((0,), variable="layer_part"),
+                        "layer_part", "which the file lacks"),
+    "element_layer_fill": ("model_prem.nc",
+                           _unwriting((0,), variable="element_layer", **_P),
+                           "part_0", "do not lie in its layers"),
+    "element_layer": ("model_prem.nc", _relabelling(**_P), "part_0/element_layer",
+                      "which its bounds do not lie in"),
+    "scale_infinite": ("model_lateral.nc", _setting("scale_length", np.inf),
+                       "scale_length", "not positive and finite"),
+    "interface_radius": ("model_lateral.nc",
+                         _storing((0,), 0.25, variable="interface_radius"),
+                         "interface_radius", "interfaces of the skeleton"),
+    "ngll_fraction": ("model_lateral.nc", _adding_half("ngll", **_P), "part_0.ngll",
+                      "whole number"),
+    "harmonic_custom": ("model_lateral.nc",
+                        _both(_setting("lateral_interpolation", "harmonic", **_RHO),
+                              _setting("grid_kind", "custom", **_P)),
+                        "part_0/rho", "states the lateral rule harmonic"),
+    "harmonic_band": ("model_lateral.nc",
+                      _both(_setting("lateral_interpolation", "harmonic", **_RHO),
+                            _deleting("grid_lmax", **_P)),
+                      "part_0/rho", "states no grid_lmax"),
+    "stack_harmonic": ("model_stacked.nc",
+                       _both(_setting("lateral_interpolation", "harmonic", **_BETWEEN),
+                             _setting("grid_kind", "custom", group="geometry")),
+                       "geometry/boundary_displacement",
+                       "states the lateral rule harmonic"),
+    "surface_harmonic": ("model_surfaces.nc",
+                         _both(_setting("lateral_interpolation", "harmonic", **_S,
+                                        variable="K_shape"),
+                               _setting("grid_kind", "custom", **_S)),
+                         "surfaces/K_shape", "states the lateral rule harmonic"),
+    "cubic_thin": ("model_cases/thin.nc",
+                   _setting("lateral_interpolation", "cubic", **_RHO),
+                   "part_0/rho", "states the lateral rule cubic"),
+    "poles_absent": ("model_cases/thin.nc",
+                     _Rebuilding("part_0/rho_poles", "part_0/pole"),
+                     "part_0/rho", "rho_poles is missing"),
+    "poles_size": ("model_cases/thin.nc",
+                   _Rebuilding("part_0/rho_poles", "part_0/pole",
+                               then=_creating("rho_poles", ("node", "pole"),
+                                              sizes={"pole": 3}, **_P)),
+                   "part_0/rho_poles", "does not hold both poles at every node"),
+    "poles_dimensions": ("model_cases/thin.nc",
+                         _Rebuilding("part_0/rho_poles",
+                                     then=_creating("rho_poles", ("pole", "node"),
+                                                    **_P)),
+                         "part_0/rho_poles", "does not hold both poles at every node"),
+    "displacement_poles_absent": ("model_flattened.nc",
+                                  _Rebuilding("part_0/displacement_poles",
+                                              "part_0/pole"),
+                                  "part_0/displacement",
+                                  "displacement_poles is missing"),
+    "stack_poles_absent": ("model_stacked.nc",
+                           _Rebuilding("geometry/boundary_displacement_poles",
+                                       "geometry/pole"),
+                           "geometry/boundary_displacement",
+                           "boundary_displacement_poles is missing"),
+    "stack_poles_size": ("model_stacked.nc",
+                         _Rebuilding("geometry/boundary_displacement_poles",
+                                     "geometry/pole",
+                                     then=_creating("boundary_displacement_poles",
+                                                    ("boundary", "pole"),
+                                                    sizes={"pole": 1},
+                                                    group="geometry")),
+                         "geometry/boundary_displacement",
+                         "boundary_displacement_poles is missing"),
+    "stack_poles_dimensions": ("model_stacked.nc",
+                               _Rebuilding("geometry/boundary_displacement_poles",
+                                           then=_creating(
+                                               "boundary_displacement_poles",
+                                               ("pole", "boundary"),
+                                               group="geometry")),
+                               "geometry/boundary_displacement_poles",
+                               "has the wrong dimensions"),
+    "surface_poles_absent": ("model_surfaces.nc",
+                             _Rebuilding("surfaces/K_shape_poles",
+                                         "surfaces/shift_poles", "surfaces/pole"),
+                             "surfaces/K_shape", "K_shape_poles is missing"),
+    "surface_poles_size": ("model_surfaces.nc",
+                           _Rebuilding("surfaces/K_shape_poles",
+                                       "surfaces/shift_poles", "surfaces/pole",
+                                       then=_both(
+                                           _creating("K_shape_poles",
+                                                     ("surface", "pole"),
+                                                     sizes={"pole": 3}, **_S),
+                                           _creating("shift_poles",
+                                                     ("surface", "pole"), **_S))),
+                           "surfaces/K_shape", "K_shape_poles is missing"),
+    "stack_radius_order": ("model_stacked.nc",
+                           _storing((1,), 1.5, variable="boundary_radius",
+                                    group="geometry"),
+                           "geometry/boundary_radius", "does not increase strictly"),
+    "stack_one_surface": ("model_stacked.nc",
+                          _Rebuilding(sizes={"geometry/boundary": 1}),
+                          "geometry/boundary_radius", "fewer than two surfaces"),
+    "layer_bounds_negative": ("model_lateral.nc",
+                              _storing((0, 0), -0.1, variable="layer_bounds"),
+                              "layer_bounds", "do not make a skeleton"),
+    "layer_bounds_infinite": ("model_lateral.nc",
+                              _storing((-1, 1), np.inf, variable="layer_bounds"),
+                              "layer_bounds", "do not make a skeleton"),
+    "no_layers": ("model_lateral.nc", _Rebuilding(sizes={"layer": 0}),
+                  "layer_bounds", "do not make a skeleton of contiguous layers"),
+    "latitude_range": ("model_lateral.nc",
+                       _storing((0,), 90.5, variable="latitude", **_P),
+                       "part_0", _LATITUDES),
+    "stack_latitude_range": ("model_stacked.nc",
+                             _storing((-1,), -90.5, variable="latitude",
+                                      group="geometry"),
+                             "geometry", _LATITUDES),
+    "surface_latitude_range": ("model_surfaces.nc",
+                               _storing((0,), 90.5, variable="latitude", **_S),
+                               "surfaces", _LATITUDES),
 }
 
 
+def _thin_model(path: Path) -> Path:
+    """A two-layer model file whose density varies with direction, on a grid
+    of two longitudes and stating the bilinear rule: valid, and on a grid
+    that cannot carry the bicubic rule."""
+    grid = pm.equiangular(6, 2)
+    two = pm.LayeredIsotropicElastic([0.0, 0.5, 1.0], rho=[10.0, 4.0],
+                                     vp=[9.0, 7.0], vs=[4.0, 3.0])
+    rho = pm.GriddedField.sampled(pm.AnalyticField(
+        (0.5, 1.0), lambda r, t, p: 4.0 + 0.1 * r * np.cos(t), character=pm.DENSITY),
+        grid, ngll=3)
+    write_model(path, two.with_field(1, "rho", rho, replace=True), grid=grid,
+                fields=["rho"])
+    validate_structure(path)
+    return path
+
+
+def _malformed(directory: Path, root: Path,
+               cases: dict[str, tuple[str, Any, str, str]]) -> list[Path]:
+    """The malformed copies `bad_<label>.nc` of `cases` in `root`, each a
+    file of `directory` edited by netCDF4 in place, or rebuilt by a
+    `_Rebuilding`, and their index `bad.txt`: a case, a tab, where the
+    fault lies, a tab, and what the refusal says."""
+    import netCDF4
+    out, lines = [], []
+    for label, (base, edit, where, phrase) in cases.items():
+        path = root / f"bad_{label}.nc"
+        if isinstance(edit, _Rebuilding):
+            edit(directory / base, path)
+        else:
+            shutil.copyfile(directory / base, path)
+            with netCDF4.Dataset(path, "a") as ds:
+                edit(ds)
+        out.append(path)
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
+
+
 def model_cases(directory: Path) -> list[Path]:
-    """The harmonic copy, the expectations, and the malformed copies, of
-    the model files already in `directory`."""
+    """The harmonic copy, the expectations, and the malformed copies of the
+    model files already in `directory` and of `model_cases/thin.nc`, written
+    here."""
     import netCDF4
     out = []
     harmonic = directory / "model_harmonic.nc"
@@ -1628,17 +1838,8 @@ def model_cases(directory: Path) -> list[Path]:
     root = directory / "model_cases"
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir()
-    lines = []
-    for label, (base, edit, where, phrase) in _BAD_MODELS.items():
-        path = root / f"bad_{label}.nc"
-        shutil.copyfile(directory / base, path)
-        with netCDF4.Dataset(path, "a") as ds:
-            edit(ds)
-        out.append(path)
-        lines.append(f"{label}\t{where}\t{phrase}")
-    index = root / "bad.txt"
-    index.write_text("\n".join(lines) + "\n")
-    return out + [index]
+    out.append(_thin_model(root / "thin.nc"))
+    return out + _malformed(directory, root, _BAD_MODELS)
 
 
 def gll(directory: Path) -> list[Path]:
@@ -1700,50 +1901,89 @@ def vocabulary(directory: Path) -> list[Path]:
     return [path]
 
 
-def surface_files(directory: Path) -> list[Path]:
-    """The surface file of the module docstring, and its expectations."""
+def _as_long_as(new: str, old: str) -> Any:
+    """An edit adding the root a dimension `new` of the length of `old`."""
+    return lambda ds: ds.createDimension(new, len(ds.dimensions[old]))
+
+
+#: The attributes of a static field of a surface file.
+_STATIC = {"time_support": "static", "time_interpolation": "none",
+           "lateral_interpolation": "linear"}
+
+#: The malformed surface files: (the file copied, an edit by netCDF4, where
+#: the fault lies, what the refusal says).
+_BAD_SURFACES: dict[str, tuple[str, Any, str, str]] = {
+    "transposed": ("surface_basic.nc",
+                   _creating("turned", ("longitude", "latitude"), attributes=_STATIC),
+                   "turned", "does not run over its support and the grid"),
+    "other_axis": ("surface_basic.nc",
+                   _both(_as_long_as("epoch", "time"),
+                         _creating("drift", ("epoch", "latitude", "longitude"),
+                                   attributes={**_STATIC, "time_support": "node"})),
+                   "drift", "does not run over its support and the grid"),
+    "poles_axis": ("surface_basic.nc",
+                   _both(_as_long_as("epoch", "time"),
+                         _creating("load_nodes_poles", ("epoch", "pole"))),
+                   "load_nodes_poles", "does not run over the support of load_nodes"),
+    "scale_infinite": ("surface_basic.nc", _setting("scale_time", np.inf),
+                       "scale_time", "not positive and finite"),
+    "harmonic_custom": ("surface_basic.nc",
+                        _both(_setting("lateral_interpolation", "harmonic",
+                                       variable="topography"),
+                              _setting("grid_kind", "custom")),
+                        "topography", "states the lateral rule harmonic"),
+    "harmonic_band": ("surface_basic.nc",
+                      _both(_setting("lateral_interpolation", "harmonic",
+                                     variable="topography"),
+                            _deleting("grid_lmax")),
+                      "topography", "states no grid_lmax"),
+    "poles_on_both": ("surface_poles.nc",
+                      _creating("relief_poles", ("pole",), sizes={"pole": 2}),
+                      "relief_poles",
+                      "gives polar values on a grid holding both poles"),
+    "pole_length": ("surface_poles.nc", _adding_dimension("pole", size=3), "pole",
+                    "does not run over the two poles"),
+    "latitude_range": ("surface_basic.nc",
+                       _storing((0,), 90.5, variable="latitude"), "", _LATITUDES),
+    "source_number": ("surface_basic.nc", _setting("source", 3.0), "source",
+                      "is missing or empty"),
+    "created_number": ("surface_basic.nc", _setting("created", np.int32(2026)),
+                       "created", "is missing or empty"),
+    "dimensions_three": ("surface_basic.nc",
+                         _setting("dimensions", np.asarray([0, 1, 0], dtype=np.int32),
+                                  variable="topography"),
+                         "topography", _EXPONENTS),
+    "dimensions_text": ("surface_basic.nc",
+                        _setting("dimensions", "length", variable="topography"),
+                        "topography", _EXPONENTS),
+    "dimensions_fraction": ("surface_basic.nc",
+                            _setting("dimensions", np.asarray([0.0, 0.5, 0.0, 0.0]),
+                                     variable="topography"),
+                            "topography", _EXPONENTS),
+}
+
+
+def _expect_surface(path: Path, fields: dict[str, Any], *,
+                    dated: tuple[tuple[str, float | None, str], ...],
+                    functions: tuple[tuple[str, float | None, str], ...]) -> Path:
+    """The expectations of the surface file at `path`, written from
+    `fields`, beside it (module docstring): the Python's reading of the
+    file, its history's values at each (name, date, extrapolation) of
+    `dated`, and the field of each of `functions` there as a function of
+    (theta, phi), with its two derivatives."""
     from planetmodel import surfacefile
 
-    grid = pm.gauss_legendre(8)
-    rng = np.random.default_rng(11)
-    time = np.array([0.0, 1.0, 2.5, 4.0])
-    instant = np.array([2.5, 4.0])
-    shape = (grid.ntheta, grid.nphi)
-    topography = rng.normal(size=shape)
-    topography[0, 0] = np.nan
-    fields = {
-        "topography": surfacefile.SurfaceVariable(
-            topography, dimensions=units.LENGTH,
-            meaning="present-day topography", poles=[1.0, -2.0]),
-        "ice_thickness": surfacefile.SurfaceVariable(
-            rng.normal(size=(time.size,) + shape), support="node",
-            time_interpolation="linear", dimensions=units.LENGTH,
-            poles=rng.normal(size=(time.size, 2))),
-        "load_previous": surfacefile.SurfaceVariable(
-            rng.normal(size=(time.size,) + shape), support="node",
-            time_interpolation="previous"),
-        "load_nodes": surfacefile.SurfaceVariable(
-            rng.normal(size=(time.size,) + shape), support="node"),
-        "rate": surfacefile.SurfaceVariable(
-            rng.normal(size=(time.size - 1,) + shape), support="interval"),
-        "instantaneous": surfacefile.SurfaceVariable(
-            rng.normal(size=(instant.size,) + shape), support="instant",
-            lateral_interpolation="cubic"),
-    }
-    scales = pm.Scales.geophysical(6.371e6)
-    path = directory / "surface_basic.nc"
-    surfacefile.write_surface(path, grid, fields=fields,
-                              source="planetmodel fixtures", time=time,
-                              instant=instant, radius=1.0, scales=scales,
-                              meta={"epoch": "present"}, citation=("a work",))
-    surfacefile.validate_structure(path)
     data = surfacefile.read_surface_file(path)
+    grid, scales = data.grid, data.scales
     lines = [f"scales {scales.length!r} {scales.mass!r} {scales.time!r} "
-             f"{scales.temperature!r}",
-             f"radius {data.radius!r}",
-             f"grid {grid.kind} {grid.lmax} {grid.ntheta} {grid.nphi}"]
-    lines += [f"time {k} {float(t)!r}" for k, t in enumerate(data.time)]
-    lines += [f"instant {k} {float(t)!r}" for k, t in enumerate(data.instant)]
+             f"{scales.temperature!r}"]
+    if data.radius is not None:
+        lines.append(f"radius {data.radius!r}")
+    lines.append(f"grid {grid.kind} {grid.lmax} {grid.ntheta} {grid.nphi}")
+    for axis in ("time", "instant"):
+        if getattr(data, axis) is not None:
+            lines += [f"{axis} {k} {float(t)!r}"
+                      for k, t in enumerate(getattr(data, axis))]
     samples = ((0, 1), (grid.ntheta // 2, grid.nphi // 3),
                (grid.ntheta - 1, grid.nphi - 1), (0, 0))
     for name, field in fields.items():
@@ -1771,25 +2011,124 @@ def surface_files(directory: Path) -> list[Path]:
                 tag = "-" if k is None else str(k)
                 lines.append(f"poles {name} {tag} {float(row[0])!r} {float(row[1])!r}")
     history = surfacefile.read_surface(path)
-    for name, date, extrapolation in (("topography", None, "refuse"),
-                                      ("ice_thickness", 1.75, "refuse"),
-                                      ("ice_thickness", 2.5, "refuse"),
-                                      ("ice_thickness", 9.0, "hold"),
-                                      ("load_previous", 1.75, "refuse"),
-                                      ("load_previous", -3.0, "hold"),
-                                      ("load_nodes", 2.5, "refuse"),
-                                      ("rate", 3.0, "refuse"),
-                                      ("rate", 4.0, "refuse"),
-                                      ("instantaneous", 2.5, "refuse")):
+    for name, date, extrapolation in dated:
         at = history.values(name, date=date, extrapolation=extrapolation)
         tag = "-" if date is None else repr(float(date))
         for i, j in samples:
             if np.isfinite(at[i, j]):
                 lines.append(f"sample {name} {tag} {extrapolation} {i} {j} "
                              f"{float(at[i, j])!r}")
-    expect = directory / "surface_basic.expect"
+    # the fields as functions of (theta, phi): both poles, the seam, a node
+    # and points between nodes
+    phi0 = float(grid.longitudes[0])
+    points = ((0.0, 0.3), (np.pi, 1.1), (1.0, phi0 - 1e-9), (0.7, 2.0), (2.9, -1.0),
+              (0.05, 5.0), (float(grid.colatitudes[1]), float(grid.longitudes[2])))
+    for name, date, extrapolation in functions:
+        f = history.function(name, date=date, extrapolation=extrapolation)
+        tag = "-" if date is None else repr(float(date))
+        for theta, phi in points:
+            dt, dp = (float(v) for v in f.angular_gradient(theta, phi))
+            lines.append(f"function {name} {tag} {extrapolation} {theta!r} {phi!r} "
+                         f"{float(f(theta, phi))!r} {dt!r} {dp!r}")
+    expect = path.with_name(path.name.removesuffix(".nc") + ".expect")
     expect.write_text("\n".join(lines) + "\n")
-    return [path, expect]
+    return expect
+
+
+def surface_files(directory: Path) -> list[Path]:
+    """The surface files of the module docstring, their expectations, and
+    the malformed copies of them (`surface_cases/`), each refused by the
+    Python's reader as it is written."""
+    import netCDF4
+
+    from planetmodel import surfacefile
+
+    grid = pm.gauss_legendre(8)
+    rng = np.random.default_rng(11)
+    time = np.array([0.0, 1.0, 2.5, 4.0])
+    instant = np.array([2.5, 4.0])
+    shape = (grid.ntheta, grid.nphi)
+    topography = rng.normal(size=shape)
+    topography[0, 0] = np.nan
+    fields = {
+        "topography": surfacefile.SurfaceVariable(
+            topography, dimensions=units.LENGTH,
+            meaning="present-day topography", poles=[1.0, -2.0]),
+        "ice_thickness": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="linear", dimensions=units.LENGTH,
+            poles=rng.normal(size=(time.size, 2))),
+        "load_previous": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="previous"),
+        "load_nodes": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node"),
+        "rate": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size - 1,) + shape), support="interval"),
+        "instantaneous": surfacefile.SurfaceVariable(
+            rng.normal(size=(instant.size,) + shape), support="instant",
+            lateral_interpolation="cubic"),
+        "geoid": surfacefile.SurfaceVariable(
+            rng.normal(size=(time.size,) + shape), support="node",
+            time_interpolation="linear", lateral_interpolation="cubic",
+            poles=rng.normal(size=(time.size, 2))),
+    }
+    scales = pm.Scales.geophysical(6.371e6)
+    path = directory / "surface_basic.nc"
+    surfacefile.write_surface(path, grid, fields=fields,
+                              source="planetmodel fixtures", time=time,
+                              instant=instant, radius=1.0, scales=scales,
+                              meta={"epoch": "present"}, citation=("a work",))
+    surfacefile.validate_structure(path)
+    out = [path, _expect_surface(
+        path, fields,
+        dated=(("topography", None, "refuse"), ("ice_thickness", 1.75, "refuse"),
+               ("ice_thickness", 2.5, "refuse"), ("ice_thickness", 9.0, "hold"),
+               ("load_previous", 1.75, "refuse"), ("load_previous", -3.0, "hold"),
+               ("load_nodes", 2.5, "refuse"), ("rate", 3.0, "refuse"),
+               ("rate", 4.0, "refuse"), ("instantaneous", 2.5, "refuse")),
+        functions=(("ice_thickness", 1.75, "refuse"), ("ice_thickness", 2.5, "refuse"),
+                   ("ice_thickness", 9.0, "hold"), ("geoid", 1.75, "refuse"),
+                   ("geoid", -3.0, "hold")))]
+    # a grid holding both poles, whose fields carry no polar values
+    both = pm.equiangular(7, 12, poles=True)
+    theta, phi = both.nodes
+    relief = smooth(theta, phi)
+    held = {
+        "relief": surfacefile.SurfaceVariable(
+            relief, dimensions=units.LENGTH, lateral_interpolation="cubic"),
+        "ice_thickness": surfacefile.SurfaceVariable(
+            np.stack([relief, 2.0 * relief + np.cos(theta)]), support="node",
+            time_interpolation="linear", dimensions=units.LENGTH),
+    }
+    path = directory / "surface_poles.nc"
+    surfacefile.write_surface(path, both, fields=held, time=[0.0, 2.0])
+    surfacefile.validate_structure(path)
+    out += [path, _expect_surface(
+        path, held,
+        dated=(("relief", None, "refuse"), ("ice_thickness", 0.5, "refuse")),
+        functions=(("relief", None, "refuse"), ("ice_thickness", 0.5, "refuse"),
+                   ("ice_thickness", 5.0, "hold")))]
+    root = directory / "surface_cases"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+    lines = []
+    for label, (base, edit, where, phrase) in _BAD_SURFACES.items():
+        bad = root / f"bad_{label}.nc"
+        shutil.copyfile(directory / base, bad)
+        with netCDF4.Dataset(bad, "a") as ds:
+            edit(ds)
+        try:
+            surfacefile.read_surface_file(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{label}: the Python reads the malformed file")
+        out.append(bad)
+        lines.append(f"{label}\t{where}\t{phrase}")
+    index = root / "bad.txt"
+    index.write_text("\n".join(lines) + "\n")
+    return out + [index]
 
 
 def _fault_examples() -> dict[str, tuple[Any, dict[str, Any]]]:
@@ -1987,12 +2326,6 @@ def _expect_fault(fault: Any, names: Any, rng: np.random.Generator) -> list[str]
     return lines
 
 
-def _adding_dimension(name: str, *, group: str | None = None) -> Any:
-    """An edit adding a dimension of two to the root or a group."""
-    return lambda ds: (ds if group is None else ds.groups[group]).createDimension(
-        name, 2)
-
-
 def _flattening(group: str) -> Any:
     """An edit collapsing a Cartesian structured patch onto a line."""
     def edit(ds: Any) -> None:
@@ -2015,8 +2348,12 @@ _BAD_FAULTS: dict[str, tuple[str, Any, str, str]] = {
                        "rupture_velocity", "planetmodel.fault/1 does not name it"),
     "no_created": ("fault_static.nc", _deleting("created"), "created",
                    "is missing or empty"),
+    "source_empty": ("fault_static.nc", _setting("source", ""), "source",
+                     "is missing or empty"),
     "scale": ("fault_static.nc", _setting("scale_time", -1.0), "scale_time",
               "is missing or not positive"),
+    "scale_infinite": ("fault_static.nc", _setting("scale_time", np.inf), "scale_time",
+                       "is missing or not positive and finite"),
     "frame": ("fault_static.nc", _setting("frame", "spherical"), "frame",
               "not one of geographic, cartesian"),
     "radius": ("fault_static.nc", _setting("reference_radius", 0.0), "reference_radius",
@@ -2230,7 +2567,7 @@ def _flat_domains() -> dict[str, Any]:
 def _wave(grid: Any, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """A smooth function of (x, y) with the periods of a grid's domain, the
     exponential of sines; of x alone over a rectangle."""
-    x0 = grid.domain.extent[0] if grid.dimension == 1 else grid.domain.extent[0][0]
+    x0 = grid.domain.extent[0][0]
     lx = grid.lengths[0]
     a = 2.0 * np.pi * (np.asarray(x, dtype=float) - x0) / lx
     out = np.sin(a) + 0.3 * np.cos(2.0 * a + 0.4)
@@ -2258,7 +2595,7 @@ def flat_lateral_cases(directory: Path) -> list[Path]:
         gx, gy = grid.nodes
         values = np.broadcast_to(_wave(grid, gx, gy), grid.shape)
         two = grid.dimension == 2
-        (x0, x1) = grid.domain.extent[0] if two else grid.domain.extent
+        (x0, x1) = grid.domain.extent[0]
         lx = grid.lengths[0]
         y0, ly = (grid.domain.extent[1][0], grid.lengths[1]) if two else (0.0, 1.0)
         # random points over three periods, the seam, the nodes, the far end
@@ -2280,8 +2617,7 @@ def flat_lateral_cases(directory: Path) -> list[Path]:
                 directory / f"flat_case_lateral_{label}_{method}.nc", arrays,
                 {"domain": "box" if two else "rectangle",
                  "bounds": np.ravel(np.asarray(grid.domain.bounds, dtype=float)),
-                 "padding": np.atleast_1d(np.asarray(grid.domain.padding,
-                                                     dtype=float)),
+                 "padding": np.asarray(grid.domain.padding, dtype=float),
                  "method": method, "mean": float(f.mean())}))
     return out
 
@@ -2302,6 +2638,10 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
     out["layered"] = (layered, {"grid": flat.Grid(box, (4, 3))})
     out["layered_rectangle"] = (flat.CrustOverMantle(rectangle),
                                 {"grid": flat.Grid(rectangle, (5,))})
+    # the same, of a type with a behaviour of its own, with no grid given
+    own = model_type(flat.Model, (pm.Elastic, Tidal, pm.Viscoelastic))
+    out["depth"] = (own(layered.geometry, [layer.fields for layer in layered.layers],
+                        name="depth alone"), {})
 
     # lateral fields on each rule, of every rank, in two parts on two grids
     base = flat.CrustOverMantle(padded)
@@ -2412,7 +2752,7 @@ def _flat_models() -> dict[str, tuple[Any, dict[str, Any]]]:
 
     # padded below the base, the lowest properties held
     held = lateral.extended([260e3, 400e3], fields="hold",
-                            names=["padding", "deep_padding"])
+                            layer_names=["padding", "deep_padding"])
     out["held"] = (held, {"grid": coarse, "fields": ["rho", "vs", "stress"],
                           "interpolation": {"vs": ("polynomial", "cubic")}})
 
@@ -2458,7 +2798,7 @@ def _expect_flat_model(path: Path) -> Path:
     from planetmodel.cartesian import FLAT
     from planetmodel.cartesian.modelfile import read_model_file
     from planetmodel.modelfile import read_model, read_surfaces
-    data, model = read_model_file(path), read_model(path)
+    data, model = read_model_file(path), read_model(path, model_type=())
     hexed = (lambda x: "-" if not x else x.encode("utf-8").hex())
     s = data.scales
     domain = data.domain
@@ -2466,10 +2806,11 @@ def _expect_flat_model(path: Path) -> Path:
     lines = [f"scales {s.length!r} {s.mass!r} {s.time!r} {s.temperature!r}",
              f"rtol {data.rtol!r}", f"name {hexed(data.name)}",
              f"citation {hexed(chr(10).join(data.citation))}",
+             f"behaviours {hexed(' '.join(data.behaviours))}",
              f"domain {'box' if two else 'rectangle'} "
              + " ".join(repr(float(v)) for v in (
                  *np.ravel(np.asarray(domain.bounds, dtype=float)),
-                 *np.atleast_1d(np.asarray(domain.padding, dtype=float))))]
+                 *domain.padding))]
     lines += [f"layer_name {i} {hexed(n)}" for i, n in enumerate(data.layer_names)]
     lines += [f"interface_name {i} {hexed(n)}"
               for i, n in enumerate(data.interface_names)]
@@ -2481,8 +2822,7 @@ def _expect_flat_model(path: Path) -> Path:
         lines.append(f"constant {cname} {value!r}{dims}")
     names = sorted({n for part in data.parts for n in part.variables
                     if not n.endswith("_perturbation") and n != "displacement"})
-    extent = domain.extent if two else (domain.extent, (0.0, 1.0))
-    (x0, x1), (y0, y1) = extent
+    (x0, x1), (y0, y1) = (*domain.extent, (0.0, 1.0))[:2]
     lx, ly = x1 - x0, y1 - y0
     for i, layer in enumerate(model.layers):
         lo, hi = layer.interval
@@ -2548,22 +2888,6 @@ def flat_model_files(directory: Path) -> list[Path]:
     return out
 
 
-def _creating(name: str, dims: tuple[str, ...], *, group: str | None = None,
-              attributes: dict[str, Any] | None = None,
-              sizes: dict[str, int] | None = None) -> Any:
-    """An edit creating a real variable of zeros over dimensions of the
-    root or a group, those of `sizes` created first."""
-    def edit(ds: Any) -> None:
-        g = ds if group is None else ds.groups[group]
-        for dim, n in (sizes or {}).items():
-            g.createDimension(dim, n)
-        var = g.createVariable(name, "f8", dims)
-        var[...] = 0.0
-        for key, value in (attributes or {}).items():
-            var.setncattr(key, value)
-    return edit
-
-
 _FLAT_RHO = {"group": "part_0", "variable": "rho"}
 _FLAT_VS = {"group": "part_1", "variable": "vs"}
 _FLAT_STACK = {"group": "geometry", "variable": "boundary_displacement"}
@@ -2580,6 +2904,12 @@ _BAD_FLAT_MODELS: dict[str, tuple[str, Any, str, str]] = {
                   "not a planetmodel model file"),
     "rtol_negative": ("flat_model_lateral.nc", _setting("rtol", -1.0), "rtol",
                       "not a tolerance"),
+    "behaviours_number": ("flat_model_lateral.nc",
+                          _setting("behaviours", np.int32(4)), "behaviours",
+                          "not the names of the model's behaviours"),
+    "behaviours_twice": ("flat_model_lateral.nc",
+                         _setting("behaviours", "Elastic Tidal Elastic"),
+                         "behaviours", "each once"),
     "no_scale_mass": ("flat_model_lateral.nc", _deleting("scale_mass"), "scale_mass",
                       "missing or not positive"),
     "coordinate_system": ("flat_model_lateral.nc",
@@ -2682,28 +3012,57 @@ _BAD_FLAT_MODELS: dict[str, tuple[str, Any, str, str]] = {
                      _setting("lateral_interpolation", "harmonic", group="surfaces",
                               variable="shift"),
                      "surfaces/shift", "no known lateral rule"),
+    "element_layer": ("flat_model_lateral.nc", _relabelling(group="part_0"),
+                      "part_0/element_layer", "which its bounds do not lie in"),
+    "stack_above": ("flat_model_stacked.nc",
+                    _storing((0,), -0.5, variable="boundary_depth", group="geometry"),
+                    "geometry/boundary_depth", "above the free surface"),
+    "scale_infinite": ("flat_model_lateral.nc", _setting("scale_mass", np.inf),
+                       "scale_mass", "not positive and finite"),
+    "interface_depth": ("flat_model_lateral.nc",
+                        _storing((1,), 31e3, variable="interface_depth"),
+                        "interface_depth", "interfaces of the skeleton"),
+    "ngll_fraction": ("flat_model_lateral.nc", _adding_half("ngll", group="part_0"),
+                      "part_0.ngll", "whole number"),
+    "cubic_thin": ("flat_model_cases/thin.nc",
+                   _setting("lateral_interpolation", "cubic", **_FLAT_RHO),
+                   "part_0/rho", "states the lateral rule cubic"),
+    "stack_order": ("flat_model_stacked.nc",
+                    _storing((1,), 1e9, variable="boundary_depth", group="geometry"),
+                    "geometry/boundary_depth", "does not increase strictly"),
+    "stack_one_surface": ("flat_model_stacked.nc",
+                          _Rebuilding(sizes={"geometry/boundary": 1}),
+                          "geometry/boundary_depth", "fewer than two surfaces"),
 }
 
 
+def _thin_flat_model(path: Path) -> Path:
+    """A two-layer flat model file whose density varies laterally, on a grid
+    of two nodes along y and stating the bilinear rule: valid, and on a
+    grid that cannot carry the bicubic rule."""
+    from planetmodel import cartesian as flat
+    box = _flat_domains()["box"]
+    grid = flat.Grid(box, (4, 2))
+    two = flat.LayeredIsotropicElastic([0.0, 30e3, 200e3], box, rho=[2800.0, 3300.0],
+                                       vp=[6400.0, 8000.0], vs=[3700.0, 4500.0])
+    rho = flat.GriddedField.sampled(flat.AnalyticField(
+        (30e3, 200e3), lambda d, x, y: 3300.0 + 10.0 * _wave(grid, x, y) + 0.0 * d,
+        character=pm.DENSITY), grid, ngll=3)
+    write_model(path, two.with_field(1, "rho", rho, replace=True), grid=grid,
+                fields=["rho"])
+    validate_structure(path)
+    return path
+
+
 def flat_model_cases(directory: Path) -> list[Path]:
-    """The malformed copies of the flat model files already in `directory`,
-    `flat_model_cases/bad_*.nc`, listed in `bad.txt` as the model cases
-    are."""
-    import netCDF4
+    """The malformed copies of the flat model files already in `directory`
+    and of `flat_model_cases/thin.nc`, written here: `bad_*.nc`, listed in
+    `bad.txt` as the model cases are."""
     root = directory / "flat_model_cases"
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir()
-    out, lines = [], []
-    for label, (base, edit, where, phrase) in _BAD_FLAT_MODELS.items():
-        path = root / f"bad_{label}.nc"
-        shutil.copyfile(directory / base, path)
-        with netCDF4.Dataset(path, "a") as ds:
-            edit(ds)
-        out.append(path)
-        lines.append(f"{label}\t{where}\t{phrase}")
-    index = root / "bad.txt"
-    index.write_text("\n".join(lines) + "\n")
-    return out + [index]
+    return [_thin_flat_model(root / "thin.nc")] + _malformed(directory, root,
+                                                             _BAD_FLAT_MODELS)
 
 
 def _flat_surface(directory: Path, label: str, grid: Any, *,
@@ -2755,7 +3114,7 @@ def _flat_surface(directory: Path, label: str, grid: Any, *,
              f"domain {'box' if two else 'rectangle'} "
              + " ".join(repr(float(v)) for v in (
                  *np.ravel(np.asarray(domain.bounds, dtype=float)),
-                 *np.atleast_1d(np.asarray(domain.padding, dtype=float)))),
+                 *domain.padding)),
              "grid " + " ".join(str(n) for n in shape)]
     lines += [f"time {k} {float(t)!r}" for k, t in enumerate(data.time)]
     lines += [f"instant {k} {float(t)!r}" for k, t in enumerate(data.instant)]
@@ -2842,6 +3201,17 @@ _BAD_FLAT_SURFACES: dict[str, tuple[Any, str, str]] = {
                      "no known lateral rule"),
     "dimensions": (_setting("time_support", "node", variable="relief"), "relief",
                    "does not run over"),
+    "scale_infinite": (_setting("scale_time", np.inf), "scale_time",
+                       "not positive and finite"),
+    "source_number": (_setting("source", 3.0), "source", "is missing or empty"),
+    "created_number": (_setting("created", np.int32(2026)), "created",
+                       "is missing or empty"),
+    "dimensions_three": (_setting("dimensions", np.asarray([0, 1, 0], dtype=np.int32),
+                                  variable="relief"), "relief", _EXPONENTS),
+    "dimensions_text": (_setting("dimensions", "length", variable="relief"),
+                        "relief", _EXPONENTS),
+    "dimensions_fraction": (_setting("dimensions", np.asarray([0.0, 0.5, 0.0, 0.0]),
+                                     variable="relief"), "relief", _EXPONENTS),
 }
 
 
@@ -2871,72 +3241,6 @@ def flat_surface_files(directory: Path) -> list[Path]:
     index = root / "bad.txt"
     index.write_text("\n".join(lines) + "\n")
     return out + [index]
-
-
-def flat_decks(directory: Path) -> list[Path]:
-    """The decks of depths of the module docstring, `flat_deck_<case>.txt`,
-    each with its expectations."""
-    from planetmodel import cartesian as flat
-    from planetmodel.deck import Deck, read_deck, write_deck
-    nan = np.nan
-    depth = np.array([0.0, 10e3, 30e3, 30e3, 60e3, 100e3, 100e3, 130e3, 160e3, 200e3,
-                      200e3, 400e3])
-    n = depth.size
-    grade = 1.0 + depth / 1e6
-    elastic = {"rho": np.where(depth < 30e3 + (np.arange(n) > 2), 2800.0, 3300.0)
-               * grade,
-               "vpv": np.where(np.arange(n) < 3, 6400.0, 8000.0) * grade,
-               "vsv": np.where(np.arange(n) < 3, 3700.0, 4500.0) * grade,
-               "vph": np.where(np.arange(n) < 3, 6500.0, 8100.0) * grade,
-               "vsh": np.where(np.arange(n) < 3, 3750.0, 4550.0) * grade,
-               "eta": np.where(np.arange(n) < 3, 1.0, 0.97) + 0.0 * depth}
-    quality = {"qkappa": np.where(np.arange(n) < 3, nan, 57823.0),
-               "qmu": np.where(np.arange(n) < 3, nan, 600.0 - depth / 1e3)}
-    named = {"layers": ("crust", "lithosphere", None, "padding"),
-             "interfaces": ("surface", "moho", "lab", None)}
-    out = []
-
-    def written(label: str, deck: Any, fmt: Any, names: str | None) -> None:
-        path = write_deck(directory / f"flat_deck_{label}.txt", deck, fmt)
-        out.extend([path, _expect_deck(path, read_deck(path, fmt), names=names,
-                                       depth=True)])
-
-    ti = {k: {**elastic, **quality}[k] for k in
-          ("rho", "vpv", "vsv", "qkappa", "qmu", "vph", "vsh", "eta")}
-    written("elastic", Deck(depth, ti, header={"name": "an elastic deck of depths",
-                                               **named}), flat.ELASTIC, None)
-    # the isotropic columns, unnamed, starting below the surface
-    written("isotropic", Deck(
-        depth[3:] , {"rho": elastic["rho"][3:], "vp": elastic["vpv"][3:],
-                     "vs": elastic["vsv"][3:], "qkappa": quality["qkappa"][3:],
-                     "qmu": quality["qmu"][3:]},
-        header={"name": "a mantle from 30 km down"}), flat.ELASTIC, None)
-    viscosity = np.full(n, nan)
-    viscosity[3:6] = 10.0 ** (23.0 - 2.0 * (depth[3:6] - 30e3) / 70e3)
-    viscosity[6:10] = [1e21, 3e20, 1e20, 5e20]
-    viscosity[10:] = 1e21
-    written("maxwell", Deck(depth, {**elastic, "viscosity": viscosity},
-                            header={"name": "a Maxwell deck of depths", **named}),
-            flat.MAXWELL, "maxwell")
-    w1, t1, w2, t2 = (np.full(n, nan) for _ in range(4))
-    w1[3:6], t1[3:6] = 1.0, [3e12, 1e12, 3e11]            # one branch: completed
-    w1[6:10], t1[6:10] = [0.4, 0.45, 0.5, 0.5], [1e9, 2e9, 4e9, 4e9]
-    w2[6:10], t2[6:10] = [0.5, 0.45, 0.3, 0.3], [1e12, 3e12, 1e13, 1e13]
-    w1[10:], t1[10:], w2[10:], t2[10:] = 0.6, 1e10, 0.4, 1e13
-    written("prony", Deck(depth, {**elastic, "relaxation_strength_1": w1,
-                                  "relaxation_time_1": t1, "relaxation_strength_2": w2,
-                                  "relaxation_time_2": t2},
-                          header={"name": "a prony deck of depths", **named}),
-            flat.PRONY, "prony")
-    kelvin, fraction = np.full(n, nan), np.full(n, nan)
-    kelvin[6:10], fraction[6:10] = [1e19, 2e19, 5e19, 5e19], [0.5, 0.7, 1.5, 1.5]
-    written("burgers", Deck(depth, {**elastic, "viscosity": viscosity,
-                                    "kelvin_viscosity": kelvin,
-                                    "kelvin_modulus_fraction": fraction},
-                            header={"name": "a burgers deck of depths",
-                                    "layers": named["layers"]}),
-            flat.BURGERS, "burgers")
-    return out
 
 
 #: The valid flat manifest the flat refusal cases are made from: a box of
@@ -3294,10 +3598,10 @@ def flat_fault_meshes(directory: Path) -> list[Path]:
                             faults=[EmbeddedFault(f, name=n, sizing=0.08)
                                     for n, f in faults.items()])
             res = build_layered_mesh(spec, Path(scratch) / label / label)
-            testing.check_fault_mesh(res.msh_path, faults, mapping=res.mapping,
+            testing.check_fault_mesh(res.mesh_path, faults, mapping=res.mapping,
                                      distance=1e-9)
             card = mf.read(res.manifest_path)
-            mesh = read_mesh(res.msh_path)
+            mesh = read_mesh(res.mesh_path)
             cells, layers = mesh.cells, mesh.cell_attributes
             boundary, attributes = mesh.faces, mesh.face_attributes
             x = np.asarray(mesh.points, dtype=float)
@@ -3356,11 +3660,12 @@ def write_fixtures(directory: str | Path, *, meshes: bool = True) -> list[Path]:
             + fault_files(directory) + slip_from_rake(directory) + burgers(directory)
             + lateral_cases(directory) + radial_cases(directory)
             + constants(directory) + frames(directory) + json_documents(directory)
-            + manifest_cases(directory) + decks(directory)
+            + manifest_cases(directory)
             + flat_model_files(directory) + flat_model_cases(directory)
             + flat_lateral_cases(directory) + flat_surface_files(directory)
-            + flat_decks(directory) + flat_manifest_cases(directory)
-            + (manifests(directory) + fault_meshes(directory)
+            + flat_manifest_cases(directory)
+            + (manifests(directory) + cubed_manifests(directory)
+               + fault_meshes(directory)
                + flat_manifests(directory) + flat_fault_meshes(directory)
                if meshes else []))
 

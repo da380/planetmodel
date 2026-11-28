@@ -1,11 +1,12 @@
 # %% [markdown]
 # # AdGIA's faulted box, in planetmodel's form
 #
-# The box of AdGIA's coseismic examples (`meshes/faulted_box.py` in
-# AdGIA), 8 wide and 4 deep with a planar thrust 1.5 by 1.5 centred 1
-# below the surface, dipping 30 degrees towards +x, here with every
-# length divided by 8, flat and under AdGIA's range topography (its
-# relief 2, the default in 3-D). AdGIA builds its box with the free
+# The box of the coseismic examples of AdGIA, a glacial isostatic
+# adjustment code built on MFEM (`meshes/faulted_box.py` in AdGIA), 8
+# wide and 4 deep with a planar thrust 1.5 by 1.5 centred 1 below the
+# surface, dipping 30 degrees towards +x, here with every length
+# divided by 8, flat and under AdGIA's range topography (its relief 2,
+# the default in 3-D). AdGIA builds its box with the free
 # surface as a spline and cuts the body in two by the fault's plane
 # extended to the boundary, the footwall and the hanging wall two
 # volumes; planetmodel builds the reference box, moves its nodes by the
@@ -14,7 +15,10 @@
 # own, its edge a tip curve group, pinned. The sizes are AdGIA's, at
 # unit scale: 0.01875 on the fault, 0.05 on the surface, 0.1 far away,
 # growing at its gradation, 0.3 per unit distance, which is the gradient
-# a fault sized by a number is graded at (`EmbeddedFault`'s rule).
+# a fault sized by a number is graded at (`EmbeddedFault`'s rule). The
+# minSICN printed for each mesh is the shape of its worst cell: gmsh's
+# signed inverse condition number, 1 for a regular tetrahedron, falling
+# to 0 as a cell flattens.
 #
 # Needs: meshing, plot
 # Network: none
@@ -95,7 +99,7 @@ for label, g in (("flat", flat), ("under the range", under)):
         MeshSpec(g, UniformInterfaces(0.05, 0.1, (0.1 - 0.05) / 0.3), order=2,
                  faults=[EmbeddedFault(fault, name="fault", sizing=0.15 * SCALE)]),
         work / label.replace(" ", "_"))
-    mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+    mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
     built[label] = (mesh, card, result.mapping(mesh.points))
     print(f"{label}: {result.counts['elements']} elements, minSICN "
           f"{result.validation.min_sicn:.2f}")

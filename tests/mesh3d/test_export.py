@@ -6,12 +6,12 @@ import pytest
 
 from planetmodel.mesh3d import (MeshSpec, Shell, build_layered_mesh,
                                 build_offset_mesh, export_mfem_mesh,
-                                manifest as sc)
-from planetmodel.mesh3d.export import (MESH_READ_OPTIONS, _node_array,
+                                manifest as sc, read_mesh)
+from planetmodel.mesh3d.export import (MESH_READ_OPTIONS, node_array,
                                        jacobian_report)
 
-from conftest import COARSE, confined_flattening, flattening, full_geometry, \
-    hollow_geometry
+from conftest import COARSE, confined_flattening, facing, flattening, \
+    full_geometry, hollow_geometry
 
 mfem = pytest.importorskip("mfem.ser", reason="needs the planetmodel[mfem] extra")
 
@@ -62,10 +62,29 @@ def load(export):
 
 
 def nodes_of(mesh):
-    return np.array(_node_array(mesh.GetNodes()), dtype=float)
+    return np.array(node_array(mesh.GetNodes()), dtype=float)
 
 
 NAMES = list(CASES) + ["offset3", "offset2"]
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_boundary_elements_face_as_mfem_holds_them(built, exported, name):
+    """An interface's boundary elements point away from the centre, and
+    the inner boundary of a hollow body out of the body, towards it: in
+    the MSH file as in both deliveries, MFEM having had nothing to turn."""
+    res = built[name]
+    card = sc.read(res.manifest_path)
+    written = facing(read_mesh(res.mesh_path))
+    assert sorted(written) == [e["attribute"] for e in card.interfaces]
+    for entry in card.interfaces:
+        away, towards = written[entry["attribute"]]
+        inner = entry["between_layers"][0] == -1
+        assert (away, towards)[0 if inner else 1] == 0 and away + towards > 0, (
+            f"interface {entry['attribute']} faces {(away, towards)}")
+    assert res.validation.inward_faces == 0
+    for delivery in ("physical", "referential"):
+        assert facing(read_mesh(exported[name, delivery].mesh_path)) == written
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -84,8 +103,12 @@ def test_mfem_reads_every_export_back_clean(built, exported, name, delivery):
     assert list(mesh.attributes.ToList()) == list(range(1, len(card.layers) + 1))
     assert list(mesh.bdr_attributes.ToList()) == \
         list(range(1, len(card.interfaces) + 1))
-    assert export.counts["elements"] == mesh.GetNE()
-    assert export.counts["nodes"] == mesh.GetNodes().FESpace().GetNDofs()
+    assert export.counts["elements"] == mesh.GetNE() == res.counts["elements"]
+    assert export.counts["boundary_elements"] == mesh.GetNBE() \
+        == res.counts["boundary_elements"]
+    assert export.counts["nodes"] == mesh.GetNodes().FESpace().GetNDofs() \
+        == res.counts["nodes"]
+    assert export.counts["order"] == res.counts["order"]
     assert card.mesh["file"] == export.mesh_path.name
     assert card.mesh["format"] == "mfem"
     assert card.mesh["read_options"] == export.read_options == MESH_READ_OPTIONS
@@ -121,7 +144,7 @@ def test_the_physical_mesh_is_the_reference_mesh_plus_the_displacement(
     mesh = load(ref)
     X = nodes_of(mesh)
     gf = mfem.GridFunction(mesh, str(ref.displacement_path))
-    u = np.array(_node_array(gf), dtype=float, copy=True)
+    u = np.array(node_array(gf), dtype=float, copy=True)
     x = nodes_of(load(phys))
     assert x.shape == X.shape == u.shape
     assert np.abs(x - (X + u)).max() < 1e-12
@@ -148,7 +171,7 @@ def test_identity_and_offset_exports_move_nothing(exported):
         ref = exported[(name, "referential")]
         mesh = load(ref)
         gf = mfem.GridFunction(mesh, str(ref.displacement_path))
-        assert np.abs(np.asarray(_node_array(gf))).max() == 0.0
+        assert np.abs(np.asarray(node_array(gf))).max() == 0.0
         assert np.array_equal(nodes_of(load(exported[(name, "physical")])),
                               nodes_of(mesh))
 
@@ -218,7 +241,7 @@ def test_the_jacobian_report_is_its_statement(built):
     """On meshes of one geometry, read all at once, and after their nodes
     move; on a mesh of two, element by element; a fold is counted."""
     for name in ("full3", "hollow3", "full2", "hollow2"):
-        mesh = mfem.Mesh(str(built[name].msh_path), *MESH_READ_OPTIONS.values())
+        mesh = mfem.Mesh(str(built[name].mesh_path), *MESH_READ_OPTIONS.values())
         if mesh.GetNodes() is None:
             mesh.SetCurvature(1)
         for _ in range(2):
@@ -258,7 +281,7 @@ def test_a_wrongly_oriented_element_is_refused(tmp_path):
     spec = MeshSpec(Geometry(Skeleton([0.0, 0.5, 1.0])),
                     UniformInterfaces(0.3, 0.5, 0.5), dimension=2, order=1)
     res = build_layered_mesh(spec, tmp_path / "m")
-    lines = res.msh_path.read_text().splitlines()
+    lines = res.mesh_path.read_text().splitlines()
     for k in range(lines.index("$Elements") + 2, len(lines)):
         f = lines[k].split()
         if len(f) > 1 and f[1] == "2":                        # a triangle
@@ -270,5 +293,5 @@ def test_a_wrongly_oriented_element_is_refused(tmp_path):
     bad = tmp_path / "bad.msh"
     bad.write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="wrongly oriented"):
-        export_mfem_mesh(dataclasses.replace(res, msh_path=bad), tmp_path / "x")
+        export_mfem_mesh(dataclasses.replace(res, mesh_path=bad), tmp_path / "x")
     export_mfem_mesh(res, tmp_path / "good")

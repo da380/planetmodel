@@ -56,6 +56,12 @@ the nodes of the lateral grid).  Between the nodes of the lateral grid
 the variance is as exact but for the Nyquist cosines of an even axis,
 whose square is not constant off the grid.
 
+**Batches.**  `sample(size=k)` draws k vectors, shape (k, size), the
+k successive draws of the generator.  Every method that takes a vector
+takes such a batch too: an array comes back with the batch axis leading,
+and a field (`to_layer`, `to_field`, `to_fields`) as a tuple over the
+batch.
+
 **Padding.**  The mesh in depth extends beyond both ends of the
 physical interval by `pad_factor` times the Matern reach
 sqrt(8 nu) lambda at that end, above the free surface (negative depth)
@@ -70,7 +76,11 @@ proper is wanted clear of its periodic images.
 box (d = 3) or of a rectangle (d = 2: one lateral axis, the same at
 every y), and `LayeredGRF` independent fields on the layers of a flat
 skeleton.  The horizontal scale is one, `lam_h`; distinct scales along
-x and y are not built.  All fields are real and zero-mean.
+x and y are not built.  All fields are real and zero-mean.  The
+methods are those of `randomfield.RadialGRF`, `SphericalGRF` and
+`LayeredGRF`, with the same meanings and arguments, but that a sampler
+of a box holds its lateral grid, so `on_grid` and `sample_grid` take
+none.
 
 ::
 
@@ -78,6 +88,7 @@ x and y are not built.  All fields are real and zero-mean.
     c = grf.sample(rng=rng)                  # the coefficient vector
     grf.to_field(c)                          # a FourierField
     grf.on_grid(c)                           # depth nodes x grid nodes
+    grf.on_grid(grf.sample(rng=rng, size=8)) # eight of them, the batch first
     grf.basis.block(grid.transform.component_of((1, 0)))
 """
 from __future__ import annotations
@@ -93,9 +104,10 @@ from ..character import SCALAR, Character
 from ..fourier import PaddedDomain, Transform
 from ..layerfunction import PolynomialLayer, constant_layer
 from ..randomfield.basis import SpectralBasis
-from ..randomfield.fields import (Profile, layer_indices, marginal_scale,
-                                  matern_exponent, per_layer, profile_function,
-                                  robin_spec, sampler_mesh)
+from ..randomfield.fields import (Profile, coefficient_vectors, layer_indices,
+                                  marginal_scale, matern_exponent, nodal_ppoly,
+                                  per_layer, profile_function, robin_spec,
+                                  sampler_mesh)
 from ..randomfield.mesh import Restriction
 from ..randomfield.operator import CACHE_BYTES, Robin, SeparableOperatorFamily
 from ..skeleton import Skeleton
@@ -105,7 +117,6 @@ from .fields import DepthField
 from .grid import Grid
 
 if TYPE_CHECKING:
-    from ..mesh1d import Mesh1D
     from .geometry import Geometry
     from .model import Model
 
@@ -183,9 +194,9 @@ class LayerBasis:
             if b.family.index != "value":
                 raise ValueError(f"a layer basis is of a family indexed by "
                                  f"'value', not by {b.family.index!r}")
-            if b.degree != values[i]:
+            if b.label != values[i]:
                 raise ValueError(f"bases[{i}] has the lateral eigenvalue "
-                                 f"{b.degree!r}, the transform's is {values[i]!r}")
+                                 f"{b.label!r}, the transform's is {values[i]!r}")
             if (b.restriction.interval != first.restriction.interval
                     or b.restriction.nodes != first.restriction.nodes):
                 raise ValueError("the bases must share one restriction")
@@ -357,14 +368,6 @@ def _interval(depth1: float, depth2: float, nu: float) -> tuple[float, float]:
     return d1, d2
 
 
-def _nodal_ppoly(mesh: Mesh1D, restriction: Restriction, nodal: np.ndarray) -> PPoly:
-    """The piecewise polynomial of depth on the physical interval through
-    values at its nodes, leading axis the nodes."""
-    full = np.zeros((mesh.nglob,) + nodal.shape[1:])
-    full[restriction.nodes] = nodal
-    return mesh.to_ppoly(full[mesh.gmap], elements=restriction.elements)
-
-
 # -- fields of depth alone ------------------------------------------------------
 
 class DepthGRF:
@@ -382,9 +385,10 @@ class DepthGRF:
     A sample is a vector of coefficients in `basis`, a `SpectralBasis`,
     independent with standard deviations `coefficient_std`; the field
     of a vector is `scale` times its synthesis, whose standard deviation
-    at the nodes `r` is `sigma` to rounding.  Attributes: `interval`,
-    `nu`, `beta`, `mesh`, `drmax`, `restriction`, `family`, `basis`, `r`
-    (the physical nodes, depths), `sigma`, `scale` and
+    at the nodes `r` is `sigma` to rounding.  Wherever a vector is taken
+    a batch of them, shape (k, nmodes), is taken too.  Attributes:
+    `interval`, `nu`, `beta`, `mesh`, `drmax`, `restriction`, `family`,
+    `basis`, `r` (the physical nodes, depths), `sigma`, `scale` and
     `coefficient_std`, the last three read-only.
     """
 
@@ -406,9 +410,8 @@ class DepthGRF:
         self.basis = SpectralBasis(self.family, 0.0, restrict=self.restriction,
                                    power=2.0 * self.beta, tol=tol)
         self.coefficient_std = _readonly(self.basis.theta ** (-self.beta))
-        self.sigma, scale = marginal_scale(
+        self.sigma, self.scale = marginal_scale(
             sigma, self.r, self.basis.pointwise_variance(2.0 * self.beta))
-        self.scale = _readonly(scale)
 
     @property
     def nmodes(self) -> int:
@@ -429,12 +432,9 @@ class DepthGRF:
         return rng.standard_normal(shape) * self.coefficient_std
 
     def synthesise(self, vector: ArrayLike) -> np.ndarray:
-        """The field of coefficient vectors, shape (..., nmodes), at the
-        physical nodes: shape (..., r.size), `scale` applied."""
-        c = np.asarray(vector, dtype=float)
-        if c.ndim == 0 or c.shape[-1] != self.nmodes:
-            raise ValueError(f"expected {self.nmodes} coefficients along the last "
-                             f"axis, got shape {c.shape}")
+        """The field of a coefficient vector at the physical nodes, shape
+        (r.size,), `scale` applied; of a batch, shape (k, r.size)."""
+        c = coefficient_vectors(vector, self.nmodes)
         return (c @ self.basis.modes()[self.restriction.nodes].T) * self.scale
 
     def factor(self) -> np.ndarray:
@@ -451,21 +451,26 @@ class DepthGRF:
         """Marginal standard deviation at the nodes (exact by design)."""
         return self.sigma.copy()
 
-    def to_layer(self, vector: ArrayLike) -> PolynomialLayer:
-        """The field of one coefficient vector as an exact
-        `PolynomialLayer` on [depth1, depth2], through its nodal values."""
-        c = np.asarray(vector, dtype=float)
-        if c.shape != (self.nmodes,):
-            raise ValueError(f"expected a vector of length {self.nmodes}, got "
-                             f"shape {c.shape}")
-        return PolynomialLayer(self.interval, _nodal_ppoly(
+    def to_layer(self, vector: ArrayLike
+                 ) -> PolynomialLayer | tuple[PolynomialLayer, ...]:
+        """The field of a coefficient vector as an exact `PolynomialLayer`
+        on [depth1, depth2], through its nodal values; of a batch, one
+        for each of its vectors."""
+        c = coefficient_vectors(vector, self.nmodes)
+        if c.ndim == 2:
+            return tuple(self.to_layer(v) for v in c)
+        return PolynomialLayer(self.interval, nodal_ppoly(
             self.mesh, self.restriction, self.synthesise(c)))
 
     def to_field(self, vector: ArrayLike, *, character: Character = SCALAR,
-                 name: str | None = None) -> DepthField:
-        """The field of one coefficient vector as a `DepthField` on
-        [depth1, depth2]."""
-        return DepthField(self.interval, self.to_layer(vector), character=character,
+                 name: str | None = None) -> DepthField | tuple[DepthField, ...]:
+        """The field of a coefficient vector as a `DepthField` on
+        [depth1, depth2]; of a batch, one for each of its vectors."""
+        c = coefficient_vectors(vector, self.nmodes)
+        if c.ndim == 2:
+            return tuple(self.to_field(v, character=character, name=name)
+                         for v in c)
+        return DepthField(self.interval, self.to_layer(c), character=character,
                           name=name)
 
     def __repr__(self) -> str:
@@ -485,13 +490,12 @@ def _lateral_grid(lateral: Grid | Transform) -> Grid:
         raise TypeError(f"the lateral grid is a cartesian.Grid or a "
                         f"fourier.Transform, got {type(lateral).__name__}")
     domain: PaddedDomain = lateral.domain
-    if domain.dimension == 2:
-        return Grid(Box(domain.bounds, padding=domain.padding), lateral.shape)
-    if domain.dimension == 1:
-        return Grid(Rectangle(domain.bounds[0], padding=domain.padding[0]),
-                    lateral.shape)
-    raise NotImplementedError(f"a random field over a lateral domain of "
-                              f"{domain.dimension} axes is not built")
+    # the one branch on the number of axes: it names the kind of lateral domain
+    kind = {len(kind.axes): kind for kind in (Box, Rectangle)}.get(domain.dimension)
+    if kind is None:
+        raise NotImplementedError(f"a random field over a lateral domain of "
+                                  f"{domain.dimension} axes is not built")
+    return Grid(kind(domain.bounds, padding=domain.padding), lateral.shape)
 
 
 class BoxGRF:
@@ -515,10 +519,11 @@ class BoxGRF:
     independent with standard deviations `coefficient_std`; the field
     of a vector is `scale` (a factor of depth) times its synthesis,
     whose standard deviation at the depth nodes `r` and the nodes of
-    the lateral grid is `sigma` to rounding.  Attributes: `interval`,
-    `grid`, `transform`, `nu`, `beta`, `mesh`, `drmax`, `restriction`,
-    `family`, `basis`, `r` (the physical nodes, depths), `sigma`,
-    `scale` and `coefficient_std`, the last three read-only.
+    the lateral grid is `sigma` to rounding.  Wherever a vector is taken
+    a batch of them, shape (k, size), is taken too.  Attributes:
+    `interval`, `grid`, `transform`, `nu`, `beta`, `mesh`, `drmax`,
+    `restriction`, `family`, `basis`, `r` (the physical nodes, depths),
+    `sigma`, `scale` and `coefficient_std`, the last three read-only.
     """
 
     def __init__(self, depth1: float, depth2: float, grid: Grid | Transform,
@@ -552,9 +557,8 @@ class BoxGRF:
         var_raw = np.zeros(self.r.size)
         for b, count in zip(self.basis, self.basis.multiplicity):
             var_raw += count * b.pointwise_variance(p)
-        self.sigma, scale = marginal_scale(sigma, self.r,
-                                           var_raw / self.transform.volume)
-        self.scale = _readonly(scale)
+        self.sigma, self.scale = marginal_scale(sigma, self.r,
+                                                var_raw / self.transform.volume)
         self._interpolant: PPoly | None = None
 
     @property
@@ -577,22 +581,33 @@ class BoxGRF:
         return rng.standard_normal(shape) * self.coefficient_std
 
     def synthesise(self, vector: ArrayLike) -> np.ndarray:
-        """The Fourier components of the field of one coefficient vector
-        as functions of depth at the physical nodes: shape (N, r.size),
-        the transform's components in its order and depth last, `scale`
-        applied."""
-        return self.basis.synthesise(vector) * self.scale
+        """The Fourier components of the field of a coefficient vector as
+        functions of depth at the physical nodes: shape (N, r.size), the
+        transform's components in its order and depth last, `scale`
+        applied; of a batch, that with a leading axis over it."""
+        c = coefficient_vectors(vector, self.size)
+        rows = c.reshape(-1, self.size)
+        out = np.empty((rows.shape[0], self.transform.size, self.r.size))
+        for k, row in enumerate(rows):
+            out[k] = self.basis.synthesise(row)
+        out *= self.scale
+        return out.reshape(c.shape[:-1] + out.shape[1:])
 
     def on_grid(self, vector: ArrayLike) -> np.ndarray:
-        """The field of one coefficient vector at the depth nodes and the
-        nodes of the lateral grid: shape (r.size,) + grid.shape, through
-        the transform's grid synthesis."""
-        return self.transform.synthesise_grid(self.synthesise(vector).T)
+        """The field of a coefficient vector at the depth nodes `r` and
+        the nodes of the lateral grid: shape (r.size,) + grid.shape,
+        through the transform's grid synthesis; of a batch, that with a
+        leading axis over it.  The grid is the sampler's own, which is
+        also its lateral band."""
+        return self.transform.synthesise_grid(
+            np.swapaxes(self.synthesise(vector), -1, -2))
 
-    def sample_grid(self, *, rng: Any = None) -> np.ndarray:
-        """One sample at the depth nodes and the nodes of the lateral
-        grid, `on_grid` of `sample`: shape (r.size,) + grid.shape."""
-        return self.on_grid(self.sample(rng=rng))
+    def sample_grid(self, *, rng: Any = None, size: int | None = None
+                    ) -> np.ndarray:
+        """One sample (or `size` of them) at the depth nodes `r` and the
+        nodes of the lateral grid, `on_grid` of `sample`: shape
+        (r.size,) + grid.shape, or that with a leading axis of `size`."""
+        return self.on_grid(self.sample(rng=rng, size=size))
 
     def factor(self, i: int) -> np.ndarray:
         """The covariance factor of the i-th distinct lateral eigenvalue,
@@ -614,27 +629,33 @@ class BoxGRF:
         return self.sigma.copy()
 
     def coefficient_functions(self, vector: ArrayLike) -> PPoly:
-        """The Fourier components of the field of one coefficient vector
-        as one `PPoly` of depth on [depth1, depth2] whose values have
-        shape (N,): the polynomial of each element through `synthesise`'s
-        values at its nodes."""
-        return _nodal_ppoly(self.mesh, self.restriction, self.synthesise(vector).T)
+        """The Fourier components of the field of a coefficient vector as
+        one `PPoly` of depth on [depth1, depth2] whose values have shape
+        (N,), or (k, N) of a batch: the polynomial of each element
+        through `synthesise`'s values at its nodes."""
+        return nodal_ppoly(self.mesh, self.restriction,
+                           np.moveaxis(self.synthesise(vector), -1, 0))
 
     def to_field(self, vector: ArrayLike, *, character: Character = SCALAR,
-                 name: str | None = None) -> FourierField:
-        """The field of one coefficient vector as a `FourierField` on
+                 name: str | None = None
+                 ) -> FourierField | tuple[FourierField, ...]:
+        """The field of a coefficient vector as a `FourierField` on
         [depth1, depth2] over `grid`, its coefficients the piecewise
-        polynomials of `coefficient_functions`."""
-        return FourierField(self.interval, self.grid,
-                            self.coefficient_functions(vector), character=character,
-                            name=name)
+        polynomials of `coefficient_functions`; of a batch, one for each
+        of its vectors."""
+        c = coefficient_vectors(vector, self.size)
+        if c.ndim == 2:
+            return tuple(self.to_field(v, character=character, name=name)
+                         for v in c)
+        return FourierField(self.interval, self.grid, self.coefficient_functions(c),
+                            character=character, name=name)
 
     def _at_depths(self, depth: np.ndarray) -> np.ndarray:
         """The weights (depth.size, r.size) that read the polynomial
         through nodal values at depths of the interval."""
         if self._interpolant is None:
-            self._interpolant = _nodal_ppoly(self.mesh, self.restriction,
-                                             np.eye(self.r.size))
+            self._interpolant = nodal_ppoly(self.mesh, self.restriction,
+                                            np.eye(self.r.size))
         return self._interpolant(depth)
 
     def covariance(self, a: ArrayLike, b: ArrayLike) -> np.ndarray:
@@ -700,9 +721,11 @@ class LayeredGRF:
     box being the period.
 
     A sample is one vector, the coefficient vectors of the included
-    layers in ascending order of layer (`block`); `to_fields` gives the
-    field of a vector on every layer of the skeleton, zero on the
-    excluded ones, ready for `Model.with_field`.
+    layers in ascending order of layer (`block`), of length `size`;
+    `to_fields` gives the field of a vector on every layer of the
+    skeleton, zero on the excluded ones, ready for `Model.with_field`.
+    Wherever a vector is taken a batch of them, shape (k, size), is
+    taken too.
     """
 
     def __init__(self, skeleton: Skeleton | Geometry | Model,
@@ -750,25 +773,29 @@ class LayeredGRF:
         start = self._starts[i]
         return slice(start, start + self._grfs[i].size)
 
-    def sample(self, *, rng: Any = None) -> np.ndarray:
-        """One coefficient vector, shape (size,): the layers' samples in
-        ascending order of layer, drawn in that order from the generator.
-        `rng` is anything `np.random.default_rng` accepts."""
+    def sample(self, *, rng: Any = None, size: int | None = None) -> np.ndarray:
+        """One coefficient vector (or `size` of them), shape (self.size,)
+        or (size, self.size): the layers' samples in ascending order of
+        layer, drawn in that order from the generator, a batch being
+        `size` successive draws.  `rng` is anything
+        `np.random.default_rng` accepts."""
         rng = np.random.default_rng(rng)
-        out = np.empty(self.size)
-        for i in self.layers:
-            out[self.block(i)] = self._grfs[i].sample(rng=rng)
-        return out
+        out = np.empty((1 if size is None else int(size), self.size))
+        for row in out:
+            for i in self.layers:
+                row[self.block(i)] = self._grfs[i].sample(rng=rng)
+        return out[0] if size is None else out
 
     def to_fields(self, vector: ArrayLike, *, character: Character = SCALAR
-                  ) -> tuple[DepthField | FourierField, ...]:
+                  ) -> (tuple[DepthField | FourierField, ...]
+                        | tuple[tuple[DepthField | FourierField, ...], ...]):
         """The field of a coefficient vector on every layer of the
         skeleton: a `DepthField` each, or over a grid a `FourierField`
-        each, zero on the excluded layers."""
-        v = np.asarray(vector, dtype=float)
-        if v.shape != (self.size,):
-            raise ValueError(f"expected a vector of length {self.size}, got "
-                             f"shape {v.shape}")
+        each, zero on the excluded layers.  Of a batch, one such tuple
+        for each of its vectors."""
+        v = coefficient_vectors(vector, self.size)
+        if v.ndim == 2:
+            return tuple(self.to_fields(row, character=character) for row in v)
         out = []
         for i in range(self.skeleton.nlayers):
             iv = self.skeleton.interval(i)

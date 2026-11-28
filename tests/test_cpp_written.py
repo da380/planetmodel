@@ -8,7 +8,10 @@ the Python's strict reader, a fixture written back to the same fault
 and metadata, evaluating number for number as the fixture does, and a
 fault built in C++ to the C++'s own evaluations of it; and the kernel the example
 `write_kernel` wrote reads as a kernel (tutorial 15, given its path,
-compares it with the Python's own at every node, in the C++ job of CI).
+compares it with the Python's own at every node, in the C++ job of CI);
+and a file the C++ wrote without a source names the C++ library.  The
+Interpolation the C++ library fetches by default is held to a release
+tag, with or without the files.
 
 The C++ tests leave the files in their build tree; PLANETMODEL_CPP_WRITTEN
 names that directory (`build/cpp/tests/written` for the build of
@@ -31,6 +34,18 @@ FIXTURES = Path(__file__).resolve().parents[1] / "cpp" / "tests" / "fixtures"
 needs_written = pytest.mark.skipif(
     WRITTEN is None,
     reason="PLANETMODEL_CPP_WRITTEN names no directory of C++-written files")
+
+
+def test_the_cpp_builds_against_a_release_of_interpolation():
+    """The Interpolation revision the C++ library fetches by default is a
+    release tag, so that every state of planetmodel names one that can be
+    rebuilt; another revision is a caller's to name."""
+    import re
+    text = (FIXTURES.parents[1] / "CMakeLists.txt").read_text()
+    default = re.search(r"set\(PLANETMODEL_INTERPOLATION_TAG (\S+) CACHE STRING", text)
+    assert default is not None, "no default PLANETMODEL_INTERPOLATION_TAG"
+    assert re.fullmatch(r"v\d+\.\d+\.\d+", default.group(1)), default.group(1)
+    assert "GIT_TAG        ${PLANETMODEL_INTERPOLATION_TAG}" in text
 
 
 def _written(pattern: str) -> list[Path]:
@@ -136,6 +151,32 @@ def test_a_fixture_written_back_reads_as_the_fixture(path):
 
 
 @needs_written
+def test_a_file_the_cpp_wrote_names_the_behaviours_it_was_given():
+    """The C++ has no behaviours and carries their names: those a code
+    states for the model it builds, and those of a file it reads and
+    writes back, a name the Python lacks among them, so that the model
+    read from its file has the behaviours of the one first written."""
+    from planetmodel import Elastic, SelfGravitating, Viscoelastic
+    from planetmodel.modelfile import read_model_file
+    stated = ("Elastic", "Tidal", "SelfGravitating")
+    assert read_model_file(Path(WRITTEN) / "written_si.nc").behaviours == stated
+    for name in ("roundtrip_model_radial.nc", "behaviours_radial.nc"):
+        assert read_model_file(Path(WRITTEN) / name).behaviours == stated
+        with pytest.warns(UserWarning, match="names the behaviour 'Tidal'"):
+            model = read_model(Path(WRITTEN) / name)
+        assert isinstance(model, Elastic) and isinstance(model, SelfGravitating)
+        assert model.behaviours == stated
+    want = read_model(FIXTURES / "model_prem.nc")
+    prem = read_model(Path(WRITTEN) / "roundtrip_model_prem.nc")
+    assert type(prem) is type(want) and isinstance(prem, Viscoelastic)
+    assert prem.behaviours == want.behaviours == (
+        "Elastic", "ConstantQ", "SelfGravitating", "Viscoelastic")
+    r = np.linspace(0.0, want.skeleton.boundaries[-1], 23)
+    assert np.allclose(prem.gravity(r), want.gravity(r), rtol=1e-12)
+    assert read_model_file(Path(WRITTEN) / "behaviours_none.nc").behaviours == ()
+
+
+@needs_written
 def test_a_file_the_cpp_wrote_cites_what_it_was_given():
     assert read_model(Path(WRITTEN) / "written_si.nc").citation == (
         "A. Author (2026).  A written model.", "B. Author (2026).  Its source.")
@@ -179,6 +220,21 @@ def test_the_surface_file_the_cpp_wrote_holds_what_it_was_given():
     want = gauss_legendre(4)
     assert np.allclose(grid.colatitudes, want.colatitudes, rtol=0, atol=1e-12)
     assert np.allclose(grid.weights, want.weights, rtol=0, atol=1e-12)
+
+
+@needs_written
+def test_a_file_the_cpp_wrote_without_a_source_names_the_library():
+    """A surface file, a flat one and a fault file written by the C++ with
+    no `source` given state the C++ library and its version, as its model
+    files do."""
+    from planetmodel import __version__
+    from planetmodel.faultfile import read_fault_file
+    from planetmodel.surfacefile import read_surface
+
+    want = f"planetmodel C++ {__version__}"
+    for name in ("surface_stamped.nc", "flat_surface_stamped.nc"):
+        assert read_surface(Path(WRITTEN) / name).file.source == want, name
+    assert read_fault_file(Path(WRITTEN) / "fault_stamped" / "fault.nc").source == want
 
 
 @needs_written

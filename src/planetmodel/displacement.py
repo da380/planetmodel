@@ -159,12 +159,14 @@ class CallableDisplacement:
 
     Derivatives passed in, or carried by `fn` as attributes named
     `radial_derivative` and `angular_gradient`, are used as given;
-    otherwise central differences are taken, with step `dstep` in the
-    angles (`angular_difference`) and `max(dstep, dstep * |r|)` in the
-    radius (`radial_difference`), one-sided where they would leave the
-    sphere or step below the centre.  `knots` declares the radii where
-    dh/dr jumps, by default those `fn` carries; leaving them empty
-    asserts smoothness.  `bounds` is `fn`'s where it has one.
+    otherwise differences are taken.  In the angles they are central
+    with step `dstep` (`angular_difference`), a colatitude stepped past
+    a pole being read across it at the opposite longitude, so that they
+    stay central there; in the radius they are central with step
+    `max(dstep, dstep * |r|)` (`radial_difference`), and one-sided where
+    the lower point would fall below the centre.  `knots` declares the
+    radii where dh/dr jumps, by default those `fn` carries; leaving them
+    empty asserts smoothness.  `bounds` is `fn`'s where it has one.
     """
 
     def __init__(self, fn: SphericalFunction, *, knots: Iterable[float] = (),
@@ -396,7 +398,8 @@ class LayerLinear:
     def scaled(self, k: float) -> "LayerLinear":
         """The same reliefs on a body k times the size: the boundaries and
         every relief multiplied by k, a relief by its own `scaled` where
-        it has one (a gridded relief stays gridded)."""
+        it has one (a gridded relief stays gridded, a harmonic one
+        harmonic)."""
         k = float(k)
         return LayerLinear(Skeleton(k * self._b),
                            [None if rel is None else _scaled_relief(rel, k, self._h)

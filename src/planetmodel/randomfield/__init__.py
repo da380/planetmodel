@@ -18,23 +18,29 @@ coefficients as one vector.  That is what a space, an operator and a
 Gaussian measure are made of.  `RadialGRF`, `SphericalGRF` and
 `LayeredGRF` are the samplers built on them: fields of radius, of
 a shell and of the layers of a skeleton, by Karhunen-Loeve expansion in
-those bases, with an exact marginal standard deviation.  The shell
-fields are expanded in the real orthonormal harmonics of
-`planetmodel.harmonics`, synthesised through ducc0; everything else
-here is numpy and scipy.  `fields`
+those bases, with an exact marginal standard deviation.  A sample is
+the vector of the field's coefficients in its basis, and the values at
+the nodes, the values on a grid and the field a model holds are views
+of a vector, or of a batch of them.  The shell fields are expanded in
+the real orthonormal harmonics of `planetmodel.harmonics`, synthesised
+through ducc0; everything else here is numpy and scipy.  `fields`
 states the construction of the samplers, `basis` that of the bases.
 The samplers of flat layers, Fourier series over a box with the family
 in depth, are in `planetmodel.cartesian.randomfield`, on the same
-family, bases and helpers.
+family, bases and helpers and with the same methods.
 
 ::
 
     grf = RadialGRF(r1, r2, nu, lam, sigma=sigma)
-    grf.to_field(grf.sample(rng=rng))              # a RadialField
+    c = grf.sample(rng=rng)                        # the coefficient vector
+    grf.synthesise(c)                              # values at the nodes grf.r
+    grf.to_field(c)                                # a RadialField
     shell = SphericalGRF(r1, r2, nu, lam, lmax=24)
-    shell.to_field(shell.sample(rng=rng))          # a HarmonicField
-    shell.sample_grid(gauss_legendre(24), rng=rng)   # nodes x grid, ducc0
-    LayeredGRF(model, nu, lam, layers=mantle).sample(rng=rng)
+    c = shell.sample(rng=rng)
+    shell.to_field(c)                              # a HarmonicField
+    shell.on_grid(c, gauss_legendre(24))           # nodes x grid, ducc0
+    layered = LayeredGRF(model, nu, lam, layers=mantle)
+    layered.to_fields(layered.sample(rng=rng))     # a RadialField per layer
 
     mesh = padded_mesh(a, b, pad=2 * matern_reach(nu, lam), weight="one")
     family = SeparableOperatorFamily(mesh, kappa=lam ** 2, weight="one")

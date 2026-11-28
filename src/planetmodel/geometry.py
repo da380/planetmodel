@@ -34,7 +34,7 @@ for the outside.  For a hollow geometry the inner boundary is interface
 
 The lattice of those checks is the geometry's `lattice`, in its
 `coordinates` (`SPHERICAL`'s lattice on the sphere), and is the sample
-the mapping's `is_valid(sample=..., coordinates=...)` takes; the
+the mapping's `validity(sample=..., coordinates=...)` takes; the
 messages, and the repr's skeleton, name the system's coordinates.  A
 leaf states the class of a field of its layered coordinate alone
 (`radial_field_type`: `RadialField` on the sphere, `cartesian.DepthField`
@@ -53,7 +53,7 @@ from typing import ClassVar
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .coordinates import SPHERICAL, Coordinates
+from .coordinates import SPHERICAL, Coordinates, increases_outward
 from .displacement import RadialDisplacement, SphericalFunction
 from .fields import RadialField
 from .mapping import (IdentityMapping, Mapping, RadialStretch, SphericalSample,
@@ -292,6 +292,7 @@ class GeometryBase:
             raise IndexError(f"{what} index out of range for {n} {what}s")
         return i
 
+    @property
     def knots(self) -> tuple[float, ...]:
         """The values of the layered coordinate within the skeleton, to
         `rtol` of its span, where the mapping declares its gradient may
@@ -375,14 +376,16 @@ class GeometryBase:
 
     # -- surgery ------------------------------------------------------------
 
-    def refined(self, radii: ArrayLike, *, names: Names = None) -> "GeometryBase":
+    def refined(self, radii: ArrayLike, *,
+                interface_names: Names = None) -> "GeometryBase":
         """Interior boundaries inserted; the mapping is kept.
 
-        A split layer loses its name; `names` name the new interfaces.
+        A split layer loses its name; `interface_names` name the new
+        interfaces, one per radius in the order given.
         """
         radii = [float(r) for r in np.atleast_1d(np.asarray(radii, dtype=float))]
         sk = self._sk.refined(radii)
-        new_face_names = _names(names, len(radii), "interface")
+        new_face_names = _names(interface_names, len(radii), "interface")
         by_radius = dict(zip(sorted(radii), [new_face_names[radii.index(r)]
                                              for r in sorted(radii)]))
         old_faces = {f.radius: f.name for f in self.interfaces}
@@ -432,11 +435,11 @@ class GeometryBase:
         return self._copy(skeleton=sk, layer_names=layer_names,
                           interface_names=face_names)
 
-    def extended(self, radii: ArrayLike, *, names: Names = None,
+    def extended(self, radii: ArrayLike, *, layer_names: Names = None,
                  interface_names: Names = None) -> "GeometryBase":
         """Layers appended beyond the last boundary; identity mapping only.
 
-        `names` name the new layers and `interface_names` the interfaces
+        `layer_names` name the new layers and `interface_names` the interfaces
         they bring, one each: the new layers' outer boundaries on the
         sphere, their tops in a box (the old base first).  A geometry
         whose mapping is not the identity is refused: extend the
@@ -448,24 +451,49 @@ class GeometryBase:
         n = len(radii)
         return self._copy(
             skeleton=sk,
-            layer_names=self._layer_names + _names(names, n, "layer"),
+            layer_names=self._layer_names + _names(layer_names, n, "layer"),
             interface_names=self._face_names + _names(interface_names, n, "interface"))
 
-    def coarsened(self, *, keep: Iterable[int] | None = None,
-                  drop: Iterable[int] | None = None
+    def coarsened(self, *, keep: Iterable[int | str] | None = None,
+                  drop: Iterable[int | str] | None = None
                   ) -> tuple["GeometryBase", CoarseningMap]:
-        """Interior boundaries removed; identity mapping only.
+        """Interior interfaces removed; identity mapping only.
 
-        A merged layer's name is None; kept interfaces keep theirs.
+        Exactly one of `keep` and `drop` selects interior interfaces by
+        index or name, as `interface` takes them; the outermost interface
+        (the surface of a ball or of a box), and the inner boundary of a
+        hollow ball, are not selectable.  A merged layer's name is None;
+        kept interfaces keep theirs.
         """
+        if (keep is None) == (drop is None):
+            raise ValueError("give exactly one of keep and drop")
+        which = [self._interior(w) for w in (drop if keep is None else keep)]
         self._require_identity("coarsened")
-        sk, cmap = self._sk.coarsened(keep=keep, drop=drop)
+        sk, cmap = (self._sk.coarsened(drop=which) if keep is None
+                    else self._sk.coarsened(keep=which))
         layer_names = [self._layer_names[fine[0]] if len(fine) == 1 else None
                        for fine in cmap.layers]
         old_faces = {f.radius: f.name for f in self.interfaces}
         face_names = [old_faces.get(r) for r in self._face_values(sk)]
         return (self._copy(skeleton=sk, layer_names=layer_names,
                            interface_names=face_names), cmap)
+
+    def _interior(self, which: int | str) -> int:
+        """Interface `which`, by index or name, as an index into the
+        skeleton's interior boundaries; an end of the skeleton is refused."""
+        face = self.interface(which)
+        b = self._sk.boundaries
+        L = self._sk.nlayers
+        j = int(np.flatnonzero(b == face.radius)[0])
+        if j == (L if increases_outward(self.coordinates) else 0):
+            raise ValueError(
+                f"interface {face.name or face.index!r} is the outermost "
+                "boundary and cannot be selected for coarsening")
+        if not 0 < j < L:
+            raise ValueError(
+                f"interface {face.name or face.index!r} is the inner "
+                "boundary of a hollow geometry and cannot be selected")
+        return j - 1
 
     def _require_identity(self, verb: str) -> None:
         if not self.is_identity:

@@ -107,6 +107,40 @@ def test_component_of_finds_every_label_modulo_the_grid(shape):
         p.component_of(np.zeros(len(shape) + 1, dtype=int))
 
 
+@pytest.mark.parametrize("shape", [(8,), (7,), (6, 4), (5, 5), (4, 3, 5)])
+def test_a_cosine_is_found_under_either_member_of_its_pair_and_a_sine_under_one(shape):
+    """cos(k . x) is cos(-k . x), so the conjugate of a pair's representative
+    names the same cosine: the grid's cosine of -k, analysed, is that one
+    component, sqrt(V / 2) times its amplitude.  A sine changes sign, so it
+    is named by the representative alone."""
+    t = Transform(shape, np.arange(1.0, len(shape) + 1.0))
+    p = t.packing
+    sines = np.flatnonzero(p.phases == 1)
+    k = p.wavevectors[:, sines]
+    assert np.array_equal(p.component_of(-k), sines - 1)
+    # an array of both members and of self-conjugate modes, each found
+    every = np.concatenate([p.wavevectors, -p.wavevectors], axis=1)
+    cosines = np.where(p.phases == 1, np.arange(p.size) - 1, np.arange(p.size))
+    assert np.array_equal(p.component_of(every), np.tile(cosines, 2))
+    x = t.grid_points
+    for j in sines[::max(1, sines.size // 4)]:
+        minus = -p.wavevectors[:, j]
+        theta = sum(2.0 * np.pi * minus[i] * x[..., i] / t.lengths[i]
+                    for i in range(t.dimension))
+        c = t.analyse_grid(np.cos(theta))
+        assert p.component_of(minus) == j - 1 == p.component_of(minus.tolist())
+        assert np.isclose(c[p.component_of(minus)], np.sqrt(0.5 * t.volume))
+        assert np.isclose(np.sum(c ** 2), 0.5 * t.volume)
+        # the sine of -k is minus the representative's, which a position
+        # cannot say: refused, naming the representative
+        named = str(p.wavevectors[:, j].tolist())
+        with pytest.raises(ValueError, match=f"conjugate {named}".replace(
+                "[", r"\[").replace("]", r"\]")):
+            p.component_of(minus, phase=1)
+    with pytest.raises(ValueError, match="self-conjugate mode has no sine"):
+        p.component_of(np.zeros(len(shape), dtype=int), phase=1)
+
+
 def test_the_packing_is_built_once_per_shape_and_read_only():
     a, b = Transform((6, 4), [1.0, 1.0]), Transform((6, 4), [2.0, 3.0])
     assert a.packing is b.packing
@@ -489,7 +523,13 @@ def test_a_cartesian_box_and_rectangle_are_read_through_their_bounds_and_padding
     rect = Rectangle((0.0, 4.0), padding=1.0)
     r = Transform((24,), rect)
     assert r.domain == PaddedDomain([(0.0, 4.0)], padding=1.0)
-    assert r.lengths == (rect.length,) and r.origin == (rect.extent[0],)
+    assert r.domain.bounds == rect.bounds and r.domain.padding == rect.padding
+    assert r.domain.extent == rect.extent and r.lengths == rect.lengths
+    assert r.origin == (rect.extent[0][0],)
+    # each is its padded domain, held the same way
+    for domain in (box, rect):
+        assert PaddedDomain.of(domain) == PaddedDomain(domain.bounds,
+                                                       padding=domain.padding)
     model = Transform((16, 12), Box([(0.0, 2.0), (0.0, 1.0)]))
     assert model.domain == PaddedDomain.of([2.0, 1.0])          # its box, its period
     assert model.mask.all() and np.array_equal(model.taper, np.ones((16, 12)))

@@ -47,7 +47,7 @@ above = [lay.index for lay in model.layers if lay.interval[0] >= 6151e3]
 base = lithosphere.viscosity_threshold(model, 1e22, grid=grid, layers=above)
 maxwell = lithosphere.maxwell_threshold(model, 1e4 * 3.156e7, grid=grid, layers=above)
 for label, surface in (("1e22 Pa s", base), ("Maxwell time 1e4 years", maxwell)):
-    depth = (6371e3 - surface.function.values) / 1e3
+    depth = (TOP - surface.function.values) / 1e3
     print(f"{label}: the base from {depth.min():.0f} to {depth.max():.0f} km deep")
 
 # %% [markdown]
@@ -56,7 +56,7 @@ for label, surface in (("1e22 Pa s", base), ("Maxwell time 1e4 years", maxwell))
 
 # %%
 plain, _ = pm.PREM(ocean=False).coarsened(drop=["d80", "d220", "moho", "d15"])
-plain = plain.refined([6271e3], names=["lab"])
+plain = plain.refined([TOP - 100e3], interface_names=["lab"])
 placed = moved(plain, {"lab": base})
 pm.testing.check_geometry(placed.geometry)
 lid = lithosphere.with_lid(model, base, viscosity=1e30)
@@ -68,8 +68,8 @@ print("moved, and a lid on layers",
 fig = plt.figure(figsize=(6, 3.5))
 ax = fig.add_subplot(projection=ccrs.Robinson())
 depth = pm.slices.surface(model, pm.GriddedFunction(
-    grid, (6371e3 - base.function.values) / 1e3, lateral="linear",
-    poles=(6371e3 - base.function.poles) / 1e3), "surface")
+    grid, (TOP - base.function.values) / 1e3, lateral="linear",
+    poles=(TOP - base.function.poles) / 1e3), "surface")
 mesh = sphere_map(ax, depth)
 fig.colorbar(mesh, ax=ax, orientation="horizontal", shrink=0.7,
              label="depth of the 1e22 Pa s base (km)")

@@ -94,17 +94,21 @@ def test_surgery_keeps_the_numbering_and_the_base_takes_no_name():
     assert cut.skeleton.boundaries[-1] == 30.0
     with pytest.raises(ValueError, match="cut at depth 40 is no interface"):
         g.truncated(40.0, name="base")
-    longer = g.extended([80.0, 120.0], names=["pad1", "pad2"],
+    longer = g.extended([80.0, 120.0], layer_names=["pad1", "pad2"],
                         interface_names=["old base", "between pads"])
     assert [f.radius for f in longer.interfaces] == [0.0, 10.0, 30.0, 50.0, 80.0]
     assert longer.interfaces[3].between == (3, 2)
     assert longer.interface("old base").radius == 50.0
-    finer = g.refined([20.0], names=["mid"])
+    finer = g.refined([20.0], interface_names=["mid"])
     assert [f.name for f in finer.interfaces] == ["surface", "moho", "mid", "d2"]
     assert finer.layer(1).name is None and finer.layer(0).name == "crust"
-    coarse, _ = g.coarsened(drop=[1])
+    coarse, _ = g.coarsened(drop=[2])
     assert [f.name for f in coarse.interfaces] == ["surface", "moho"]
     assert coarse.layers[1].interval == (10.0, 50.0)
+    assert g.coarsened(drop=["d2"])[0].skeleton == coarse.skeleton
+    assert g.coarsened(keep=[1])[0].skeleton == coarse.skeleton
+    with pytest.raises(ValueError, match="'surface' is the outermost boundary"):
+        g.coarsened(drop=[0])
 
 
 def test_the_contract_holds_flat_geometries_with_any_mapping():
@@ -157,8 +161,8 @@ def test_validity_and_the_scaled_mapping_go_through_the_flat_system():
     assert not report and report.worst_point[0] > 40.0
     # the scaled mapping reads the sample of a body k times the size at X / k
     scaled = ScaledMapping(Folded(40.0), 2.0)
-    assert scaled.is_valid(sample=(np.array([70.0]), 0.0, 0.0), coordinates=FLAT)
-    bad = scaled.is_valid(sample=(np.array([90.0]), 3.0, 4.0), coordinates=FLAT)
+    assert scaled.validity(sample=(np.array([70.0]), 0.0, 0.0), coordinates=FLAT)
+    bad = scaled.validity(sample=(np.array([90.0]), 3.0, 4.0), coordinates=FLAT)
     assert not bad and np.allclose(bad.worst_point, (45.0, 1.5, 2.0))
     check_mapping(SHEAR, FLAT.points(*g.lattice(n_c=2, n_a=3, n_b=2)).reshape(-1, 3))
 
@@ -182,13 +186,75 @@ def test_a_box_has_bounds_padding_and_a_period():
 
 def test_a_rectangle_bounds_x_alone():
     r = flat.Rectangle((10, 70), padding=5.0)
-    assert r.bounds == (10.0, 70.0) and r.extent == (5.0, 75.0) and r.length == 70.0
+    assert r.bounds == ((10.0, 70.0),) and r.padding == (5.0,)
+    assert r.extent == ((5.0, 75.0),) and r.lengths == (70.0,)
     assert r.axes == ("x",) and flat.Box([(0, 1), (0, 1)]).axes == ("x", "y")
     assert r.contains([20.0, 71.0], [1e9, 0.0]).tolist() == [True, False]
     assert r == flat.Rectangle((10.0, 70.0), padding=5) and r.scaled(2.0) == (
         flat.Rectangle((20.0, 140.0), padding=10.0))
     _, x, y = r.lattice(Skeleton([0.0, 1.0]))
     assert x.min() == 5.0 and x.max() == 75.0 and np.isclose(y.min(), -35.0)
+    assert y.shape == (1, 1, 3) and np.isclose(y.max(), 35.0)
+
+
+def test_a_rectangle_is_given_the_pair_or_what_it_holds():
+    r = flat.Rectangle((10, 70), padding=5.0)
+    for bounds, padding in (([(10, 70)], (5.0,)), (r.bounds, r.padding),
+                            (np.array([10.0, 70.0]), np.array([5.0])),
+                            (np.array([[10.0, 70.0]]), 5.0)):
+        same = flat.Rectangle(bounds, padding=padding)
+        assert same == r and hash(same) == hash(r)
+        assert same.bounds == ((10.0, 70.0),) and same.padding == (5.0,)
+    assert flat.Rectangle(r.bounds).padding == (0.0,)
+
+
+@pytest.mark.parametrize("domain", [
+    flat.Box([(0, 100), (-20, 40)], padding=(5.0, 2.5)), BOX,
+    flat.Rectangle((10, 70), padding=5.0), flat.Rectangle((-3.0, 4.0))], ids=repr)
+def test_every_domain_answers_per_axis(domain):
+    """One form for a box and a rectangle: a pair of bounds and of extent,
+    a padding and a period for each of `axes`; equality, the hash, the
+    copy at another scale and the repr through them."""
+    d = len(domain.axes)
+    assert domain.axes == ("x", "y")[:d]
+    for held in (domain.bounds, domain.padding, domain.extent, domain.lengths):
+        assert isinstance(held, tuple) and len(held) == d
+    for (lo, hi), p, (e0, e1), length in zip(domain.bounds, domain.padding,
+                                             domain.extent, domain.lengths):
+        assert all(type(v) is float for v in (lo, hi, p, e0, e1, length))
+        assert (e0, e1) == (lo - p, hi + p) and length == e1 - e0 and p >= 0.0
+    # what it holds is what it is built from, and what its repr shows
+    kind = type(domain)
+    same = kind(domain.bounds, padding=domain.padding)
+    assert same == domain and hash(same) == hash(domain)
+    assert eval(repr(domain), {kind.__name__: kind}) == domain
+    assert domain != kind(domain.bounds, padding=[p + 1.0 for p in domain.padding])
+    # a point: inside at the middle of the bounds, outside in the padding
+    # and past each end of each axis the domain bounds, at any other value
+    # of the rest
+    middle = dict(zip(("x", "y"), (0.0, 0.0)))
+    middle.update({a: 0.5 * (lo + hi) for a, (lo, hi) in zip(domain.axes,
+                                                              domain.bounds)})
+    assert domain.contains(middle["x"], middle["y"])
+    for axis, (lo, hi) in zip(domain.axes, domain.bounds):
+        for value, inside in ((lo, True), (hi, True), (lo - 0.01 * (hi - lo), False),
+                              (hi + 0.01 * (hi - lo), False)):
+            assert domain.contains(**(middle | {axis: value})) == inside
+    for free in set(("x", "y")) - set(domain.axes):
+        assert domain.contains(**(middle | {free: 1e9}))
+    x = np.linspace(-200.0, 200.0, 9)
+    assert domain.contains(x[:, None], x[None, :]).shape == (9, 9)
+    # the copy at another scale, of the same kind
+    big = domain.scaled(3.0)
+    assert type(big) is kind
+    assert big.bounds == tuple((3.0 * lo, 3.0 * hi) for lo, hi in domain.bounds)
+    assert big.padding == tuple(3.0 * p for p in domain.padding)
+    assert np.allclose(big.lengths, 3.0 * np.asarray(domain.lengths), rtol=1e-15)
+    # the lattice covers the extent of each axis the domain bounds
+    lattice = dict(zip(FLAT.labels, domain.lattice(Skeleton([0.0, 1.0]), n_a=5,
+                                                   n_b=3)))
+    for axis, (e0, e1) in zip(domain.axes, domain.extent):
+        assert lattice[axis].min() == e0 and lattice[axis].max() == e1
 
 
 def test_domains_refuse_what_is_no_domain():
@@ -200,6 +266,16 @@ def test_domains_refuse_what_is_no_domain():
         flat.Box([(0, 1), (0, 1)], padding=(0.0, -1.0))
     with pytest.raises(ValueError, match="bounds of x are a"):
         flat.Rectangle(5.0)
+    with pytest.raises(ValueError, match="bounds of x are a"):
+        flat.Rectangle([(0, 1), (0, 1)])
+    with pytest.raises(ValueError, match="bounds of x must be finite and increase"):
+        flat.Rectangle([(1, 0)])
+    with pytest.raises(ValueError, match="one padding, or one per axis"):
+        flat.Rectangle((0, 1), padding=(0.1, 0.1))
+    with pytest.raises(ValueError, match="one padding, or one per axis"):
+        flat.Box([(0, 1), (0, 1)], padding=(0.1,))
+    with pytest.raises(ValueError, match="padding of x must be finite and non-neg"):
+        flat.Rectangle((0, 1), padding=(-0.1,))
     with pytest.raises(ValueError, match="scale factor must be positive"):
         BOX.scaled(0.0)
     with pytest.raises(TypeError, match="expected a Box or a Rectangle"):

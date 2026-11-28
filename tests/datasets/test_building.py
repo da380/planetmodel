@@ -56,6 +56,34 @@ def test_vs_lands_on_vsv_and_vsh_and_the_moduli_follow(s40):
     pm.testing.check_model(m)
 
 
+@pytest.mark.parametrize("mode", ["relative", "absolute"])
+def test_a_model_in_other_scales_takes_the_source_in_its_units(s40, mode):
+    """The source is SI and the model is not: the source is converted to
+    the model's scales, so the perturbed velocity is the SI model's, in
+    the model's units and at its radii, whether the source's perturbation
+    or its values are kept."""
+    from planetmodel.units import Scales
+    prem = pm.PREM()
+    rng = np.random.default_rng(11)
+    for scales in (Scales(time=1000.0), Scales(length=1000.0, mass=1e12),
+                   Scales.geophysical(R)):
+        k, speed = scales.length, scales.length / scales.time
+        m = transplanted(prem.converted(scales), s40, mode=mode)
+        assert m.scales == scales
+        for name in ("lower_mantle", "transition_zone_upper"):
+            lay, ref = m.layer(name), prem.layer(name)
+            lo, hi = ref.interval
+            r, t = rng.uniform(lo, hi, 20), rng.uniform(0, np.pi, 20)
+            p = rng.uniform(0, 6, 20)
+            d = harmonic()(r, t, p)
+            for vel in ("vsv", "vsh"):
+                assert isinstance(lay[vel], pm.PerturbedField)
+                # the source's own reference is PREM: its values over the
+                # model's Voigt average are 1 + d again
+                want = ref[vel](r) * (1 + d)
+                assert np.allclose(speed * lay[vel](r / k, t, p), want, rtol=1e-10)
+
+
 def test_the_model_writes_and_reads_back(s40, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     from planetmodel.modelfile import read_model, write_model

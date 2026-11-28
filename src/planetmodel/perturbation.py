@@ -141,6 +141,19 @@ class PerturbedField(FieldBase):
         return (np.unique(np.concatenate([p[0] for p in parts])),
                 max(p[1] for p in parts))
 
+    def quadrature_degree(self) -> int | None:
+        """The degree in the layered coordinate of the field's values on
+        each of `radial_pieces`' pieces, for a quadrature exact for them:
+        the higher of the parts' degrees when absolute and their sum when
+        relative, a product; None when logarithmic, the exponential of a
+        polynomial being none, and when a part has no pieces."""
+        parts = [getattr(f, "radial_pieces", lambda: None)()
+                 for f in (self._reference, self._perturbation)]
+        if self._kind == "log" or any(p is None for p in parts):
+            return None
+        degrees = [int(p[1]) for p in parts]
+        return max(degrees) if self._kind == "absolute" else sum(degrees)
+
     def spherical_mean(self, *, grid: AngularGrid | None = None) -> RadialField:
         """The mean from the parts: reference + mean(perturbation) when
         absolute, reference (1 + mean(perturbation)) when relative, and

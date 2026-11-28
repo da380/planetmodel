@@ -56,8 +56,11 @@ schema bump and never a silent misreading.
 
 `write_fault` writes a fault, whole or not at all; `read_fault_file`
 gives a `FaultFile` (the fault and the file's metadata), the file
-checked first; `read_fault` the fault alone.  netCDF4 (the `netcdf`
-extra) is imported where a file is opened.
+checked first; `read_fault` the fault alone.  `validate_structure`
+makes the reader's checks of a file and gives nothing back,
+`schema_of` reads its schema alone, and `malformed` is the refusal of
+a file, which every check here raises.  netCDF4 (the `netcdf` extra)
+is imported where a file is opened.
 """
 from __future__ import annotations
 
@@ -76,12 +79,14 @@ from .fault import (INTERPOLATIONS, MIN_NODES, SLIP_COMPONENTS, SLIP_RULES,
                     CartesianFrame, Fault, Frame, GeographicFrame, Patch, Plane,
                     Slip, StructuredPatch)
 from .files import written_whole
-from .modelfile import CONVENTIONS, netcdf_module, put_variable, variable_values
+from .modelfile import (CONVENTIONS, netcdf_module, put_variable,
+                        stamped_source, variable_values)
 from .surfacefile import check_time_rule
 from .units import BASE, LENGTH, TIME, Dimensions, Scales, scaled_unit
 
 __all__ = ["SCHEMA", "FRAMES", "SUPPORTS", "KINDS", "POSITIONS", "FaultFile",
-           "write_fault", "read_fault_file", "read_fault"]
+           "write_fault", "read_fault_file", "read_fault", "validate_structure",
+           "schema_of", "malformed"]
 
 #: The schema string every reader checks; bumped only for an incompatible change.
 SCHEMA = "planetmodel.fault/1"
@@ -160,25 +165,30 @@ class FaultFile:
 
 # -- writing ------------------------------------------------------------------------
 
-def write_fault(path: str | os.PathLike[str], fault: Fault, *, source: str,
+def write_fault(path: str | os.PathLike[str], fault: Fault, *,
+                source: str | None = None,
                 names: Sequence[str | None] | None = None,
                 title: str | None = None, meta: Mapping[str, Any] | None = None,
                 citation: Sequence[str] = ()) -> Path:
     """Write `fault` to a fault file at `path`, returned.
 
-    `source` names the writing code and version; `names` gives each
+    `source` names the writing code and version, this library and its
+    version unless given (`modelfile.stamped_source`); `names` gives each
     patch an optional name (a segment's label); `meta` becomes
-    `meta_<key>` attributes.  Every number is written in the fault's
+    `meta_<key>` attributes, and `citation` is the works cited, one line
+    each (`model.cited`).  Every number is written in the fault's
     `scales`.  A fault whose slip is on intervals or at instants, a frame
     or a kind of patch the format does not name, is refused.  The file
     is written whole or not at all, with the permissions a plain
     `open(path, "w")` would give it (`files.written_whole`).
     """
+    from .model import cited
+
     nc = netcdf_module()
     if not isinstance(fault, Fault):
         raise TypeError(f"expected a Fault, got {type(fault).__name__}")
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("source names the writing code and version")
+    source = stamped_source(source)
+    citation = cited(citation, ())
     if fault.support not in SUPPORTS:
         raise ValueError(f"a {fault.support!r} slip is not part of {SCHEMA}: its "
                          f"supports are {_listed(SUPPORTS)}, the slip cumulative "
@@ -206,7 +216,7 @@ def write_fault(path: str | os.PathLike[str], fault: Fault, *, source: str,
     path = Path(path)
     with written_whole(path) as partial:
         _write_file(nc, partial, fault, frame, names, source, title, meta,
-                    tuple(citation))
+                    citation)
     return path
 
 
@@ -296,10 +306,14 @@ def _write_positions(group: Any, frame: str, positions: np.ndarray,
 
 # -- reading ------------------------------------------------------------------------
 
+def malformed(path: object, msg: str) -> NoReturn:
+    """Refuse a malformed fault file, naming it and the first thing wrong."""
+    raise ValueError(f"malformed fault file {path}: {msg}")
+
+
 def _fail(path: object, where: str, msg: str) -> NoReturn:
-    """The refusal of a file, naming the place of the fault."""
-    raise ValueError(f"malformed fault file {path}: "
-                     f"{f'{where}: ' if where else ''}{msg}")
+    """The refusal of a file (`malformed`), naming the place of the fault."""
+    malformed(path, f"{where}: {msg}" if where else msg)
 
 
 def _text(value: object) -> str | None:
@@ -353,6 +367,28 @@ def read_fault(path: str | os.PathLike[str]) -> Fault:
     return read_fault_file(path).fault
 
 
+def validate_structure(source: str | os.PathLike[str] | Any) -> None:
+    """Check that a file, by path or as an open netCDF4 Dataset, has the
+    structure the module docstring defines, raising ValueError naming the
+    first thing wrong: the checks `read_fault_file` makes, in its order."""
+    if isinstance(source, (str, os.PathLike)):
+        nc = netcdf_module()
+        with nc.Dataset(source, "r") as ds:
+            _read(ds, source)
+    else:
+        _read(source, getattr(source, "filepath", lambda: "<dataset>")())
+
+
+def schema_of(path: str | os.PathLike[str]) -> str:
+    """The schema a fault file declares, its global attribute `schema`,
+    read without the rest of the file; ValueError where it declares none."""
+    nc = netcdf_module()
+    with nc.Dataset(path, "r") as ds:
+        if "schema" not in ds.ncattrs():
+            _fail(path, "schema", "is missing: not a planetmodel fault file")
+        return str(ds.getncattr("schema"))
+
+
 def _read(ds: Any, path: object) -> FaultFile:
     """The fault and metadata of an open file, checked in the order the
     C++ reader checks them."""
@@ -374,8 +410,8 @@ def _read(ds: Any, path: object) -> FaultFile:
     scales = {}
     for base in ("length", "mass", "time", "temperature"):
         value = _number(attrs.get(f"scale_{base}"))
-        if value is None or not value > 0.0:
-            _fail(path, f"scale_{base}", "is missing or not positive")
+        if value is None or not (np.isfinite(value) and value > 0.0):
+            _fail(path, f"scale_{base}", "is missing or not positive and finite")
         scales[base] = value
     frame_name = _text(attrs.get("frame"))
     if frame_name not in FRAMES:

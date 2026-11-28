@@ -43,15 +43,21 @@ if TYPE_CHECKING:
     from ..model import Model
 
 __all__ = ["gravity", "mass", "layer_masses", "gravity_fields", "pressure",
-           "pressure_fields", "PRESSURE_NODES"]
+           "pressure_fields", "radii_within", "PRESSURE_NODES"]
 
 #: The Gauss-Legendre points of each pressure integral.
 PRESSURE_NODES = 24
 
 
 def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
-    """The mass of every layer and the `rho s^2` field of each; a model
-    off the sphere is refused."""
+    """The mass of every layer and the `rho s^2` field of each, a field
+    that integrates itself; a model off the sphere is refused.
+
+    Where the product of the density with s^2 cannot integrate itself,
+    the density being radial without being a function of the radius the
+    algebra combines (a composition of radial fields, say), the density
+    is read as a callable of the radius and the product integrates by
+    quadrature."""
     _require_sphere(model)
     fields, masses = [], []
     for layer in model.layers:
@@ -59,17 +65,30 @@ def _shell_masses(model: Model) -> tuple[list[Field], np.ndarray]:
             raise KeyError(
                 f"gravity needs 'rho' on every layer; layer {layer.index} "
                 f"({layer.name!r}) holds {list(layer.names)}")
-        if not getattr(layer["rho"], "is_radial", False):
+        rho = layer["rho"]
+        if not getattr(rho, "is_radial", False):
             raise ValueError(
                 f"'rho' on layer {layer.index} ({layer.name!r}) depends on "
                 "direction; gravity here is that of a spherically symmetric "
                 "density and reads radial fields only")
         lo, hi = layer.interval
         s2 = RadialField((lo, hi), polynomial_layer((lo, hi), [0.0, 0.0, 1.0]))
-        f = layer["rho"] * s2
+        f = rho * s2
+        if not hasattr(f, "integrate"):
+            f = _of_radius(rho) * s2
         fields.append(f)
         masses.append(4.0 * np.pi * float(f.integrate(lo, hi)))
     return fields, np.asarray(masses)
+
+
+def _of_radius(field: Field) -> RadialField:
+    """A radial field of rank 0 as a `RadialField` over a callable of the
+    radius: the field evaluated in one direction, every direction giving
+    the same."""
+    return RadialField(
+        field.interval,
+        NumericLayer(field.interval, lambda r: field.evaluate(r, 0.0, 0.0)),
+        character=field.character, name=field.name)
 
 
 def _require_sphere(model: Model) -> None:
@@ -77,10 +96,11 @@ def _require_sphere(model: Model) -> None:
     require_coordinates(model, SPHERICAL, "gravity from the mass inside a radius")
 
 
-def _within(model: Model, r: np.ndarray) -> np.ndarray:
-    """Radii held to the model to the geometry's tolerance and clipped
-    onto it; a radius beyond that, or NaN, is refused, as is a model off
-    the sphere."""
+def radii_within(model: Model, r: np.ndarray) -> np.ndarray:
+    """The radii `r` as radii of `model`, of the same shape: each held to
+    the model's range to the geometry's tolerance, `rtol` of that range,
+    and clipped onto it.  A radius beyond the tolerance, or NaN, is
+    refused, as is a model off the sphere."""
     _require_sphere(model)
     b = model.skeleton.boundaries
     tol = model.geometry.rtol * (b[-1] - b[0])
@@ -99,7 +119,7 @@ def mass(model: Model, *, radius: float | None = None) -> float:
     """The mass inside `radius`, the outer boundary by default."""
     b = model.skeleton.boundaries
     r = float(b[-1]) if radius is None else float(radius)
-    r = float(_within(model, np.array(r)))
+    r = float(radii_within(model, np.array(r)))
     fields, masses = _shell_masses(model)
     total = 0.0
     for i, f in enumerate(fields):
@@ -119,7 +139,7 @@ def gravity(model: Model, radii: ArrayLike) -> np.ndarray:
     boundary of a hollow model.  M(r) is the antiderivative of each
     layer's `rho s^2`, as `gravity_fields` has it.
     """
-    r = _within(model, np.asarray(radii, dtype=float))
+    r = radii_within(model, np.asarray(radii, dtype=float))
     b = model.skeleton.boundaries
     fields, masses = _shell_masses(model)
     below = np.concatenate(([0.0], np.cumsum(masses)))
@@ -138,10 +158,9 @@ def gravity(model: Model, radii: ArrayLike) -> np.ndarray:
 
 def _cumulative_mass(f: Field, lo: float) -> Callable[[np.ndarray], np.ndarray]:
     """4 pi times the integral of `f` from `lo` to each of an array of
-    radii: through the antiderivative where the layer function is a
-    polynomial, else by quadrature point by point."""
-    fn = f.function
-    ppoly = getattr(fn, "ppoly", None)
+    radii: through the antiderivative where `f` holds one layer function
+    that is a polynomial, else by `f.integrate` point by point."""
+    ppoly = getattr(getattr(f, "function", None), "ppoly", None)
     if ppoly is not None:
         P = ppoly.antiderivative()
         base = P(lo)
@@ -237,7 +256,7 @@ def pressure(model: Model, radii: ArrayLike) -> np.ndarray:
     """The hydrostatic pressure at `radii`, in the model's units, by the
     rule of the module docstring; `radii` as `gravity` takes them, a
     radius on a boundary read from the layer below, where it is the same."""
-    r = _within(model, np.asarray(radii, dtype=float))
+    r = radii_within(model, np.asarray(radii, dtype=float))
     b = model.skeleton.boundaries
     fields = pressure_fields(model)
     flat = r.reshape(-1)

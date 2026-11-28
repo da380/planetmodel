@@ -45,9 +45,9 @@ x, y = grid.nodes
 # %% [markdown]
 # The perturbation of vs, relative, from the surface to the base: a slow
 # blob of -4 %, 30 km in its standard deviation and far enough from the
-# sides to be periodic to rounding, under a cosine pattern of 1.5 %, the
-# series of their values at the grid's nodes, fading linearly in depth to
-# half at the base.
+# sides to be periodic to a few parts in a million, under a cosine
+# pattern of 1.5 %, the series of their values at the grid's nodes,
+# fading linearly in depth to half at the base.
 
 # %%
 blob = -0.04 * np.exp(-((x - 250e3) ** 2 + (y - 150e3) ** 2) / (2 * 30e3 ** 2))
@@ -143,7 +143,9 @@ fig.savefig(FIGURES / "cartesian_01_spectrum.png", dpi=120)
 
 # %% [markdown]
 # The box seen from the southeast, down to 150 km, as the body is: its
-# top the topography, the blob's slow column on its east face.
+# top the topography, with the blob on it, and on its east face the slow
+# band of the cosine pattern about y = 150 km. The blob does not reach
+# that face.
 
 # %%
 cube = slices.block(stretched, "vs", depths=(0.0, 150e3), relative_to="mean",

@@ -9,6 +9,7 @@ imports of the rest of the package happen inside the functions.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -159,8 +160,10 @@ def _check_scaled_displacement(h: RadialDisplacement, r: np.ndarray,
         for got, want in zip(hk.angular_gradient(k * rk, theta, phi),
                              h.angular_gradient(rk, theta, phi)):
             want = k * np.asarray(want, dtype=float)
+            # a component that vanishes is held to the tolerance of the
+            # values, 1e-12 k scale, its rounding being its own
             assert _rel(np.asarray(got, dtype=float), want, rtol=1e-9,
-                        floor=1e-12 * k * scale), (
+                        floor=1e-3 * k * scale), (
                 "scaled(k).angular_gradient is not k times h's at r / k")
 
 
@@ -276,14 +279,17 @@ def check_mapping(m: BodyMapping, points: ArrayLike, *, rtol: float = 1e-6,
     Checks the shapes; `deformation_gradient` against a central
     difference of `m` with `F[i, j] = d m_i / d X_j`; `jacobian` against
     det F; and, when present, `displacement` against m(X) - X,
-    `inverse` as a round trip, and `scaled(k)` against k m(X / k) with
-    the same F and J.  The difference step is 1e-6 of each
-    point's radius unless `step` gives one step for every point; with the
-    default, a point that disagrees is differenced again at a hundredth
-    of its step, since a mapping once but not twice differentiable there
-    (a bicubic relief at a pole) has a difference converging only
-    linearly in the step.
+    `validity` as a `ValidityReport` that passes the points only where
+    J > 0 on all of them, `inverse` as a round trip, and `scaled(k)`
+    against k m(X / k) with the same F and J.  The difference step is
+    1e-6 of each point's radius unless `step` gives one step for every
+    point; with the default, a point that disagrees is differenced again
+    at a hundredth of its step, since a mapping once but not twice
+    differentiable there (a bicubic relief at a pole) has a difference
+    converging only linearly in the step.
     """
+    from .mapping import ValidityReport
+
     X = np.asarray(points, dtype=float)
     assert X.shape[-1] == 3, "points must have shape (..., 3)"
     scale = max(float(np.max(np.abs(X))), 1.0)
@@ -330,6 +336,13 @@ def check_mapping(m: BodyMapping, points: ArrayLike, *, rtol: float = 1e-6,
         u = np.asarray(m.displacement(X), dtype=float)
         assert np.allclose(u, x - X, atol=1e-12 * scale, rtol=0.0), (
             "displacement is not m(X) - X")
+
+    if callable(getattr(m, "validity", None)):
+        report = m.validity(X=X)
+        assert isinstance(report, ValidityReport), (
+            f"validity returns a {type(report).__name__}, not a ValidityReport")
+        assert not report.valid or np.all(J > 0.0), (
+            "validity passes points where J is not positive")
 
     if hasattr(m, "inverse"):
         try:
@@ -410,7 +423,7 @@ def check_geometry(geometry: GeometryBase) -> None:
     # declared knots, where the mapping's gradient may jump
     _, theta, phi = geometry.lattice(n_a=5, n_b=4)
     tol = geometry.rtol * sk.span
-    cuts = np.unique(np.concatenate([b, np.asarray(geometry.knots(), dtype=float)]))
+    cuts = np.unique(np.concatenate([b, np.asarray(geometry.knots, dtype=float)]))
     cuts = cuts[np.concatenate([[True], np.diff(cuts) > tol])]
     r = np.concatenate([lo + (hi - lo) * np.array([0.25, 0.5, 0.75])
                         for lo, hi in zip(cuts[:-1], cuts[1:])])[:, None, None]
@@ -509,7 +522,11 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
     `rescaled` round trip, the rescaled field read at the point k X; and,
     where the field declares the pieces of its logarithm
     (`log_radial_pieces`), that it is of rank 0 and positive, the
-    breakpoints spanning the interval in increasing order.
+    breakpoints spanning the interval in increasing order; and, where it
+    states the degree of its values for a quadrature
+    (`quadrature_degree`), that it states none without radial pieces and
+    that its values along the layered coordinate, on each piece, are a
+    polynomial of at most that degree.
     """
     from .coordinates import CARTESIAN, SPHERICAL, Coordinates
     from .fields import stored_shape
@@ -630,6 +647,34 @@ def check_field(field: Field, *, rng: np.random.Generator | None = None,
         assert isinstance(degree, int) and degree >= 0, (
             f"the logarithm's degree is {degree!r}")
 
+    stated = getattr(field, "quadrature_degree", None)
+    if stated is not None:
+        assert callable(stated), "quadrature_degree is not a method"
+        degree = stated()
+        pieces = getattr(field, "radial_pieces", lambda: None)()
+        if pieces is None:
+            assert degree is None, (
+                "a field without radial pieces states a quadrature degree")
+        if degree is not None:
+            assert isinstance(degree, int) and degree >= 0, (
+                f"the quadrature degree is {degree!r}")
+            # on each piece the values along the layered coordinate are a
+            # polynomial of at most that degree: one through degree + 1
+            # of them gives the rest
+            breaks = np.asarray(pieces[0], dtype=float)
+            x = 0.5 * (1.0 - np.cos(np.pi * (np.arange(degree + 4) + 0.5)
+                                    / (degree + 4)))
+            for a, b in zip(breaks[:-1], breaks[1:]):
+                rr = a + (b - a) * x
+                f = np.asarray(field.evaluate(rr, theta[0], phi[0]))
+                f = f.reshape(rr.size, -1)
+                fit = np.polynomial.chebyshev.chebfit(2.0 * x - 1.0, f, degree)
+                back = np.polynomial.chebyshev.chebval(2.0 * x - 1.0, fit).T
+                size = max(float(np.max(np.abs(f))), 1e-300)
+                assert np.allclose(back, f, rtol=0.0, atol=1e-9 * size), (
+                    f"the values on [{a:g}, {b:g}] are no polynomial of degree "
+                    f"{degree} in the layered coordinate")
+
 
 def check_refinement(refinement: Refinement, points: ArrayLike) -> None:
     """Hold a refinement to its protocol on the given points.
@@ -674,7 +719,9 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
     """Hold a model, spherical or flat, to its invariants.
 
     Checks that `replaced` with checks on accepts it and keeps its class,
-    fields and citation, which `cite` gives a work a line; that its
+    fields, citation and behaviours, the citation given by `cite` a work
+    a line; that `behaviours` are names, each once, those of the mixins
+    of its class among them in the order of its bases; that its
     geometry is of its leaf's `geometry_type`, and its `coordinates` the
     geometry's; that every layer's fields
     pass `check_field`, sit on the layer's interval, are in the
@@ -685,7 +732,7 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
     and its density the one the excess derives; that conversion to other scales and
     back restores every field to 1e-12 at points the coordinates probe;
     and that every surgery, the extension by "extrapolate" and by "hold"
-    among them, keeps the class and validates again.
+    among them, keeps the class and the behaviours and validates again.
     """
     from .behaviours import SelfGravitating
     from .coordinates import coordinates_of
@@ -708,6 +755,16 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
         "a work cited is not one line of text")
     assert model.cite().splitlines() == list(model.citation), (
         "cite does not give the citation a work a line")
+    named = model.behaviours
+    assert isinstance(named, tuple) and len(set(named)) == len(named) and all(
+        isinstance(b, str) and b.split() == [b] for b in named), (
+        f"behaviours are not names, each once: {named!r}")
+    mixins = tuple(c.__name__ for c in cls.__mro__
+                   if c is not object and not issubclass(c, ModelBase))
+    assert tuple(b for b in named if b in mixins) == mixins, (
+        f"behaviours {named} do not name the mixins of the class, {mixins}, in "
+        "the order of its bases")
+    assert again.behaviours == named, "replaced does not keep the behaviours"
     for a, b in zip(again.layers, model.layers):
         assert a.fields == b.fields, "replaced changes the fields"
     rtol = model.geometry.rtol
@@ -799,6 +856,7 @@ def check_model(model: ModelBase, *, rng: np.random.Generator | None = None) -> 
                 continue
             raise AssertionError(f"{verb} refused: {exc}") from exc
         assert type(out) is cls, f"{verb} does not keep the class"
+        assert out.behaviours == named, f"{verb} does not keep the behaviours"
         out.validate()
 
 
@@ -1048,7 +1106,11 @@ def check_slice(slice_: Any, model: ModelBase, *,
     statistic or normalisation), `n` random finite values of each part
     are the model's field at the reference points evaluated afresh, a
     part without layers read from the layer `slices.layers_of` gives its
-    reference points on the slice's `side`.  Runs: at physical points
+    reference points on the slice's `side`; a point is read at the
+    coordinates `slices.read_at` gives it with the slice's `lateral`,
+    where it has one: its own, but where it fixes none (a longitude on
+    the polar axis, both angles at the centre), those of the slice's
+    line or node there.  Runs: at physical points
     each layer of a section or a profile runs on each of its lines (a
     ray, a vertical) between where the mapping puts the layer's two
     boundaries on that line, within `bounds`, the (lo, hi) of the layered
@@ -1059,10 +1121,15 @@ def check_slice(slice_: Any, model: ModelBase, *,
     the last row of the slice's last layer, and the mapped boundaries
     are the mapping of the model's boundary points on each.
     `slices.normalised` of a slice with a value
-    other than zero has largest absolute value one.  Tolerances are
+    other than zero has largest absolute value one.  Bands: a slice that
+    holds `bands` (a flat mean profile's spread) has one for each layer,
+    None exactly where the layer has no finite value, else a (low, high)
+    about its values, and `normalised` divides them by the number that
+    divides the values.  Tolerances are
     `rtol` of the largest value, or of the largest coordinate for points.
     """
-    from .slices import AT, Shown, SliceLayer, layers_of, normalised, to_physical
+    from .slices import (AT, Shown, SliceLayer, layers_of, normalised, read_at,
+                         to_physical)
 
     rng = np.random.default_rng(0) if rng is None else rng
     coords = model.geometry.coordinates
@@ -1092,6 +1159,8 @@ def check_slice(slice_: Any, model: ModelBase, *,
     # a mean profile has no location: its points stand on an axis for drawing
     located = all(getattr(slice_, a, 0.0) is not None for a in ("theta", "x"))
     tol = model.geometry.rtol * model.skeleton.span
+    # where a point fixes no lateral coordinates, those the slice read it at
+    lateral = getattr(slice_, "lateral", None)
     for lay, values, reference, physical in parts:
         assert reference.shape == values.shape + (3,), (
             f"reference points have shape {reference.shape}, values {values.shape}")
@@ -1104,7 +1173,7 @@ def check_slice(slice_: Any, model: ModelBase, *,
             to_physical(model, reference[ok]), physical[ok], rtol=0.0,
             atol=rtol * size * 1e3), (
             "physical points are not the mapping of the reference points")
-        c = coords.split(reference)[0]
+        c, a, b = read_at(coords, reference, lateral)
         if lay is not None:
             seen = coords.split(physical if slice_.at == "physical" else reference)[0]
             assert np.allclose(np.asarray(lay.radius)[ok], seen[ok], rtol=0.0,
@@ -1120,8 +1189,7 @@ def check_slice(slice_: Any, model: ModelBase, *,
         if finite.size == 0:
             continue
         pick = finite[rng.integers(finite.size, size=min(n, finite.size))]
-        _, a, b, _ = coords.split(reference.reshape(-1, 3)[pick])
-        cc = c.ravel()[pick]
+        cc, a, b = c.ravel()[pick], a.ravel()[pick], b.ravel()[pick]
         if lay is None:
             layer_of, _ = layers_of(model, cc, getattr(slice_, "side", None))
         else:
@@ -1148,6 +1216,51 @@ def check_slice(slice_: Any, model: ModelBase, *,
             "the normalised slice's largest absolute value is not one")
         assert unit.shown.normalised and "normalised" in unit.label, (
             "the normalised slice does not say so")
+        _check_bands(slice_, unit, float(np.max(np.abs(every))))
+    else:
+        _check_bands(slice_, None, 1.0)
+
+
+def _check_bands(slice_: Any, unit: Any | None, scale: float) -> None:
+    """Hold the `bands` of a slice that has them (a flat mean profile's
+    spread) to its layers: one for each, None exactly where the layer has
+    no finite value, else a (low, high) of the values' shape with the
+    values between them; and those of `unit`, the slice normalised, to
+    the same bands divided by `scale`, the number that divided its values."""
+    bands = getattr(slice_, "bands", None)
+    if bands is None:
+        return
+    layers = slice_.layers
+    assert len(bands) == len(layers), (
+        f"{len(bands)} bands for {len(layers)} layers")
+    size = max(scale, 1e-300)
+    for k, (lay, band) in enumerate(zip(layers, bands)):
+        values = np.asarray(lay.values)
+        if band is None:
+            assert not np.any(np.isfinite(values)), (
+                f"layer {lay.index} has values and no band")
+            continue
+        low, high = (np.asarray(edge) for edge in band)
+        assert low.shape == high.shape == values.shape, (
+            f"layer {lay.index}'s band has shapes {low.shape} and {high.shape}, "
+            f"its values {values.shape}")
+        ok = np.isfinite(values)
+        slack = 1e-12 * size
+        assert np.all(low[ok] <= values[ok] + slack) and np.all(
+            values[ok] <= high[ok] + slack), (
+            f"layer {lay.index}'s values leave its band")
+        if unit is None:
+            continue
+        scaled = unit.bands[k]
+        assert scaled is not None and all(
+            np.allclose(np.asarray(got), want / scale, rtol=1e-12, atol=0.0,
+                        equal_nan=True)
+            for got, want in zip(scaled, (low, high))), (
+            f"layer {lay.index}'s band is not divided as its values are by "
+            "normalised")
+    if unit is not None:
+        assert getattr(unit, "spread", None) == getattr(slice_, "spread", None), (
+            "normalised changes the slice's spread")
 
 
 def check_spectrum(spectrum_: Any) -> None:
@@ -1184,7 +1297,7 @@ def check_spectrum(spectrum_: Any) -> None:
 def _full_mass(basis: SpectralBasis) -> np.ndarray:
     """The family's diagonal mass at every node of the mesh, a massless
     centre included."""
-    mass = basis.family.mass(basis.degree)
+    mass = basis.family.mass(basis.label)
     full = np.zeros(basis.family.mesh.nglob)
     full[full.size - mass.size:] = mass
     return full
@@ -1201,7 +1314,7 @@ def check_spectral_basis(basis: SpectralBasis, *,
     on the full mesh, each an eigenfunction of the family's operator with
     its theta, and zero at a centre (of a ball or a disk) when the
     member's lateral eigenvalue is positive under the inverse-square
-    profile; `degree` is the label as the family holds it and
+    profile; `label` is the member's as the family holds it and
     `lateral_eigenvalue` the family's lambda for it.  The
     transforms: the physical synthesis is the full one read on the
     restriction's nodes; `analyse` inverts the full synthesis and is
@@ -1224,7 +1337,7 @@ def check_spectral_basis(basis: SpectralBasis, *,
     rng = np.random.default_rng(0) if rng is None else rng
     assert isinstance(basis, SpectralBasis), (
         f"not a SpectralBasis: {type(basis).__name__}")
-    fam, l, R = basis.family, basis.degree, basis.restriction
+    fam, l, R = basis.family, basis.label, basis.restriction
     mesh = fam.mesh
     theta, k = basis.theta, basis.nmodes
 
@@ -1341,7 +1454,7 @@ def check_spherical_basis(basis: SphericalBasis, *,
     assert len(basis) == L + 1, "len is not lmax + 1"
     for l in range(L + 1):
         b = basis[l]
-        assert b.degree == l, f"basis[{l}] has degree {b.degree}"
+        assert b.label == l, f"basis[{l}] has degree {b.label}"
         assert b.family is basis.family, "the bases do not share one family"
         assert b.restriction.nodes == basis.restriction.nodes, (
             "the bases do not share one restriction")
@@ -1424,7 +1537,7 @@ def check_layer_basis(basis: LayerBasis, *,
     assert basis.family.index == "value", "the family is not indexed by value"
     for i, b in enumerate(basis):
         assert b is basis[i], "iteration is not in the order of the eigenvalues"
-        assert b.degree == values[i] and b.lateral_eigenvalue == values[i], (
+        assert b.label == values[i] and b.lateral_eigenvalue == values[i], (
             f"basis {i} is not labelled by its eigenvalue")
         assert b.family is basis.family, "the bases do not share one family"
         assert b.restriction.nodes == basis.restriction.nodes, (
@@ -1484,9 +1597,22 @@ def check_layer_basis(basis: LayerBasis, *,
 
 
 def _check_file_root(data: Any, model: ModelBase) -> None:
-    """A model file's skeleton, names, scales, citation, stamps and
-    tolerance against the model it was written from."""
+    """A model file's skeleton, names, scales, constants, citation,
+    behaviours, stamps and tolerance against the model it was written
+    from."""
     from datetime import datetime
+    assert data.name == (model.name or None), (
+        f"the file names its model {data.name!r}, the model is {model.name!r}")
+    assert set(data.constants) == set(model.constants), (
+        f"the file holds the constants {sorted(data.constants)}, the model "
+        f"{sorted(model.constants)}")
+    for name, constant in model.constants.items():
+        assert data.constants[name] == float(model.constant(name)), (
+            f"the file's constant {name} is {data.constants[name]!r}, the model's "
+            f"{float(model.constant(name))!r}")
+        assert name in data.declared and (
+            data.declared[name].dimensions == constant.dimensions), (
+            f"the file does not state the dimensions of the model's constant {name}")
     assert np.allclose(data.skeleton.boundaries, model.skeleton.boundaries,
                        rtol=1e-15), "the file's skeleton is not the model's"
     assert data.layer_names == tuple(lay.name for lay in model.geometry.layers), (
@@ -1496,11 +1622,48 @@ def _check_file_root(data: Any, model: ModelBase) -> None:
     assert data.scales == model.scales, (
         f"the file is in {data.scales!r}, the model in {model.scales!r}")
     assert data.citation == model.citation, "the file does not cite what the model does"
+    assert data.behaviours == model.behaviours, (
+        f"the file names the behaviours {data.behaviours}, the model has "
+        f"{model.behaviours}")
     assert data.source.strip(), "the file names no source"
     datetime.fromisoformat(data.created)
     assert data.rtol == model.geometry.rtol, (
         f"the file states rtol {data.rtol!r}, the model's geometry has "
         f"{model.geometry.rtol!r}")
+
+
+def _read_back(path: str | os.PathLike[str], model: ModelBase) -> ModelBase:
+    """The model `read_model` gives of a file written from `model`, held
+    to the behaviours the file names: it has each of
+    `behaviours.BEHAVIOURS` the model names and no other of them, states
+    the names the model does, and the reading warns once, naming them,
+    of exactly the names that are none of those.  Any other warning of
+    the reading is passed on."""
+    from .behaviours import BEHAVIOURS
+    from .modelfile import read_model
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        back = read_model(path)
+    told = []
+    for w in caught:
+        if issubclass(w.category, UserWarning) and "behaviour" in str(w.message):
+            told.append(str(w.message))
+        else:
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+    known = {b.__name__: b for b in BEHAVIOURS}
+    other = [name for name in model.behaviours if name not in known]
+    assert len(told) == bool(other) and all(repr(name) in told[0] for name in other), (
+        f"reading a file naming the behaviours {model.behaviours} warns {told}, "
+        f"where the names this program lacks are {other}")
+    for name, behaviour in known.items():
+        assert isinstance(back, behaviour) == (name in model.behaviours), (
+            f"the model read back is {'' if isinstance(back, behaviour) else 'not '}"
+            f"{name}, and the file names {model.behaviours}")
+    assert back.behaviours == model.behaviours, (
+        f"the model read back has the behaviours {back.behaviours}, the model "
+        f"written {model.behaviours}")
+    return back
 
 
 def _stored_against(values: np.ndarray, want: ArrayLike, what: str, *,
@@ -1519,21 +1682,28 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
 
     Checks the structure (`validate_structure`); the schema, the one of a
     file stating a rule in the logarithm exactly where a variable states
-    one; the skeleton, the layer
-    and interface names, the scales and the citation; that the file names
-    its source and carries a parseable created stamp; that every variable is held on
-    the layers its `layers` attribute names, NaN elsewhere, by fields of
-    the model of the stated character; that a lateral variable names in
-    `radial_layers` exactly the layers where the model's field is radial,
-    and reads back radial there; that its values at `n` random
-    entries of the file's own nodes are the model's there, the
-    reference and the perturbation of a perturbed field apart, and so
-    are its polar values; that the geometry group holds the mapping's
-    reliefs at its nodes, and a displacement variable the mapping's
-    displacement; and that the model read back from the file takes the
-    stored values at those nodes, for every variable read by a local
-    rule.  Given the `surfaces` the file was written with, that its
-    surfaces group holds exactly those names on exactly those
+    one; the skeleton, the layer and interface names, the model's name,
+    the scales, the constants with their dimensions, the citation and
+    the behaviours, the model's own; that the model read back has those
+    of `behaviours.BEHAVIOURS` among them and no other, states the same
+    names, and is read with a warning naming exactly those that are none
+    of them;
+    that the file names its source and carries a parseable created stamp;
+    that every variable is held on the layers its `layers` attribute
+    names, NaN elsewhere, by fields of the model of the stated character;
+    that a lateral variable names in `radial_layers` exactly the layers
+    where the model's field is radial, and reads back radial there; that
+    its values at `n` random entries of the file's own nodes are the
+    model's there, the reference and the perturbation of a perturbed
+    field apart, and so are the polar values of each; that the geometry
+    group holds the mapping's boundaries and its reliefs at its nodes and
+    poles, and a displacement variable the mapping's displacement at its
+    nodes and poles; and that the model read back from the file takes
+    the stored values at those nodes, its fields, their perturbations
+    and its mapping alike, for every variable read by a local rule (the
+    harmonic rule reads its nodes through an analysis and a synthesis,
+    to their accuracy).  Given the `surfaces` the file was written with,
+    that its surfaces group holds exactly those names on exactly those
     interfaces, NaN on the others, their values at its nodes and poles,
     and that `read_surfaces` gives functions taking the stored values at
     the nodes, for a local rule.  Tolerances are `rtol` of a variable's
@@ -1556,7 +1726,7 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
     from .fields import from_inside
     from .frames import cartesian_points, spherical_frame
     from .modelfile import (LOG_RULES, SCHEMA, SCHEMA_FLAT, SCHEMA_WITH_LOG_RULES,
-                            read_model, read_model_file, read_surfaces, schema_of,
+                            read_model_file, read_surfaces, schema_of,
                             validate_structure)
 
     rng = np.random.default_rng(0) if rng is None else rng
@@ -1572,11 +1742,20 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
         f"the file's schema is {data.schema!r}, and "
         f"{'a' if logged else 'no'} variable states a rule in the logarithm")
     _check_file_root(data, model)
-    back = read_model(path)
+    back = _read_back(path, model)
 
     def stored_against(values: np.ndarray, want: np.ndarray, what: str) -> None:
         _stored_against(values, want, what, rtol=rtol)
 
+    def poles_against(values: np.ndarray, want: np.ndarray, of: np.ndarray,
+                      what: str) -> None:
+        # polar values, to `rtol` of the largest value of the variable `of`
+        # that they belong to: a field may vanish at a pole
+        scale = max(float(np.nanmax(np.abs(of))) if of.size else 0.0, 1e-300)
+        assert np.allclose(values, want, rtol=0.0, atol=rtol * scale), (
+            f"{what}: the file's polar values are not the model's")
+
+    ends = (np.array([0.0, np.pi]), np.zeros(2))
     for k, part in enumerate(data.parts):
         mesh, grid = part.mesh, part.grid
         r_all = mesh.r.ravel()
@@ -1640,22 +1819,33 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
                         "not read back radial")
                 poles = part.variables.get(f"{name}_poles")
                 if poles is not None:
-                    want = source.evaluate(r[:, None], np.array([0.0, np.pi]),
-                                           np.zeros(2), frame="cartesian")
+                    want = source.evaluate(r[:, None], *ends, frame="cartesian")
                     stored_against(poles.values[idx], want, f"part_{k}/{name}_poles")
                 if pert_name and reference is not None:
                     pv = part.variables[pert_name]
-                    d = field.perturbation
+                    d, got = field.perturbation, back.layer(i)[name].perturbation
+                    where = f"part_{k}/{pert_name}"
                     if pv.values.ndim == 1:
-                        want = d.evaluate(r, np.full(r.shape, 0.5 * np.pi),
-                                          np.zeros_like(r))
-                        stored_against(pv.values[idx], want, f"part_{k}/{pert_name}")
+                        th = np.full(r.shape, 0.5 * np.pi)
+                        stored_against(pv.values[idx],
+                                       d.evaluate(r, th, np.zeros_like(r)), where)
+                        stored_against(pv.values[idx],
+                                       got.evaluate(r, th, np.zeros_like(r)),
+                                       f"{where} read back")
                     else:
                         it = rng.integers(grid.ntheta, size=idx.size)
                         ip = rng.integers(grid.nphi, size=idx.size)
                         t, p = grid.colatitudes[it], grid.longitudes[ip]
                         stored_against(pv.values[idx, it, ip], d.evaluate(r, t, p),
-                                       f"part_{k}/{pert_name}")
+                                       where)
+                        if pv.attributes.get("lateral_interpolation") != "harmonic":
+                            stored_against(pv.values[idx, it, ip],
+                                           got.evaluate(r, t, p), f"{where} read back")
+                    poles = part.variables.get(f"{pert_name}_poles")
+                    if poles is not None:
+                        want = d.evaluate(r[:, None], *ends, frame="cartesian")
+                        poles_against(poles.values[idx], want, pv.values[idx],
+                                      f"{where}_poles")
         disp = part.variables.get("displacement")
         if disp is not None:
             it = rng.integers(grid.ntheta, size=n)
@@ -1665,15 +1855,37 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
             R = spherical_frame(grid.colatitudes[it], grid.longitudes[ip])
             u = np.einsum("pji,pj->pi", R, model.geometry.mapping(X) - X)
             stored_against(disp.values[idx, it, ip], u, f"part_{k}/displacement")
+            if disp.attributes.get("lateral_interpolation") != "harmonic":
+                u = np.einsum("pji,pj->pi", R, back.geometry.mapping(X) - X)
+                stored_against(disp.values[idx, it, ip], u,
+                               f"part_{k}/displacement read back")
+            poles = part.variables.get("displacement_poles")
+            if poles is not None:
+                P = cartesian_points(r_all[idx][:, None], *ends)
+                poles_against(poles.values[idx], model.geometry.mapping(P) - P,
+                              disp.values[idx], f"part_{k}/displacement_poles")
     if data.geometry is not None:
         g = data.geometry
-        h = model.geometry.mapping.h
+        h, got = model.geometry.mapping.h, back.geometry.mapping.h
+        assert np.array_equal(g.radii, np.asarray(h.boundaries, dtype=float)), (
+            "the geometry group's radii are not the mapping's boundaries")
         theta = g.grid.colatitudes[:, None]
         phi = g.grid.longitudes[None, :]
         for j, radius in enumerate(g.radii):
-            want = np.broadcast_to(h(np.full(theta.shape, radius), theta, phi),
-                                   g.values[j].shape)
-            stored_against(g.values[j], want, f"geometry/boundary_displacement[{j}]")
+            where = f"geometry/boundary_displacement[{j}]"
+            at = np.full(theta.shape, radius)
+            want = np.broadcast_to(h(at, theta, phi), g.values[j].shape)
+            stored_against(g.values[j], want, where)
+            if g.lateral != "harmonic":
+                stored_against(g.values[j], np.broadcast_to(
+                    got(at, theta, phi), g.values[j].shape), f"{where} read back")
+            if g.poles is not None:
+                at = np.full(2, radius)
+                poles_against(g.poles[j], h(at, *ends), g.values[j],
+                              f"{where}, its poles")
+                if g.lateral != "harmonic":
+                    poles_against(g.poles[j], got(at, *ends), g.values[j],
+                                  f"{where}, its poles read back")
     if surfaces is None:
         return
     held = data.surfaces
@@ -1689,7 +1901,6 @@ def check_model_file(path: str | os.PathLike[str], model: ModelBase, *,
         f"{faces}")
     read = read_surfaces(path)
     theta, phi = held.grid.colatitudes[:, None], held.grid.longitudes[None, :]
-    ends = (np.array([0.0, np.pi]), np.zeros(2))
     for name, on in given.items():
         var, poles = held.variables[name], held.variables.get(f"{name}_poles")
         listed = {int(k) for k in np.atleast_1d(var.attributes["interfaces"])}
@@ -1723,7 +1934,7 @@ def _check_flat_model_file(path: str | os.PathLike[str], model: ModelBase, *,
     file's nodes in depth and on its horizontal grids."""
     from .cartesian.modelfile import read_model_file
     from .fourier import POINT_EPSILON
-    from .modelfile import SCHEMA_FLAT, read_model, read_surfaces, validate_structure
+    from .modelfile import SCHEMA_FLAT, read_surfaces, validate_structure
 
     validate_structure(path)
     data = read_model_file(path)
@@ -1732,7 +1943,7 @@ def _check_flat_model_file(path: str | os.PathLike[str], model: ModelBase, *,
     domain = model.geometry.domain
     assert data.domain == domain, (
         f"the file's domain is {data.domain!r}, the model's {domain!r}")
-    back = read_model(path)
+    back = _read_back(path, model)
     assert back.geometry.domain == domain, "the model read back is over another domain"
 
     def tolerance(attributes: Mapping[str, Any]) -> float:

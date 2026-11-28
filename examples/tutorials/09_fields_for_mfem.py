@@ -68,7 +68,11 @@ print("mass:", mass(model))
 # ## Mesh, then export with fields
 #
 # The mesh is built on the model's geometry as in tutorial 4, without a
-# buffer this time. The export uses the `referential` delivery: the mesh
+# buffer this time. As it builds, gmsh may print a warning of an
+# element with a negative Jacobian: that line is from an intermediate
+# step, when the elements are first curved to order 2 and before the
+# builder repairs them, and the validation report printed beneath it is
+# what counts. The export uses the `referential` delivery: the mesh
 # stays spherical and the displacement `m(X) - X` is written beside it as
 # a vector field on the nodes, for the solver to apply itself. This is
 # the natural delivery once fields travel with the mesh, because the
@@ -87,6 +91,7 @@ spec = MeshSpec(model.geometry, UniformInterfaces(0.15, 0.3, 0.3), dimension=3,
                 order=2)
 result = build_layered_mesh(spec, workdir / "planet")
 print(result)
+print("validation:", result.validation)
 exported = export_mfem(result, workdir / "planet_ref", model=model,
                        fields=["rho", "vs", "elastic_moduli"],
                        delivery="referential")

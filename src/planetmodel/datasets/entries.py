@@ -12,8 +12,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from ..catalogue import MineosModel
-from ..deck import MINEOS, ND, TVEL, nd_names
+from ..behaviours import BEHAVIOURS
+from ..deck import MINEOS, ND, TVEL, mineos_constants, mineos_names, nd_names
 from .decks import DeckReader
 from .grids import EARTH_RADIUS, GridReader
 from .registry import Dataset, Source
@@ -232,7 +232,8 @@ _ENTRIES: tuple[Dataset, ...] = (
         "STW105",
         (Source("https://zenodo.org/records/8357380/files/STW105",
                 "ccc2060674502b8032ef7bb11d2ea08fd4c8532f19455d62a784907bb5588352"),),
-        DeckReader(MINEOS, model=MineosModel),
+        DeckReader(MINEOS, behaviours=BEHAVIOURS, names=mineos_names,
+                   constants=mineos_constants),
         title="The radial reference of S362ANI, S362ANI+M and GLAD-M25 (REF)",
         citation=("Kustowski, B., G. Ekström and A. M. Dziewoński (2008).  "
                   "Anisotropic shear-wave velocity structure of the Earth's mantle: "
@@ -244,8 +245,8 @@ _ENTRIES: tuple[Dataset, ...] = (
                   "1713-1738, doi:10.1093/gji/ggu356; the files at Zenodo, "
                   "doi:10.5281/zenodo.8357380"),
         licence="none stated",
-        notes="A mineos deck in SI, its discontinuities repeated radii; the third "
-              "header line's two extra integers are kept.  EMC's copy moves the "
+        notes="A mineos deck in SI, its discontinuities repeated radii; its header "
+              "names the core and gives the reference period.  EMC's copy moves the "
               "upper side of each discontinuity up by 0.1 m and is not this file."),
     Dataset(
         "ak135-F",

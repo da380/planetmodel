@@ -10,8 +10,9 @@
  * A mesh file carries numbered attributes and nothing else; the manifest
  * says which attribute is which layer and interface, where each sits,
  * whether the nodes carry the mapping, how the mesh must be opened, and
- * which files beside it hold which fields.  `MeshManifest(path)` reads one
- * and holds it to the structure the Python's `validate_structure` checks,
+ * which files beside it hold which fields.  `ReadMeshManifest(path)`, or
+ * the constructor `MeshManifest(path)` it calls, reads one and holds it
+ * to the structure the Python's `validate_structure` checks,
  * refusing the first fault with an `Error` naming the file and the JSON
  * path of the fault; schemas 5 (a mesh without faults) and 6 (a mesh with
  * them) are read, and schema 7, a flat mesh's, is refused by name:
@@ -43,7 +44,7 @@
  * with what the manifest gives:
  *
  * @code
- * const auto m = planetmodel::MeshManifest(path);
+ * const auto m = planetmodel::ReadMeshManifest(path);
  * const auto o = m.Options();
  * auto mesh = mfem::Mesh(m.MeshFile().string(), o.generate_edges, o.refine,
  *                        o.fix_orientation);
@@ -863,7 +864,8 @@ class MeshManifest {
   [[nodiscard]] std::filesystem::path MeshFile() const {
     return path_.parent_path() / mesh_.file;
   }
-  /** @brief `msh` from the mesher, `mfem` from the exporter. */
+  /** @brief `msh` from the mesher, `mfem` from the exporter and from the
+   * builder of a cubed sphere. */
   [[nodiscard]] const std::string& Format() const noexcept { return mesh_.format; }
   /** @brief `reference` or `physical`. */
   [[nodiscard]] const std::string& Nodes() const noexcept { return mesh_.nodes; }
@@ -1391,6 +1393,19 @@ class MeshManifest {
   std::optional<ModelRecord> model_;
 };
 
+/**
+ * @brief Read a mesh manifest and hold it to the structure, as
+ * `MeshManifest(path)` does: the function beside `ReadModelFile`,
+ * `ReadSurfaceFile` and `ReadFaultFile`.
+ * @param path The manifest.
+ * @return The manifest, read and checked.
+ * @throws planetmodel::Error naming the file and the JSON path of the
+ *         first fault.
+ */
+[[nodiscard]] inline MeshManifest ReadMeshManifest(const std::filesystem::path& path) {
+  return MeshManifest(path);
+}
+
 /** @brief A vertex of a mesh: its three coordinates. */
 using MeshVertex = std::array<double, 3>;
 
@@ -1698,7 +1713,10 @@ std::vector<Edges> CurvesOfFaults(std::span<const std::vector<MeshTriangle>> fau
   auto touching = std::vector<char>(cells.size(), 0);
   for (auto c = std::size_t{0}; c < cells.size(); ++c) {
     const auto& t = cells[c];
-    for (const auto i : t) touching[c] = touching[c] || carries[check(i)];
+    // every corner checked, whichever of them carry slip
+    for (const auto i : t) {
+      if (carries[check(i)]) touching[c] = 1;
+    }
     for (auto a = 0; a < 4 && !touching[c]; ++a) {
       for (auto b = a + 1; b < 4; ++b) {
         if (is_slip_edge(t[static_cast<std::size_t>(a)], t[static_cast<std::size_t>(b)])) {

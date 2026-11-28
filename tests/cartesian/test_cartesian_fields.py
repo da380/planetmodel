@@ -68,8 +68,8 @@ def flat_fields():
         "pulled": PulledBackField(
             IV, lambda d, x, y: np.stack(np.broadcast_arrays(d, x, 1.0 + y), axis=-1),
             Shear(), character=VECTOR, coordinates=FLAT),
-        "held depth": held(vec, IV[1], (5.0, 8.0)),
-        "held analytic": held(lateral, IV[1], (5.0, 8.0)),
+        "held depth": held((5.0, 8.0), vec, IV[1]),
+        "held analytic": held((5.0, 8.0), lateral, IV[1]),
     }
 
 
@@ -149,8 +149,8 @@ def test_the_algebra_and_every_copy_keep_the_flat_class():
     for got in (rho + rho, rho - plain, plain + rho, 2.0 * rho, -rho, rho / 2.0,
                 rho * flat.constant_field(IV, 2.0), flat.constant_field(IV, 1.0) ** 3,
                 rho.derivative(), rho.on_interval(1.0, 6.0), rho.renamed("x"),
-                rho.rescaled(k=2.0, v=3.0), rho.held(5.0, (5.0, 9.0)),
-                held(rho, 5.0, (5.0, 9.0))):
+                rho.rescaled(k=2.0, v=3.0), rho.held((5.0, 9.0), 5.0),
+                held((5.0, 9.0), rho, 5.0)):
         assert type(got) is flat.DepthField and got.coordinates is FLAT, got
     assert type(plain + plain) is RadialField and (plain + plain).coordinates is FLAT
     f = flat.AnalyticField(IV, lambda d, x, y: d + x * y, name="f")
@@ -171,19 +171,19 @@ def test_a_constant_field_of_depth_is_exact():
 
 def test_a_held_field_is_the_source_at_its_depth_exactly():
     lateral = flat.AnalyticField(IV, lambda d, x, y: d * (1.0 + x - 2.0 * y))
-    h = held(lateral, 5.0, (5.0, 9.0))
+    h = held((5.0, 9.0), lateral, 5.0)
     assert isinstance(h, HeldField) and h.at == 5.0 and h.source is lateral
     rng = np.random.default_rng(3)
     d, x, y = rng.uniform(5.0, 9.0, 50), rng.uniform(-9, 9, 50), rng.uniform(-9, 9, 50)
     assert np.array_equal(h.evaluate(d, x, y), lateral.evaluate(np.full(50, 5.0), x, y))
     vec = flat.DepthField(IV, [cubic(), 2.0, lambda d: 0.5 * d], character=VECTOR)
-    hv = held(vec, 5.0, (5.0, 9.0))
+    hv = held((5.0, 9.0), vec, 5.0)
     assert np.array_equal(hv.evaluate(d, x, y), np.broadcast_to(vec.evaluate(
         5.0, 0.0, 0.0), (50, 3)))
     with pytest.raises(ValueError, match="depth 6 is outside the interval"):
-        HeldField(lateral, 6.0, (5.0, 9.0))
+        HeldField((5.0, 9.0), lateral, 6.0)
     with pytest.raises(ValueError, match="depth 6 is outside the interval"):
-        vec.held(6.0, (5.0, 9.0))
+        vec.held((5.0, 9.0), 6.0)
 
 
 def test_messages_speak_of_depth_and_x_and_y():

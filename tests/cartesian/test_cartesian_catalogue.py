@@ -99,7 +99,7 @@ def test_a_prescribed_gravity_is_a_plain_field_of_every_layer():
 
 def test_surgery_on_a_flat_model_returns_flat_classes():
     m = flat.CrustOverMantle(BOX)
-    made = {"refined": m.refined([60e3], names=["d60"]),
+    made = {"refined": m.refined([60e3], interface_names=["d60"]),
             "truncated": m.truncated(150e3),
             "hollowed": m.hollowed(10e3),
             "extrapolated": m.extended([300e3], fields="extrapolate"),

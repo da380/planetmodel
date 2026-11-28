@@ -42,9 +42,10 @@ representative, the member of lower flat index where both lie in the half
 spectrum.  A component is named by its signed integer wavevector,
 wavenumbers above n_i / 2 taken as k_i - n_i so that a Nyquist wavenumber
 is +n_i / 2, and its phase, 0 for a cosine or a self-conjugate mode and 1
-for a sine; `component_of` finds one, modulo the grid.  The
-representative's wavevector is the one the basis is evaluated with off
-the grid.  `degrees` is `|k|` rounded down in grid units, which group
+for a sine; `component_of` finds one, modulo the grid, a cosine under
+either member of its pair and a sine under the representative alone.
+The representative's wavevector is the one the basis is evaluated with
+off the grid.  `degrees` is `|k|` rounded down in grid units, which group
 modes of one spatial scale only where the periods are equal;
 `laplacian_eigenvalues` are the physical sum_i (2 pi k_i / L_i)^2.  A
 grid holds exactly its packing's components: its band is its shape.
@@ -284,8 +285,15 @@ class Packing:
         One wavevector of D integers gives an int; an array of shape (D, m)
         gives m positions, `phase` a scalar or one per column.  Wavevectors
         are taken modulo the grid, so a mode may be named by either sign of
-        an aliased wavenumber.  A label the grid does not hold, a sine of a
-        self-conjugate mode, is refused.
+        an aliased wavenumber.  Of a pair of conjugate wavevectors k and
+        -k the packing holds one, the representative, whose signed form
+        is the component's in `wavevectors`.  A cosine is the same
+        function of the grid's nodes under either, so a cosine named by
+        the other member is the position of the representative's cosine.
+        A sine changes sign, which a position cannot say, so a sine is
+        named by the representative alone: one named by the other member
+        is refused, the message giving the representative, and so is the
+        sine of a self-conjugate mode, which has none.
         """
         k = np.asarray(wavevector, dtype=int)
         if k.ndim == 0 or k.shape[0] != self.dimension:
@@ -294,13 +302,31 @@ class Packing:
         p = np.broadcast_to(np.asarray(phase, dtype=int), k.shape[1:])
         if np.any((p != 0) & (p != 1)):
             raise ValueError("a phase is 0 (cosine) or 1 (sine)")
-        keys = self._keys(k, p)
         sorted_keys, order = self._sorted
-        found = np.minimum(np.searchsorted(sorted_keys, keys), sorted_keys.size - 1)
-        if np.any(sorted_keys[found] != keys):
-            raise ValueError("no component has that wavevector and phase: a "
-                             "self-conjugate mode has no sine")
-        position = order[found]
+
+        def held(keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            found = np.minimum(np.searchsorted(sorted_keys, keys),
+                               sorted_keys.size - 1)
+            return order[found], sorted_keys[found] == keys
+
+        position, own = held(self._keys(k, p))
+        if not np.all(own):
+            # the wavevectors not held are the other members of their pairs,
+            # or self-conjugate ones asked for a sine
+            conjugate, other = held(self._keys(-k, p))
+            position = np.where(own, position, conjugate)
+            refused = ~own & ~(other & (p == 0))
+            if np.any(refused):
+                first = tuple(np.argwhere(refused)[0])
+                named = k[(slice(None),) + first].tolist()
+                if not other[first]:
+                    raise ValueError(f"no component has the wavevector {named} and "
+                                     "the phase 1: a self-conjugate mode has no sine")
+                representative = self._wavevectors[:, conjugate[first]].tolist()
+                raise ValueError(
+                    f"no component has the wavevector {named} and the phase 1: its "
+                    f"pair is held under the conjugate {representative}, whose sine "
+                    "is minus the one asked for; name the sine by that wavevector")
         return int(position) if position.ndim == 0 else position
 
     def matching(self, target: Packing) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -380,9 +406,10 @@ class PaddedDomain:
     @classmethod
     def of(cls, domain: DomainLike) -> PaddedDomain:
         """The padded domain of `domain`: itself; a `cartesian.Box` or
-        `Rectangle`, or anything with `bounds` and `padding` in either's
-        form, read through them; or the periods of a torus, a number or one
-        per axis, whose domain proper is the whole box from the origin."""
+        `Rectangle`, or anything with `bounds` and `padding` held per axis
+        as theirs are, read through them; or the periods of a torus, a
+        number or one per axis, whose domain proper is the whole box from
+        the origin."""
         if isinstance(domain, PaddedDomain):
             return domain
         bounds = getattr(domain, "bounds", None)
@@ -392,8 +419,6 @@ class PaddedDomain:
                 raise ValueError(f"the periods of a torus are positive lengths, one "
                                  f"per axis, got {domain!r}")
             return cls([(0.0, float(length)) for length in lengths])
-        if np.ndim(bounds) == 1:                     # one axis, a Rectangle's
-            return cls([bounds], padding=domain.padding)
         return cls(bounds, padding=domain.padding)
 
     @property

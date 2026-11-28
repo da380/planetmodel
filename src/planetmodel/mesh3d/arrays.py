@@ -12,14 +12,22 @@ own checks read.  The positions are the file's: for the mesher's
 output, reference positions, which the geometry's mapping moves.
 
 It reads MSH files through gmsh, imported where a file is read: the
-version the mesher writes (2.2) and any other gmsh reads.  An MFEM
-delivery (`.mesh`) is read by MFEM, whose `Mesh` gives the same arrays
-(`GetVertexArray`, `GetElementVertices`, `GetBdrElementVertices`,
-`GetAttribute`, `GetBdrAttribute`), corners alone.
+version the mesher writes (2.2) and any other gmsh reads.  A file in
+MFEM's own format (`.mesh`: a delivery, or a cubed sphere as it is
+built) is read through PyMFEM, imported where it is read: the points
+are then the mesh's nodes, its vertices first, a two-dimensional
+mesh's with a zero third coordinate, and every element is held by its
+corners alone, a hexahedron's eight or a quadrilateral's four in
+MFEM's order; an MFEM mesh keeps no curve groups and no names.  The
+rules of a fault's faces are stated for simplices, and the methods
+that apply them refuse hexahedra and quadrilaterals by name.
 
-`cell_quality` reads the shape of every cell of an MSH file in the same
-order, by the measure the mesher's checks take (`spec.QUALITY_MEASURE`,
-gmsh's minSICN, which sees a curved element's curvature).
+`cell_quality` reads the shape of every cell of a file in the same
+order, by the measure its builder's checks take: of an MSH file
+`spec.QUALITY_MEASURE`, gmsh's minSICN, which sees a curved element's
+curvature, and of a file of hexahedra or quadrilaterals in MFEM's
+format the same measure of the cell through its corners
+(`_cubed.cell_shapes`).
 
 A cell is an element of the mesh's own dimension in a physical group,
 its attribute the group's number (its layer's own attribute, or in a
@@ -31,7 +39,7 @@ element in several groups of its dimension appears once for each.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -40,7 +48,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from . import manifest as _manifest
-from ._extra import require_gmsh
+from ._cubed import cell_shapes
+from ._extra import require_gmsh, require_mfem
 from .spec import QUALITY_MEASURE
 
 __all__ = ["MeshArrays", "read_mesh", "cell_quality"]
@@ -71,7 +80,9 @@ class MeshArrays:
     points: np.ndarray
     #: The file's tag of each node, (n,), in increasing order.
     tags: np.ndarray
-    #: The cells, (c, k): k = 4 for a linear tetrahedron, 10 quadratic.
+    #: The cells, (c, k): k = 4 for a linear tetrahedron, 10 quadratic;
+    #: 8 for a hexahedron and 4 for a quadrilateral, held by their
+    #: corners.
     cells: np.ndarray
     #: The element attribute of each cell, (c,): its layer's own, or one
     #: of its layer's collars' (`MeshManifest.layer_of`).
@@ -86,6 +97,19 @@ class MeshArrays:
     curves: Mapping[int, np.ndarray] = field(default_factory=dict)
     #: The groups' names, by (dimension, number); empty where unnamed.
     names: Mapping[tuple[int, int], str] = field(default_factory=dict)
+
+    @property
+    def tensor(self) -> bool:
+        """Whether the cells are hexahedra or quadrilaterals, held by their
+        corners, and not simplices."""
+        return self.cells.shape[1] == 2 ** self.dimension
+
+    def _require_simplices(self, what: str) -> None:
+        """Refuse, naming `what`, a rule stated for simplices on a mesh of
+        hexahedra or quadrilaterals."""
+        if self.tensor:
+            raise ValueError(f"{what} is stated for a mesh of simplices, and this "
+                             "one is of hexahedra or quadrilaterals")
 
     def faces_with(self, attribute: int) -> np.ndarray:
         """The boundary elements of one attribute, in file order."""
@@ -118,6 +142,7 @@ class MeshArrays:
         a neighbour itself undecided is decided first.  Refused where a
         cell's corners span two layers, and where a cell's neighbours
         leave its layer undecided."""
+        self._require_simplices("a cell's layer by the place of its corners")
         bounds = manifest.boundaries
         d = self.dimension
         X = np.zeros(self.points.shape[:-1] + (3,))
@@ -162,6 +187,7 @@ class MeshArrays:
         hanging wall, -1 in its footwall, 0 in neither, a shell's cells
         in neither; a box's faces (`MeshManifest.face_attributes`) are
         where a fault's face edge lies."""
+        self._require_simplices("a fault's walls")
         body = np.isin(self.layers(manifest),
                        [e["attribute"] for e in manifest.layers if e["in_geometry"]])
         out = np.zeros((len(manifest.faults), len(self.cells)), dtype=np.int8)
@@ -175,10 +201,12 @@ class MeshArrays:
 
     def boundary_of(self, attributes: Sequence[int]) -> np.ndarray:
         """The corners of the boundary elements of any of the given
-        attributes, (b, dimension), in file order."""
+        attributes, in file order: (b, dimension) of simplices, and of
+        hexahedra or quadrilaterals (b, 2^(dimension - 1))."""
+        corners = 2 ** (self.dimension - 1) if self.tensor else self.dimension
         rows = self.faces[np.isin(self.face_attributes, list(attributes))]
-        return rows[:, :self.dimension] if len(rows) else np.empty(
-            (0, self.dimension), dtype=np.int64)
+        return rows[:, :corners] if len(rows) else np.empty(
+            (0, corners), dtype=np.int64)
 
     @cached_property
     def _sides(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -206,6 +234,7 @@ class MeshArrays:
         Refused where a face is held by more than two cells, which no
         conforming mesh has.
         """
+        self._require_simplices("the cells holding a face")
         f = np.asarray(faces)
         d = self.dimension
         if f.ndim != 2 or f.shape[1] < d or not np.issubdtype(f.dtype, np.integer):
@@ -246,13 +275,52 @@ def _groups(gmsh: object, dim: int, groups: Sequence[tuple[int, int]]
     return out
 
 
+def _read_mfem(path: Path) -> MeshArrays:
+    """The mesh in a file of MFEM's format as plain arrays (module
+    docstring), read as a consumer is told to read it."""
+    from .export import MESH_READ_OPTIONS, node_array
+
+    mfem = require_mfem()
+    if not path.is_file():
+        raise FileNotFoundError(f"no mesh file at {path}")
+    o = MESH_READ_OPTIONS
+    mesh = mfem.Mesh(str(path), o["generate_edges"], o["refine"], o["fix_orientation"])
+    if mesh.GetNodes() is None:
+        mesh.SetCurvature(1)
+    nodes = np.array(node_array(mesh.GetNodes()), dtype=float)
+    points = np.zeros((nodes.shape[0], 3))
+    points[:, :nodes.shape[1]] = nodes
+
+    def rows(count: int, vertices: Callable[[int], Sequence[int]],
+             what: str) -> np.ndarray:
+        found = [list(vertices(i)) for i in range(count)]
+        if len({len(row) for row in found}) > 1:
+            raise ValueError(f"the {what} of {path} mix element types")
+        return np.array(found, dtype=np.int64).reshape(count, -1)
+
+    cells = rows(mesh.GetNE(), mesh.GetElementVertices, "elements")
+    faces = rows(mesh.GetNBE(), mesh.GetBdrElementVertices, "boundary elements")
+    return MeshArrays(
+        dimension=mesh.Dimension(), points=points, tags=np.arange(points.shape[0]),
+        cells=cells,
+        cell_attributes=np.array([mesh.GetAttribute(e) for e in range(mesh.GetNE())],
+                                 dtype=np.int64),
+        faces=faces,
+        face_attributes=np.array([mesh.GetBdrAttribute(b)
+                                  for b in range(mesh.GetNBE())], dtype=np.int64))
+
+
 def read_mesh(path: str | Path) -> MeshArrays:
-    """The mesh in an MSH file as plain arrays (module docstring); gmsh is
-    imported here, and its absence refused naming the `meshing` extra."""
+    """The mesh in a file as plain arrays (module docstring): an MSH file
+    through gmsh, or a file in MFEM's format, by its suffix `.mesh`,
+    through PyMFEM.  Each is imported here, and its absence refused
+    naming its extra, `meshing` or `mfem`."""
+    path = Path(path)
+    if path.suffix == ".mesh":
+        return _read_mfem(path)
     gmsh = require_gmsh()
     from ._session import session
 
-    path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"no mesh file at {path}")
     with session(name="read"):
@@ -299,15 +367,26 @@ def read_mesh(path: str | Path) -> MeshArrays:
 
 
 def cell_quality(path: str | Path) -> np.ndarray:
-    """The shape of every cell of the mesh in an MSH file, (c,), in the
-    order of `read_mesh`'s cells: `spec.QUALITY_MEASURE`, gmsh's minSICN,
-    1 for a regular tetrahedron (or triangle), near 0 for a flat one,
-    negative for one folded; gmsh is imported here, its absence refused
-    naming the `meshing` extra."""
+    """The shape of every cell of the mesh in a file, (c,), in the order
+    of `read_mesh`'s cells.  Of an MSH file: `spec.QUALITY_MEASURE`,
+    gmsh's minSICN, 1 for a regular tetrahedron (or triangle), near 0
+    for a flat one, negative for one folded; gmsh is imported here, its
+    absence refused naming the `meshing` extra.  Of a file of hexahedra
+    or quadrilaterals in MFEM's format (`.mesh`): the same measure of
+    the cell through its corners (`_cubed.cell_shapes`), 1 for a cube
+    or a square; simplices in MFEM's format are refused, their measure
+    being gmsh's, taken on the MSH file."""
+    path = Path(path)
+    if path.suffix == ".mesh":
+        mesh = _read_mfem(path)
+        if not mesh.tensor:
+            raise ValueError(
+                f"{path.name} holds simplices, whose shape is measured by gmsh on "
+                "the MSH file they were built as")
+        return cell_shapes(mesh.points[:, :mesh.dimension], mesh.cells)
     gmsh = require_gmsh()
     from ._session import session
 
-    path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"no mesh file at {path}")
     with session(name="quality"):

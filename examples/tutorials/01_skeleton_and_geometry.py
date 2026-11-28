@@ -44,7 +44,9 @@ for i in range(sk.nlayers):
 # does not choose between them. A layered model can have two different
 # values at a boundary, one from each side, so which side you mean is
 # your decision. A radius within a small fraction of the span of a
-# boundary counts as being on it.
+# boundary counts as being on it. The `Location` gives the boundary's
+# number, counted from the centre, which is boundary 0, so the radius
+# 0.55 is boundary 2.
 
 # %%
 print(sk.locate(0.3))
@@ -111,8 +113,10 @@ print("outer interface:", g.interface(-1))
 # Interfaces are numbered from the centre, starting at zero. In a full
 # geometry, one whose innermost radius is zero, interface `k` separates
 # layers `k` and `k + 1`; the outer interface has `-1` as the layer above
-# it, meaning the outside. In a hollow geometry the inner boundary is
-# also an interface: it is interface 0, with `-1` below it.
+# it, meaning the outside. The centre is a boundary but not an
+# interface, so interface `k` is boundary `k + 1`: the radius 0.55,
+# boundary 2 above, is interface 1. In a hollow geometry the inner
+# boundary is also an interface: it is interface 0, with `-1` below it.
 
 # %%
 def show(geometry):
@@ -132,7 +136,7 @@ show(hollow)
 # wherever its radius survives.
 
 # %%
-refined = g.refined([0.9], names=["floor"])
+refined = g.refined([0.9], interface_names=["floor"])
 print([lay.name for lay in refined.layers])
 print([f.name for f in refined.interfaces])
 merged, _ = g.coarsened(drop=[0])

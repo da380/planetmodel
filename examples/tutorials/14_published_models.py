@@ -517,7 +517,7 @@ print("figure written to", out)
 # %%
 litho1 = datasets.load("LITHO1.0")
 lithosphere, _ = PREM(ocean=False).coarsened(drop=["d220", "d80", "moho", "d15"])
-lithosphere = lithosphere.refined([6271e3], names=["lab"])
+lithosphere = lithosphere.refined([6271e3], interface_names=["lab"])
 base = datasets.reliefs(litho1, lithosphere, interfaces={"lab": litho1["lid"].bottom},
                         lateral="linear")["lab"]
 print(f"the lithosphere's base moves by {base.values.min() / 1e3:.0f} to "

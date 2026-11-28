@@ -1,4 +1,4 @@
-"""Sections of a simplex mesh: its elements cut by a plane, and drawn.
+"""Sections of a mesh: its elements cut by a plane, and drawn.
 
 `plane_cut` cuts simplices by a plane through `origin` spanned by an
 orthonormal pair (a, b), the normal n = a x b: a tetrahedron the plane
@@ -14,6 +14,16 @@ its corners, its curved edges taken as chords.  The points are
 whichever the caller holds: a mesh's reference positions, or those
 positions moved by a mapping.
 
+A mesh of hexahedra is cut the same way (a cubed sphere's): a
+hexahedron, given by its eight corners in the order a mesh holds them,
+leaves the polygon through the points where the plane crosses its
+twelve edges, of three to six sides, and a quadrilateral, a face of
+such a mesh, a segment.  Rows of eight corners are hexahedra; rows of
+four are tetrahedra unless `plane_cut` is told they are quadrilaterals
+(`tensor`).  The pieces tile the section as those of tetrahedra do, the
+polygons of two cells meeting along the chord across the face they
+share.
+
 A corner on the plane counts as lying on its negative side, opposite
 the normal, and a crossing at such a corner is that corner exactly: a
 face lying in the plane is left once, by the cell on the normal's side
@@ -23,7 +33,8 @@ which to rounding is a polygon whose area is at most `FLAT` times the
 square of its diameter (an edge of the mesh lying in the plane, or a
 hair off it, would otherwise be drawn once for every cell around it).
 A tetrahedron's polygon is held as four vertices in order around it, a
-triangle's last vertex repeated.
+triangle's last vertex repeated; a hexahedron's as up to six, its last
+vertex repeated likewise.
 
 `mesh_section` draws a cut on plain axes of equal aspect: the pieces of
 tetrahedra as polygons, each the colour given its simplex, their edges
@@ -31,8 +42,8 @@ the element edges in the section; the pieces of triangles as line
 segments.  matplotlib is imported where a section is drawn.
 
 A mesh that lies in a plane is its own section: `in_plane` takes its
-triangles whole, as polygons, and its line elements whole, as
-segments, into the same `PlaneCut`, so that `mesh_section` draws a
+triangles or its quadrilaterals whole, as polygons, and its line
+elements whole, as segments, into the same `PlaneCut`, so that `mesh_section` draws a
 two-dimensional mesh (a disc, or a box's cross-section in the (x, z) plane)
 and the curves of its interfaces and faces as it draws a cut of a
 three-dimensional one, and the faces of a surface of a volume mesh (a
@@ -46,7 +57,9 @@ its faces exactly instead of in whole elements.  `mesh_block` draws such
 a block of a volume mesh on three-dimensional axes, the box (x0, x1) x
 (y0, y1) x (z0, z1): the cells' sections by its three walls away from
 the viewer, clipped to it and each the colour of its cell, with the
-curves other simplices (an interface's faces) leave on them; whatever
+curves other elements (an interface's faces) leave on them, the cells
+tetrahedra and those faces triangles, or hexahedra and quadrilaterals;
+whatever
 the caller draws inside the block afterwards (a fault's faces, clipped
 by `block_planes`, its curves) is seen against those walls, drawn in
 the order drawn, matplotlib's own depth sorting off.
@@ -124,18 +137,20 @@ BLOCK_VIEW = (25.0, -60.0)
 
 @dataclass(frozen=True, eq=False)
 class PlaneCut:
-    """Simplices cut by a plane (module docstring)."""
+    """The elements of a mesh cut by a plane (module docstring)."""
 
     #: A point of the plane, (3,): the origin of its coordinates.
     origin: np.ndarray
     #: The orthonormal pair (a, b) spanning the plane, (2, 3).
     axes: np.ndarray
     #: The pieces in the plane's coordinates (s, t): (p, 4, 2) polygons
-    #: cut from tetrahedra, (p, 2, 2) segments cut from triangles; or, of
-    #: a mesh in the plane (`in_plane`), its triangles and line elements;
-    #: or the projected faces of a crinkle.
+    #: cut from tetrahedra, (p, 4, 2) to (p, 6, 2) from hexahedra, as
+    #: many vertices as the piece of most sides has, (p, 2, 2) segments
+    #: cut from triangles or quadrilaterals; or, of a mesh in the plane
+    #: (`in_plane`), its triangles or quadrilaterals and its line
+    #: elements; or the projected faces of a crinkle.
     pieces: np.ndarray
-    #: The simplex each piece was cut from, as a row of those given, (p,):
+    #: The element each piece was cut from, as a row of those given, (p,):
     #: of a crinkle, the kept cell whose face it is.
     index: np.ndarray
 
@@ -175,42 +190,61 @@ def _plane_axes(axes: ArrayLike) -> np.ndarray:
     return np.stack([a, b / np.linalg.norm(b)])
 
 
-def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
-              axes: ArrayLike, *, kind: str = "cut") -> PlaneCut:
-    """The simplices cut by the plane through `origin` spanned by `axes`
+#: The edges of each kind of element `plane_cut` cuts, as pairs of its
+#: corners, by the number of its corners and whether it is a tensor
+#: element: a triangle, a tetrahedron, a quadrilateral, a hexahedron.
+_CUT_EDGES = {
+    (3, False): tuple(combinations(range(3), 2)),
+    (4, False): tuple(combinations(range(4), 2)),
+    (4, True): ((0, 1), (1, 2), (2, 3), (3, 0)),
+    (8, True): ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
+                (0, 4), (1, 5), (2, 6), (3, 7)),
+}
+
+
+def plane_cut(points: ArrayLike, elements: ArrayLike, origin: ArrayLike,
+              axes: ArrayLike, *, kind: str = "cut", tensor: bool = False
+              ) -> PlaneCut:
+    """The elements cut by the plane through `origin` spanned by `axes`
     (module docstring).
 
-    `points` are the vertices, (n, 3); `simplices` the corners of each
+    `points` are the vertices, (n, 3); `elements` the corners of each
     element as indices into them, (m, 4) tetrahedra or (m, 3) triangles
     (a curved element's corners: its first columns as a mesh holds
-    them); `origin` a point of the plane, (3,); `axes` two vectors
-    spanning it, (2, 3), made orthonormal with the first one's direction
-    kept.  `kind` is "cut", the simplices cut by the plane, or, of
-    tetrahedra, "crinkle", the cells it passes through seen whole from
-    its positive side (module docstring).
+    them), or (m, 8) hexahedra, and with `tensor` (m, 4) quadrilaterals,
+    their corners in order round them; `origin` a point of the plane,
+    (3,); `axes` two vectors spanning it, (2, 3), made orthonormal with
+    the first one's direction kept.  `kind` is "cut", the elements cut
+    by the plane, or, of tetrahedra, "crinkle", the cells it passes
+    through seen whole from its positive side (module docstring).
     """
     if kind not in ("cut", "crinkle"):
         raise ValueError(f"kind is 'cut' or 'crinkle', got {kind!r}")
     x = np.asarray(points, dtype=float)
-    s = np.asarray(simplices)
+    s = np.asarray(elements)
     o = np.asarray(origin, dtype=float)
     if x.ndim != 2 or x.shape[1] != 3:
         raise ValueError(f"points have shape (n, 3), got {x.shape}")
-    if s.ndim != 2 or s.shape[1] not in (3, 4) or not (
+    if s.ndim != 2 or s.shape[1] not in (3, 4, 8) or not (
             np.issubdtype(s.dtype, np.integer) or s.size == 0):
-        raise ValueError(f"simplices are rows of 3 or 4 corner indices, got "
-                         f"{s.shape} of {s.dtype}")
+        raise ValueError(f"elements are rows of 3 or 4 corner indices, or of 8 "
+                         f"for hexahedra, got {s.shape} of {s.dtype}")
     s = s.astype(np.int64)
     if s.size and (s.min() < 0 or s.max() >= len(x)):
-        raise ValueError(f"simplices index vertices outside 0..{len(x) - 1}")
+        raise ValueError(f"elements index vertices outside 0..{len(x) - 1}")
     if o.shape != (3,) or not np.all(np.isfinite(o)):
         raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
     ab = _plane_axes(axes)
     k = s.shape[1]
+    tensor = bool(tensor) or k == 8
+    if (k, tensor) not in _CUT_EDGES:
+        raise ValueError("rows of 3 corners are triangles, which are no tensor "
+                         "elements: tensor reads rows of 4 as quadrilaterals")
     if kind == "crinkle":
-        if k != 4:
-            raise ValueError("a crinkle is a section of tetrahedra; cut a surface's "
-                             "triangles with kind='cut'")
+        if k != 4 or tensor:
+            given = {3: "triangles", 4: "quadrilaterals", 8: "hexahedra"}[k]
+            raise ValueError("a crinkle is a section of tetrahedra, and these are "
+                             f"{given}; cut them with kind='cut'")
         return _crinkle(x, s, o, ab)
     d = (x - o) @ np.cross(ab[0], ab[1])
     D = d[s]
@@ -219,7 +253,7 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     rows = np.flatnonzero((count > 0) & (count < k))
     S, D, above = s[rows], D[rows], above[rows]
     crossings = []
-    for i, j in combinations(range(k), 2):
+    for i, j in _CUT_EDGES[k, tensor]:
         # each crossing taken from the corner above the plane
         p = np.where(above[:, i], S[:, i], S[:, j])
         q = np.where(above[:, i], S[:, j], S[:, i])
@@ -232,15 +266,19 @@ def plane_cut(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
         crossings.append(np.where(crosses[:, None], at, np.nan))
     st = (np.stack(crossings, axis=1) - o) @ ab.T             # (r, pairs, 2)
     valid = ~np.isnan(st[..., 0])
-    if k == 4:
+    if (k, tensor) in ((4, False), (8, True)):
+        sides = np.count_nonzero(valid, axis=1)
+        width = max(4, int(sides.max(initial=0)))
         centre = (np.where(valid[..., None], st, 0.0).sum(axis=1)
-                  / np.count_nonzero(valid, axis=1)[:, None])
+                  / sides[:, None])
         rel = st - centre[:, None]
         angle = np.where(valid, np.arctan2(rel[..., 1], rel[..., 0]), np.inf)
-        order = np.argsort(angle, axis=1)[:, :4]
+        order = np.argsort(angle, axis=1)[:, :width]
         pieces = np.take_along_axis(st, order[..., None], axis=1)
-        three = np.count_nonzero(valid, axis=1) == 3
-        pieces[three, 3] = pieces[three, 2]
+        # a polygon of fewer sides than the widest repeats its last vertex
+        last = np.take_along_axis(pieces, (sides - 1)[:, None, None], axis=1)
+        short = np.arange(width)[None, :] >= sides[:, None]
+        pieces = np.where(short[..., None], last, pieces)
         s, t = pieces[..., 0], pieces[..., 1]
         area = 0.5 * np.abs(np.sum(s * np.roll(t, -1, axis=1)
                                    - np.roll(s, -1, axis=1) * t, axis=1))
@@ -297,32 +335,34 @@ def _crinkle(x: np.ndarray, cells: np.ndarray, o: np.ndarray,
                     index=owner[row[shown]])
 
 
-def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
+def in_plane(points: ArrayLike, elements: ArrayLike, origin: ArrayLike,
              axes: ArrayLike, *, rtol: float = 1e-9) -> PlaneCut:
-    """The simplices of a mesh lying in the plane through `origin` spanned
+    """The elements of a mesh lying in the plane through `origin` spanned
     by `axes`, each kept whole as a piece of a `PlaneCut` (module
-    docstring): a triangle as a polygon, its last vertex repeated, a line
-    element as a segment.
+    docstring): a triangle as a polygon, its last vertex repeated, a
+    quadrilateral as the polygon of its corners, a line element as a
+    segment.
 
-    `points` are the vertices, (n, 3); `simplices` the corners of each
-    element as indices into them, (m, 3) triangles or (m, 2) line
+    `points` are the vertices, (n, 3); `elements` the corners of each
+    element as indices into them, (m, 3) triangles, (m, 4)
+    quadrilaterals, their corners in order round them, or (m, 2) line
     elements (a curved element's corners: its first columns as a mesh
     holds them); `origin` and `axes` as for `plane_cut`.  Refused where a
     corner lies off the plane by more than `rtol` times the largest
     distance between the corners given.
     """
     x = np.asarray(points, dtype=float)
-    s = np.asarray(simplices)
+    s = np.asarray(elements)
     o = np.asarray(origin, dtype=float)
     if x.ndim != 2 or x.shape[1] != 3:
         raise ValueError(f"points have shape (n, 3), got {x.shape}")
-    if s.ndim != 2 or s.shape[1] not in (2, 3) or not (
+    if s.ndim != 2 or s.shape[1] not in (2, 3, 4) or not (
             np.issubdtype(s.dtype, np.integer) or s.size == 0):
-        raise ValueError(f"simplices are rows of 2 or 3 corner indices, got "
+        raise ValueError(f"elements are rows of 2, 3 or 4 corner indices, got "
                          f"{s.shape} of {s.dtype}")
     s = s.astype(np.int64)
     if s.size and (s.min() < 0 or s.max() >= len(x)):
-        raise ValueError(f"simplices index vertices outside 0..{len(x) - 1}")
+        raise ValueError(f"elements index vertices outside 0..{len(x) - 1}")
     if o.shape != (3,) or not np.all(np.isfinite(o)):
         raise ValueError(f"origin is a finite point, (3,), got {o.shape}")
     ab = _plane_axes(axes)
@@ -331,7 +371,7 @@ def in_plane(points: ArrayLike, simplices: ArrayLike, origin: ArrayLike,
     size = float(np.ptp(corners.reshape(-1, 3), axis=0).max()) if s.size else 0.0
     if s.size and off.max() > rtol * size:
         raise ValueError(f"a corner lies {off.max():.3g} off the plane: the "
-                         "simplices are not in it")
+                         "elements are not in it")
     st = (corners - o) @ ab.T
     if s.shape[1] == 3:
         st = np.concatenate([st, st[:, 2:]], axis=1)
@@ -343,12 +383,13 @@ def mesh_section(ax: Any, cut: PlaneCut, *, colours: Any = None,
     """Draw a cut on plain axes by the rules of the module docstring,
     setting their aspect equal and their limits to what is drawn.
 
-    `colours` is one colour for every piece, or one for each simplex
-    that was cut (a row for each row of `plane_cut`'s `simplices`),
+    `colours` is one colour for every piece, or one for each element
+    that was cut (a row for each row of `plane_cut`'s `elements`),
     indexed by the piece's `index`; None leaves matplotlib's own.  The
-    pieces of tetrahedra are a `PolyCollection`, `colours` their faces,
-    and those of triangles a `LineCollection`, `colours` their lines;
-    `style` goes to the collection.  Returns the collection drawn.
+    pieces of cells, polygons, are a `PolyCollection`, `colours` their
+    faces, and those of faces, segments, a `LineCollection`, `colours`
+    their lines; `style` goes to the collection.  Returns the
+    collection drawn.
     """
     from matplotlib.collections import LineCollection, PolyCollection
     from matplotlib.colors import to_rgba_array
@@ -357,14 +398,14 @@ def mesh_section(ax: Any, cut: PlaneCut, *, colours: Any = None,
         raise ValueError("a mesh section is drawn on plain axes")
     if not isinstance(cut, PlaneCut):
         raise TypeError(f"expected a PlaneCut, got {type(cut).__name__}")
-    polygons = cut.pieces.shape[1] == 4
+    polygons = cut.pieces.shape[1] > 2
     if colours is not None:
         rgba = to_rgba_array(colours)
         if len(rgba) != 1:
             if cut.index.size and cut.index.max() >= len(rgba):
-                raise ValueError(f"{len(rgba)} colours for simplices up to row "
+                raise ValueError(f"{len(rgba)} colours for elements up to row "
                                  f"{int(cut.index.max())}: give one colour, or one "
-                                 "for each simplex cut")
+                                 "for each element cut")
             rgba = rgba[cut.index]
         key = "facecolors" if polygons else "colors"
         style = {key: rgba} | style
@@ -470,11 +511,13 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
     box aspect to its proportions and their view.
 
     `points` are the vertices, (n, 3); `cells` the corners of the
-    tetrahedra, (m, 4) (a curved element's first four columns);
-    `bounds` the block, ((x0, x1), (y0, y1), (z0, z1)); `colours` one
-    colour, or one for each cell, of the pieces cut from it; `lines`
-    triangles, (k, 3) corner indices, whose sections by the walls are
-    drawn over them as curves in `line_style` (a dark line by default);
+    tetrahedra, (m, 4) (a curved element's first four columns), or of
+    hexahedra, rows of exactly eight; `bounds` the block, ((x0, x1),
+    (y0, y1), (z0, z1)); `colours` one colour, or one for each cell, of
+    the pieces cut from it; `lines` triangles, (k, 3) corner indices,
+    or beside hexahedra quadrilaterals, (k, 4), whose sections by the
+    walls are drawn over them as curves in `line_style` (a dark line by
+    default);
     `view` the (elevation, azimuth) in degrees, which also chooses the
     walls drawn, those whose outward normal points away from the viewer;
     `zoom` matplotlib's zoom of the box; `style` goes to the walls'
@@ -490,7 +533,11 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
     c = np.asarray(cells)
     b = _bounds(bounds)
     if c.ndim != 2 or c.shape[1] < 4:
-        raise ValueError(f"cells are rows of 4 corner indices, got {c.shape}")
+        raise ValueError(f"cells are rows of 4 corner indices, or of 8 for "
+                         f"hexahedra, got {c.shape}")
+    hexahedra = c.shape[1] == 8
+    corners = c if hexahedra else c[:, :4]
+    sides = 4 if hexahedra else 3
     eye = _eye(view)
     normals, offsets = block_planes(b)
     walls, owner, curves = [], [], []
@@ -505,12 +552,13 @@ def mesh_block(ax: Any, points: ArrayLike, cells: ArrayLike, bounds: ArrayLike, 
         pair = np.eye(3)[[k for k in range(3) if k != axis]]
         if np.cross(*pair) @ normal > 0.0:
             pair = pair[::-1]
-        cut = plane_cut(x, c[:, :4], origin, pair)
+        cut = plane_cut(x, corners, origin, pair)
         parts, index = clip_polygons(cut.in_space(), normals, offsets)
         walls += parts
         owner.append(cut.index[index])
         if lines is not None and len(lines):
-            rim = plane_cut(x, np.asarray(lines)[:, :3], origin, pair)
+            rim = plane_cut(x, np.asarray(lines)[:, :sides], origin, pair,
+                            tensor=hexahedra)
             curves += clip_polygons(rim.in_space(), normals, offsets)[0]
     owner = np.concatenate(owner) if owner else np.empty(0, dtype=np.int64)
     if colours is not None:

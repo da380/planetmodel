@@ -33,8 +33,10 @@ positive up) and as a surface quantity, a digital elevation model on
 its own grid say.  A `GriddedDisplacement` is the vertical displacement
 of `cartesian.displacement` held the same way: w(depth, x, y) a gridded
 scalar field on every layer of a skeleton of depths, its derivatives
-the rules' derivatives, and every element boundary declared as a knot,
-since the radial rule's derivative may jump there; under
+the rules' derivatives, and every depth the radial rule's derivative
+may jump at declared as a knot (the breakpoints of each field's
+`radial_pieces`: the element boundaries under the polynomial rule and
+every node under the linear one); under
 `cartesian.VerticalStretch` it is the flat form of the sphere's gridded
 mapping (`gridded.GriddedDisplacement`), the vertical stretch being the
 mapping of a flat body.
@@ -254,9 +256,11 @@ class GriddedDisplacement:
     boundary is read from the deeper layer, and beyond the skeleton the
     end layers continue.  `depth_derivative` and `lateral_gradient` are
     the rules' derivatives, exact for the field as its rules define it,
-    and every element boundary of every field inside the skeleton is a
-    knot.  `GriddedDisplacement.sampled` builds one from any vertical
-    displacement.
+    and every breakpoint of every field's `radial_pieces` inside the
+    skeleton is a knot: the element boundaries of a field read by the
+    polynomial rule and all the nodes of one read by the linear rule,
+    where its derivative in depth jumps.  `GriddedDisplacement.sampled`
+    builds one from any vertical displacement.
     """
 
     def __init__(self, skeleton: Skeleton, fields: Sequence[GriddedField]) -> None:
@@ -274,8 +278,8 @@ class GriddedDisplacement:
                 raise ValueError(f"field {i} lies on [{lo:g}, {hi:g}], its layer "
                                  f"on [{b[i]:g}, {b[i + 1]:g}]")
         self._sk, self._fields = skeleton, fields
-        breaks = np.unique(np.concatenate([f.breaks for f in fields]))
-        inside = breaks[(breaks > b[0] + tol) & (breaks < b[-1] - tol)]
+        pieces = np.unique(np.concatenate([f.radial_pieces()[0] for f in fields]))
+        inside = pieces[(pieces > b[0] + tol) & (pieces < b[-1] - tol)]
         self.knots = tuple(float(k) for k in inside)
         self.name = "gridded_displacement"
 

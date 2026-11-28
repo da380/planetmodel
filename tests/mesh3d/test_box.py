@@ -128,14 +128,14 @@ def test_a_box_and_a_rectangle_build_checked_at_every_order(built, kind, order):
                               "faces": res.counts["faces"]}
     assert res.mapping.is_identity and res.geometry is res.spec.geometry
     # a few elements across, as every meshing test is
-    assert 10 < res.counts[f"dim{d}"] < 3000
+    assert 10 < res.counts["elements"] < 3000
 
 
 @pytest.mark.parametrize("kind", list(GEOMETRIES))
 def test_every_cell_lies_in_the_layer_its_attribute_says(built, kind):
     res = built(kind)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     assert sorted(set(mesh.cell_attributes.tolist())) == [1, 2, 3]
     depth = -physical(mesh, card)[:, 2]
     for a in (1, 2, 3):
@@ -157,7 +157,7 @@ def test_every_boundary_element_lies_on_the_plane_its_group_says_facing_out(
         built, kind, order):
     res = built(kind, order)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     d = mesh.dimension
     X = physical(mesh, card)
     where = planes(card)
@@ -198,10 +198,10 @@ def test_every_boundary_element_lies_on_the_plane_its_group_says_facing_out(
 @pytest.mark.parametrize("kind", list(GEOMETRIES))
 def test_the_mesh_file_names_its_groups(built, kind):
     res = built(kind)
-    header = res.msh_path.read_text(errors="ignore").splitlines()[:2]
+    header = res.mesh_path.read_text(errors="ignore").splitlines()[:2]
     assert header[1].split()[0] == "2.2"
     with session(name="reread"):
-        groups = read_groups(res.msh_path)
+        groups = read_groups(res.mesh_path)
     d = res.spec.dimension
     assert groups[d] == {1: "upper", 2: "middle", 3: "lower"}
     faces = {"box": ["base", "x_min", "x_max", "y_min", "y_max"],
@@ -328,7 +328,7 @@ def test_the_sizing_measures_distance_from_the_planes(kind, tmp_path):
                              tmp_path / kind)
     assert res.validation.ok
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     d = mesh.dimension
 
     def edges(attribute):
@@ -400,13 +400,13 @@ def test_a_hollow_box_and_a_padded_domain_build(tmp_path):
     card = sc.read(res.manifest_path)
     assert [e["depth"] for e in card.interfaces] == [0.1, 0.3, 0.6]
     assert card.layers[0]["depth_top"] == 0.1 and card.surface_attribute == 1
-    assert read_mesh(res.msh_path).points[:, 1].max() == pytest.approx(-0.1, abs=1e-12)
+    assert read_mesh(res.mesh_path).points[:, 1].max() == pytest.approx(-0.1, abs=1e-12)
     padded = cartesian.Geometry(Skeleton(DEPTHS),
                                 cartesian.Rectangle((-1.0, 1.0), padding=0.25))
     res = build_layered_mesh(MeshSpec(padded, SIZING, order=1), tmp_path / "padded")
     card = sc.read(res.manifest_path)
     assert [e["value"] for e in card.faces] == [-1.0, -1.25, 1.25]
-    x = read_mesh(res.msh_path).points[:, 0]
+    x = read_mesh(res.mesh_path).points[:, 0]
     assert (x.min(), x.max()) == pytest.approx((-1.25, 1.25), abs=1e-12)
 
 
@@ -418,7 +418,7 @@ def test_a_mapping_is_carried_and_the_nodes_stay_on_the_reference_planes(kind,
     assert res.validation.ok and res.mapping is g.mapping
     card = sc.read(res.manifest_path)
     assert card.mesh["nodes"] == "reference"
-    depth = -physical(read_mesh(res.msh_path), card)[:, 2]
+    depth = -physical(read_mesh(res.mesh_path), card)[:, 2]
     assert (depth.min(), depth.max()) == pytest.approx((0.0, 1.0), abs=1e-12)
 
 
@@ -436,7 +436,7 @@ def test_a_box_and_a_rectangle_are_drawn_by_layer(built, kind):
 
     res = built(kind)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     if kind == "box":
         cut = plane_cut(mesh.points, mesh.cells[:, :4], [0.0, 0.1, 0.0],
                         [[1, 0, 0], [0, 0, 1]])

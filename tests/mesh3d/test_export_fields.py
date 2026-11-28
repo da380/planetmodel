@@ -14,7 +14,7 @@ from planetmodel.units import G_SI, Scales
 from planetmodel.mesh3d import (MeshSpec, Shell, build_layered_mesh,
                                 build_offset_mesh, export_mfem,
                                 manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array
+from planetmodel.mesh3d.export import MESH_READ_OPTIONS, node_array
 
 from conftest import COARSE, confined_flattening, flattening, full_geometry, \
     hollow_geometry
@@ -91,7 +91,7 @@ def load(export):
 def read_back(mesh, path) -> np.ndarray:
     """A GridFunction's values as (ndof, vdim), copied while it is alive."""
     gf = mfem.GridFunction(mesh, str(path))
-    return np.array(_node_array(gf), dtype=float, copy=True)
+    return np.array(node_array(gf), dtype=float, copy=True)
 
 
 def dof_points(mesh, fes) -> np.ndarray:
@@ -156,7 +156,7 @@ def test_every_field_reads_back_at_the_dof_coordinates(built, exported, name):
             f"L2_{mesh.Dimension()}D_P{export.counts['order']}"
         assert fes.GetVDim() == entries[field_name]["vdim"]
         assert entries[field_name]["ordering"] == "byNODES"
-        values = np.array(_node_array(gf), dtype=float)
+        values = np.array(node_array(gf), dtype=float)
         scalar = mfem.FiniteElementSpace(mesh, fes.FEColl(), 1)
         X = dof_points(mesh, scalar)
         attributes = dof_attributes(mesh, scalar)
@@ -392,7 +392,7 @@ def test_model_file_true_writes_a_radial_model_and_refuses_one_that_varies(
         built, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     res, model = built["full3"]
-    with pytest.raises(ValueError, match="give the angular grid"):
+    with pytest.raises(ValueError, match="give the grid"):
         export_mfem(res, tmp_path / "a", model=model, model_file=True)
     radial = Model(model.geometry, [
         {"rho": constant_field(lay.interval, 1.0 + lay.index, character=DENSITY)}
@@ -412,10 +412,10 @@ def test_a_re_export_without_a_model_says_nothing_a_model_said(built, tmp_path):
 
     res, model = built["full3"]
     own = tmp_path / "own"
-    shutil.copy(res.msh_path, own.with_suffix(".msh"))
+    shutil.copy(res.mesh_path, own.with_suffix(".msh"))
     shutil.copy(res.manifest_path, own.with_suffix(".json"))
     import dataclasses
-    mine = dataclasses.replace(res, msh_path=own.with_suffix(".msh"),
+    mine = dataclasses.replace(res, mesh_path=own.with_suffix(".msh"),
                                manifest_path=own.with_suffix(".json"))
     export_mfem(mine, own, model=model)
     from planetmodel.mesh3d import export_mfem_mesh
@@ -430,7 +430,7 @@ def test_a_re_export_without_a_model_says_nothing_a_model_said(built, tmp_path):
 def test_a_refused_model_file_leaves_nothing_written(built, tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     res, model = built["shells3"]
-    with pytest.raises(ValueError, match="give the angular grid"):
+    with pytest.raises(ValueError, match="give the grid"):
         export_mfem(res, tmp_path / "mf", model=model, model_file=True)
     assert list(tmp_path.iterdir()) == []
 

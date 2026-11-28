@@ -19,7 +19,8 @@ import pytest
 from planetmodel import Scales
 from planetmodel.fault import (CartesianFrame, Fault, GeographicFrame, Plane, Slip,
                                StructuredPatch)
-from planetmodel.faultfile import (SCHEMA, FaultFile, read_fault, read_fault_file,
+from planetmodel.faultfile import (SCHEMA, FaultFile, malformed, read_fault,
+                                   read_fault_file, schema_of, validate_structure,
                                    write_fault)
 from planetmodel.testing import check_fault_file
 
@@ -111,6 +112,18 @@ def test_round_trip(tmp_path: Path, case: str):
                               fault.slip_vector(k, u, v, date=date, basis="ambient"))
 
 
+def test_a_writer_stamps_this_library_as_its_source_unless_given_one(tmp_path: Path):
+    """`source` is the model file's: this library and its version unless
+    given."""
+    import planetmodel
+
+    fault, kw = _faults()["node_linear"]
+    path = write_fault(tmp_path / "stamped.nc", fault, **kw)
+    assert read_fault_file(path).source == f"planetmodel {planetmodel.__version__}"
+    path = write_fault(tmp_path / "named.nc", fault, source="my code 1.0", **kw)
+    assert read_fault_file(path).source == "my code 1.0"
+
+
 def test_xarray_opens_it_as_it_stands(tmp_path: Path):
     xr = pytest.importorskip("xarray")
     fault, kw = _faults()["node_linear"]
@@ -131,8 +144,9 @@ def test_writing_refuses_what_the_format_cannot_hold(tmp_path: Path):
             write_fault(tmp_path / "x.nc", fault, source="t")
     one = Fault([Plane(LOCAL, [0.0, 0.0, -5.0], strike=10.0, dip=40.0, length=6.0,
                        width=3.0, slip=Slip(np.zeros((1, 1, 3))))])
-    with pytest.raises(ValueError, match="source"):
-        write_fault(tmp_path / "x.nc", one, source=" ")
+    for source in (" ", "", 3):
+        with pytest.raises(ValueError, match="source names the writing code"):
+            write_fault(tmp_path / "x.nc", one, source=source)
     with pytest.raises(ValueError, match="2 names for 1"):
         write_fault(tmp_path / "x.nc", one, source="t", names=["a", "b"])
     with pytest.raises(TypeError, match="a string or None"):
@@ -141,6 +155,10 @@ def test_writing_refuses_what_the_format_cannot_hold(tmp_path: Path):
         write_fault(tmp_path / "x.nc", one, source="t", meta={"k": [1, 2]})
     with pytest.raises(TypeError, match="Fault"):
         write_fault(tmp_path / "x.nc", one.patches[0], source="t")
+    with pytest.raises(TypeError, match="not one string"):
+        write_fault(tmp_path / "x.nc", one, source="t", citation="Smith 2020")
+    with pytest.raises(ValueError, match="is one line"):
+        write_fault(tmp_path / "x.nc", one, source="t", citation=("Smith\n2020",))
     assert not list(tmp_path.iterdir())
 
 
@@ -204,6 +222,8 @@ REFUSALS = {
                    "is missing or empty"),
     "scale": ("static_plane", _set("scale_time", -1.0), "scale_time",
               "is missing or not positive"),
+    "scale_infinite": ("static_plane", _set("scale_length", np.inf), "scale_length",
+                       "is missing or not positive and finite"),
     "frame": ("static_plane", _set("frame", "spherical"), "frame",
               "not one of geographic, cartesian"),
     "radius": ("static_plane", _set("reference_radius", 0.0), "reference_radius",
@@ -389,6 +409,65 @@ def test_a_group_the_schema_does_not_name_is_refused(tmp_path: Path):
         ds.createGroup("hypocentre")
     with pytest.raises(ValueError, match="hypocentre: is not one of the 1 patches"):
         read_fault_file(path)
+
+
+# -- the structure alone, the schema alone, the refusal -----------------------------
+
+@pytest.mark.parametrize("case", sorted(_faults()))
+def test_a_written_file_has_the_structure(tmp_path: Path, case: str):
+    path = _written(tmp_path, case)
+    assert validate_structure(path) is None
+    assert validate_structure(str(path)) is None
+    with netCDF4.Dataset(path, "r") as ds:
+        assert validate_structure(ds) is None
+
+
+@pytest.mark.parametrize("label", sorted(REFUSALS))
+def test_the_structure_is_refused_as_the_reader_refuses_it(tmp_path: Path, label: str):
+    """By path or as an open dataset, in the reader's words."""
+    case, edit, where, phrase = REFUSALS[label]
+    path = _written(tmp_path, case)
+    with netCDF4.Dataset(path, "a") as ds:
+        edit(ds)
+    with pytest.raises(ValueError) as read:
+        read_fault_file(path)
+    with pytest.raises(ValueError) as validated:
+        validate_structure(path)
+    assert str(validated.value) == str(read.value)
+    assert str(read.value).startswith(f"malformed fault file {path}: {where}: ")
+    with netCDF4.Dataset(path, "r") as ds:
+        with pytest.raises(ValueError) as opened:
+            validate_structure(ds)
+    assert str(opened.value) == str(read.value)
+
+
+def test_the_schema_is_read_without_the_rest_of_the_file(tmp_path: Path):
+    path = _written(tmp_path, "static_plane")
+    assert schema_of(path) == SCHEMA == read_fault_file(path).schema
+    with netCDF4.Dataset(path, "a") as ds:
+        ds.setncattr("schema", "planetmodel.fault/0")
+        ds.delncattr("created")
+        ds.groups["patch_0"].delncattr("kind")
+    assert schema_of(path) == "planetmodel.fault/0"
+    with netCDF4.Dataset(path, "a") as ds:
+        ds.delncattr("schema")
+    with pytest.raises(ValueError) as caught:
+        schema_of(path)
+    assert str(caught.value) == (f"malformed fault file {path}: schema: is missing: "
+                                 "not a planetmodel fault file")
+    with pytest.raises(ValueError) as read:
+        read_fault_file(path)
+    assert str(read.value) == str(caught.value)
+
+
+def test_malformed_is_the_refusal_of_a_file():
+    with pytest.raises(ValueError) as caught:
+        malformed("a.nc", "patch_0.kind: is missing")
+    assert str(caught.value) == "malformed fault file a.nc: patch_0.kind: is missing"
+    where = Path("b") / "c.nc"
+    with pytest.raises(ValueError) as caught:
+        malformed(where, "nothing in it")
+    assert str(caught.value) == f"malformed fault file {where}: nothing in it"
 
 
 # -- the format page's examples ----------------------------------------------------

@@ -28,8 +28,8 @@ being (1 - sum w_k) mu_U; a viscosity is the one-branch shorthand, w_1 =
 of which family, `family_spec` gives its spec, and `shipped(name)` the
 spec of any name the library speaks, of the table or of a family.  A
 Burgers body's Kelvin element is named by `kelvin_viscosity` and
-`kelvin_modulus_fraction`, the columns of a burgers deck; a model holds
-a Burgers layer as its two Prony branches.
+`kelvin_modulus_fraction`; a model holds a Burgers layer as its two
+Prony branches.
 
 `CONSTANTS` holds the named constants a model reads in its own units,
 each declared with its SI value and dimensions.

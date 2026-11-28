@@ -2,10 +2,11 @@
 # # Power-law creep beside a viscosity
 #
 # A code that steps in time can let a relaxation time fall with stress:
-# AdGIA divides it by 1 + gamma (|dev sigma| / 2 mu_0)^(n - 1), so that
-# creep is linear at low stress and power-law at high. A model carries the
-# two parameters a code needs, the stress exponent n and the transition
-# stress sigma_t at which the two kinds of creep strain equally fast;
+# AdGIA, a glacial isostatic adjustment code, divides it by
+# 1 + gamma (|dev sigma| / 2 mu_0)^(n - 1), so that creep is linear at
+# low stress and power-law at high. A model carries the two parameters
+# a code needs, the stress exponent n and the transition stress sigma_t
+# at which the two kinds of creep strain equally fast;
 # gamma = (2 mu_0 / sigma_t)^(n - 1) follows.
 #
 # Needs: none

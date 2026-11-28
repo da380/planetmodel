@@ -36,6 +36,24 @@ def boundary_edge_lengths(curve):
     return np.array([np.linalg.norm(pos[a] - pos[b]) for a, b in ends])
 
 
+def facing(mesh):
+    """How the boundary elements of each attribute of a mesh read as
+    arrays face the origin: {attribute: (away from it, towards it)}, by
+    a face's (v1 - v0) x (v2 - v0) through its first three corners and,
+    in two dimensions, an edge's direction turned clockwise."""
+    out = {}
+    for attribute in np.unique(mesh.face_attributes):
+        p = mesh.points[mesh.faces_with(attribute)]
+        if mesh.dimension == 3:
+            normal = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+        else:
+            t = p[:, 1] - p[:, 0]
+            normal = np.stack([t[:, 1], -t[:, 0], np.zeros(len(t))], axis=1)
+        dots = np.einsum("ij,ij->i", normal, p.mean(axis=1))
+        out[int(attribute)] = (int((dots > 0.0).sum()), int((dots < 0.0).sum()))
+    return out
+
+
 def full_geometry():
     """Three shells of a unit ball, named."""
     return Geometry(Skeleton([0.0, 0.4, 0.8, 1.0]),

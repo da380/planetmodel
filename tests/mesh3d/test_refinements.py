@@ -16,9 +16,9 @@ from planetmodel.mesh3d import (InterfaceSizing, MeshSpec, NearPoints,
 from planetmodel.mesh3d._geometry import build_concentric
 from planetmodel.mesh3d._session import session
 from planetmodel.mesh3d._sizing import (apply_mesh_options, apply_refinements,
-                                        apply_size_fields, check_sizing_scale)
+                                        apply_size_fields)
 from planetmodel.mesh3d._tagging import apply_physical_groups, identify
-from planetmodel.mesh3d.spec import QUALITY_FLOOR
+from planetmodel.mesh3d.spec import QUALITY_FLOOR, check_sizing_scale
 from planetmodel.testing import check_refinement
 
 from conftest import COARSE, full_geometry
@@ -319,7 +319,7 @@ def test_a_refinement_no_finer_than_the_sizing_changes_nothing(tmp_path):
     g = full_geometry()
     base = build_layered_mesh(MeshSpec(g, COARSE, dimension=2),
                               tmp_path / "base")
-    ceiling = NearPoints([[0.0, 1.0]], COARSE.h_max, COARSE.h_max, 0.3)
+    ceiling = NearPoints([[0.0, 1.0]], COARSE.far_size, COARSE.far_size, 0.3)
     same = build_layered_mesh(MeshSpec(g, COARSE, dimension=2,
                                        refinements=[ceiling]),
                               tmp_path / "same")

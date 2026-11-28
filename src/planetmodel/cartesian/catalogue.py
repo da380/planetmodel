@@ -1,5 +1,5 @@
-"""Named flat model types: a layered isotropic model, a crust over a
-mantle, and the models of the decks of depths.
+"""Named flat model types: a layered isotropic model and a crust over a
+mantle.
 
 Each is a class derived from `cartesian.Model` alone, with the
 behaviours of `planetmodel.behaviours` that are pointwise mixed in:
@@ -11,10 +11,9 @@ frequency where a layer holds a viscosity or Prony branches.  None is
 sphere's, and a flat model's gravity is prescribed
 (`Model.with_uniform_gravity`).  Every model is in SI, converted to
 other scales by `converted`, and built over a lateral `Box` or
-`Rectangle` given to its constructor, a deck holding no lateral extent:
-the box is as large as the problem it serves needs, which no default
-could know.  Below its base a model is padded by `extended(depths,
-fields="hold")`.
+`Rectangle` given to its constructor: the box is as large as the
+problem it serves needs, which no default could know.  Below its base a
+model is padded by `extended(depths, fields="hold")`.
 
 `LayeredIsotropicElastic` is the flat counterpart of the spherical one:
 `rho`, `vp` and `vs` per layer, a constant or the coefficients of a
@@ -36,36 +35,21 @@ lithosphere) and the base at 200 km unless `base` says otherwise; with
 `viscosity` (Pa s) the asthenosphere is a Maxwell body, its elastic
 values unrelaxed.  It holds no quality factors; one put on a layer
 (`with_field`) disperses its moduli by `moduli_at`.
-
-`ElasticDeckModel`, `MaxwellDeckModel`, `PronyDeckModel` and
-`BurgersDeckModel` are the models of the decks of depths
-(`cartesian.ELASTIC`, `MAXWELL`, `PRONY`, `BURGERS`), built as their
-spherical counterparts are from the same rules (`deck.deck_from`,
-`deck.prony_layers`, `conversion.prony.burgers_layers`), the deck kept
-so that `to_deck` writes the model back, character for character on
-its own knots.
 """
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from ..behaviours import ConstantQ, Elastic, Viscoelastic
 from ..catalogue import LayerValue, isotropic_layers
-from ..deck import (BURGERS_KINDS, MAXWELL_KINDS, PRONY_KINDS, Deck, DeckFormat,
-                    Tabulated, deck_from, deck_layers, prony_layers)
-from ..fields import Field
 from ..layerfunction import constant_layer
 from ..skeleton import Skeleton
 from ..units import Scales
-from .deck import BURGERS, DEPTH, ELASTIC, MAXWELL, PRONY, depth_names
 from .domains import Domain
 from .geometry import Geometry
 from .model import Model
 
-__all__ = ["LayeredIsotropicElastic", "CrustOverMantle", "ElasticDeckModel",
-           "MaxwellDeckModel", "PronyDeckModel", "BurgersDeckModel",
-           "CRUST_OVER_MANTLE"]
+__all__ = ["LayeredIsotropicElastic", "CrustOverMantle", "CRUST_OVER_MANTLE"]
 
 #: `CrustOverMantle`'s layers from the surface down: name, top depth (m),
 #: and rho (kg/m^3), vp and vs (m/s).
@@ -144,127 +128,3 @@ class CrustOverMantle(Elastic, ConstantQ, Viscoelastic, Model):
                 iv, constant_layer(iv, float(viscosity)), name="viscosity")
             name += " (Maxwell asthenosphere)"
         super().__init__(geometry, layers, scales=Scales.SI, name=name)
-
-
-def _read(model: Tabulated, source: str | os.PathLike[str] | Deck, domain: Domain,
-          format: DeckFormat, *, kind: str, kinds: Mapping[str, str] | None
-          ) -> tuple[Geometry, list[dict[str, Field]], Deck]:
-    """A deck of depths in `format` as a geometry over `domain` and the base
-    fields of its layers, the deck kept on `model`, the one being built."""
-    deck = deck_from(source, format)
-    skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds, coordinate=DEPTH)
-    layer_names, interface_names = depth_names(deck)
-    geometry = Geometry(skeleton, domain, layer_names=layer_names,
-                        interface_names=interface_names)
-    model.keep_deck(deck)
-    return geometry, layers, deck
-
-
-def _title(deck: Deck) -> str | None:
-    """A deck's title as a model's name, None for none."""
-    return str(deck.header.get("name", "")) or None
-
-
-class ElasticDeckModel(Elastic, ConstantQ, Viscoelastic, Tabulated, Model):
-    """The model of an elastic deck of depths (`cartesian.ELASTIC`) over the
-    lateral `domain`: `depth rho vpv vsv qkappa qmu vph vsh eta` in SI, or
-    `depth rho vp vs qkappa qmu`, under a title, the column line and the
-    naming lines, NaN where a layer lacks a field.
-
-    The columns are interpolated layer by layer by `kind` (see
-    `planetmodel.deck.KINDS`); a quality factor NaN throughout a layer is
-    absent from it, and `moduli_at` disperses the moduli of a layer
-    holding one about a period of one second.  The naming lines name the
-    layers and interfaces (`depth_names`), the title the model.  The
-    deck is kept as `deck`, its knots per layer as `knots`, its header
-    as `header` and its columns as `columns`, so `to_deck` writes the
-    model back out.  The model is in SI, as the deck is.
-    """
-
-    def __init__(self, source: str | os.PathLike[str] | Deck, domain: Domain, *,
-                 kind: str = "cubic") -> None:
-        geometry, layers, deck = _read(self, source, domain, ELASTIC, kind=kind,
-                                       kinds=None)
-        super().__init__(geometry, layers, name=_title(deck))
-
-
-class MaxwellDeckModel(Elastic, Viscoelastic, Tabulated, Model):
-    """The model of a Maxwell deck of depths (`cartesian.MAXWELL`) over the
-    lateral `domain`: `depth rho vpv vsv vph vsh eta viscosity` in SI
-    under a title, the column line and the naming lines, NaN where a
-    layer lacks a field.
-
-    As the spherical `MaxwellDeckModel`: the columns are interpolated by
-    `kind`, and by `kinds` where it names a column, the viscosity in its
-    logarithm by straight lines by default (`MAXWELL_KINDS`); the elastic
-    values are the Maxwell body's unrelaxed ones, which `frozen(omega)`
-    relaxes with tau = viscosity / mu.  The deck is kept and `to_deck`
-    writes the model back out.
-    """
-
-    def __init__(self, source: str | os.PathLike[str] | Deck, domain: Domain, *,
-                 kind: str = "cubic", kinds: Mapping[str, str] = MAXWELL_KINDS) -> None:
-        geometry, layers, deck = _read(self, source, domain, MAXWELL, kind=kind,
-                                       kinds=kinds)
-        super().__init__(geometry, layers, name=_title(deck))
-
-
-class PronyDeckModel(Elastic, Viscoelastic, Tabulated, Model):
-    """The model of a prony deck of depths (`cartesian.PRONY`) over the
-    lateral `domain`: the Maxwell deck's columns with the viscosity
-    replaced by the pairs `relaxation_strength_k relaxation_time_k`.
-
-    As the spherical `PronyDeckModel`: by default the strengths are joined
-    by straight lines and the times in their logarithm (`PRONY_KINDS`),
-    each layer holds the branches it uses (`deck.prony_layers`), a deck
-    given rather than read is completed and held to the format, and
-    `to_deck` writes the model back out as a prony deck of depths on its
-    knots (`conversion.prony.prony_deck`).
-    """
-
-    def __init__(self, source: str | os.PathLike[str] | Deck, domain: Domain, *,
-                 kind: str = "cubic", kinds: Mapping[str, str] = PRONY_KINDS) -> None:
-        geometry, layers, deck = _read(self, source, domain, PRONY, kind=kind,
-                                       kinds=kinds)
-        super().__init__(geometry, prony_layers(deck, layers), name=_title(deck))
-
-    def to_deck(self, *, columns: Sequence[str] | None = None) -> Deck:
-        """The model as a prony deck of depths on its knots, in SI, by
-        `conversion.prony.prony_deck`, under the header it was read with
-        (`Tabulated.restated`); with `columns`, those fields as
-        `Tabulated.to_deck` samples them."""
-        if columns is not None:
-            return super().to_deck(columns=columns)
-        from ..conversion.prony import prony_deck
-        return self.restated(prony_deck(self, knots=self.knots, format=PRONY))
-
-
-class BurgersDeckModel(Elastic, Viscoelastic, Tabulated, Model):
-    """The model of a burgers deck of depths (`cartesian.BURGERS`) over the
-    lateral `domain`: the Maxwell deck's columns, then the Kelvin
-    element's `kelvin_viscosity` and `kelvin_modulus_fraction`.
-
-    As the spherical `BurgersDeckModel`: by default the two viscosities
-    are joined in their logarithm and the modulus fraction by straight
-    lines (`BURGERS_KINDS`), a Burgers layer holds its two Prony branches
-    (`conversion.prony.burgers_layers`) and a Maxwell layer its
-    viscosity, and `to_deck` writes the model back out as a burgers deck
-    of depths on its knots (`conversion.prony.burgers_deck`).
-    """
-
-    def __init__(self, source: str | os.PathLike[str] | Deck, domain: Domain, *,
-                 kind: str = "cubic", kinds: Mapping[str, str] = BURGERS_KINDS) -> None:
-        from ..conversion.prony import burgers_layers
-        geometry, layers, deck = _read(self, source, domain, BURGERS, kind=kind,
-                                       kinds=kinds)
-        super().__init__(geometry, burgers_layers(layers), name=_title(deck))
-
-    def to_deck(self, *, columns: Sequence[str] | None = None) -> Deck:
-        """The model as a burgers deck of depths on its knots, in SI, by
-        `conversion.prony.burgers_deck`, under the header it was read with
-        (`Tabulated.restated`); with `columns`, those fields as
-        `Tabulated.to_deck` samples them."""
-        if columns is not None:
-            return super().to_deck(columns=columns)
-        from ..conversion.prony import burgers_deck
-        return self.restated(burgers_deck(self, knots=self.knots, format=BURGERS))

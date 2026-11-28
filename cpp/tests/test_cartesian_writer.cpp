@@ -182,6 +182,7 @@ flat::ModelFile BoxModel() {
   file.SetName("a box built in C++");
   file.SetWrittenBy("planetmodel C++ tests");
   file.SetCitation({"A. Author (2026).  A written box.", "B. Author (2026).  Its source."});
+  file.SetBehaviours({"Elastic", "Creeping"});
   file.SetLayerName(0, "crust");
   file.SetLayerName(2, "asthenosphere");
   file.SetInterfaceName(0, "surface");
@@ -330,6 +331,7 @@ TEST(CartesianWriter, WritesBackWhatItReads) {
     EXPECT_EQ(after.WrittenBy(), before.WrittenBy());
     EXPECT_EQ(after.Created(), before.Created());
     EXPECT_EQ(after.Citation(), before.Citation());
+    EXPECT_EQ(after.Behaviours(), before.Behaviours());
     EXPECT_EQ(after.GetScales(), before.GetScales());
     EXPECT_EQ(after.Rtol(), before.Rtol());
     EXPECT_EQ(after.Meta(), before.Meta());
@@ -407,6 +409,7 @@ TEST(CartesianWriter, WritesABoxOfEveryKindOfFieldThatReadsBackToItsSources) {
   EXPECT_EQ(file.WrittenBy(), "planetmodel C++ tests");
   EXPECT_NE(file.Created().find('T'), std::string::npos);
   EXPECT_EQ(file.Citation().size(), 2u);
+  EXPECT_EQ(file.Behaviours(), (std::vector<std::string>{"Elastic", "Creeping"}));
   EXPECT_EQ(file.GetDomain(), Box());
   EXPECT_EQ(file.LayerNames(),
             (std::vector<std::optional<std::string>>{"crust", std::nullopt, "asthenosphere"}));
@@ -455,6 +458,28 @@ TEST(CartesianWriter, WritesABoxOfEveryKindOfFieldThatReadsBackToItsSources) {
     EXPECT_NEAR(shift.Value(x, y), 30.0 * Wave(x, y), 1e-12);
   }
   EXPECT_THROW(static_cast<void>(file.SurfaceFieldOn(1, "K_shape")), Error);
+}
+
+TEST(CartesianWriter, NamesBehavioursEachOnceAndCarriesThoseItReads) {
+  auto file = flat::ModelFile(pm::Skeleton({0.0, 30e3}), Box());
+  EXPECT_TRUE(file.Behaviours().empty());
+  file.SetBehaviours({"Viscoelastic", "Creeping"});
+  EXPECT_EQ(file.Behaviours(), (std::vector<std::string>{"Viscoelastic", "Creeping"}));
+  EXPECT_THROW(file.SetBehaviours({"Elastic", "Elastic"}), pm::Error);
+  EXPECT_THROW(file.SetBehaviours({"two words"}), pm::Error);
+  EXPECT_EQ(file.Behaviours().size(), 2u);
+
+  // fields of depth alone, on the grid of one node, whose file names a
+  // behaviour the library has none of: read, and written back unchanged
+  PLANETMODEL_FIXTURE(depth, "flat_model_depth.nc");
+  const auto before = flat::ReadModelFile(depth);
+  const auto stated = std::vector<std::string>{"Elastic", "Tidal", "Viscoelastic"};
+  EXPECT_EQ(before.Behaviours(), stated);
+  ASSERT_EQ(before.Parts().size(), 1u);
+  EXPECT_EQ(before.Parts()[0].grid->Shape(), (std::vector<std::size_t>{1, 1}));
+  const auto path = pm::testing::WrittenDir() / "flat_behaviours_depth.nc";
+  flat::WriteModelFile(path, before);
+  EXPECT_EQ(flat::ReadModelFile(path).Behaviours(), stated);
 }
 
 TEST(CartesianWriter, WritesARectangleWithItsDisplacementInItsOwnUnits) {
@@ -585,12 +610,14 @@ TEST(CartesianWriter, RefusesSourcesThatDoNotFitTheirLayers) {
   EXPECT_THROW(file.AddField("flow", {.character = pm::VECTOR}, {{0, lateral}}), Error);
   EXPECT_THROW(file.AddField("vp", {{0, lateral}, {1, lateral}}), Error);
   EXPECT_FALSE(file.Parts()[0].variables.contains("vp"));
-  // names the format keeps, and specs the vocabulary states otherwise
+  // names the format keeps, those of a spherical file's variables, which a
+  // reader refuses in a flat file, and specs the vocabulary states otherwise
   for (const auto* name : {"depth", "x", "y", "displacement", "interface_depth", "a_perturbation",
-                           "a_poles", ""}) {
+                           "a_poles", "", "radius", "latitude", "longitude",
+                           "colatitude_weights", "interface_radius", "boundary_radius"}) {
     EXPECT_THROW(file.AddField(name, {.character = pm::SCALAR}, {{0, lateral}}), Error) << name;
   }
-  EXPECT_NO_THROW(file.AddField("radius", {.character = pm::SCALAR}, {{0, lateral}}));
+  EXPECT_EQ(flat::RESERVED_NAMES.size(), 18u);
   EXPECT_THROW(file.AddField("vs", {.character = pm::VECTOR}, {{0, lateral}}), Error);
   EXPECT_THROW(file.AddField("nonesuch", {{0, lateral}}), Error);
   file.AddField("vs", {{0, lateral}});
@@ -621,6 +648,15 @@ TEST(CartesianWriter, RefusesSourcesThatDoNotFitTheirLayers) {
   EXPECT_THROW(file.SetDisplacement({{0, still}, {1, still}}), Error) << "two grids";
   EXPECT_THROW(file.SetStack({0.1, 1.0}, grid, {std::nullopt, std::nullopt}), Error);
   EXPECT_THROW(file.SetStack({0.0, 1.0}, grid, {std::nullopt}), Error);
+  // no surface above the free surface: a depth is not negative
+  try {
+    file.SetStack({-0.5, 0.5, 1.0}, grid, {std::nullopt, std::nullopt, std::nullopt});
+    ADD_FAILURE() << "a stack starting above the free surface was accepted";
+  } catch (const Error& e) {
+    EXPECT_NE(std::string{e.what()}.find("above the free surface"), std::string::npos)
+        << e.what();
+  }
+  EXPECT_FALSE(file.Geometry());
   EXPECT_THROW(file.SetStack({0.0, 1.0}, flat::Grid(flat::Domain::Box({0.0, 2.0}, {0.0, 1.0}), 4, 4),
                              {std::nullopt, std::nullopt}),
                Error);
@@ -639,6 +675,11 @@ TEST(CartesianWriter, RefusesSourcesThatDoNotFitTheirLayers) {
   one_grid.SetSurfaceGrid(grid);
   EXPECT_THROW(one_grid.AddSurfaceField("K", {.character = pm::SCALAR}, {{2, lateral}}), Error);
   EXPECT_THROW(one_grid.AddSurfaceField("K", {.character = pm::VECTOR}, {{0, lateral}}), Error);
+  for (const auto* name : {"surface_interface", "radius", "latitude", "longitude",
+                           "colatitude_weights", "interface_radius", "boundary_radius"}) {
+    EXPECT_THROW(one_grid.AddSurfaceField(name, {.character = pm::SCALAR}, {{1, lateral}}), Error)
+        << name;
+  }
   one_grid.AddSurfaceField("K", {.character = pm::SCALAR}, {{1, lateral}});
   EXPECT_THROW(one_grid.SetSurfaceGrid(grid), Error);
   EXPECT_THROW(static_cast<void>(flat::ModelFile(pm::Skeleton({0.0, 1.0}), domain,

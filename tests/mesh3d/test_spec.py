@@ -1,6 +1,7 @@
 """The specification objects and the sizing rules."""
 import dataclasses
 
+import numpy as np
 import pytest
 
 from planetmodel import Geometry, Skeleton
@@ -82,8 +83,10 @@ def test_mesh_spec_validates():
         MeshSpec(g, 0.1)
     with pytest.raises(ValueError, match="dimension must be"):
         MeshSpec(g, COARSE, dimension=1)
-    with pytest.raises(ValueError, match="element order"):
-        MeshSpec(g, COARSE, order=4)
+    for order in (4, 0, 2.5, True):
+        with pytest.raises(ValueError, match="element order must be 1, 2 or 3"):
+            MeshSpec(g, COARSE, order=order)
+    assert MeshSpec(g, COARSE, order=np.int64(2)).order == 2
     with pytest.raises(ValueError, match="outer_boundary must be"):
         MeshSpec(g, COARSE, outer_boundary="round")
     with pytest.raises(TypeError, match="divisor"):
@@ -150,7 +153,7 @@ def test_a_graded_sizing_takes_its_width_from_its_gradient():
 
 def test_angular_resolution_scales_with_radius():
     faces = full_geometry().interfaces
-    rule = AngularResolution(h_ref=0.1, h_far=0.5)
+    rule = AngularResolution(size=0.1, far_size=0.5)
     sizes = rule(faces, 1.0)
     assert sizes[0].size == pytest.approx(0.04)          # 0.1 * 0.4 / 1.0
     assert sizes[2].size == pytest.approx(0.1)
@@ -163,7 +166,7 @@ def test_angular_resolution_scales_with_radius():
 
 def test_angular_resolution_never_exceeds_the_far_size():
     faces = full_geometry().interfaces
-    for s in AngularResolution(h_ref=10.0, h_far=0.2)(faces, 1.0).values():
+    for s in AngularResolution(size=10.0, far_size=0.2)(faces, 1.0).values():
         assert s.size <= s.far_size
 
 
@@ -178,7 +181,7 @@ def test_per_interface_overrides_by_name_and_index():
     fine = InterfaceSizing(0.02, 0.2, 0.2)
     sizes = PerInterface({"moho": fine, 0: fine}, base=COARSE)(faces, 1.0)
     assert sizes[1] is fine and sizes[0] is fine
-    assert sizes[2].size == COARSE.h_min
+    assert sizes[2].size == COARSE.size
     with pytest.raises(KeyError, match="no interface named"):
         PerInterface({"ocean": fine}, base=COARSE)(faces, 1.0)
     with pytest.raises(ValueError, match="no sizing for interfaces"):
@@ -231,7 +234,33 @@ def test_sizing_rules_are_frozen_and_comparable():
     assert AngularResolution(0.1, 0.5) == AngularResolution(0.1, 0.5)
     assert CappedInterfaces(0.1, 0.5, 0.5) == CappedInterfaces(0.1, 0.5, 0.5)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        AngularResolution(0.1, 0.5).h_ref = 1.0
+        AngularResolution(0.1, 0.5).size = 1.0
+
+
+def test_every_sizing_rule_names_its_sizes_alike():
+    """`size`, `far_size` and, where the rule has one, `decay_width`, in
+    that order: by position, by keyword, in the fields and in the repr."""
+    uniform = UniformInterfaces(0.1, 0.2, 0.3)
+    assert uniform == UniformInterfaces(size=0.1, far_size=0.2, decay_width=0.3)
+    assert (uniform.size, uniform.far_size, uniform.decay_width) == (0.1, 0.2, 0.3)
+    assert repr(uniform) == "UniformInterfaces(size=0.1, far_size=0.2, decay_width=0.3)"
+    capped = CappedInterfaces(0.1, 0.5, 0.4)
+    assert capped == CappedInterfaces(size=0.1, far_size=0.5, decay_width=0.4)
+    assert (capped.size, capped.far_size, capped.decay_width) == (0.1, 0.5, 0.4)
+    assert repr(capped) == ("CappedInterfaces(size=0.1, far_size=0.5, decay_width=0.4, "
+                            "angular=0.3, thin=4.0, decay_factor=10.0)")
+    angular = AngularResolution(0.1, 0.5)
+    assert angular == AngularResolution(size=0.1, far_size=0.5)
+    assert (angular.size, angular.far_size) == (0.1, 0.5)
+    assert repr(angular) == ("AngularResolution(size=0.1, far_size=0.5, r_ref=None, "
+                             "fraction=0.2)")
+    assert repr(InterfaceSizing(0.1, 0.2, 0.3)) == (
+        "InterfaceSizing(size=0.1, far_size=0.2, decay_width=0.3)")
+    names = [[f.name for f in dataclasses.fields(rule) if f.name != "_"][:3]
+             for rule in (InterfaceSizing, UniformInterfaces, CappedInterfaces)]
+    assert names == [["size", "far_size", "decay_width"]] * 3
+    assert [f.name for f in dataclasses.fields(AngularResolution)][:2] == [
+        "size", "far_size"]
 
 
 # --------------------------------------------------------------- results
@@ -247,7 +276,7 @@ def test_validation_report_raises_with_every_failure():
 
 
 def test_mesh_result_constructs_by_hand(tmp_path):
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None, counts={"elements": 3, "layers": 1},
                    validation=ValidationReport(dimension=2), timings={})
     assert r.spec is None and r.mapping is None
@@ -255,7 +284,7 @@ def test_mesh_result_constructs_by_hand(tmp_path):
 
 
 def test_mesh_result_summary_is_one_line(tmp_path):
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None,
                    counts={"elements": 3, "nodes": 5, "layers": 1},
                    validation=ValidationReport(dimension=3, min_sicn=0.4),
@@ -282,7 +311,7 @@ def test_the_report_shows_the_fault_checks_and_warnings_where_there_are_faults(
         "ValidationReport(ok, minSICN 0.4, max interface error 0; 2 faults, 1 "
         "misoriented and 0 nonconforming faces; warning: Netgen skipped; warning: "
         "poor elements)")
-    r = MeshResult(msh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
+    r = MeshResult(mesh_path=tmp_path / "a.msh", manifest_path=tmp_path / "a.json",
                    geometry=None, counts={"elements": 3, "nodes": 5, "layers": 1},
                    validation=faulted, timings={"mesh": 0.5})
     line = r.summary()

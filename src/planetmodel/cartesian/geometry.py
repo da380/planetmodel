@@ -22,7 +22,7 @@ The mapping is checked as on the sphere, on the lattice the domain lays
 over the body (`lattice`): orientation preserved, continuity across
 every interior boundary.  Over a `Rectangle` the body is invariant
 along y, and the mapping is held to it: m(X + s e_y) = m(X) + s e_y
-across the lattice, s the rectangle's length.  Any mapping is accepted;
+across the lattice, s the rectangle's period.  Any mapping is accepted;
 the identity is the default, and `stretched` places the geometry under
 the vertical stretch of a displacement (`cartesian.VerticalStretch`),
 topography as a stack of reliefs (`cartesian.layer_linear`), heights
@@ -107,10 +107,10 @@ class Geometry(GeometryBase):
 
     def _check_invariance(self) -> None:
         """m(X + s e_y) = m(X) + s e_y on the lattice, to `rtol` of the body's
-        size, s the domain's length."""
+        size, s the domain's longest period."""
         depth, x, y = self.lattice()
         X = FLAT.points(depth, x, y)
-        s = float(self._domain.length)
+        s = float(max(self._domain.lengths))
         shift = np.array([0.0, s, 0.0])
         gap = np.linalg.norm(np.asarray(self._m(X + shift), dtype=float)
                              - np.asarray(self._m(X), dtype=float) - shift, axis=-1)

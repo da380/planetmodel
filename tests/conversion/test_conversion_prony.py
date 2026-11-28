@@ -54,12 +54,13 @@ def test_one_branch_freezes_as_the_viscosity_does():
 
 
 def test_burgers_is_its_closed_form():
-    strength, ratio = 5.0, 5.0
-    s = prony.burgers_series(strength=strength, viscosity_ratio=ratio)
+    fraction, ratio = 0.2, 5.0
+    s = prony.burgers_series(kelvin_modulus_fraction=fraction, viscosity_ratio=ratio)
+    assert s.name == "Burgers (Kelvin modulus fraction 0.2, viscosity ratio 5)"
     assert len(s.strengths) == 2 and sum(s.strengths) == pytest.approx(1.0, abs=1e-15)
     w = np.logspace(-4, 4, 41)
-    # J / J_M with mu_M = eta_M = 1, mu_K = 1 / strength, eta_K = 1 / ratio
-    j = 1.0 + 1.0 / (1j * w) + 1.0 / (1.0 / strength + 1j * w / ratio)
+    # J / J_M with mu_M = eta_M = 1, mu_K = fraction, eta_K = 1 / ratio
+    j = 1.0 + 1.0 / (1j * w) + 1.0 / (fraction + 1j * w / ratio)
     assert np.allclose(s.modulus(w), 1.0 / j, rtol=1e-13, atol=1e-15)
     # on a model: mu(omega) = mu_U / J(i omega) with the layer's own Maxwell time
     m = viscous_prem()
@@ -70,11 +71,11 @@ def test_burgers_is_its_closed_form():
     mu = pm.kappa_mu(m.layer(i))[1](r)
     tau = 2e21 / mu
     want = mu / (1.0 + 1.0 / (1j * omega * tau)
-                 + 1.0 / (1.0 / strength + 1j * omega * tau / ratio))
+                 + 1.0 / (fraction + 1j * omega * tau / ratio))
     frozen = b.frozen(omega).layer(i)
     assert np.allclose(frozen["N"](r) - m.layer(i)["N"](r) + mu, want, rtol=1e-12)
     with pytest.raises(ValueError, match="positive"):
-        prony.burgers_series(strength=0.0, viscosity_ratio=1.0)
+        prony.burgers_series(kelvin_modulus_fraction=0.0, viscosity_ratio=1.0)
 
 
 def test_an_andrade_fit_holds_its_misfit_and_flows():
@@ -122,8 +123,8 @@ def test_freezing_refuses_a_muddled_layer():
 
 
 def test_branches_are_rheology_and_have_units():
-    m = prony.with_branches(viscous_prem(), prony.burgers_series(strength=2.0,
-                                                                 viscosity_ratio=10.0))
+    m = prony.with_branches(viscous_prem(), prony.burgers_series(
+        kelvin_modulus_fraction=0.5, viscosity_ratio=10.0))
     i = m.layer("lower_mantle").index
     assert "relaxation_time_2" not in m.elastic().layer(i)
     assert m.layer(i).fields.keys() >= {"relaxation_strength_1", "relaxation_time_2"}
@@ -149,15 +150,57 @@ def test_a_laterally_varying_time_is_a_log_perturbation():
                                       scaling=parameters.SL3D_DENSITY_SCALING,
                                       expansivity=parameters.SL3D_EXPANSIVITY)
     m = building.with_viscosity(m, dt, parameters.MILNE_2018_VISCOSITY)
-    b = prony.with_branches(m, prony.burgers_series(strength=5.0, viscosity_ratio=5.0))
+    b = prony.with_branches(m, prony.burgers_series(kelvin_modulus_fraction=0.2,
+                                                    viscosity_ratio=5.0))
     i = m.layer("lower_mantle").index
     tau = b.layer(i)["relaxation_time_2"]
     assert isinstance(tau, pm.PerturbedField) and tau.kind == "log"
     r, t, p = np.array([5000e3, 4000e3]), np.array([0.3, 2.0]), np.array([1.0, 4.0])
-    c = prony.burgers_series(strength=5.0, viscosity_ratio=5.0).times[1]
+    c = prony.burgers_series(kelvin_modulus_fraction=0.2,
+                             viscosity_ratio=5.0).times[1]
     want = c * m.layer(i)["viscosity"](r, t, p) / pm.kappa_mu(m.layer(i))[1](r, t, p)
     assert np.allclose(tau(r, t, p), want, rtol=1e-12)
     flat = prony.with_branches(viscous_prem(), prony.maxwell_series())
+    assert not isinstance(flat.layer(i)["relaxation_time_1"], pm.PerturbedField)
+
+
+def test_a_laterally_varying_burgers_time_is_a_log_perturbation():
+    """A Burgers body over a viscosity that varies laterally: each time is a
+    log perturbation of the same branch's time over the unperturbed
+    viscosity and shear modulus, its values `burgers_terms` of the layer's
+    own at every point; the strengths are held as they are, and a radial
+    layer's times are no perturbation."""
+    from planetmodel.conversion import building, parameters
+    m = viscous_prem()
+    f = pm.AnalyticField((3480e3, 5701e3), lambda r, t, p: 0.02 * np.cos(t) + 0 * r * p)
+    for n in ("vsv", "vsh"):
+        m = pm.perturbed(m, n, f, kind="relative")
+    dt = building.temperature_anomaly(building.velocity_anomaly(m),
+                                      scaling=parameters.SL3D_DENSITY_SCALING,
+                                      expansivity=parameters.SL3D_EXPANSIVITY)
+    m = building.with_viscosity(m, dt, parameters.MILNE_2018_VISCOSITY)
+    kelvin = {"kelvin_viscosity": 2e20, "kelvin_modulus_fraction": 0.5}
+    b = prony.with_burgers(m, ["lower_mantle"], **kelvin)
+    i = m.layer("lower_mantle").index
+    plain = pm.unperturbed(m).layer(i)
+    r, t, p = np.array([5000e3, 4000e3]), np.array([0.3, 2.0]), np.array([1.0, 4.0])
+    w, tau = prony.burgers_terms(pm.kappa_mu(m.layer(i))[1](r, t, p),
+                                 m.layer(i)["viscosity"](r, t, p), **kelvin)
+    w0, tau0 = prony.burgers_terms(pm.kappa_mu(plain)[1](r), plain["viscosity"](r),
+                                   **kelvin)
+    assert not np.allclose(tau, tau0, rtol=1e-3)            # it does vary
+    for k in range(2):
+        time = b.layer(i)[f"relaxation_time_{k + 1}"]
+        assert isinstance(time, pm.PerturbedField) and time.kind == "log"
+        assert time.reference.is_radial
+        assert np.allclose(time(r, t, p), tau[k], rtol=1e-12, atol=0)
+        assert np.allclose(time.reference(r), tau0[k], rtol=1e-12, atol=0)
+        assert np.allclose(time.perturbation(r, t, p), np.log(tau[k] / tau0[k]),
+                           rtol=1e-9, atol=1e-13)
+        strength = b.layer(i)[f"relaxation_strength_{k + 1}"]
+        assert not isinstance(strength, pm.PerturbedField)
+        assert np.allclose(strength(r, t, p), w[k], rtol=1e-12, atol=0)
+    flat = prony.with_burgers(viscous_prem(), ["lower_mantle"], **kelvin)
     assert not isinstance(flat.layer(i)["relaxation_time_1"], pm.PerturbedField)
 
 
@@ -165,8 +208,8 @@ def test_a_laterally_varying_time_is_a_log_perturbation():
 def test_branches_write_and_read_back(tmp_path):
     pytest.importorskip("netCDF4", reason="needs the planetmodel[netcdf] extra")
     from planetmodel.modelfile import read_model, write_model
-    m = prony.with_branches(viscous_prem(), prony.burgers_series(strength=5.0,
-                                                                 viscosity_ratio=5.0))
+    m = prony.with_branches(viscous_prem(), prony.burgers_series(
+        kelvin_modulus_fraction=0.2, viscosity_ratio=5.0))
     path = write_model(tmp_path / "prony.nc", m, grid=pm.gauss_legendre(2))
     pm.testing.check_model_file(path, m)
     back = read_model(path)
@@ -217,7 +260,7 @@ def test_burgers_terms_are_the_burgers_body():
         got = mu * (w[0] * s / (s + 1.0 / tau[0]) + w[1] * s / (s + 1.0 / tau[1]))
         assert np.allclose(got, want, rtol=1e-12, atol=0), x
     # a Kelvin element a fixed fraction of the Maxwell one: the ratios' series
-    series = prony.burgers_series(strength=1.0 / f[0],
+    series = prony.burgers_series(kelvin_modulus_fraction=f[0],
                                   viscosity_ratio=eta[0] / eta_k[0])
     assert np.allclose(w[:, 0], series.strengths, rtol=1e-13, atol=0)
     assert np.allclose(tau[:, 0], np.array(series.times) * tau_m[0], rtol=1e-13, atol=0)
@@ -260,8 +303,8 @@ def test_burgers_parameters_invert_burgers_terms():
         got = mu * (strengths[0] * s / (s + 1.0 / t[0])
                     + strengths[1] * s / (s + 1.0 / t[1]))
         assert np.allclose(got, want, rtol=1e-9, atol=0), x
-    # the ratios' series: Delta = 1 / f, eta_M / eta_K
-    series = prony.burgers_series(strength=5.0, viscosity_ratio=10.0)
+    # the ratios' series: f, eta_M / eta_K
+    series = prony.burgers_series(kelvin_modulus_fraction=0.2, viscosity_ratio=10.0)
     v, vk, fk = prony.burgers_parameters(1.0, series.strengths, series.times)
     assert np.allclose([v, vk, fk], [1.0, 0.1, 0.2], rtol=1e-13, atol=0)
     with pytest.raises(ValueError, match="positive and finite"):
@@ -324,7 +367,8 @@ def test_with_burgers_makes_named_layers_burgers_bodies():
     assert "viscosity" in b.layer(upper)
     # a Kelvin element a fixed fraction of a constant viscosity: the series
     lower = m.layer("lower_mantle").index
-    c = prony.with_branches(m, prony.burgers_series(strength=2.0, viscosity_ratio=10.0),
+    c = prony.with_branches(m, prony.burgers_series(kelvin_modulus_fraction=0.5,
+                                                    viscosity_ratio=10.0),
                             layers=["lower_mantle"])
     r = np.linspace(*m.layer(lower).interval, 5)
     for key in ("relaxation_strength_1", "relaxation_time_1", "relaxation_strength_2",
@@ -353,17 +397,16 @@ def test_with_burgers_makes_named_layers_burgers_bodies():
 
 
 def test_a_burgers_model_tabulates_and_reads_back_as_a_deck(tmp_path):
-    """A deck of the Maxwell columns and the two branches: the Burgers
-    layers hold the branches and no viscosity, the Maxwell layers the
-    viscosity and no branches, and the deck read back is the same body."""
-    from planetmodel.deck import (MAXWELL_COLUMNS, DeckFormat, deck_layers, read_deck,
-                                  sample_deck, write_deck)
+    """A table of the elastic columns, the viscosity and the two branches:
+    the Burgers layers hold the branches and no viscosity, the Maxwell
+    layers the viscosity and no branches, and the table read back is the
+    same body."""
+    from planetmodel.deck import deck_layers, read_deck, sample_deck, write_deck
     m = prony.with_burgers(viscous_prem(), ["lower_mantle"], kelvin_viscosity=2e20,
                            kelvin_modulus_fraction=0.5)
     branches = tuple(f"{stem}_{k}" for k in (1, 2) for stem in rheology.BRANCH_STEMS)
-    burgers = DeckFormat(MAXWELL_COLUMNS + branches, name="burgers")
-    path = write_deck(tmp_path / "burgers.deck", sample_deck(m, burgers.columns),
-                      burgers)
+    burgers = ("rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity") + branches
+    path = write_deck(tmp_path / "burgers.deck", sample_deck(m, burgers), burgers)
     deck = read_deck(path, burgers)
     skeleton, layers = deck_layers(deck, kinds={n: "linear" for n in
                                                 ("viscosity",) + branches})

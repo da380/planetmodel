@@ -68,7 +68,8 @@ namespace planetmodel {
 
 /**
  * @brief The Gauss-Lobatto-Legendre nodes of an element, as a model file
- * holds them.
+ * holds them: the first and the last are the element's ends to the bit, so
+ * that two elements sharing an end hold the one radius there.
  * @param left The element's inner radius.
  * @param right The element's outer radius.
  * @param ngll The number of nodes, at least two.
@@ -78,6 +79,8 @@ namespace planetmodel {
   const auto jac = 0.5 * (right - left);
   auto out = GllPoints(ngll);
   for (auto& x : out) x = left + (x + 1.0) * jac;
+  out.front() = left;
+  out.back() = right;
   return out;
 }
 

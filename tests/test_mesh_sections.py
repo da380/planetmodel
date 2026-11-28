@@ -182,7 +182,8 @@ def test_refusals():
     plt.close(fig)
     with pytest.raises(ValueError, match="'cut' or 'crinkle'"):
         plane_cut(CORNERS, cells, np.full(3, 0.5), np.eye(3)[:2], kind="slice")
-    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra"):
+    with pytest.raises(ValueError, match="crinkle is a section of tetrahedra, and "
+                       "these are triangles"):
         plane_cut(CORNERS, kuhn()[1], np.full(3, 0.5), np.eye(3)[:2], kind="crinkle")
 
 

@@ -1,0 +1,16 @@
+crust over mantle (Maxwell asthenosphere)
+depth rho vpv vsv vph vsh eta relaxation_strength_1 relaxation_time_1 relaxation_strength_2 relaxation_time_2
+# layers crust lithospheric_mantle asthenosphere
+# interfaces surface moho lab
+         0.000            2800            6400            3700            6400            3700               1             nan             nan             nan             nan
+     10000.000            2800            6400            3700            6400            3700               1             nan             nan             nan             nan
+     20000.000            2800            6400            3700            6400            3700               1             nan             nan             nan             nan
+     30000.000            2800            6400            3700            6400            3700               1             nan             nan             nan             nan
+     30000.000            3300            8000            4500            8000            4500               1             nan             nan             nan             nan
+     53333.333            3300            8000            4500            8000            4500               1             nan             nan             nan             nan
+     76666.667            3300            8000            4500            8000            4500               1             nan             nan             nan             nan
+    100000.000            3300            8000            4500            8000            4500               1             nan             nan             nan             nan
+    100000.000            3300            8000            4500            8000            4500               1      0.69528337        95429630      0.30471663   4.6931974e+09
+    133333.333            3300            8000            4500            8000            4500               1      0.72570837        90684677      0.27429163   2.2923705e+09
+    166666.667            3300            8000            4500            8000            4500               1      0.78165293        81422241      0.21834707   1.1850655e+09
+    200000.000            3300            8000            4500            8000            4500               1      0.86380344        65611251      0.13619656   6.8261172e+08

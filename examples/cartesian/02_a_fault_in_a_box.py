@@ -7,7 +7,7 @@
 # fault is built three times: with no refinement towards it, its faces
 # conforming at whatever size the interfaces' rule gives there; refined
 # by a steep ramp of its own, a size on it growing to a far size over a
-# fixed width (an `InterfaceSizing`, the size more than doubling from
+# fixed width (an `InterfaceSizing`, the size nearly doubling from
 # one element to the next), the linear mesh left as the mesher made it
 # (`optimise=None`); and by the default, the size on it given alone
 # (`EmbeddedFault`'s rule), the size growing by about 30 per cent an
@@ -87,8 +87,8 @@ for k, (label, (sizing, options)) in enumerate(specs.items()):
         MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1, **options,
                  faults=[EmbeddedFault(fault, name="fault", **sizing)]),
         work / f"build_{k}")
-    mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
-    quality = cell_quality(result.msh_path)
+    mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
+    quality = cell_quality(result.mesh_path)
     centres = mesh.points[mesh.cells[:, :4]].mean(axis=1)
     near = np.abs(fault.locate(centres, strict=False).distance) <= 3 * h
     built[label] = (mesh, card, quality, near)

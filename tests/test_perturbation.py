@@ -60,6 +60,52 @@ def test_a_gridded_perturbation():
     assert np.isclose(f(r, t, p), REF(r) * (1 + wobble(r, t, p)), rtol=1e-12)
 
 
+@pytest.mark.parametrize("kind, degree", [("absolute", 3), ("relative", 5),
+                                          ("log", None)])
+def test_the_degree_of_the_values_on_a_piece_is_stated(kind, degree):
+    """The pieces hold each part by its own polynomial, a quadratic and a
+    cubic here; the values are of the higher degree where the parts add
+    and of the sum where they multiply, and no polynomial under the
+    exponential.  A polynomial of the stated degree fitted to the values
+    along a radius leaves nothing, and one a degree lower does not."""
+    from scipy.interpolate import PPoly
+    from planetmodel.layerfunction import PolynomialLayer
+    grid = gauss_legendre(4)
+    ref = RadialField(INTERVAL, PolynomialLayer(INTERVAL, PPoly(
+        np.array([[1.0], [0.5], [3.0]]), np.array(INTERVAL))), character=DENSITY)
+    char = DENSITY if kind == "absolute" else SCALAR
+    d = GriddedField.sampled(AnalyticField(
+        INTERVAL, lambda r, t, p: (0.3 * r ** 3 - 0.1 * r) * (1.0 + np.cos(t)
+                                                              + 0.0 * p),
+        character=char), grid, ngll=4)
+    f = PerturbedField(ref, d, kind=kind)
+    breaks, held = f.radial_pieces()
+    assert np.array_equal(breaks, INTERVAL) and held == 3
+    assert f.quadrature_degree() == degree
+    r = np.linspace(*INTERVAL, 12)
+    v = f(r, grid.colatitudes[1], grid.longitudes[2])
+
+    def misfit(n):
+        fit = np.polynomial.Polynomial.fit(r, v, n)
+        return np.max(np.abs(fit(r) - v)) / np.max(np.abs(v))
+
+    if degree is None:
+        assert misfit(6) > 1e-9
+    else:
+        assert misfit(degree) < 1e-13 and misfit(degree - 1) > 1e-6
+    # the field contract holds the stated degree to the values
+    check_field(f)
+    if degree is not None:
+        class Understated(PerturbedField):
+            def quadrature_degree(self) -> int:
+                return degree - 1
+        with pytest.raises(AssertionError, match="are no polynomial of degree"):
+            check_field(Understated(ref, d, kind=kind))
+    # a part that declares no pieces leaves the values with no degree
+    loose = PerturbedField(REF, d, kind=kind)
+    assert loose.radial_pieces() is None and loose.quadrature_degree() is None
+
+
 def test_rescaled_and_restated():
     d = AnalyticField(INTERVAL, wobble)
     f = PerturbedField(REF, d, kind="relative")

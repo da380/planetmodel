@@ -53,7 +53,9 @@ angle to an interface or to the outer boundary: such a mesh fails its
 validation or the check of its collars and is refused, never written.
 Whether one is left depends on the surface meshes, so another
 `algorithm_2d` (gmsh's Delaunay, 5, in place of its frontal Delaunay,
-6) or other sizes are what to try.
+6) or other sizes are what to try.  Neither algorithm is the better
+throughout: the Delaunay one has left no such element where the frontal
+one does, and gives cells of a slightly worse shape elsewhere.
 """
 from __future__ import annotations
 
@@ -63,25 +65,22 @@ from pathlib import Path
 import gmsh
 import numpy as np
 
-from ..frames import cartesian_points
-from ..geometry import Geometry
-from ..mapping import validity_lattice
 from . import manifest
 from ._faults import (CollarTagging, add_surfaces, apply_fault_groups, assign_collars,
                       curve_names, fault_entries, fault_refinements, prepare_faults,
                       settle_faults)
 from ._layout import Layout, layout_of
-from ._orient import orient_mesh, raise_order
+from ._orient import orient_circles, orient_mesh, raise_order
 from ._session import session
 from ._sizing import (apply_mesh_options, apply_refinements, apply_size_fields,
-                      check_sizing_resolves_spans, check_sizing_scale)
+                      check_sizing_resolves_spans)
 from ._tagging import apply_physical_groups
 from ._validate import confirm_collars, validate_mesh
 from ._writer import confirm_reread, element_counts, write_msh
-from .spec import MeshResult, MeshSpec, largest_size
+from .spec import (MeshResult, MeshSpec, check_sizing_scale, largest_size,
+                   require_mapping_on_shells, require_spherical_outer_boundary)
 
-__all__ = ["build_layered_mesh", "require_mapping_on_shells",
-           "require_spherical_outer_boundary", "policy_name", "UNSAFE_WITH_FAULTS"]
+__all__ = ["build_layered_mesh", "policy_name", "UNSAFE_WITH_FAULTS"]
 
 #: The gmsh optimisations that crash the process on a solid with a surface
 #: embedded in it, and optimise every solid whatever entities they are
@@ -89,49 +88,6 @@ __all__ = ["build_layered_mesh", "require_mapping_on_shells",
 #: with a warning on its validation report ("auto" names none there,
 #: `spec.OPTIMISE_WITH_FAULTS`).
 UNSAFE_WITH_FAULTS = ("netgen",)
-
-
-def require_mapping_on_shells(spec: MeshSpec) -> None:
-    """Refuse a mapping that is not defined on the shells.
-
-    The computational domain under the geometry's mapping must satisfy
-    every invariant of a Geometry: knots on boundaries, orientation
-    preserved on the validity lattice, continuity across every interior
-    boundary, the geometry's own outer boundary included.
-    """
-    g = spec.geometry
-    domain = spec.domain
-    try:
-        Geometry(domain.skeleton, mapping=g.mapping, rtol=g.rtol, check=True)
-    except (ValueError, TypeError) as exc:
-        raise ValueError(
-            "with shells the mapping must be defined and orientation-preserving "
-            f"on the whole computational domain, out to r = {spec.outer_radius:g}: "
-            f"{exc}"
-        ) from exc
-
-
-def require_spherical_outer_boundary(spec: MeshSpec) -> None:
-    """Refuse a mapping that moves the outer boundary of the domain.
-
-    The mapping must be the identity on the outer boundary of the
-    computational domain to `geometry.rtol` times that radius, checked
-    on the validity lattice's angles.
-    """
-    g = spec.geometry
-    outer = spec.outer_radius
-    _, theta, phi = validity_lattice(spec.domain.skeleton)
-    X = cartesian_points(outer, theta, phi)
-    gap = float(np.max(np.linalg.norm(np.asarray(g.mapping(X), dtype=float) - X,
-                                      axis=-1)))
-    tol = g.rtol * outer
-    if gap > tol:
-        raise ValueError(
-            "a spherical outer boundary was asked for, so the mapping must be the "
-            f"identity on the outer boundary of the computational domain at r = "
-            f"{outer:g}, and it moves points there by up to {gap:.3g} (tolerance "
-            f"{tol:.3g}); make the displacement vanish there, or mesh with "
-            "outer_boundary='free'")
 
 
 def policy_name(rule: object) -> str:
@@ -220,8 +176,11 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
             timings["optimise"] = clock() - t0
 
         t0 = clock()
-        orient_mesh(d, directions=tagging.directions, faults=surfaces)
+        orient_mesh(d, directions=tagging.directions, inward=tagging.inward,
+                    faults=surfaces)
         raise_order(d, spec.order)
+        orient_circles(d, directions=tagging.directions, inward=tagging.inward,
+                       skip=surfaces)
         timings["orient"] = clock() - t0
 
         t0 = clock()
@@ -279,6 +238,7 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
         confirm_collars(msh_path, manifest_path)
         timings["collars"] += clock() - t0
 
+    counts["order"] = spec.order
     counts["layers"] = domain.nlayers
     counts["interfaces"] = len(domain.interfaces)
     if face_names:
@@ -286,7 +246,7 @@ def build_layered_mesh(spec: MeshSpec, path: str | Path, *, verbose: bool = Fals
     if prepared:
         counts["faults"] = len(prepared)
         counts["collars"] = len(collared.names) if collared is not None else 0
-    return MeshResult(msh_path=msh_path, manifest_path=manifest_path,
+    return MeshResult(mesh_path=msh_path, manifest_path=manifest_path,
                       geometry=geometry, counts=counts, validation=report,
                       timings=timings, spec=spec, mapping=mapping,
                       preimages={f.name: f.preimages for f in prepared})

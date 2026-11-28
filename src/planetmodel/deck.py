@@ -1,97 +1,73 @@
-"""Tabulated layered models: decks, their formats, and fields by interpolation.
+"""Decks: a table of knots brought in as a model, and a model written as one.
+
+The form of every model is the model file (`planetmodel.modelfile`),
+which holds a model's fields with what they mean.  A deck is a text
+table for the codes that read one, and this module does two things
+with it: `model_from_deck` makes an ordinary model of a table, to be
+written to a model file like any other, and `sample_deck` and
+`write_deck` write a model as a table.
 
 A deck is a table of knots, the layered coordinate first, one column
 per named field, in which a repeated knot marks a boundary: the
 layering comes from that structure, so a boundary is recorded even
-where the tabulated values happen to agree across it.  The coordinate
-increases down the file: a radius from the centre outward in every
-format here (`RADIUS`), a depth from the free surface down in those of
-`planetmodel.cartesian` (`cartesian.DEPTH`).  A `DeckCoordinate` says
-which: the word naming the knots in a column line and in messages, the
-system they are the layered coordinate of, the class of the fields its
-columns become and the names its naming lines give, counted by that
-system's geometry; a format of named columns is one definition for
-either coordinate (`maxwell_format`, `prony_format`, `burgers_format`,
-`elastic_format`).  It is dense enough in knots that the
-choice of interpolation between them does not matter in practice: the
-kinds that join them (below) are a reasonable default, not part of the
-model's definition, and a model that is a particular function in each
-layer (a given polynomial, say) belongs in a format that states that
-function, not in a deck.  What the columns are called and what
-the header lines mean is a `DeckFormat`: the column names (by row
-width, where a format admits more than one), the number of header
-lines and the keywords of the `#` lines that may follow them as part of
-the header, how to read and write the header, and what is written for a
-column a layer lacks.  `MINEOS` is the format of the mineos and PREM
-decks, three header lines and nine or six columns, an absent quality
-factor written as 0, mineos's no loss.  `MAXWELL` is that of a Maxwell
-body, the unrelaxed elastic values beside a viscosity: a title, the
-line naming the columns `r rho vpv vsv vph vsh eta viscosity`, then
-optionally `# layers` and `# interfaces` lines naming them centre
-outward (`-` for none), SI, NaN where a layer lacks a field (the
-viscosity of an elastic or fluid layer).  `PRONY` is that of a
-generalised Maxwell body: the same header and elastic columns, and in
-place of the viscosity one pair of columns per Prony branch,
-`relaxation_strength_k relaxation_time_k` for k = 1 to N, N read from
-the column line and the same throughout the deck (`prony_columns`,
-`prony_branches`); a layer is elastic, NaN in every branch column, or
-holds a number in each, a strength of 0 in a branch it does not use,
-which the writer completes with the time of the layer's last branch.
-`BURGERS` is the reduced form of two branches, as `MAXWELL` is of one:
-the Maxwell element's viscosity beside the Kelvin element's viscosity
-and shear modulus, the latter a fraction of the layer's, a Maxwell layer
-NaN in the two Kelvin columns.  The elastic deck of `elastic_format`
-holds the mineos columns under such a header, NaN where a layer lacks a
-field: the elastic deck of a flat model, mineos's own header being a
-radial code's.  `ND` is TauP's named
-discontinuities, depth first from the surface in km, km/s and g/cm^3
-with label lines naming the regions below them, and `TVEL` its tabled
-velocities under two header lines; any other table is a format of its
-own, given its column names.  A format whose table is not SI rows,
-its coordinate first, reads and writes it through hooks of its own, the
-deck being SI and its coordinate first whatever the file, and a format
-that requires more of the values than their layering checks every deck
-it reads or writes.
+where the tabulated values agree across it.  The coordinate increases
+down the table: a radius from the centre outward (`RADIUS`), or a depth
+from the free surface down (`cartesian.DEPTH`), a `DeckCoordinate`
+saying which.  A table is dense enough in knots that the choice of
+interpolation between them does not matter in practice.
 
-`read_deck` turns a file into a `Deck`, numbers and a header, nothing
-else, and `deck_from` takes a file or a deck held to its format.
-`deck_layers` turns a deck into the base fields of a model, fields of
-its coordinate's `field_type`: the
-knots of every layer are joined by a kind of `KINDS` (a cubic spline by
-default, another kind for a column, or for every member of a family,
-where asked), a piecewise polynomial, a `PolynomialLayer`, so the field
-algebra downstream is exact on it and the moduli of a deck model are
-products of piecewise polynomials, never refits.  A kind of `LOG_KINDS`
-(`log-linear`, `log-cubic`, ...) joins the logarithms of a column's
-values by that kind instead, the value their exponential, an
-`ExponentialLayer` with exact derivatives, for a column positive at
-every knot that changes by orders of magnitude within a layer, where a
-cubic through the values overshoots and can go negative and straight
-lines through them are far above the geometric mean between knots.  A
-Maxwell deck's viscosity is joined so, by `log-linear`
-(`MAXWELL_KINDS`), as are a prony deck's relaxation times, its
-strengths by straight lines, which keep every strength in [0, 1] and
-their sum at most one (`PRONY_KINDS`), and a burgers deck's two
-viscosities, its Kelvin modulus fraction by straight lines
-(`BURGERS_KINDS`); `kinds` names another kind for any of them.  A
-column constant through a layer is that constant under every kind.  A
-column that is NaN throughout a layer is absent from that layer, the
-way a fluid layer holds no shear quality factor; NaN on part of a layer
-is refused.  From those base fields the rest of a model is built the
-normal way, by the mixins of `planetmodel.behaviours`.
+A `DeckFormat` is what a family of files looks like: the column names
+(by row width, where a format admits more than one), how many header
+lines precede the table, the header a file of it is written under, and
+what is written for a column a layer lacks.  `MINEOS` is the format of
+the mineos and PREM decks, three header lines and nine or six columns
+in SI, an absent quality factor written as 0, mineos's no loss.  `ND`
+is TauP's named discontinuities, depth first from the surface in km,
+km/s and g/cm^3 with label lines naming the regions below them, and
+`TVEL` its tabled velocities under two header lines.  Any other table
+is a format of its own, given its column names.  A format whose table
+is not rows of the knot and the columns in SI reads and writes it
+through hooks of its own, the deck being SI and its knot first
+whatever the file.
+
+`read_deck` turns a file into a `Deck`: the numbers, and the header
+lines as they stand, which nothing reads unless asked to.  What a
+header means is for the caller to say: `mineos_header` reads a mineos
+header's values, `mineos_names` the names of the core its counts imply
+and `mineos_constants` its reference period as the constant
+`omega_ref`; `nd_names` the names an `.nd` table's labels imply.  Each
+is called by whoever wants it and its result passed on.
+
+`model_from_deck` builds the model: the layers from the repeated knots,
+each column a field of every layer on the function through that layer's
+knots (`deck_layers`), with the behaviours, the names of the layers and
+interfaces, the constants and the scales the caller gives.  The knots
+of a layer are joined by a kind of `KINDS` (a cubic spline by default,
+another kind for a column, or for every member of a family, where
+asked), a piecewise polynomial, a `PolynomialLayer`, so the field
+algebra downstream is exact on it and the moduli of the model are
+products of piecewise polynomials, never refits.  A kind of
+`LOG_KINDS` (`log-linear`, `log-cubic`, ...) joins the logarithms of a
+column's values by that kind instead, the value their exponential, an
+`ExponentialLayer` with exact derivatives: for a column positive at
+every knot that changes by orders of magnitude within a layer, a
+viscosity or a relaxation time, where a cubic through the values
+overshoots and can go negative and straight lines through them are far
+above the geometric mean between knots.  A column constant through a
+layer is that constant under every kind.  A column that is NaN
+throughout a layer is absent from that layer, the way a fluid layer
+holds no shear quality factor; NaN on part of a layer is refused.
 
 `sample_deck` goes the other way, any model to a deck in SI, its knots
 the model's layered coordinate: each column is the layer's field of
 that name, or a velocity its density and Love moduli give, on knots
-given or placed at every breakpoint of the fields and no further apart
-than a fraction of the model's span; the header carries the model's
-name and the names of its layers and interfaces.  `Tabulated` is the
-mixin of a model type built from a deck: `keep_deck` keeps the deck,
-its knots per layer, its header and its column names, and `to_deck`
-samples the model on those knots, so that a model that was read can be
-written (`restated` puts a prony or burgers deck of it under the
-header it was read with).  `prony_layers` is what a prony deck's model
-holds of its base fields.
+given (`deck_knots` gives those of a table read) or placed at every
+breakpoint of the fields and no further apart than a fraction of the
+model's span.  `write_deck` writes a deck in a format under the
+format's own header, generated from the table and from what the model
+said of itself when it was sampled (its name, its reference period,
+the names of its interfaces); under lines the caller gives, written as
+they are; or under none.
 """
 from __future__ import annotations
 
@@ -110,29 +86,27 @@ from scipy.interpolate import Akima1DInterpolator, CubicSpline, PchipInterpolato
 from numpy.typing import ArrayLike
 
 from . import materials
+from .behaviours import model_type
 from .character import SCALAR, Character
-from .coordinates import SPHERICAL, Coordinates
 from .fields import Field, RadialField
+from .geometry import Geometry, GeometryBase, Names
 from .layerfunction import (ExponentialLayer, PolynomialLayer, constant_layer,
                             same_interval)
-from .rheology import BRANCH_STEMS
+from .model import Layer, Model, ModelBase
+from .rheology import omega_ref_constant
 from .skeleton import Skeleton
 from .units import LENGTH, Scales
-from .vocabulary import VOCABULARY, FieldSpec, family_spec, member
+from .vocabulary import VOCABULARY, Constant, FieldSpec, family_spec, member
 
 if TYPE_CHECKING:
-    from .model import Layer, Model
+    from .cartesian.domains import Domain
 
-__all__ = ["Deck", "DeckFormat", "DeckCoordinate", "RADIUS", "header_names",
-           "maxwell_format", "prony_format", "burgers_format", "elastic_format",
-           "prony_layers", "deck_from", "HeaderNames",
-           "MINEOS", "MINEOS_COLUMNS", "MINEOS_ISOTROPIC_COLUMNS",
-           "MAXWELL", "MAXWELL_COLUMNS", "MAXWELL_KINDS", "PRONY", "PRONY_COLUMNS",
-           "PRONY_KINDS", "BURGERS", "BURGERS_COLUMNS", "BURGERS_KINDS",
-           "STRENGTH_ROUNDING", "prony_columns", "prony_branches", "ND", "TVEL",
-           "ND_COLUMNS", "ND_LABELS", "Table", "read_deck", "write_deck", "deck_layers",
-           "deck_knots", "mineos_names", "maxwell_names", "nd_names", "sample_deck",
-           "SAMPLE_SPACING", "Tabulated", "KINDS", "LOG_KINDS"]
+__all__ = ["Deck", "DeckFormat", "DeckCoordinate", "RADIUS", "HeaderNames", "Table",
+           "MINEOS", "MINEOS_COLUMNS", "MINEOS_ISOTROPIC_COLUMNS", "ND", "TVEL",
+           "ND_COLUMNS", "ND_LABELS", "read_deck", "write_deck", "deck_layers",
+           "deck_knots", "model_from_deck", "mineos_header", "mineos_names",
+           "mineos_constants", "nd_names", "sample_deck", "SAMPLE_SPACING", "KINDS",
+           "LOG_KINDS"]
 
 #: The interpolants a deck's knots may be joined by, each a piecewise
 #: polynomial: a not-a-knot cubic spline, the parabola through three
@@ -154,20 +128,14 @@ MINEOS_COLUMNS = ("rho", "vpv", "vsv", "qkappa", "qmu", "vph", "vsh", "eta")
 #: The columns of an isotropic mineos deck, after the radius.
 MINEOS_ISOTROPIC_COLUMNS = ("rho", "vp", "vs", "qkappa", "qmu")
 
-
-#: The two widths of an elastic deck's rows after the knot: transversely
-#: isotropic, and isotropic.
-_ELASTIC_COLUMNS: Mapping[int, tuple[str, ...]] = MappingProxyType(
-    {len(MINEOS_COLUMNS): MINEOS_COLUMNS,
-     len(MINEOS_ISOTROPIC_COLUMNS): MINEOS_ISOTROPIC_COLUMNS})
-
 #: What a format's own table reader gives: the knots, the columns at
-#: them, both SI, and what the table adds to the header.
+#: them, both SI, and what the table adds to the deck's header.
 type Table = Callable[[Sequence[str]],
                       tuple[np.ndarray, Mapping[str, np.ndarray], Mapping[str, Any]]]
 
-#: Layer and interface names a deck's header gives, by layer and by
-#: interface, None where one is unnamed.
+#: Names for a deck's layers and for its interfaces, by layer and by
+#: interface, None where one is unnamed: what `mineos_names` and
+#: `nd_names` read out of a header, and `model_from_deck` takes.
 type HeaderNames = tuple[list[str | None], list[str | None]]
 
 
@@ -175,72 +143,43 @@ type HeaderNames = tuple[list[str | None], list[str | None]]
 
 @dataclass(frozen=True)
 class DeckCoordinate:
-    """The coordinate of a deck's knots, increasing down the file.
+    """The coordinate of a deck's knots, increasing down the table.
 
-    `word` names it as the first word of a column line and in a message
-    about a knot (`at r = 0`); `coordinates` is the system it is the
-    layered coordinate of, whose label names it in prose ("the columns
-    after the radius", `label`); `field_type` is the class of the fields
-    a deck's columns become, a `RadialField` in that system
-    (`deck_layers`); and `names` gives the layer and interface names a
-    header's naming lines give a deck (`header_names`), refusing a count
-    other than that of its geometry's interfaces.  `RADIUS` is the radius
-    from the centre outward, the coordinate of every format of this
-    module; `cartesian.DEPTH` the depth from the free surface down.
+    `word` names it in a message about a knot (`at r = 0`); `base` is the
+    leaf model type a table of such knots is a model of, whose geometry's
+    `radial_field_type` is the class of the fields its columns become
+    (`field_type`); and `geometry` builds that model's geometry, called
+    `geometry(skeleton, domain, layer_names=..., interface_names=...)`
+    with the lateral domain `model_from_deck` was given, None for none,
+    and refusing one it has no use for or the lack of one it needs.
+    `RADIUS` is the radius from the centre outward; `cartesian.DEPTH`
+    the depth from the free surface down.
     """
 
     word: str
-    coordinates: Coordinates
-    field_type: type[RadialField]
-    names: Callable[["Deck"], HeaderNames]
-
-    def __post_init__(self) -> None:
-        probe = self.field_type((0.0, 1.0), 0.0)
-        if probe.coordinates != self.coordinates:
-            raise ValueError(f"the fields of {self.field_type.__name__} are in "
-                             f"{probe.coordinates.name!r}, the knots in "
-                             f"{self.coordinates.name!r}")
+    base: type[ModelBase]
+    geometry: Callable[..., GeometryBase]
 
     @property
-    def label(self) -> str:
-        """The coordinate's name in prose: its system's label for it."""
-        return self.coordinates.labels[0]
+    def field_type(self) -> type[RadialField]:
+        """The class of the fields a deck's columns become."""
+        return self.base.geometry_type.radial_field_type
 
 
-def header_names(deck: Deck, interfaces: Sequence[str | None]) -> HeaderNames:
-    """Layer and interface names of a deck whose header may hold `# layers`
-    and `# interfaces` lines (a deck of named columns: Maxwell, prony,
-    burgers, elastic): those lines' names, None for `-`.  Without a line
-    the layers are unnamed and the interfaces take `interfaces`, the
-    defaults, one per interface of the deck's geometry.  A count other
-    than the deck's layers, or than its interfaces, is refused."""
-    n = deck.nlayers
-    layers = list(deck.header.get("layers", [None] * n))
-    faces = list(deck.header.get("interfaces", interfaces))
-    for what, names, want in (("layers", layers, n),
-                              ("interfaces", faces, len(interfaces))):
-        if len(names) != want:
-            raise ValueError(f"the deck's header names {len(names)} {what}; its table "
-                             f"has {want}")
-    return layers, faces
+def _sphere(skeleton: Skeleton, domain: Domain | None, *, layer_names: Names,
+            interface_names: Names) -> Geometry:
+    """The geometry of a table of radii, which has no lateral domain."""
+    if domain is not None:
+        raise ValueError(f"a table of radii is a model of the whole sphere and takes "
+                         f"no lateral domain; got {domain!r} (a table of depths is "
+                         "read with coordinate=cartesian.DEPTH)")
+    return Geometry(skeleton, layer_names=layer_names, interface_names=interface_names)
 
 
-def maxwell_names(deck: Deck) -> HeaderNames:
-    """Layer and interface names a Maxwell header gives, or a prony or
-    burgers header, which name them the same way: those of its
-    `# layers` and `# interfaces` lines, centre outward, None for `-`.
-    Without a line the layers are unnamed, and the interfaces too but for
-    `surface`, the outermost.  A count other than the deck's layers, or
-    its interfaces (one per layer, and one more for a hollow body's inner
-    boundary), is refused."""
-    nfaces = deck.nlayers + (1 if deck.radius[0] > 0 else 0)
-    return header_names(deck, [None] * (nfaces - 1) + ["surface"])
-
-
-#: The radius from the centre outward: `r` in a column line, the layered
-#: coordinate of `SPHERICAL`, the fields each a `RadialField`, the interfaces
+#: The radius from the centre outward: `r` in a message, the knots of a
+#: `Model` on a `Geometry`, the fields each a `RadialField`, the interfaces
 #: one per layer and one more at the inner boundary of a hollow body.
-RADIUS = DeckCoordinate("r", SPHERICAL, RadialField, maxwell_names)
+RADIUS = DeckCoordinate("r", Model, _sphere)
 
 
 # -- the deck and its format ---------------------------------------------------
@@ -251,97 +190,48 @@ class DeckFormat:
 
     `columns` names the columns after the knot's, either one tuple or a
     mapping from row width to tuple where the format admits several (a
-    deck is written with the widest it holds, `written`); `coordinate`
-    is the knots' (`RADIUS`, a radius from the centre outward, by
-    default), whose label the messages name it by; `header_lines` is how
-    many lines precede the table, and `header_comments` the keywords of
-    the `#` lines that may follow them as part of the header, each such
-    line a `#`, its keyword and its words.  `parse_header` turns the
-    header lines into the header mapping a `Deck` carries and
-    `write_header` turns a deck back into them.  Without a parser the
-    header lines are kept verbatim under "lines".  `fill` is the value
-    written for a column where a layer lacks it, NaN for a column it
-    does not name.  A table that is not rows of the knot and SI values
-    has `read_table`, from the lines after the header to (knots, columns,
-    more of the header) in SI and the knot first, and `write_table`, from
-    a deck and the columns to write to its lines.
-
-    `families`, where given, are stems of the vocabulary's families
-    (`vocabulary.FAMILIES`) whose members follow `columns` (one tuple,
-    the columns before them) in groups: one member of each stem for each
-    index k = 1 to N in order, N at least one and the same throughout a
-    deck, read from the width of the rows; a deck is written with every
-    group it holds.
-    `check_table` is what the format requires of a deck's values beyond
-    their layering, raising where a deck breaks it, and is applied to
-    every deck read and to every deck written, as it is written:
-    completed, its columns the format's and its header that of the lines
-    it is written with; `complete` gives a deck as it is written, the
-    values a layer lacks completed where `fill` does not say what they
-    are.
+    deck is written with the widest it holds, `written`); `header_lines`
+    is how many lines precede the table, kept as they stand by a deck
+    read.  `write_header` gives the header a file of the format is
+    written under where the caller gives none, from the deck and the
+    columns written; without one the format has no header of its own.
+    `fill` is the value written for a column where a layer lacks it, NaN
+    for a column it does not name.  A table that is not rows of the knot
+    and SI values has `read_table`, from the lines after the header to
+    (knots, columns, more of the header) in SI and the knot first, and
+    `write_table`, from a deck and the columns to write to its lines.
     """
 
     columns: tuple[str, ...] | Mapping[int, tuple[str, ...]] = field(hash=False)
     _: KW_ONLY
     name: str = "custom"
     header_lines: int = 0
-    header_comments: tuple[str, ...] = ()
-    parse_header: Callable[[Sequence[str]], Mapping[str, Any]] | None = None
-    write_header: Callable[["Deck"], Sequence[str]] | None = None
+    write_header: Callable[["Deck", tuple[str, ...]], Sequence[str]] | None = None
     fill: Mapping[str, float] = field(default_factory=dict, hash=False)
     read_table: Table | None = None
     write_table: Callable[["Deck", tuple[str, ...]], Sequence[str]] | None = None
-    families: tuple[str, ...] = ()
-    check_table: Callable[["Deck"], None] | None = None
-    complete: Callable[["Deck"], "Deck"] | None = None
-    coordinate: DeckCoordinate = RADIUS
-
-    def __post_init__(self) -> None:
-        if self.families and isinstance(self.columns, Mapping):
-            raise ValueError("a format with families has one tuple of columns, those "
-                             "before the groups")
-
-    def is_header_comment(self, line: str) -> bool:
-        """Whether a line is a `#` line of one of `header_comments`."""
-        return _keyword(line) in self.header_comments
 
     def names(self, width: int) -> tuple[str, ...]:
         """The column names of a row with `width` values after the knot."""
-        after = self.coordinate.label
-        if self.families:
-            lead = tuple(self.columns)
-            size = len(self.families)
-            n, extra = divmod(width - len(lead), size)
-            if n < 1 or extra:
-                raise ValueError(
-                    f"a {self.name} deck has {len(lead)} columns after the {after}, "
-                    f"{list(lead)}, then {size} for each index k = 1 to N, "
-                    f"{[f'{stem}_k' for stem in self.families]}, N at least one; the "
-                    f"table has {width}")
-            return lead + _members(self.families, n)
         if isinstance(self.columns, Mapping):
             try:
                 return tuple(self.columns[width])
             except KeyError:
                 raise ValueError(
                     f"a {self.name} deck has {sorted(self.columns)} columns after "
-                    f"the {after}, not {width}") from None
+                    f"the knot, not {width}") from None
         if len(self.columns) != width:
             raise ValueError(
                 f"a {self.name} deck has {len(self.columns)} columns after the "
-                f"{after}, {list(self.columns)}; the table has {width}")
+                f"knot, {list(self.columns)}; the table has {width}")
         return tuple(self.columns)
 
     def written(self, deck: Deck) -> tuple[str, ...]:
-        """The columns `write_deck` writes `deck` with, in order: every
-        group of a format of families the deck holds, the widest tuple of
-        a format of several it holds, the one tuple of any other; a deck
-        lacking a column of them is refused."""
+        """The columns `write_deck` writes `deck` with, in order: the
+        widest tuple of a format of several the deck holds, the one tuple
+        of any other; a deck lacking a column of them is refused."""
         names: tuple[str, ...] | None
-        if self.families:
-            n = _groups(self.families, deck.names, f"a {self.name} deck")
-            names = tuple(self.columns) + _members(self.families, n)
-        elif isinstance(self.columns, Mapping):
+        if isinstance(self.columns, Mapping):
             widest = sorted(self.columns.items(), key=lambda item: -item[0])
             names = next((tuple(c) for _, c in widest if set(c) <= set(deck.columns)),
                          None)
@@ -352,48 +242,8 @@ class DeckFormat:
                              f"deck has {list(deck.columns)}")
         return names
 
-    def header(self, lines: Sequence[str]) -> Mapping[str, Any]:
-        """The header mapping of the given header lines."""
-        if self.parse_header is None:
-            return {"lines": tuple(lines)}
-        return self.parse_header(lines)
 
-
-def _keyword(line: str) -> str | None:
-    """The first word after the `#` of a comment line, else None."""
-    text = line.strip()
-    if not text.startswith("#"):
-        return None
-    words = text[1:].split()
-    return words[0] if words else None
-
-
-def _members(stems: tuple[str, ...], n: int) -> tuple[str, ...]:
-    """The members of the families `stems` for k = 1 to n, one of each
-    stem for each index, in order."""
-    return tuple(f"{stem}_{k}" for k in range(1, n + 1) for stem in stems)
-
-
-def _groups(stems: tuple[str, ...], names: Iterable[str], what: str) -> int:
-    """N where the column `names` hold every member of the families
-    `stems` for k = 1 to N and no other, N at least one; refused,
-    naming the members held, otherwise."""
-    held: dict[int, set[str]] = {}
-    for name in names:
-        found = member(name)
-        if found is not None and found[0] in stems:
-            held.setdefault(found[1], set()).add(found[0])
-    n = len(held)
-    if (n == 0 or sorted(held) != list(range(1, n + 1))
-            or any(got != set(stems) for got in held.values())):
-        got = [f"{stem}_{k}" for k in sorted(held) for stem in stems
-               if stem in held[k]]
-        raise ValueError(f"{what} holds {', '.join(f'{s}_k' for s in stems)} for k = 1 "
-                         f"to N, N at least one, each of them; it has {got or 'none'}")
-    return n
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Deck:
     """A table of knots: values of the layered coordinate, one array per
     named column, and a header.
@@ -401,8 +251,15 @@ class Deck:
     `radius` holds the knots, non-decreasing with every repeat a boundary:
     radii, or depths in a deck of depths (`cartesian.DEPTH`), the deck
     being the same table either way; `columns` maps each name to its
-    values at the knots, NaN where a value is absent; `header` is what
-    the format read from the header lines.  Arrays are read-only.
+    values at the knots, NaN where a value is absent.  `header` is what
+    is known beside the table, which the library reads only where asked:
+    of a deck read, the header lines as they stand under "lines" (and an
+    `.nd` table's labels under "labels"); of a deck sampled from a
+    model, what a format's own header is written from, the model's
+    "name", its reference period "tref" and the names of its "layers"
+    and "interfaces".  `source` is the path of a deck read.  Arrays are
+    read-only.  A deck holds arrays, so two decks are equal only where
+    they are the same object, and a deck hashes by its identity.
     """
 
     radius: np.ndarray
@@ -452,10 +309,10 @@ class Deck:
         return name in self.columns
 
     def layers(self) -> list[slice]:
-        """The rows of every layer, in the order of the file (centre outward
-        in a deck of radii, from the surface down in one of depths): one
-        slice per span between repeated knots, each of at least two
-        strictly increasing knots."""
+        """The rows of every layer, in the order of the table (centre
+        outward in a deck of radii, from the surface down in one of
+        depths): one slice per span between repeated knots, each of at
+        least two strictly increasing knots."""
         r = self.radius
         cuts = np.flatnonzero(np.diff(r) == 0.0)
         if cuts.size and np.any(np.diff(cuts) == 1):
@@ -487,17 +344,27 @@ class Deck:
                 f"{list(self.columns)})")
 
 
+def _as_format(format: DeckFormat | Sequence[str], header_lines: int) -> DeckFormat:
+    """`format`, or the format of a table of the column names given under
+    `header_lines` lines."""
+    if isinstance(format, DeckFormat):
+        return format
+    if isinstance(format, str):
+        raise TypeError(f"a format is a DeckFormat or the column names after the "
+                        f"knot, a sequence of them; got the string {format!r}")
+    return DeckFormat(tuple(format), header_lines=header_lines)
+
+
 def read_deck(source: str | os.PathLike[str] | Iterable[str],
               format: DeckFormat | Sequence[str], *,
               header_lines: int | None = None) -> Deck:
-    """A deck from a file, or from lines: the header lines by the format,
-    with the `#` lines of its `header_comments` straight after them, then
-    whitespace-separated rows, the knot first.
+    """A deck from a file, or from lines: the format's header lines, kept
+    as they stand under "lines" in the deck's header and read no further,
+    then whitespace-separated rows, the knot first.
 
-    `format` is a `DeckFormat`, or the column names after the knot for
-    a table whose header is `header_lines` verbatim lines (none by
-    default).  Blank lines and `#` comments in the table are skipped.
-    The deck read is held to the format's `check_table`.
+    `format` is a `DeckFormat`, or the column names after the knot for a
+    table under `header_lines` lines (none by default).  Blank lines and
+    `#` comments in the table are skipped.
     """
     if isinstance(source, (str, os.PathLike)):
         path: str | None = os.fspath(source)
@@ -506,80 +373,59 @@ def read_deck(source: str | os.PathLike[str] | Iterable[str],
     else:
         path = None
         lines = list(source)
-    if not isinstance(format, DeckFormat):
-        format = DeckFormat(tuple(format), header_lines=header_lines or 0)
-    elif header_lines is not None:
+    if isinstance(format, DeckFormat) and header_lines is not None:
         raise ValueError("header_lines is set by the DeckFormat")
+    format = _as_format(format, header_lines or 0)
     n = format.header_lines
     if len(lines) < n:
         raise ValueError(f"{path or 'the deck'}: {len(lines)} lines, fewer than the "
                          f"{n} header lines of a {format.name} deck")
-    while n < len(lines) and format.is_header_comment(lines[n]):
-        n += 1
-    header = format.header(lines[:n])
+    header: dict[str, Any] = {"lines": tuple(lines[:n])}
     if format.read_table is not None:
         radius, columns, more = format.read_table(lines[n:])
-        deck = Deck(radius, columns, header={**header, **more}, source=path)
-    else:
-        body = [ln for ln in lines[n:] if ln.strip()]
-        if not body:
-            raise ValueError(f"{path or 'the deck'}: no knots after the header")
-        table = np.loadtxt(body, dtype=float, ndmin=2)
-        names = format.names(table.shape[1] - 1)
-        deck = Deck(table[:, 0], {nm: table[:, j + 1] for j, nm in enumerate(names)},
-                    header=header, source=path)
-    if format.check_table is not None:
-        format.check_table(deck)
-    return deck
+        return Deck(radius, columns, header={**header, **more}, source=path)
+    body = [ln for ln in lines[n:] if ln.strip()]
+    if not body:
+        raise ValueError(f"{path or 'the deck'}: no knots after the header")
+    table = np.loadtxt(body, dtype=float, ndmin=2)
+    names = format.names(table.shape[1] - 1)
+    return Deck(table[:, 0], {nm: table[:, j + 1] for j, nm in enumerate(names)},
+                header=header, source=path)
 
 
-def deck_from(source: str | os.PathLike[str] | Iterable[str] | Deck,
-              format: DeckFormat) -> Deck:
-    """`source` as a deck of `format`: a file or lines read by `read_deck`,
-    or a `Deck` given, completed by the format's `complete` and held to
-    its `check_table` as one written would be; how a model type built
-    from a deck takes either."""
-    if not isinstance(source, Deck):
-        return read_deck(source, format)
-    deck = source if format.complete is None else format.complete(source)
-    if format.check_table is not None:
-        format.check_table(deck)
-    return deck
+def write_deck(path: str | os.PathLike[str], deck: Deck,
+               format: DeckFormat | Sequence[str], *,
+               header: Sequence[str] | bool = True) -> Path:
+    """Write a deck in a format: a header, then one row per knot, the knot
+    first and the format's columns in order (`DeckFormat.written`), the
+    knot as `%14.3f` and values as `%16.8g`.
 
-
-def write_deck(path: str | os.PathLike[str], deck: Deck, format: DeckFormat) -> Path:
-    """Write a deck in a format: its header lines, then one row per knot,
-    the knot first and the format's columns in order (`written`), the
-    knot as `%14.3f` and values as `%16.8g`.  A column the deck lacks is
-    refused, a column the format does not name is not written, and an
-    absent value is written as the format's `fill` for its column, else
-    as nan.  A format of families writes every group the deck holds; the
-    deck is completed by the format's `complete` and held to its
-    `check_table` before it is written."""
+    `format` is a `DeckFormat`, or the column names after the knot for a
+    plain table of them.  `header` is True for the format's own header,
+    generated from the deck (`MINEOS`: its three lines; `TVEL`: its two
+    title lines; none for a format without one, a plain table among
+    them); lines, written as they are in place of it, whatever their
+    number; or False for none.  A column the deck lacks is refused, a
+    column the format does not name is not written, and an absent value
+    is written as the format's `fill` for its column, else as nan.
+    """
+    format = _as_format(format, 0)
     names = format.written(deck)
-    if format.complete is not None:
-        deck = format.complete(deck)
-    if format.write_header is not None:
-        header = list(format.write_header(deck))
+    if isinstance(header, (bool, np.bool_)):
+        own = header and format.write_header is not None
+        lines = list(format.write_header(deck, names)) if own else []
+    elif isinstance(header, str):
+        raise TypeError(f"header is True, False or the header's lines, a sequence of "
+                        f"them; got the string {header!r}")
     else:
-        header = list(deck.header.get("lines", ()))
-    extra = header[format.header_lines:]
-    if (len(header) < format.header_lines or len(extra) > len(format.header_comments)
-            or not all(format.is_header_comment(line) for line in extra)):
-        comments = (f" and up to {len(format.header_comments)} `#` lines of "
-                    f"{list(format.header_comments)}" if format.header_comments else "")
-        raise ValueError(f"a {format.name} deck has {format.header_lines} header "
-                         f"lines{comments}; {len(header)} were produced")
-    if format.check_table is not None:
-        format.check_table(Deck(deck.radius, {n: deck[n] for n in names},
-                                header=format.header(header), source=deck.source))
+        lines = [str(line) for line in header]
     if format.fill:
         filled = {n: np.where(np.isnan(deck[n]), format.fill[n], deck[n])
                   for n in names if n in format.fill}
         deck = Deck(deck.radius, {**deck.columns, **filled}, header=deck.header,
                     source=deck.source)
     if format.write_table is not None:
-        body = list(format.write_table(deck, tuple(names)))
+        body = list(format.write_table(deck, names))
     else:
         rows = np.column_stack([deck.radius] + [deck[n] for n in names])
         body = [f"{row[0]:14.3f}" + "".join(f"{v:16.8g}" for v in row[1:])
@@ -587,457 +433,81 @@ def write_deck(path: str | os.PathLike[str], deck: Deck, format: DeckFormat) -> 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as fh:
-        for line in header + body:
+        for line in lines + body:
             fh.write(line.rstrip("\n") + "\n")
     return out
 
 
 # -- the mineos format -------------------------------------------------------------
 
-def _mineos_header(lines: Sequence[str]) -> dict[str, Any]:
-    """The three header lines of a mineos deck: a title; `ifanis tref
-    ifdeck`; `nknot nic noc`.  Trailing tokens are kept under "extras"."""
-    title = lines[0].strip()
+def mineos_header(deck: Deck) -> dict[str, Any]:
+    """What the three header lines of a mineos deck say, for a caller who
+    wants it: the title under "name"; `ifanis tref ifdeck` of the second
+    line; `nknot nic noc` of the third.  `tref` is the period in seconds
+    the elastic values are given at, 0 for none; `nic` and `noc` count
+    the knots of the inner core and to the top of the outer core.  A deck
+    whose header lines are not those is refused."""
+    lines = tuple(deck.header.get("lines", ()))
+    rule = ("a mineos deck's header is a title line, then `ifanis tref ifdeck` and "
+            "`nknot nic noc`")
+    if len(lines) < 3:
+        raise ValueError(f"{rule}; the deck holds {len(lines)} header lines")
     h2, h3 = lines[1].split(), lines[2].split()
-    if len(h2) < 3 or len(h3) < 3:
-        raise ValueError("a mineos deck's second and third header lines carry "
-                         "`ifanis tref ifdeck` and `nknot nic noc`")
-    return {"name": title, "ifanis": int(h2[0]), "tref": float(h2[1]),
-            "ifdeck": int(h2[2]), "nknot": int(h3[0]), "nic": int(h3[1]),
-            "noc": int(h3[2]), "extras": (tuple(h2[3:]), tuple(h3[3:]))}
+    try:
+        return {"name": lines[0].strip(), "ifanis": int(h2[0]), "tref": float(h2[1]),
+                "ifdeck": int(h2[2]), "nknot": int(h3[0]), "nic": int(h3[1]),
+                "noc": int(h3[2])}
+    except (IndexError, ValueError):
+        raise ValueError(f"{rule}; got {lines[1]!r} and {lines[2]!r}") from None
 
 
-def _mineos_header_lines(deck: Deck) -> list[str]:
-    """The three header lines for a deck: the title from its header, the
-    flags from its header where present, the counts from its knots, and
-    the trailing tokens the header was read with."""
+def mineos_constants(deck: Deck) -> dict[str, Constant]:
+    """The constants a mineos header declares, to give a model of the
+    deck: `omega_ref`, the angular frequency of its reference period
+    `tref`, which a constant-Q band disperses the elastic values about;
+    none where `tref` is 0."""
+    tref = mineos_header(deck)["tref"]
+    if not tref > 0.0:
+        return {}
+    return {"omega_ref": omega_ref_constant(tref)}
+
+
+def _core_counts(deck: Deck, names: tuple[str, ...]) -> tuple[int, int]:
+    """(nic, noc) of a table: the outer core is the innermost layer whose
+    S velocity is zero throughout, `noc` the knots up to its top and
+    `nic` those beneath it, 0 where no solid layer lies beneath; (0, 0)
+    for a body with no fluid layer."""
+    vs = deck["vsv" if "vsv" in names else "vs"]
+    for s in deck.layers():
+        if np.all(vs[s] == 0.0):
+            return s.start, s.stop
+    return 0, 0
+
+
+def _mineos_header_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
+    """The three header lines of a mineos deck: the title, the deck's
+    "name"; `ifanis tref ifdeck`, the flag 1 where the columns are the
+    transversely isotropic ones and `tref` the deck's, 0 for none; and
+    `nknot nic noc`, counted from the table (`_core_counts`)."""
     h = deck.header
-    cuts = np.flatnonzero(np.diff(deck.radius) == 0.0)
-    nic = int(cuts[0] + 1) if cuts.size else deck.nknots
-    noc = int(cuts[1] + 1) if cuts.size > 1 else nic
-    ifanis = int(h.get("ifanis", 1 if "vph" in deck else 0))
-    tref = float(h.get("tref", 1.0))
-    ifdeck = int(h.get("ifdeck", 1))
-    tail2, tail3 = (tuple(t) for t in h.get("extras", ((), ())))
-    return [str(h.get("name", deck.source or "deck")),
-            " ".join((f"{ifanis} {tref:g} {ifdeck}",) + tail2),
-            " ".join((f"{deck.nknots} {h.get('nic', nic)} {h.get('noc', noc)}",)
-                     + tail3)]
+    nic, noc = _core_counts(deck, names)
+    return [str(h.get("name") or deck.source or "deck"),
+            f"{int('vph' in names)} {float(h.get('tref', 0.0)):g} 1",
+            f"{deck.nknots} {nic} {noc}"]
 
 
 #: The mineos deck: three header lines, then `r rho vpv vsv qkappa qmu vph
 #: vsh eta` in SI (nine columns) or `r rho vp vs qkappa qmu` (six); an
 #: absent quality factor is written as 0, which mineos reads as no loss.
-MINEOS = DeckFormat(dict(_ELASTIC_COLUMNS), name="mineos", header_lines=3,
-                    parse_header=_mineos_header, write_header=_mineos_header_lines,
+#: Its own header is a title, the model's name; `ifanis tref ifdeck`,
+#: `tref` the period of the model's reference frequency and 0 where it
+#: declares none; and `nknot nic noc`, the counts those of the table, the
+#: outer core its innermost layer whose S velocity is zero throughout
+#: (`0 0` for a body with no fluid layer).
+MINEOS = DeckFormat({len(MINEOS_COLUMNS): MINEOS_COLUMNS,
+                     len(MINEOS_ISOTROPIC_COLUMNS): MINEOS_ISOTROPIC_COLUMNS},
+                    name="mineos", header_lines=3, write_header=_mineos_header_lines,
                     fill={"qkappa": 0.0, "qmu": 0.0})
-
-
-# -- the decks of named columns: elastic, Maxwell, prony, burgers ---------------
-
-#: The columns of a Maxwell deck, after the knot.
-MAXWELL_COLUMNS = ("rho", "vpv", "vsv", "vph", "vsh", "eta", "viscosity")
-
-#: The kinds a Maxwell deck's columns are joined by where not the default:
-#: the viscosity in its logarithm by straight lines, geometric between
-#: knots, which keeps it positive and follows a viscosity that changes by
-#: orders of magnitude within a layer; `{"viscosity": "linear"}` joins
-#: the values themselves by straight lines instead.
-MAXWELL_KINDS: Mapping[str, str] = MappingProxyType({"viscosity": "log-linear"})
-
-#: The columns of a prony deck after the knot and before its branches:
-#: a Maxwell deck's, without the viscosity.
-PRONY_COLUMNS = MAXWELL_COLUMNS[:-1]
-
-#: The kinds a prony deck's columns are joined by where not the default,
-#: by the stems of the branches' families: the strengths by straight
-#: lines, which keep every one in [0, 1] and their sum at most one
-#: between knots; the times in their logarithm by straight lines,
-#: positive and geometric between knots, as a Maxwell deck's viscosity is
-#: joined.
-PRONY_KINDS: Mapping[str, str] = MappingProxyType(
-    {BRANCH_STEMS[0]: "linear", BRANCH_STEMS[1]: "log-linear"})
-
-#: The columns of a burgers deck, after the knot: a Maxwell deck's, then
-#: the Kelvin element's viscosity and its shear modulus as a fraction of
-#: the layer's elastic (Voigt) shear modulus.
-BURGERS_COLUMNS = MAXWELL_COLUMNS + ("kelvin_viscosity", "kelvin_modulus_fraction")
-
-#: The kinds a burgers deck's columns are joined by where not the default:
-#: the two viscosities in their logarithm by straight lines, as a Maxwell
-#: deck's viscosity is joined, and the Kelvin element's modulus fraction
-#: by straight lines; all three stay positive between knots.
-BURGERS_KINDS: Mapping[str, str] = MappingProxyType(
-    {**MAXWELL_KINDS, "kelvin_viscosity": "log-linear",
-     "kelvin_modulus_fraction": "linear"})
-
-#: How far, per branch, a prony deck's strengths may stand from what
-#: they were before they were written: the rounding of the eight
-#: significant digits `write_deck` writes a value with, at most 5e-9 on a
-#: strength below one, doubled.  A layer's N strengths may sum to one
-#: plus N times this, and are read as summing to one (a body without a
-#: relaxed part) within it.
-STRENGTH_ROUNDING = 1e-8
-
-#: The keywords of the naming lines of a deck of named columns, and the
-#: header keys they are read into.
-_MAXWELL_NAMES = ("layers", "interfaces")
-
-#: What refuses a column line: its words before any `#` comment, and the
-#: line as written.
-type _LineCheck = Callable[[tuple[str, ...], str], None]
-
-
-def _named_header(lines: Sequence[str], what: str, check: _LineCheck) -> dict[str, Any]:
-    """The header of a deck of a title, a column line and naming lines (a
-    deck of named columns): the title; the words of the column line before
-    any `#` comment, which `check` refuses where they are not the
-    format's; and the names of the `# layers` and `# interfaces` lines
-    where present, `-` read as no name."""
-    named = tuple(lines[1].split("#", 1)[0].split())
-    check(named, lines[1].strip())
-    header: dict[str, Any] = {"name": lines[0].strip(), "columns": named[1:]}
-    for line in lines[2:]:
-        key, *words = line.strip()[1:].split()
-        if key in header:
-            raise ValueError(f"{what} has one `# {key}` line; it has two")
-        header[key] = tuple(None if w == "-" else w for w in words)
-    return header
-
-
-def _column_line(what: str, word: str,
-                 choices: Iterable[tuple[str, ...]]) -> _LineCheck:
-    """A check refusing a column line other than `word` followed by one of
-    `choices`, spelling them."""
-    wants = [(word,) + tuple(c) for c in choices]
-
-    def check(named: tuple[str, ...], line: str) -> None:
-        if named not in wants:
-            spelled = " or ".join(" ".join(w) for w in wants)
-            raise ValueError(f"{what}'s second line names its columns, {spelled}; "
-                             f"got {line!r}")
-    return check
-
-
-def _prony_line(word: str) -> _LineCheck:
-    """A check refusing a prony column line other than `word`,
-    `PRONY_COLUMNS` and the pairs of branch columns for k = 1 to N in
-    order, N at least one, saying what is wrong."""
-    lead = (word,) + PRONY_COLUMNS
-
-    def check(named: tuple[str, ...], line: str) -> None:
-        if named[:len(lead)] != lead:
-            raise ValueError(f"a prony deck's second line names its columns, "
-                             f"{' '.join(lead)} then relaxation_strength_k "
-                             f"relaxation_time_k for each branch k = 1 to N; got "
-                             f"{line!r}")
-        words = named[len(lead):]
-        if not words:
-            raise ValueError("a prony deck has at least one branch; its column line "
-                             "names none after eta")
-        want = _members(BRANCH_STEMS, (len(words) + 1) // 2)
-        rule = ("a prony deck's branch columns come in pairs, relaxation_strength_k "
-                "relaxation_time_k for k = 1, 2, ... in order")
-        for got, expected in zip(words, want):
-            if got != expected:
-                raise ValueError(f"{rule}; {got!r} stands where {expected!r} belongs")
-        if len(words) % 2:
-            raise ValueError(f"{rule}; branch {len(want) // 2} has no {want[-1]!r}")
-    return check
-
-
-def _name_line(key: str, names: Sequence[str | None]) -> str:
-    """One `# layers` or `# interfaces` line, `-` for no name."""
-    for name in names:
-        if name is not None and (name in ("", "-") or "#" in name
-                                 or any(c.isspace() for c in name)):
-            raise ValueError(f"a name in a deck is one word, not `-` and without `#`; "
-                             f"got {name!r}")
-    return " ".join(["#", key] + [name or "-" for name in names])
-
-
-def _named_header_lines(deck: Deck, columns: Sequence[str],
-                        coordinate: DeckCoordinate) -> list[str]:
-    """The header of a deck of a title, a column line and naming lines:
-    its name, the line naming the coordinate's word and `columns`, and a
-    naming line for the layers and one for the interfaces where the
-    header names any, their counts checked against the deck's by the
-    coordinate's `names`."""
-    lines = [str(deck.header.get("name", "")), " ".join((coordinate.word, *columns))]
-    layers, faces = coordinate.names(deck)
-    for key, names in zip(_MAXWELL_NAMES, (layers, faces)):
-        given = deck.header.get(key)
-        if given is not None and any(n is not None for n in given):
-            lines.append(_name_line(key, names))
-    return lines
-
-
-def _check_declared(deck: Deck, names: tuple[str, ...],
-                    coordinate: DeckCoordinate) -> None:
-    """Refuse a deck whose header's column line (where it has one) names
-    other columns than its rows' `names`."""
-    declared = deck.header.get("columns")
-    if declared is not None and tuple(declared) != names:
-        raise ValueError(f"{deck.source or 'the deck'}: the column line names "
-                         f"{len(declared)} columns after the {coordinate.label}; the "
-                         f"rows have {len(names)}")
-
-
-def _named_format(columns: tuple[str, ...] | Mapping[int, tuple[str, ...]], *,
-                  name: str, what: str, coordinate: DeckCoordinate, line: _LineCheck,
-                  families: tuple[str, ...] = (),
-                  check_table: Callable[[Deck], None] | None = None,
-                  complete: Callable[[Deck], Deck] | None = None) -> DeckFormat:
-    """A format of named columns: a title line, a column line that `line`
-    holds to the format, the naming lines, then the rows, the knot first
-    and the columns written (`DeckFormat.written`) after it."""
-    def parse(lines: Sequence[str]) -> dict[str, Any]:
-        return _named_header(lines, what, line)
-
-    def header(deck: Deck) -> list[str]:
-        return _named_header_lines(deck, out.written(deck), coordinate)
-
-    out = DeckFormat(columns, name=name, header_lines=2,
-                     header_comments=_MAXWELL_NAMES, parse_header=parse,
-                     write_header=header, families=families, check_table=check_table,
-                     complete=complete, coordinate=coordinate)
-    return out
-
-
-def elastic_format(coordinate: DeckCoordinate) -> DeckFormat:
-    """The elastic deck of knots of `coordinate`: a title line, a line
-    naming the columns, the coordinate's word then `MINEOS_COLUMNS`
-    (transversely isotropic) or `MINEOS_ISOTROPIC_COLUMNS`, optionally
-    `# layers` and `# interfaces` lines, then the rows in SI, NaN where a
-    layer lacks a field (a quality factor where it attenuates nothing,
-    the shear one of a fluid).  The column line and the width of the rows
-    agree; a deck is written with the widest set it holds.
-    `cartesian.ELASTIC` is that of depths."""
-    def check(deck: Deck) -> None:
-        _check_declared(deck, deck.names, coordinate)
-
-    return _named_format(dict(_ELASTIC_COLUMNS), name="elastic", what="an elastic deck",
-                         coordinate=coordinate,
-                         line=_column_line("an elastic deck", coordinate.word,
-                                           _ELASTIC_COLUMNS.values()),
-                         check_table=check)
-
-
-def maxwell_format(coordinate: DeckCoordinate) -> DeckFormat:
-    """The Maxwell deck of knots of `coordinate`: a title line, a line
-    naming the columns, the coordinate's word then `MAXWELL_COLUMNS`
-    (a `#` comment after them allowed), optionally `# layers` and
-    `# interfaces` lines, then the rows in SI, NaN where a layer lacks a
-    field.  `MAXWELL` is that of radii, `cartesian.MAXWELL` of depths."""
-    return _named_format(MAXWELL_COLUMNS, name="maxwell", what="a Maxwell deck",
-                         coordinate=coordinate,
-                         line=_column_line("a Maxwell deck", coordinate.word,
-                                           [MAXWELL_COLUMNS]))
-
-
-#: The Maxwell deck: a title line, a line naming the columns, optionally
-#: `# layers` and `# interfaces` lines, then `r rho vpv vsv vph vsh eta
-#: viscosity` in SI, NaN where a layer lacks a field.
-MAXWELL = maxwell_format(RADIUS)
-
-
-def prony_columns(n: int) -> tuple[str, ...]:
-    """The columns after the knot of a prony deck of `n` branches, n at
-    least one: `PRONY_COLUMNS`, then `relaxation_strength_k` and
-    `relaxation_time_k` for k = 1 to n."""
-    if isinstance(n, bool) or not isinstance(n, (int, np.integer)) or n < 1:
-        raise ValueError(f"a prony deck has a whole number of branches, at least one; "
-                         f"got {n!r}")
-    return PRONY_COLUMNS + _members(BRANCH_STEMS, int(n))
-
-
-def prony_branches(deck: Deck) -> int:
-    """The number of branches N of a prony deck, the same on every layer:
-    the pairs of branch columns it holds, both of each pair for k = 1 to
-    N, N at least one; a deck holding other branch columns, or none, is
-    refused."""
-    return _groups(BRANCH_STEMS, deck.names, "a prony deck")
-
-
-def _branch_values(deck: Deck, n: int, s: slice) -> tuple[np.ndarray, np.ndarray]:
-    """The strengths and times of branches 1 to n on the rows `s`, each of
-    shape (n, rows)."""
-    w = np.array([deck[f"{BRANCH_STEMS[0]}_{k}"][s] for k in range(1, n + 1)])
-    t = np.array([deck[f"{BRANCH_STEMS[1]}_{k}"][s] for k in range(1, n + 1)])
-    return w, t
-
-
-def _check_prony(deck: Deck, coordinate: DeckCoordinate) -> None:
-    """Refuse a prony deck whose header's column line (where it has one)
-    names other columns than its branches', whose layer is neither NaN in
-    every branch column (elastic) nor a number in each, or whose strengths
-    leave [0, 1] or sum to more than one past `STRENGTH_ROUNDING`, or
-    whose times are not positive and finite; naming the layer, the column
-    and the knot by the coordinate's word."""
-    n = prony_branches(deck)
-    where = deck.source or "the deck"
-    at = coordinate.word
-    _check_declared(deck, prony_columns(n), coordinate)
-    for i, s in enumerate(deck.layers()):
-        r = deck.radius[s]
-        w, t = _branch_values(deck, n, s)
-        absent = np.isnan(np.concatenate([w, t]))
-        if absent.all():
-            continue
-        if absent.any():
-            raise ValueError(f"{where}: layer {i}: holds nan in some of its branch "
-                             "columns and numbers in others; a layer of a prony deck "
-                             "is nan in every branch column (elastic) or holds a "
-                             "number in each, a strength of 0 in a branch it does not "
-                             "use")
-        for values, stem, ok, rule in (
-                (w, BRANCH_STEMS[0], (w >= 0.0) & (w <= 1.0),
-                 "a strength lies in [0, 1]"),
-                (t, BRANCH_STEMS[1], np.isfinite(t) & (t > 0.0),
-                 "a time is positive and finite")):
-            if not ok.all():
-                k, j = np.argwhere(~ok)[0]
-                raise ValueError(f"{where}: layer {i}: {stem}_{k + 1} is "
-                                 f"{values[k, j]:g} at {at} = {r[j]:g}; {rule}")
-        total = np.zeros(r.size)
-        for row in w:
-            total = total + row
-        over = total > 1.0 + n * STRENGTH_ROUNDING
-        if over.any():
-            j = int(np.argmax(over))
-            raise ValueError(f"{where}: layer {i}: the strengths sum to "
-                             f"{total[j]:.9g} at {at} = {r[j]:g}, more than one")
-
-
-def _complete_prony(deck: Deck) -> Deck:
-    """A prony deck as written: on a layer holding branches 1 to m and NaN
-    throughout in the others, each other branch is given a strength of 0
-    and the time of branch m at every knot.  Any other layer is left as
-    it is, for `_check_prony` to hold."""
-    n = prony_branches(deck)
-    columns = {name: np.array(values) for name, values in deck.columns.items()}
-    strength, time = (f"{stem}_{{}}" for stem in BRANCH_STEMS)
-    for s in deck.layers():
-        w, t = _branch_values(deck, n, s)
-        held = [k + 1 for k in range(n) if not np.isnan(w[k]).any()
-                and not np.isnan(t[k]).any()]
-        absent = [k + 1 for k in range(n) if np.isnan(w[k]).all()
-                  and np.isnan(t[k]).all()]
-        m = len(held)
-        if (m == 0 or held != list(range(1, m + 1))
-                or absent != list(range(m + 1, n + 1))):
-            continue
-        for k in absent:
-            columns[strength.format(k)][s] = 0.0
-            columns[time.format(k)][s] = columns[time.format(m)][s]
-    return Deck(deck.radius, columns, header=deck.header, source=deck.source)
-
-
-def prony_format(coordinate: DeckCoordinate) -> DeckFormat:
-    """The prony deck of knots of `coordinate`: the Maxwell deck's title,
-    naming and layering, its columns with the viscosity replaced by the
-    pairs `relaxation_strength_k relaxation_time_k` for k = 1 to N, N read
-    from the column line; a layer NaN in every branch column or a number
-    in each, every strength in [0, 1], their sum at most one, every time
-    positive and finite; a layer of fewer branches than the deck
-    completed as it is written.  `PRONY` is that of radii,
-    `cartesian.PRONY` of depths."""
-    def check(deck: Deck) -> None:
-        _check_prony(deck, coordinate)
-
-    return _named_format(PRONY_COLUMNS, name="prony", what="a prony deck",
-                         coordinate=coordinate, line=_prony_line(coordinate.word),
-                         families=BRANCH_STEMS, check_table=check,
-                         complete=_complete_prony)
-
-
-#: The prony deck: the Maxwell deck's title, naming and layering, its
-#: columns with the viscosity replaced by the pairs `relaxation_strength_k
-#: relaxation_time_k` for k = 1 to N, N read from the column line; a layer
-#: NaN in every branch column or a number in each, every strength in
-#: [0, 1], their sum at most one, every time positive and finite.
-PRONY = prony_format(RADIUS)
-
-
-def _check_burgers(deck: Deck, coordinate: DeckCoordinate) -> None:
-    """Refuse a burgers deck whose layer holds other than none of the
-    viscosity and the Kelvin columns (elastic), the viscosity alone (a
-    Maxwell body) or all three (a Burgers body), each NaN throughout the
-    layer or nowhere in it, or holds one that is not positive and
-    finite; naming the layer, the column and the knot by the
-    coordinate's word."""
-    where = deck.source or "the deck"
-    names = BURGERS_COLUMNS[-3:]
-    for i, s in enumerate(deck.layers()):
-        r = deck.radius[s]
-        held = []
-        for name in names:
-            absent = np.isnan(deck[name][s])
-            if absent.any() and not absent.all():
-                raise ValueError(f"{where}: layer {i}: {name} is nan on part of the "
-                                 "layer; a column is nan throughout a layer or nowhere "
-                                 "in it")
-            if not absent.any():
-                held.append(name)
-        if held not in ([], list(names[:1]), list(names)):
-            raise ValueError(f"{where}: layer {i}: holds {held}; a layer of a burgers "
-                             "deck holds a viscosity alone (a Maxwell body), a "
-                             "viscosity and both Kelvin columns (a Burgers body), or "
-                             "none of the three (elastic)")
-        for name in held:
-            v = deck[name][s]
-            bad = ~(np.isfinite(v) & (v > 0.0))
-            if bad.any():
-                j = int(np.argmax(bad))
-                raise ValueError(f"{where}: layer {i}: {name} is {v[j]:g} at "
-                                 f"{coordinate.word} = {r[j]:g}; it is positive and "
-                                 "finite")
-
-
-def burgers_format(coordinate: DeckCoordinate) -> DeckFormat:
-    """The burgers deck of knots of `coordinate`: the Maxwell deck's
-    title, naming and layering, its columns, then the Kelvin element's
-    `kelvin_viscosity` and `kelvin_modulus_fraction`; a layer holds none
-    of the three (elastic), the viscosity alone (a Maxwell body) or all
-    three (a Burgers body), each positive and finite.  `BURGERS` is that
-    of radii, `cartesian.BURGERS` of depths."""
-    def check(deck: Deck) -> None:
-        _check_burgers(deck, coordinate)
-
-    return _named_format(BURGERS_COLUMNS, name="burgers", what="a burgers deck",
-                         coordinate=coordinate,
-                         line=_column_line("a burgers deck", coordinate.word,
-                                           [BURGERS_COLUMNS]),
-                         check_table=check)
-
-
-#: The burgers deck: the Maxwell deck's title, naming and layering, its
-#: columns, then the Kelvin element's `kelvin_viscosity` and
-#: `kelvin_modulus_fraction`; a layer holds none of the three (elastic),
-#: the viscosity alone (a Maxwell body) or all three (a Burgers body),
-#: each positive and finite.
-BURGERS = burgers_format(RADIUS)
-
-
-def prony_layers(deck: Deck, layers: Sequence[Mapping[str, Field]]
-                 ) -> list[dict[str, Field]]:
-    """The base fields of a prony deck's layers (`deck_layers`) as its
-    model holds them: the branches after the last whose strength is not
-    zero at every knot of a layer are dropped from it, so that a layer
-    the writer completed holds the branches it was written from, and an
-    elastic layer, NaN throughout, holds none."""
-    n = prony_branches(deck)
-    strength = f"{BRANCH_STEMS[0]}_{{}}"
-    out = []
-    for fields, s in zip(layers, deck.layers()):
-        kept = dict(fields)
-        used = max((k for k in range(1, n + 1)
-                    if np.any(deck[strength.format(k)][s] != 0.0)), default=0)
-        for k in range(used + 1, n + 1):
-            for stem in BRANCH_STEMS:
-                kept.pop(f"{stem}_{k}", None)
-        out.append(kept)
-    return out
 
 
 # -- TauP's named discontinuities ----------------------------------------------
@@ -1051,7 +521,8 @@ ND_COLUMNS = {5: ("vp", "vs", "rho", "qp", "qmu"), 4: ("vp", "vs", "rho", "qp"),
 _ND_UNITS = {"vp": 1e3, "vs": 1e3, "rho": 1e3, "qp": 1.0, "qmu": 1.0}
 
 #: TauP's labels of the boundaries every planetary model has, and the
-#: interface names they give: a label names the region below it.
+#: interface names they give: a label names the region below it.  The
+#: first label of each interface is the one written for it.
 ND_LABELS = {"mantle": "moho", "moho": "moho", "outer-core": "cmb", "cmb": "cmb",
              "inner-core": "icb", "icocb": "icb"}
 
@@ -1110,16 +581,38 @@ def _nd_table(lines: Sequence[str]) -> tuple[np.ndarray, dict[str, np.ndarray],
     return radius, columns, {"labels": tuple(labels)}
 
 
-def _nd_table_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
-    """The rows of an `.nd` table from a deck, from the surface down, its
-    header's labels where they sit; an absent value is refused."""
+def _nd_labels(deck: Deck) -> dict[float, str]:
+    """The labels an `.nd` table of a deck is written with, by the radius
+    they sit at: those the deck was read with, or else the ones the names
+    of its interfaces give, `ND_LABELS`'s first for `moho`, `cmb` and
+    `icb`, each naming the region below its boundary."""
+    if "labels" in deck.header:
+        return {float(r): label for r, label in deck.header["labels"]}
+    label_of = {face: label for label, face in reversed(ND_LABELS.items())}
+    b = deck.boundaries
+    faces = tuple(deck.header.get("interfaces", ()))
+    if not faces:
+        return {}
+    first = len(faces) - deck.nlayers          # one more for a hollow body's inner
+    if first not in (0, 1):
+        raise ValueError(f"the deck's header names {len(faces)} interfaces; its "
+                         f"table has {deck.nlayers} layers, an interface each and one "
+                         "more for a hollow body's inner boundary")
+    return {float(b[k]): label_of[faces[k - 1 + first]]
+            for k in range(1, b.size - 1) if faces[k - 1 + first] in label_of}
+
+
+def _nd_rows(deck: Deck, names: tuple[str, ...], labels: Mapping[float, str]
+             ) -> list[str]:
+    """The rows of an `.nd` table from a deck, from the surface down, each
+    of `labels` between the two rows of its boundary (before the first row
+    for the surface's); an absent value is refused."""
     radius, top = deck.radius, float(deck.radius[-1])
-    labels = {float(r): label for r, label in deck.header.get("labels", ())}
     values = np.column_stack([deck[n] / _ND_UNITS[n] for n in names])
     if np.isnan(values).any():
         raise ValueError("an .nd table holds every column on every row; the deck "
                          "has absent values")
-    out = [labels.pop(top)] if top in labels else []
+    out = [labels[top]] if top in labels else []
     for i in range(radius.size - 1, -1, -1):
         r = float(radius[i])
         if i < radius.size - 1 and r == float(radius[i + 1]) and r in labels:
@@ -1129,57 +622,77 @@ def _nd_table_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
     return out
 
 
-def _tvel_header_lines(deck: Deck) -> list[str]:
-    """Two title lines for a `.tvel` table: its own, or the deck's name."""
-    kept = tuple(deck.header.get("lines", ()))
-    title = str(deck.header.get("name", deck.source or "deck"))
-    return list(kept) if len(kept) == 2 else [title, title]
+def _nd_table_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
+    """An `.nd` table of a deck: its rows with its labels (`_nd_labels`)."""
+    return _nd_rows(deck, names, _nd_labels(deck))
+
+
+def _tvel_table_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
+    """A `.tvel` table of a deck: its rows, a `.tvel` holding no labels."""
+    return _nd_rows(deck, names, {})
+
+
+def _tvel_header_lines(deck: Deck, names: tuple[str, ...]) -> list[str]:
+    """The two title lines of a `.tvel` table, which TauP skips: the
+    deck's name, marked P and S as TauP's own tables are."""
+    title = str(deck.header.get("name") or deck.source or "deck")
+    return [f"{title} - P", f"{title} - S"]
 
 
 #: TauP's named discontinuities: no header, rows `depth vp vs [rho [qp
 #: [qs]]]` from the surface down in km, km/s and g/cm^3, a repeated depth a
-#: boundary, a label line naming the region below it.
+#: boundary, a label line naming the region below it.  A table is written
+#: with the labels TauP knows the Moho and the core by (`mantle`,
+#: `outer-core`, `inner-core`) at the interfaces named `moho`, `cmb` and
+#: `icb`, or with the labels it was read with.
 ND = DeckFormat(ND_COLUMNS, name="nd", read_table=_nd_table,
                 write_table=_nd_table_lines)
 
-#: TauP's tabled velocities: two header lines, then `.nd` rows.
+#: TauP's tabled velocities: two title lines, then `.nd` rows without
+#: labels.
 TVEL = DeckFormat(ND_COLUMNS, name="tvel", header_lines=2, read_table=_nd_table,
-                  write_header=_tvel_header_lines, write_table=_nd_table_lines)
+                  write_header=_tvel_header_lines, write_table=_tvel_table_lines)
 
 
-def nd_names(deck: Deck) -> tuple[list[str | None], list[str | None]]:
+def nd_names(deck: Deck) -> HeaderNames:
     """Layer and interface names an `.nd` table's labels imply: each label
     names the layer below it (its words joined by '_'), and the labels of
     `ND_LABELS` name their interfaces too (`moho`, `cmb`, `icb`); the
-    outermost interface is `surface`.  Every other name is None."""
+    outermost interface is `surface`.  Every other name is None.  A label
+    at the innermost boundary, of a solid body or a hollow one, is refused:
+    no layer lies below it."""
     b = deck.boundaries
     first = 1 if b[0] > 0 else 0
     layers: list[str | None] = [None] * deck.nlayers
     faces: list[str | None] = [None] * (deck.nlayers - 1 + first) + ["surface"]
     for r, label in deck.header.get("labels", ()):
         k = int(np.argmin(np.abs(b - float(r))))
+        if k == 0:
+            raise ValueError(f"the label {label!r} sits at the innermost boundary, "
+                             "where no layer lies below it")
         layers[k - 1] = label.replace("-", "_")
         if label in ND_LABELS and k < b.size - 1:
             faces[k - 1 + first] = ND_LABELS[label]
     return layers, faces
 
 
-def mineos_names(deck: Deck) -> tuple[list[str | None], list[str | None]]:
-    """Layer and interface names a mineos header implies: `nic` and `noc`
-    count the knots of the inner core and to the top of the outer core,
-    so where each sits on a repeated radius the first two layers are
-    `inner_core` and `outer_core` under `icb` and `cmb`; the outermost
-    interface is `surface`.  Every other name is None.  A count of zero
-    says there is no such core; a header whose other counts do not sit
-    on repeated radii is warned about and ignored."""
+def mineos_names(deck: Deck) -> HeaderNames:
+    """Layer and interface names a mineos header implies (`mineos_header`):
+    `nic` and `noc` count the knots of the inner core and to the top of
+    the outer core, so where each sits on a repeated radius the layer
+    beneath it is `inner_core` or `outer_core` under `icb` or `cmb`; the
+    outermost interface is `surface`.  Every other name is None.  A count
+    of zero says there is no such core; a header whose other counts do
+    not sit on repeated radii, or whose `nknot` is not the table's, is
+    warned about and the table taken as the truth."""
     layers: list[str | None] = [None] * deck.nlayers
     faces: list[str | None] = [None] * (deck.nlayers + (1 if deck.radius[0] > 0 else 0))
     faces[-1] = "surface"
-    r, h = deck.radius, deck.header
+    r, h = deck.radius, mineos_header(deck)
     first = 1 if deck.radius[0] > 0 else 0
     cores = (("nic", "inner_core", "icb"), ("noc", "outer_core", "cmb"))
     for key, layer, face in cores:
-        i = int(h.get(key, 0))
+        i = h[key]
         if not (1 <= i < r.size and r[i - 1] == r[i]):
             if i != 0:
                 warnings.warn(f"the header's {key} = {i} does not sit on a repeated "
@@ -1189,7 +702,7 @@ def mineos_names(deck: Deck) -> tuple[list[str | None], list[str | None]]:
         if 0 < k < deck.nlayers:
             layers[k - 1] = layer
             faces[k - 1 + first] = face
-    if "nknot" in h and h["nknot"] != deck.nknots:
+    if h["nknot"] != deck.nknots:
         warnings.warn(f"the header says {h['nknot']} knots, the table has "
                       f"{deck.nknots}; the table is taken as the truth", stacklevel=2)
     return layers, faces
@@ -1317,6 +830,50 @@ def deck_layers(deck: Deck, *, kind: str = "cubic",
     return skeleton, layers
 
 
+def model_from_deck(deck: Deck, *, behaviours: Iterable[type] = (),
+                    kind: str = "cubic", kinds: Mapping[str, str] | None = None,
+                    specs: Mapping[str, FieldSpec] | None = None,
+                    layer_names: Names = None, interface_names: Names = None,
+                    constants: Mapping[str, Constant] | None = None,
+                    scales: Scales = Scales.SI, name: str | None = None,
+                    citation: Iterable[str] = (), coordinate: DeckCoordinate = RADIUS,
+                    domain: Domain | None = None) -> ModelBase:
+    """The model of a deck: an ordinary model, to be used, changed and
+    written to a model file like any other.
+
+    Its layers are the deck's, cut at the repeated knots, and the fields
+    of each its columns, joined by `kind`, and by the kind `kinds` gives
+    a column or the stem of a family where it gives one (`deck_layers`:
+    `kinds={"viscosity": "log-linear"}` joins a viscosity in its
+    logarithm), with the characters the vocabulary or `specs` give the
+    names.  Everything else is the caller's to say, nothing being read
+    from the deck's header: `behaviours` are the mixins of
+    `planetmodel.behaviours` the model has (`behaviours.BEHAVIOURS` for
+    all four; `Elastic` completes the Love moduli beside the velocities,
+    and wants every layer's elastic description whole), its class
+    `behaviours.model_type` of them; `layer_names` and
+    `interface_names` name the layers and interfaces, in the deck's
+    order; `constants` are the model's own (`omega_ref`, say); `scales`
+    are the units the table's numbers are in, SI as every format here
+    reads them; `name` and `citation` are the model's.  `mineos_names`,
+    `mineos_constants`, `mineos_header` and `nd_names` read such things
+    out of a header for a caller who trusts it.
+
+    `coordinate` says what the knots are: radii from the centre outward
+    by default, a model of the sphere; with `cartesian.DEPTH` depths
+    from the free surface down, a flat model over the lateral `domain`
+    (a `cartesian.Box` or `Rectangle`), which a table does not hold and
+    the caller gives.
+    """
+    skeleton, layers = deck_layers(deck, kind=kind, kinds=kinds, specs=specs,
+                                   coordinate=coordinate)
+    geometry = coordinate.geometry(skeleton, domain, layer_names=layer_names,
+                                   interface_names=interface_names)
+    return model_type(coordinate.base, behaviours)(
+        geometry, layers, scales=scales, specs=specs, constants=constants, name=name,
+        citation=citation)
+
+
 # -- any model as a deck ---------------------------------------------------------
 
 #: The widest gap `sample_deck` leaves between knots by default, as a
@@ -1330,7 +887,7 @@ SAMPLE_SPACING = 1.0 / 200.0
 _PIECE_KNOTS = 4
 
 
-def sample_deck(model: Model, columns: Sequence[str], *,
+def sample_deck(model: ModelBase, columns: Sequence[str], *,
                 knots: Sequence[ArrayLike] | None = None,
                 spacing: float = SAMPLE_SPACING) -> Deck:
     """A model as a deck, in SI.
@@ -1343,14 +900,16 @@ def sample_deck(model: Model, columns: Sequence[str], *,
     NaN where the layer has neither.  The knots are values of the model's
     layered coordinate (radii, or depths in a flat model).  `knots` are
     one array per layer in the model's units, each increasing from one
-    end of the layer to the other.  Without them each layer is cut at
-    every breakpoint of the fields sampled on it, and each piece evenly,
-    to gaps no wider than `spacing` times the model's span and at least
-    four knots, so that a not-a-knot cubic through them reproduces a
-    cubic piece exactly.  The header holds the model's name where it has one, the
-    names of its layers and interfaces under "layers" and "interfaces",
-    and the period of a declared `omega_ref` under "tref", in seconds.
-    A model in other scales is sampled in SI.
+    end of the layer to the other (`deck_knots` gives a table's).
+    Without them each layer is cut at every breakpoint of the fields
+    sampled on it, and each piece evenly, to gaps no wider than `spacing`
+    times the model's span and at least four knots, so that a not-a-knot
+    cubic through them reproduces a cubic piece exactly.  The header
+    holds what a format's own header is written from (`write_deck`): the
+    model's name where it has one, the names of its layers and
+    interfaces under "layers" and "interfaces", and the period of a
+    declared `omega_ref` under "tref", in seconds.  A model in other
+    scales is sampled in SI.
     """
     if not model.scales.is_si:
         if knots is not None:
@@ -1479,76 +1038,15 @@ def _velocities(layer: Layer, r: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-# -- the mixin of a model built from a deck ----------------------------------
-
-class Tabulated:
-    """The behaviour of a model type built from a deck.
-
-    The type's constructor calls `keep_deck`, which keeps the deck as
-    `deck`, its knots per layer as `knots`, its header as `header` and its
-    column names as `columns`; all survive every copy.  `to_deck` samples
-    the model on those knots by `sample_deck`, so that a model that was
-    read can be written by `write_deck`, and a model whose fields were
-    changed can be written as the deck it now is.  The knots are in the
-    model's units and follow it through `converted`; a deck is in SI, so
-    `to_deck` converts a model in other scales first.  A model whose
-    layering no longer matches its knots (after surgery) is refused.
-    `restated` puts a deck made from the model otherwise (a prony or
-    burgers deck of it) under the header it was read with.  The mixin
-    serves a spherical model and a flat one alike, the knots being radii
-    or depths.
-    """
-
-    deck: Deck | None = None
-    knots: tuple[np.ndarray, ...] = ()
-    header: Mapping[str, Any] = MappingProxyType({})
-    columns: tuple[str, ...] = ()
-
-    def keep_deck(self, deck: Deck) -> None:
-        """Keep the deck the model is read from: the deck, its knots per
-        layer, its header and its column names."""
-        self.deck = deck
-        self.knots = deck_knots(deck)
-        self.header = deck.header
-        self.columns = deck.names
-
-    def converted(self: Model, scales: Scales) -> Model:
-        """`Model.converted`, the knots carried into the new length unit."""
-        out = super().converted(scales)
-        k = self.scales.factor(LENGTH) / scales.factor(LENGTH)
-        out.knots = tuple(np.asarray(knots) * k for knots in self.knots)
-        return out
-
-    def to_deck(self: Model, *, columns: Sequence[str] | None = None) -> Deck:
-        """The model as a deck on its knots, in SI, by `sample_deck`:
-        `columns` are the names to tabulate, by default those of the deck
-        it was read from.  The header is the deck's, with the model's name
-        and the names of its layers and interfaces as they now are."""
-        names = self.columns if columns is None else tuple(columns)
-        if not names:
-            raise ValueError("name the columns to tabulate: the model keeps none "
-                             "from a deck")
-        sampled = sample_deck(self, names, knots=self.knots)
-        return Deck(sampled.radius, sampled.columns,
-                    header={**self.header, **sampled.header})
-
-    def restated(self, sampled: Deck) -> Deck:
-        """`sampled`, a deck of the model on its knots (a prony or burgers
-        deck of it, say), under the header of the deck the model was read
-        from, with the model's name and the names of its layers and
-        interfaces as they now are, and without the column line read,
-        which the format writes from the columns it writes."""
-        kept = {k: v for k, v in self.header.items() if k != "columns"}
-        return Deck(sampled.radius, sampled.columns, header={**kept, **sampled.header})
-
-
 def _tabulable(f: Field) -> bool:
     return (bool(getattr(f, "is_radial", False)) and f.character.rank == 0
             and f.dtype == np.float64)
 
 
 def deck_knots(deck: Deck) -> tuple[np.ndarray, ...]:
-    """The knot radii of every layer of a deck, read-only copies."""
+    """The knots of every layer of a deck, read-only copies: what
+    `sample_deck` takes as `knots` to tabulate a model where a table has
+    its own."""
     out = []
     for s in deck.layers():
         k = np.array(deck.radius[s])

@@ -35,19 +35,22 @@ isotropic rule when the layer is isotropic and leaves the anisotropy
 real.  A layer holding both a viscosity (or branches) and Q_mu is a
 Maxwell body in shear (the shear band is not applied on top) with the
 bulk band; a layer holding none of them is elastic and left alone.
-`is_rheology_name` says which names a layer's rheology is read from.
+`is_rheology_name` says which names a layer's rheology is read from,
+and `is_linear_rheology_name` which of them a linear rheology is, the
+names a frozen model's moduli are derived from.
 
 `frozen(model, omega, *, reference_omega=None)` returns the model with
 the complex moduli of every viscoelastic layer stored under A, C, F, L,
 N, which `moduli` reads before anything else, and the frequency
 recorded as the constant `omega`.  Frequencies are in the model's
 units; the reference frequency of the band is the model's constant
-`omega_ref` where it declares one, else 2 pi rad/s, a period of one
-second, which is PREM's (`reference_omega`).  `is_frozen(model)` says
-whether a model carries that constant.  The velocities of a frozen
-layer, and kappa and mu where it holds them, stay as the elastic
-description at the reference frequency; the five are what a solver
-reads.
+`omega_ref` where it declares one (`omega_ref_constant` makes it from
+a reference period, as PREM and a mineos deck's model do), else
+2 pi rad/s, a period of one second (`reference_omega`).
+`is_frozen(model)` says whether a model carries the constant `omega`.
+The velocities of a frozen layer, and kappa and mu where it holds them,
+stay as the elastic description at the reference frequency; the five
+are what a solver reads.
 """
 from __future__ import annotations
 
@@ -66,8 +69,9 @@ if TYPE_CHECKING:
     from .model import Model
 
 __all__ = ["is_viscoelastic", "frozen_moduli", "dispersive_moduli", "frozen",
-           "is_frozen", "reference_omega", "RHEOLOGY_NAMES", "BRANCH_STEMS",
-           "POWER_LAW_NAMES", "branches", "is_rheology_name"]
+           "is_frozen", "reference_omega", "omega_ref_constant", "RHEOLOGY_NAMES",
+           "BRANCH_STEMS", "POWER_LAW_NAMES", "branches", "is_rheology_name",
+           "is_linear_rheology_name"]
 
 #: The fields a layer's rheology is read from, beside its Prony branches.
 RHEOLOGY_NAMES = ("viscosity", "qmu", "qkappa")
@@ -82,11 +86,14 @@ POWER_LAW_NAMES = ("stress_exponent", "transition_stress")
 def is_rheology_name(name: str) -> bool:
     """Whether a layer's rheology is read from fields of this name: one of
     `RHEOLOGY_NAMES`, a branch's, or one of `POWER_LAW_NAMES`."""
-    return name in POWER_LAW_NAMES or _linear(name)
+    return name in POWER_LAW_NAMES or is_linear_rheology_name(name)
 
 
-def _linear(name: str) -> bool:
-    """Whether a name is one a linear rheology is read from."""
+def is_linear_rheology_name(name: str) -> bool:
+    """Whether a layer's linear rheology is read from fields of this name:
+    one of `RHEOLOGY_NAMES` or a Prony branch's.  These are the names
+    `frozen` reads, so the ones a frozen model's moduli are derived from;
+    those of power-law creep (`POWER_LAW_NAMES`) are not among them."""
     found = member(name)
     return name in RHEOLOGY_NAMES or (found is not None and found[0] in BRANCH_STEMS)
 
@@ -116,7 +123,7 @@ def branches(layer: LayerLike) -> tuple[tuple[Field, Field], ...]:
 
 def is_viscoelastic(layer: LayerLike) -> bool:
     """Whether a layer holds any of `RHEOLOGY_NAMES` or a Prony branch."""
-    return any(_linear(n) for n in layer)
+    return any(is_linear_rheology_name(n) for n in layer)
 
 
 def _maxwell_shift(mu: Field, eta: Field, omega: float) -> ComposedField:
@@ -212,11 +219,23 @@ def _shifted_moduli(layer: LayerLike, omega: float, reference_omega: float, *,
                                          ("N", base["N"] + dmu))}
 
 
+def omega_ref_constant(period: float) -> Constant:
+    """The constant `omega_ref` of a model whose elastic values are those
+    at a reference period of `period` seconds: the angular frequency
+    2 pi / period, which a constant-Q band disperses the values about."""
+    period = float(period)
+    if not period > 0.0:
+        raise ValueError(f"a reference period is positive, got {period:g}")
+    return Constant(2.0 * np.pi / period, FREQUENCY,
+                    meaning="reference angular frequency of the model's elastic "
+                            "values")
+
+
 def reference_omega(model: Model) -> float:
     """The reference angular frequency of the constant-Q band in the
     model's units: the constant `omega_ref` where the model declares
-    one (a deck's header period, say), else 2 pi rad/s, a period of one
-    second, which is PREM's."""
+    one (PREM's, a deck's header period), else 2 pi rad/s, a period of
+    one second."""
     if "omega_ref" in model.constants:
         return float(model.constant("omega_ref"))
     return 2.0 * np.pi / model.scales.factor(FREQUENCY)

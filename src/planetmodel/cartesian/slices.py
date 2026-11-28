@@ -30,7 +30,8 @@ the mean is from the field's horizontal mean at each point's reference
 depth (`cartesian.horizontal_mean`), its own where it has one and by
 the quadrature of `mean_grid` (a `cartesian.Grid`) otherwise, a plane
 taking its own grid for that by default; `"reference"` and another
-`cartesian.Model` are as on the sphere.  Every slice states its
+`cartesian.Model` are as on the sphere, the other model read in the
+model's scales (`slices.in_scales_of`).  Every slice states its
 coordinates (`FLAT`), which is how the plotting knows to draw depth
 downward.
 
@@ -114,10 +115,10 @@ from ..coordinates import Coordinates
 from ..fields import Field
 from ..slices import (AT, NO_POWER, SIDES, Fields, MeanOf, RelativeTo, Shown,
                       SliceLayer, Values, evaluate_layers, evaluator, field_of,
-                      layer_quadrature, layers_of, runs, to_physical, to_reference)
+                      in_scales_of, layer_quadrature, layers_of, runs, to_physical,
+                      to_reference)
 from ..units import Dimensions
 from .coordinates import FLAT
-from .domains import Box
 from .grid import Grid
 from .means import horizontal_mean
 from .model import Model
@@ -618,8 +619,7 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
                   dimensions=None if spec is None else spec.dimensions,
                   scales=model.scales)
     means = _horizontal_means(mean_grid)
-    (x0, x1), (y0, y1) = _extent(model)
-    centre = (0.5 * (x0 + x1), 0.5 * (y0 + y1))
+    centre = _centre(model)
     out, bands = [], []
     for layer in range(model.nlayers):
         field = field_of(model, fields, layer)
@@ -646,13 +646,13 @@ def mean_profile(model: Model, fields: Fields, *, n: int = 100,
                         bands=None if spread is None else tuple(bands))
 
 
-def _extent(model: Model) -> tuple[tuple[float, float], tuple[float, float]]:
-    """The lateral extent of the model's body, a rectangle's y taken as
-    (0, 0)."""
-    extent = model.geometry.domain.extent
-    if isinstance(model.geometry.domain, Box):
-        return extent
-    return extent, (0.0, 0.0)
+def _centre(model: Model) -> tuple[float, float]:
+    """(x, y) at the middle of the model's lateral extent, zero along an
+    axis its domain does not bound."""
+    domain = model.geometry.domain
+    middle = {axis: 0.5 * (lo + hi) for axis, (lo, hi) in zip(domain.axes,
+                                                              domain.extent)}
+    return tuple(middle.get(axis, 0.0) for axis in FLAT.labels[1:])
 
 
 def surface(model: Model, function: Callable[[np.ndarray, np.ndarray], ArrayLike],
@@ -693,8 +693,9 @@ def integrated(model: Model, fields: Fields, *,
     default, on `grid`: within a layer by Gauss-Legendre on each of the
     field's pieces in depth, exact for a piecewise polynomial of their
     degree, or `n` points on the whole layer for a field that declares
-    none; a layer lacking the field adds nothing.  The slice's depth is
-    the span's top, its points there."""
+    none and on each piece of one whose values are no polynomial there
+    (`slices.layer_quadrature`); a layer lacking the field adds nothing.
+    The slice's depth is the span's top, its points there."""
     if int(n) < 1:
         raise ValueError(f"n must be at least 1, got {n}")
     b = model.skeleton.boundaries
@@ -743,7 +744,7 @@ def block(model: Model, fields: Fields, *, depths: tuple[float, float] | None = 
     `mean_grid`.  A model over a `Rectangle` has no block."""
     _flat(model)
     domain = model.geometry.domain
-    if not isinstance(domain, Box):
+    if len(domain.axes) != 2:                        # a block has two lateral sides
         raise ValueError("a block is of a body over a Box; a rectangle's body is "
                          "drawn by its vertical section")
     if corner not in CORNERS:
@@ -859,11 +860,15 @@ def correlation(model: Model, fields: Fields, other: Model, *,
     """Two fields' correlation by bin of horizontal wavenumber and by depth,
     by the rules of the module docstring: `fields` of `model` against
     `other_fields` (the same by default) of `other`, which may be
-    `model` itself, at each of `depths`, both on one grid, `grid` or the
-    first model's default, with the same choices."""
+    `model` itself, at each of `depths`, depths of `model`, both on one
+    grid, `grid` or the first model's default, with the same choices,
+    `other` in `model`'s scales (`slices.in_scales_of`), so that a depth
+    and a point of the grid are one place in both."""
     ds = np.atleast_1d(np.asarray(depths, dtype=float))
     grid = _grid_of(model, grid)
     other_fields = fields if other_fields is None else other_fields
+    _flat(other)
+    other = in_scales_of(model, other, other_fields)
     kw = dict(grid=grid, side=side, at=at, component=component, frame=frame,
               relative_to=relative_to, departure=departure, mean_grid=mean_grid)
     first = tuple(spectrum(model, fields, depth=float(d), **kw) for d in ds)

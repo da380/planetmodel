@@ -32,7 +32,9 @@
  * components in the local or the Cartesian frame;
  * `ModelFile::Mapping()` gives the vertical stretch;
  * `ModelFile::SurfaceFieldOn(interface, name)` a field of the `surfaces`
- * group as a function of (x, y).  A code that holds fields of its own
+ * group as a function of (x, y); `ModelFile::Behaviours()` the names of
+ * the model's behaviours, which a file written from a `ModelFile` that
+ * was read states again unchanged.  A code that holds fields of its own
  * makes a `ModelFile` of its skeleton of depths, its domain and scales,
  * cuts the layers into parts from the surface down, adds its fields from
  * `LayerSource`s, and `WriteModelFile` writes the file after holding it to
@@ -105,12 +107,6 @@ inline constexpr std::string_view COORDINATE_SYSTEM = "flat";
 /** @brief What a flat model file states as its `local_frame`: (e_up, e_x, e_y). */
 inline constexpr std::string_view LOCAL_FRAME_AXES = "up x y";
 
-/** @brief Names the flat model file gives its own variables, which no field may take. */
-inline constexpr auto RESERVED_NAMES = std::array<std::string_view, 12>{
-    "depth",       "element_layer", "element_bounds",  "x",
-    "y",           "displacement",  "layer_bounds",    "layer_name",
-    "interface_depth", "interface_name", "layer_part", "surface_interface"};
-
 namespace detail {
 
 using namespace ::planetmodel::detail;
@@ -123,6 +119,31 @@ inline constexpr auto SPHERICAL_ATTRIBUTES =
 inline constexpr auto SPHERICAL_VARIABLES = std::array<std::string_view, 6>{
     "latitude", "longitude", "colatitude_weights", "radius", "interface_radius",
     "boundary_radius"};
+
+/// The names of `own` and then those of a spherical file's variables,
+/// `SPHERICAL_VARIABLES`, which a reader refuses in a flat file.
+template <std::size_t N>
+constexpr auto WithSphericalVariables(const std::array<std::string_view, N>& own) {
+  auto out = std::array<std::string_view, N + SPHERICAL_VARIABLES.size()>{};
+  std::ranges::copy(SPHERICAL_VARIABLES, std::ranges::copy(own, out.begin()).out);
+  return out;
+}
+
+}  // namespace detail
+
+/**
+ * @brief Names no field of a flat model file may take: those the file gives
+ * its own variables, and those of a spherical file's variables (`radius`,
+ * `latitude`, `longitude`, `colatitude_weights`, `interface_radius`,
+ * `boundary_radius`), which a reader refuses in a flat file.
+ */
+inline constexpr auto RESERVED_NAMES =
+    detail::WithSphericalVariables(std::array<std::string_view, 12>{
+        "depth",           "element_layer",  "element_bounds", "x",
+        "y",               "displacement",   "layer_bounds",   "layer_name",
+        "interface_depth", "interface_name", "layer_part",     "surface_interface"});
+
+namespace detail {
 
 /// `where` and a name under it, or the name alone at the root.
 inline std::string Under(std::string_view where, std::string_view name) {
@@ -260,33 +281,6 @@ inline void WriteGrid(int group, const Grid& grid, const std::string& length,
   }
 }
 
-/// The works a `citation` attribute holds, one a line.
-inline std::vector<std::string> CitationOf(const netcdf::Attributes& attrs) {
-  auto out = std::vector<std::string>{};
-  if (const auto citation = TextOf(attrs, "citation")) {
-    for (auto start = std::size_t{0}; start < citation->size();) {
-      const auto end = std::min(citation->find('\n', start), citation->size());
-      out.push_back(citation->substr(start, end - start));
-      start = end + 1;
-    }
-  }
-  return out;
-}
-
-/// The scales a file's `scale_<base>` attributes state.
-inline Scales ScalesOf(const netcdf::Attributes& attrs, const std::string& source) {
-  auto scales = std::array<double, 4>{};
-  constexpr auto bases = std::array<std::string_view, 4>{"length", "mass", "time", "temperature"};
-  for (auto b = std::size_t{0}; b < 4; ++b) {
-    const auto key = std::format("scale_{}", bases[b]);
-    const auto value = NumberOf(attrs, key);
-    if (!value || !(*value > 0.0)) Fail(source, key, "is missing or not positive");
-    scales[b] = *value;
-  }
-  return Scales({.length = scales[0], .mass = scales[1], .time = scales[2],
-                 .temperature = scales[3]});
-}
-
 /// The scales, written as the `scale_<base>` attributes.
 inline void WriteScales(int root, const Scales& scales, const std::string& source) {
   const auto put = [&](std::string_view key, double value) {
@@ -298,13 +292,22 @@ inline void WriteScales(int root, const Scales& scales, const std::string& sourc
   put("scale_temperature", scales.Temperature());
 }
 
-/// The works cited, written as the `citation` attribute where there are any.
-inline void WriteCitation(int root, const std::vector<std::string>& citation,
-                          const std::string& source) {
-  if (citation.empty()) return;
-  auto joined = citation.front();
-  for (auto k = std::size_t{1}; k < citation.size(); ++k) joined += "\n" + citation[k];
-  netcdf::WriteAttribute(root, netcdf::GLOBAL, "citation", joined, source);
+/// The depths of a skeleton's interfaces, from the surface down: every
+/// boundary but the base.
+inline std::vector<double> InterfaceDepths(const Skeleton& skeleton) {
+  const auto& b = skeleton.Boundaries();
+  return std::vector<double>(b.begin(), b.end() - 1);
+}
+
+/// Refuse a variable stating a lateral rule the grid of its group cannot
+/// carry, as the Python's `cartesian.lateral.check_rule` does: `cubic` on a
+/// grid too small for it (`CheckRule`).
+inline void CheckCarried(const Grid& grid, std::string_view rule, const std::string& source,
+                         std::string_view where) {
+  if (rule != "cubic") return;
+  if (const auto why = CubicRefusal(grid)) {
+    Fail(source, where, std::format("states the lateral rule cubic, and {}", *why));
+  }
 }
 
 }  // namespace detail
@@ -971,8 +974,7 @@ class ModelFile {
         domain_(std::move(domain)) {
     if (!(rtol_ > 0.0 && rtol_ < 1.0)) Fail("rtol", "is not a tolerance in (0, 1)");
     layer_names_.assign(skeleton_->NLayers(), std::nullopt);
-    const auto& b = skeleton_->Boundaries();
-    interface_depths_.assign(b.begin(), b.end() - 1);
+    interface_depths_ = detail::InterfaceDepths(*skeleton_);
     interface_names_.assign(interface_depths_.size(), std::nullopt);
   }
 
@@ -988,6 +990,14 @@ class ModelFile {
   [[nodiscard]] const std::optional<std::string>& Name() const noexcept { return name_; }
   /** @brief The works the model cites, one a string, in the order stated; empty for none. */
   [[nodiscard]] const std::vector<std::string>& Citation() const noexcept { return citation_; }
+  /**
+   * @brief The names of the model's behaviours (the attribute `behaviours`),
+   * in the order stated; empty for none.  They say what kind of model the
+   * numbers are, and are written again as they were read.
+   */
+  [[nodiscard]] const std::vector<std::string>& Behaviours() const noexcept {
+    return behaviours_;
+  }
   /** @brief The scales the numbers are in. */
   [[nodiscard]] const ::planetmodel::Scales& GetScales() const noexcept { return scales_; }
   /** @brief The geometry's tolerance, relative to the skeleton's span. */
@@ -1224,18 +1234,17 @@ class ModelFile {
    * @throws planetmodel::Error if a work is more than one line.
    */
   void SetCitation(const std::vector<std::string>& works) {
-    constexpr auto space = std::string_view{" \t\n\r\f\v"};
-    auto out = std::vector<std::string>{};
-    for (const auto& work : works) {
-      const auto first = work.find_first_not_of(space);
-      if (first == std::string::npos) continue;
-      auto w = work.substr(first, work.find_last_not_of(space) - first + 1);
-      if (w.find_first_of("\r\n") != std::string::npos) {
-        Fail("citation", "holds a work of more than one line");
-      }
-      if (std::ranges::find(out, w) == out.end()) out.push_back(std::move(w));
-    }
-    citation_ = std::move(out);
+    citation_ = detail::Cited(works, source_);
+  }
+
+  /**
+   * @brief State the behaviours of the model, in place of any stated before:
+   * the names a reader of the file gives the model's methods by.
+   * @param names The names, each one word, in the order the model has them.
+   * @throws planetmodel::Error if a name is empty, holds white space or is given twice.
+   */
+  void SetBehaviours(const std::vector<std::string>& names) {
+    behaviours_ = detail::BehavioursNamed(names, source_);
   }
 
   /**
@@ -1546,8 +1555,8 @@ class ModelFile {
    * @brief The mapping as the heights of surfaces, linear in depth between
    * them: the `geometry` group.
    * @param depths The surfaces' reference depths, strictly increasing,
-   *        from the skeleton's top boundary to its base; they may lie
-   *        inside layers.
+   *        from the skeleton's top boundary to its base, none negative;
+   *        they may lie inside layers.
    * @param grid The grid the heights are held on, over the file's domain.
    * @param reliefs Each surface's height above its reference place,
    *        positive up, a scalar source (evaluated at the surface's
@@ -1572,6 +1581,9 @@ class ModelFile {
       if (!(depths[k] > depths[k - 1])) {
         Fail(where, "its surfaces' depths do not increase strictly");
       }
+    }
+    if (!(depths.front() >= 0.0)) {
+      Fail(where, "its first surface lies above the free surface, at a negative depth");
     }
     const auto tolerance = rtol_ * skeleton_->Span();
     if (depths.front() > skeleton_->Boundaries().front() + tolerance ||
@@ -1947,19 +1959,8 @@ class ModelFile {
   }
 
   /// Refuse what the reading of the fields would refuse, and what the
-  /// Python's `read_model` would: a vocabulary name stated otherwise and
-  /// the cubic rule on a grid that cannot carry it; a variable stating the
-  /// fourier rule is left to the Python.
+  /// Python's `read_model` would: a vocabulary name stated otherwise.
   void CheckReadable(const std::string& source) const {
-    auto check_rule = [&](const Grid& grid, const std::string& stated,
-                          const std::string& where) {
-      if (stated == "fourier") return;
-      try {
-        CheckRule(grid, LateralRuleNamed(stated, source, where), where);
-      } catch (const Error& e) {
-        detail::Fail(source, where, e.what());
-      }
-    };
     for (const auto& part : parts_) {
       for (const auto& [name, var] : part.variables) {
         const auto where = std::format("part_{}/{}", part.index, name);
@@ -1973,13 +1974,7 @@ class ModelFile {
             }
           }
         }
-        if (var.IsLateral()) {
-          check_rule(*part.grid, *var.Text("lateral_interpolation"), where);
-        }
       }
-    }
-    if (geometry_) {
-      check_rule(*geometry_->grid, geometry_->lateral, "geometry/boundary_displacement");
     }
     if (surfaces_) {
       for (const auto& [name, var] : surfaces_->variables) {
@@ -1992,7 +1987,6 @@ class ModelFile {
                          "dimensions than the vocabulary's");
           }
         }
-        check_rule(*surfaces_->grid, *var.Text("lateral_interpolation"), where);
       }
     }
   }
@@ -2106,6 +2100,7 @@ class ModelFile {
   std::string created_{};
   std::optional<std::string> name_{};
   std::vector<std::string> citation_{};
+  std::vector<std::string> behaviours_{};
   ::planetmodel::Scales scales_{};
   double rtol_ = DEFAULT_RTOL;
   std::map<std::string, FileConstant> constants_{};
@@ -2123,12 +2118,14 @@ class ModelFile {
 /**
  * @brief Hold a flat model file to the structure the readers check, the
  * Python's `cartesian.modelfile.read_model_file` among them: the schema
- * and tolerance, one interface per layer, every
- * layer in one part of contiguous layers, each part's elements tiling its
- * layers at their Gauss-Lobatto-Legendre nodes on a grid over the file's
- * domain, every variable running over the nodes (and the part's grid where
- * it varies laterally) with the attributes and trailing axes its character
- * asks for, known rules, a perturbation that is there and of a known kind,
+ * and tolerance, the interfaces those of the skeleton (every boundary but
+ * the base, to 1e-12 of its span), every layer in one part of contiguous
+ * layers, each part's elements tiling its layers at their
+ * Gauss-Lobatto-Legendre nodes on a grid over the file's domain, every
+ * variable running over the nodes (and the part's grid where it varies
+ * laterally) with the attributes and trailing axes its character asks for,
+ * known rules, a lateral rule the grid of its group can carry (`cubic` as
+ * `CheckRule` holds it), a perturbation that is there and of a known kind,
  * the mapping held once, and the fields on interfaces on the skeleton's
  * interfaces, over the group's grid, under names no part holds.
  * @param file The file, read or built.
@@ -2149,8 +2146,11 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   const auto nlayers = skeleton.NLayers();
   const auto axes = detail::AxesOf(domain);
   if (file.layer_names_.size() != nlayers) fail("layer_name", "is not one name per layer");
-  if (file.interface_depths_.size() != nlayers) {
-    fail("interface_depth", "is not one depth per layer, the depth of its top");
+  if (const auto interfaces = detail::InterfaceDepths(skeleton);
+      !detail::HoldsInterfaces(file.interface_depths_, interfaces, skeleton.Span())) {
+    fail("interface_depth",
+         std::format("does not hold the {} interfaces of the skeleton that layer_bounds make",
+                     interfaces.size()));
   }
   if (file.interface_names_.size() != file.interface_depths_.size()) {
     fail("interface_name", "is not one name per interface");
@@ -2218,6 +2218,15 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       tiles = tiles && std::abs(eb[2 * e] - eb[2 * e - 1]) <= tile;
     }
     if (!tiles) fail(where, "element_bounds do not tile its layers");
+    // each element within the layer `element_layer` gives it, to that tolerance
+    for (auto e = std::size_t{0}; e < nelem; ++e) {
+      const auto layer = static_cast<std::size_t>(part.element_layer[e]);
+      if (!(eb[2 * e] >= b[layer] - tile && eb[2 * e + 1] <= b[layer + 1] + tile)) {
+        fail(where + "/element_layer",
+             std::format("gives element {} to layer {}, which its bounds do not lie in", e,
+                         layer));
+      }
+    }
     for (auto e = std::size_t{0}; e < nelem; ++e) {
       const auto nodes = GllNodes(eb[2 * e], eb[2 * e + 1], part.ngll);
       for (auto k = std::size_t{0}; k < part.ngll; ++k) {
@@ -2293,6 +2302,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
         if (!rule || !std::ranges::contains(LATERAL_RULES, std::string_view{*rule})) {
           fail(vwhere, "states no known lateral rule");
         }
+        detail::CheckCarried(grid, *rule, source, vwhere);
       }
       if (var.attributes.contains("perturbation")) {
         const auto other = var.Text("perturbation");
@@ -2326,6 +2336,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       fail(where, "states no known lateral rule");
     }
     if (geometry.between != "linear") fail(where, "states an unknown rule between surfaces");
+    detail::CheckCarried(*geometry.grid, geometry.lateral, source, where);
     const auto& depths = geometry.depths;
     for (auto k = std::size_t{1}; k < depths.size(); ++k) {
       if (!(depths[k] > depths[k - 1])) {
@@ -2333,6 +2344,9 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       }
     }
     if (depths.size() < 2) fail("geometry/boundary_depth", "is fewer than two surfaces");
+    if (!(depths.front() >= 0.0)) {
+      fail("geometry/boundary_depth", "starts above the free surface, at a negative depth");
+    }
     if (geometry.grid->GetDomain() != domain) {
       fail("geometry", "its grid does not lie over the file's domain");
     }
@@ -2372,6 +2386,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       if (!rule || !std::ranges::contains(LATERAL_RULES, std::string_view{*rule})) {
         fail(vwhere, "states no known lateral rule");
       }
+      detail::CheckCarried(grid, *rule, source, vwhere);
       if (var.attributes.contains("interfaces")) {
         for (const auto x : var.Numbers("interfaces").value_or(std::vector<double>{-1.0})) {
           if (!std::ranges::contains(faces, static_cast<int>(x))) {
@@ -2424,6 +2439,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   out.written_by_ = text("source").value_or("");
   out.created_ = text("created").value_or("");
   out.citation_ = detail::CitationOf(attrs);
+  out.behaviours_ = detail::BehavioursOf(attrs, source);
   out.scales_ = detail::ScalesOf(attrs, source);
   if (attrs.contains("rtol")) {
     const auto rtol = number("rtol");
@@ -2496,7 +2512,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   out.interface_depths_ = netcdf::ReadDoubles(root, "interface_depth", source).values;
   const auto layer_part_values = netcdf::ReadDoubles(root, "layer_part", source).values;
   auto layer_part = std::vector<int>{};
-  for (const auto x : layer_part_values) layer_part.push_back(static_cast<int>(x));
+  for (const auto x : layer_part_values) layer_part.push_back(detail::IndexOf(x));
   const auto groups = netcdf::GroupNames(root, source);
   auto part_numbers = layer_part;
   std::ranges::sort(part_numbers);
@@ -2535,11 +2551,11 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
     if (!gattrs.contains("ngll")) fail(where, "lacks the attribute ngll");
     detail::RefuseSpherical(g, gattrs, source, where);
     part.grid = detail::GridOf(g, domain, source, where);
-    const auto ngll = detail::NumberOf(gattrs, "ngll");
-    if (!ngll || !(*ngll >= 2.0)) fail(where + ".ngll", "is not a number of nodes, two or more");
-    part.ngll = static_cast<std::size_t>(*ngll);
+    const auto ngll = detail::NgllOf(gattrs);
+    if (!ngll) fail(where + ".ngll", "is not a whole number of nodes, two or more");
+    part.ngll = *ngll;
     for (const auto x : netcdf::ReadDoubles(g, "element_layer", source).values) {
-      part.element_layer.push_back(static_cast<int>(x));
+      part.element_layer.push_back(detail::IndexOf(x));
     }
     part.element_bounds = netcdf::ReadDoubles(g, "element_bounds", source).values;
     part.depth = netcdf::ReadDoubles(g, "depth", source).values;
@@ -2621,11 +2637,11 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
   put(root, global, "schema", schema_);
   put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
   put(root, global, "title", name_ ? "planetmodel model " + *name_ : "planetmodel model");
-  put(root, global, "source",
-      written_by_.empty() ? "planetmodel C++ " + std::string{Version()} : written_by_);
+  put(root, global, "source", detail::StampedSource(written_by_));
   put(root, global, "created", created_.empty() ? detail::CreatedNow() : created_);
   if (name_) put(root, global, "name", *name_);
   detail::WriteCitation(root, citation_, source);
+  detail::WriteBehaviours(root, behaviours_, source);
   detail::WriteScales(root, scales_, source);
   put(root, global, "rtol", std::vector<double>{rtol_});
   for (const auto& [cname, constant] : constants_) {
@@ -2748,12 +2764,11 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
  *
  * The file is checked as `ValidateModelFile` checks it, and as the reading
  * of its fields and the Python's `read_model` would (a vocabulary name
- * stated otherwise, the cubic rule on a grid that cannot carry it), before
- * anything is written; it is written under a name of its own beside `path`
- * and put in place when whole, so that a failed write leaves no file and
- * an existing file at `path` stands until it is replaced.  The file has
- * the permissions a plain open for writing would give it: an existing
- * file's, kept, or the umask's.
+ * stated otherwise), before anything is written; it is written under a
+ * name of its own beside `path` and put in place when whole, so that a
+ * failed write leaves no file and an existing file at `path` stands until
+ * it is replaced.  The file has the permissions a plain open for writing
+ * would give it: an existing file's, kept, or the umask's.
  *
  * @param path The file to write; one there is replaced.
  * @param file The flat model file, read or built.

@@ -27,6 +27,13 @@
  * one of the skeleton's interfaces (a shape kernel, a boundary's shift), as
  * a function of the angles by its stated lateral rule.
  *
+ * A file may name the behaviours of its model (the attribute `behaviours`):
+ * what kind of model the numbers are, for a reader that has methods to give
+ * it.  There are none here: `ModelFile::Behaviours()` gives the names, a
+ * file written from a `ModelFile` that was read states them again
+ * unchanged, and `ModelFile::SetBehaviours` states those of a model a code
+ * builds.
+ *
  * A field holds the interpolants it was built with and nothing mutable,
  * so it is cheap to copy and safe to evaluate from many threads; the
  * `ModelFile` holds only numbers.  A code reads the file, builds the
@@ -177,6 +184,13 @@ inline std::optional<double> NumberOf(const netcdf::Attributes& attrs, std::stri
   return v && v->size() == 1 ? std::optional<double>{(*v)[0]} : std::nullopt;
 }
 
+/// A stored number as the index it states, its fraction dropped; -1, which
+/// is no part and no layer, where it is NaN (a variable's fill) or beyond
+/// an `int`.
+inline int IndexOf(double x) {
+  return std::abs(x) < 2147483648.0 ? static_cast<int>(x) : -1;
+}
+
 /// Four exponents as dimensions, in the order `units.BASE` gives them.
 inline std::optional<Dimensions> DimensionsFrom(const std::optional<std::vector<double>>& d) {
   if (!d || d->size() != 4) return std::nullopt;
@@ -184,6 +198,14 @@ inline std::optional<Dimensions> DimensionsFrom(const std::optional<std::vector<
                     .length = static_cast<int>((*d)[1]),
                     .time = static_cast<int>((*d)[2]),
                     .temperature = static_cast<int>((*d)[3])};
+}
+
+/// Whether the attribute `key`, which is there, states dimensions: four
+/// whole numbers.
+inline bool StatesExponents(const netcdf::Attributes& attrs, std::string_view key) {
+  const auto d = NumbersOf(attrs, key);
+  return d && d->size() == 4 &&
+         std::ranges::all_of(*d, [](double e) { return e == std::round(e); });
 }
 
 /// Dimensions as their four exponents, an integer attribute.
@@ -203,6 +225,164 @@ inline netcdf::Attribute Integer(long long value) { return std::vector<long long
 inline std::string CreatedNow() {
   const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
   return std::format("{:%FT%T}+00:00", now);
+}
+
+/// The scales a file's `scale_<base>` attributes state, each one positive
+/// finite number.
+inline Scales ScalesOf(const netcdf::Attributes& attrs, const std::string& source) {
+  auto scales = std::array<double, 4>{};
+  constexpr auto bases = std::array<std::string_view, 4>{"length", "mass", "time", "temperature"};
+  for (auto b = std::size_t{0}; b < 4; ++b) {
+    const auto key = std::format("scale_{}", bases[b]);
+    const auto value = NumberOf(attrs, key);
+    if (!value || !(std::isfinite(*value) && *value > 0.0)) {
+      Fail(source, key, "is missing or not positive and finite");
+    }
+    scales[b] = *value;
+  }
+  return Scales({.length = scales[0], .mass = scales[1], .time = scales[2],
+                 .temperature = scales[3]});
+}
+
+/// The nodes per element a part's `ngll` attribute states, a whole number
+/// of at least two, or nothing where it states anything else.
+inline std::optional<std::size_t> NgllOf(const netcdf::Attributes& attrs) {
+  const auto n = NumberOf(attrs, "ngll");
+  if (!n || !(*n >= 2.0 && *n < 2147483648.0) || *n != std::floor(*n)) return std::nullopt;
+  return static_cast<std::size_t>(*n);
+}
+
+/// The works a citation holds, by the rule the Python's `cited` holds one
+/// to: each trimmed of white space at its ends, an empty one or a repeat
+/// dropped, and a work of more than one line refused.
+inline std::vector<std::string> Cited(const std::vector<std::string>& works,
+                                      const std::string& source) {
+  constexpr auto space = std::string_view{" \t\n\r\f\v"};
+  auto out = std::vector<std::string>{};
+  for (const auto& work : works) {
+    const auto first = work.find_first_not_of(space);
+    if (first == std::string::npos) continue;
+    auto w = work.substr(first, work.find_last_not_of(space) - first + 1);
+    if (w.find_first_of("\r\n") != std::string::npos) {
+      Fail(source, "citation", "holds a work of more than one line");
+    }
+    if (std::ranges::find(out, w) == out.end()) out.push_back(std::move(w));
+  }
+  return out;
+}
+
+/// The works a `citation` attribute holds, one a line; none where the
+/// attribute is absent or is not text.
+inline std::vector<std::string> CitationOf(const netcdf::Attributes& attrs) {
+  auto out = std::vector<std::string>{};
+  if (const auto citation = TextOf(attrs, "citation")) {
+    for (auto start = std::size_t{0}; start < citation->size();) {
+      const auto end = std::min(citation->find('\n', start), citation->size());
+      out.push_back(citation->substr(start, end - start));
+      start = end + 1;
+    }
+  }
+  return out;
+}
+
+/// The names of a model's behaviours as the `behaviours` attribute holds
+/// them: each without white space, and none twice.  A name that is empty,
+/// holds white space or repeats another is refused.
+inline std::vector<std::string> BehavioursNamed(const std::vector<std::string>& names,
+                                                const std::string& source) {
+  constexpr auto space = std::string_view{" \t\n\r\f\v"};
+  auto out = std::vector<std::string>{};
+  for (const auto& name : names) {
+    if (name.empty() || name.find_first_of(space) != std::string::npos) {
+      Fail(source, "behaviours",
+           std::format("names '{}', and a behaviour's name is one word", name));
+    }
+    if (std::ranges::find(out, name) != out.end()) {
+      Fail(source, "behaviours", std::format("names '{}' twice", name));
+    }
+    out.push_back(name);
+  }
+  return out;
+}
+
+/// The names a `behaviours` attribute holds, separated by white space, in
+/// the order stated; none where the attribute is absent.  An attribute
+/// that is not text, or that names a behaviour twice, is refused.
+inline std::vector<std::string> BehavioursOf(const netcdf::Attributes& attrs,
+                                             const std::string& source) {
+  constexpr auto space = std::string_view{" \t\n\r\f\v"};
+  constexpr auto wrong = std::string_view{
+      "is not the names of the model's behaviours, each once, separated by spaces"};
+  auto out = std::vector<std::string>{};
+  if (!attrs.contains("behaviours")) return out;
+  const auto text = TextOf(attrs, "behaviours");
+  if (!text) Fail(source, "behaviours", wrong);
+  for (auto start = text->find_first_not_of(space); start != std::string::npos;) {
+    const auto end = std::min(text->find_first_of(space, start), text->size());
+    auto name = text->substr(start, end - start);
+    if (std::ranges::find(out, name) != out.end()) Fail(source, "behaviours", wrong);
+    out.push_back(std::move(name));
+    start = text->find_first_not_of(space, end);
+  }
+  return out;
+}
+
+/// The behaviours named, written as the `behaviours` attribute, a space
+/// between names, where there are any.
+inline void WriteBehaviours(int root, const std::vector<std::string>& behaviours,
+                            const std::string& source) {
+  if (behaviours.empty()) return;
+  auto joined = behaviours.front();
+  for (auto k = std::size_t{1}; k < behaviours.size(); ++k) joined += " " + behaviours[k];
+  netcdf::WriteAttribute(root, netcdf::GLOBAL, "behaviours", joined, source);
+}
+
+/// The `source` attribute a writer stamps: the writing code and version
+/// it is given, or this library and its version where it is given none.
+inline std::string StampedSource(const std::string& given) {
+  return given.empty() ? "planetmodel C++ " + std::string{Version()} : given;
+}
+
+/// The works cited, written as the `citation` attribute, one a line, where
+/// there are any.
+inline void WriteCitation(int root, const std::vector<std::string>& citation,
+                          const std::string& source) {
+  if (citation.empty()) return;
+  auto joined = citation.front();
+  for (auto k = std::size_t{1}; k < citation.size(); ++k) joined += "\n" + citation[k];
+  netcdf::WriteAttribute(root, netcdf::GLOBAL, "citation", joined, source);
+}
+
+/// The radii of a skeleton's interfaces, from the centre outward: every
+/// boundary but a centre.
+inline std::vector<double> InterfaceRadii(const Skeleton& skeleton) {
+  const auto& b = skeleton.Boundaries();
+  return std::vector<double>(b.begin() + (skeleton.IsHollow() ? 0 : 1), b.end());
+}
+
+/// Whether a file's interfaces are the skeleton's, each to 1e-12 of `span`.
+inline bool HoldsInterfaces(std::span<const double> held, std::span<const double> interfaces,
+                            double span) {
+  return std::ranges::equal(held, interfaces, [span](double a, double b) {
+    return std::abs(a - b) <= 1e-12 * span;
+  });
+}
+
+/// Refuse a variable stating a lateral rule the grid of its group cannot
+/// carry, as the Python's `check_rule` does: `harmonic` on a grid that is
+/// not of a shipped kind with its band, and `cubic` on a grid too small for
+/// it (`CheckRule`).
+inline void CheckCarried(const AngularGrid& grid, std::string_view rule,
+                         const std::string& source, std::string_view where) {
+  auto why = std::optional<std::string>{};
+  if (rule == "harmonic" && (grid.Kind() == "custom" || !grid.Lmax())) {
+    why = std::format("the harmonic rule needs a grid of a shipped kind with its band; this "
+                      "grid is {}{}",
+                      grid.Kind(), grid.Lmax() ? "" : " and states no grid_lmax");
+  } else if (rule == "cubic") {
+    why = CubicRefusal(grid);
+  }
+  if (why) Fail(source, where, std::format("states the lateral rule {}, and {}", rule, *why));
 }
 
 }  // namespace detail
@@ -972,11 +1152,8 @@ class ModelFile {
         rtol_(rtol),
         skeleton_(std::move(skeleton)) {
     if (!(rtol_ > 0.0 && rtol_ < 1.0)) Fail("rtol", "is not a tolerance in (0, 1)");
-    const auto& b = skeleton_->Boundaries();
     layer_names_.assign(skeleton_->NLayers(), std::nullopt);
-    for (auto j = skeleton_->IsHollow() ? std::size_t{0} : std::size_t{1}; j < b.size(); ++j) {
-      interface_radii_.push_back(b[j]);
-    }
+    interface_radii_ = detail::InterfaceRadii(*skeleton_);
     interface_names_.assign(interface_radii_.size(), std::nullopt);
   }
 
@@ -998,6 +1175,14 @@ class ModelFile {
   [[nodiscard]] const std::optional<std::string>& Name() const noexcept { return name_; }
   /** @brief The works the model cites, one a string, in the order stated; empty for none. */
   [[nodiscard]] const std::vector<std::string>& Citation() const noexcept { return citation_; }
+  /**
+   * @brief The names of the model's behaviours (the attribute `behaviours`),
+   * in the order stated; empty for none.  They say what kind of model the
+   * numbers are, and are written again as they were read.
+   */
+  [[nodiscard]] const std::vector<std::string>& Behaviours() const noexcept {
+    return behaviours_;
+  }
   /** @brief The scales the numbers are in. */
   [[nodiscard]] const ::planetmodel::Scales& GetScales() const noexcept { return scales_; }
   /** @brief The geometry's tolerance, relative to the skeleton's span. */
@@ -1235,18 +1420,17 @@ class ModelFile {
    * @throws planetmodel::Error if a work is more than one line.
    */
   void SetCitation(const std::vector<std::string>& works) {
-    constexpr auto space = std::string_view{" \t\n\r\f\v"};
-    auto out = std::vector<std::string>{};
-    for (const auto& work : works) {
-      const auto first = work.find_first_not_of(space);
-      if (first == std::string::npos) continue;
-      auto w = work.substr(first, work.find_last_not_of(space) - first + 1);
-      if (w.find_first_of("\r\n") != std::string::npos) {
-        Fail("citation", "holds a work of more than one line");
-      }
-      if (std::ranges::find(out, w) == out.end()) out.push_back(std::move(w));
-    }
-    citation_ = std::move(out);
+    citation_ = detail::Cited(works, source_);
+  }
+
+  /**
+   * @brief State the behaviours of the model, in place of any stated before:
+   * the names a reader of the file gives the model's methods by.
+   * @param names The names, each one word, in the order the model has them.
+   * @throws planetmodel::Error if a name is empty, holds white space or is given twice.
+   */
+  void SetBehaviours(const std::vector<std::string>& names) {
+    behaviours_ = detail::BehavioursNamed(names, source_);
   }
 
   /**
@@ -2060,10 +2244,9 @@ class ModelFile {
   }
 
   /// Refuse what the reading of the fields would refuse, and what the
-  /// Python's `read_model` would: a vocabulary name stated otherwise, the
-  /// cubic rule on a grid that cannot carry it, and a pole node whose
-  /// values are not one value; a variable stating the harmonic rule is
-  /// left to the Python.
+  /// Python's `read_model` would: a vocabulary name stated otherwise, and a
+  /// pole node whose values are not one value; the values of a variable
+  /// stating the harmonic rule are left to the Python.
   void CheckReadable(const std::string& source) const {
     for (const auto& part : parts_) {
       const auto& grid = *part.grid;
@@ -2081,11 +2264,7 @@ class ModelFile {
             }
           }
         }
-        if (!var.IsLateral()) continue;
-        const auto stated = *var.Text("lateral_interpolation");
-        if (stated == "harmonic") continue;
-        const auto rule = LateralRuleNamed(stated, source, where);
-        CheckRule(grid, rule, where);
+        if (!var.IsLateral() || *var.Text("lateral_interpolation") == "harmonic") continue;
         if (!grid.NorthPoleNode() && !grid.SouthPoleNode()) continue;
         auto radial_layers = std::vector<int>{};
         if (const auto listed = var.Numbers("radial_layers")) {
@@ -2108,11 +2287,9 @@ class ModelFile {
         }
       }
     }
-    if (geometry_) {
+    if (geometry_ && geometry_->lateral != "harmonic") {
       const auto where = std::string{"geometry/boundary_displacement"};
       const auto& grid = *geometry_->grid;
-      if (geometry_->lateral == "harmonic") return;
-      CheckRule(grid, LateralRuleNamed(geometry_->lateral, source, where), where);
       const auto cells = grid.NTheta() * grid.NPhi();
       for (auto k = std::size_t{0}; k < geometry_->radii.size(); ++k) {
         const auto values = std::span<const double>(geometry_->values).subspan(k * cells, cells);
@@ -2136,9 +2313,7 @@ class ModelFile {
                          "dimensions than the vocabulary's");
           }
         }
-        const auto stated = *var.Text("lateral_interpolation");
-        if (stated == "harmonic") continue;
-        CheckRule(grid, LateralRuleNamed(stated, source, where), where);
+        if (*var.Text("lateral_interpolation") == "harmonic") continue;
         for (auto row = std::size_t{0}; row < surfaces_->interfaces.size(); ++row) {
           if (!HoldsRow(var, row)) continue;
           static_cast<void>(PolarValues(
@@ -2257,6 +2432,7 @@ class ModelFile {
   std::string created_{};
   std::optional<std::string> name_{};
   std::vector<std::string> citation_{};
+  std::vector<std::string> behaviours_{};
   ::planetmodel::Scales scales_{};
   double rtol_ = DEFAULT_RTOL;
   std::map<std::string, FileConstant> constants_{};
@@ -2273,13 +2449,21 @@ class ModelFile {
 namespace detail {
 
 /// The angular grid a group's coordinates and attributes hold, as the
-/// Python's `_grid_of` reads it: colatitude 90 - latitude in radians,
-/// clipped to [0, pi]; longitude in radians reduced into [0, 2 pi); the
-/// colatitude weights where the group has them.
-inline AngularGrid GridOf(int group, const netcdf::Attributes& attrs, const std::string& source) {
+/// Python's `grid_of_group` reads it: colatitude 90 - latitude in radians,
+/// a pole at exactly 0 or pi; longitude in radians reduced into [0, 2 pi);
+/// the colatitude weights where the group has them.  A latitude outside
+/// [-90, 90], and nodes that make no grid, are refused at `where`, the
+/// group, as a malformed grid.
+inline AngularGrid GridOf(int group, const netcdf::Attributes& attrs, const std::string& source,
+                          std::string_view where) {
   constexpr auto degree = std::numbers::pi / 180.0;
   auto theta = netcdf::ReadDoubles(group, "latitude", source).values;
-  for (auto& t : theta) t = std::clamp((90.0 - t) * degree, 0.0, std::numbers::pi);
+  for (auto& t : theta) {
+    if (std::abs(t) > 90.0) {
+      Fail(source, where, "the grid is malformed: latitudes must lie in [-90, 90]");
+    }
+    t = std::clamp((90.0 - t) * degree, 0.0, std::numbers::pi);
+  }
   auto phi = netcdf::ReadDoubles(group, "longitude", source).values;
   for (auto& p : phi) p = Wrapped(p * degree);
   auto lmax = std::optional<int>{};
@@ -2292,8 +2476,12 @@ inline AngularGrid GridOf(int group, const netcdf::Attributes& attrs, const std:
   if (netcdf::HasVariable(group, "colatitude_weights")) {
     weights = netcdf::ReadDoubles(group, "colatitude_weights", source).values;
   }
-  return AngularGrid(std::move(theta), std::move(phi),
-                     TextOf(attrs, "grid_kind").value_or("custom"), lmax, std::move(weights));
+  try {
+    return AngularGrid(std::move(theta), std::move(phi),
+                       TextOf(attrs, "grid_kind").value_or("custom"), lmax, std::move(weights));
+  } catch (const Error& e) {
+    Fail(source, where, std::format("the grid is malformed: {}", e.what()));
+  }
 }
 
 inline FileVariable ReadVariable(int group, const std::string& name, const std::string& source) {
@@ -2361,14 +2549,19 @@ inline void PutInPlace(const std::filesystem::path& partial, const std::filesyst
 
 /**
  * @brief Hold a model file to the structure the readers check, the
- * Python's `read_model_file` among them: the schema and tolerance, every
- * layer in one part of contiguous layers, each part's elements tiling its
- * layers at their Gauss-Lobatto-Legendre nodes, every variable running
- * over the nodes on the part's grid with the attributes and trailing axes
- * its character asks for, known rules, the poles where the grid lacks
- * one, a perturbation that is there and of a known kind, the mapping
- * held once, and the fields on interfaces on the skeleton's interfaces,
- * over the group's grid, under names no part holds.
+ * Python's `read_model_file` among them: the schema and tolerance, the
+ * interfaces those of the skeleton (every boundary but a centre, to 1e-12
+ * of its span), every layer in one part of contiguous layers, each part's
+ * elements tiling its layers at their Gauss-Lobatto-Legendre nodes, every
+ * variable running over the nodes on the part's grid with the attributes
+ * and trailing axes its character asks for, known rules, a lateral rule
+ * the grid of its group can carry (`harmonic` on a grid of a shipped kind
+ * with its band, `cubic` as `CheckRule` holds it), the poles where the
+ * grid lacks one (`<name>_poles` over the nodes, the two poles and the
+ * variable's components), a perturbation that is there and of a known
+ * kind, the mapping held once, a stack of two surfaces or more at strictly
+ * increasing radii, and the fields on interfaces on the skeleton's
+ * interfaces, over the group's grid, under names no part holds.
  * @param file The file, read or built.
  * @param source The file's path, as the errors name it.
  * @throws planetmodel::Error naming the place of the first fault.
@@ -2386,6 +2579,12 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   const auto& b = skeleton.Boundaries();
   const auto nlayers = skeleton.NLayers();
   if (file.layer_names_.size() != nlayers) fail("layer_name", "is not one name per layer");
+  if (const auto interfaces = detail::InterfaceRadii(skeleton);
+      !detail::HoldsInterfaces(file.interface_radii_, interfaces, skeleton.Span())) {
+    fail("interface_radius",
+         std::format("does not hold the {} interfaces of the skeleton that layer_bounds make",
+                     interfaces.size()));
+  }
   if (file.interface_names_.size() != file.interface_radii_.size()) {
     fail("interface_name", "is not one name per interface");
   }
@@ -2439,6 +2638,15 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       tiles = tiles && std::abs(eb[2 * e] - eb[2 * e - 1]) <= tile;
     }
     if (!tiles) fail(where, "element_bounds do not tile its layers");
+    // each element within the layer `element_layer` gives it, to that tolerance
+    for (auto e = std::size_t{0}; e < nelem; ++e) {
+      const auto layer = static_cast<std::size_t>(part.element_layer[e]);
+      if (!(eb[2 * e] >= b[layer] - tile && eb[2 * e + 1] <= b[layer + 1] + tile)) {
+        fail(where + "/element_layer",
+             std::format("gives element {} to layer {}, which its bounds do not lie in", e,
+                         layer));
+      }
+    }
     for (auto e = std::size_t{0}; e < nelem; ++e) {
       const auto nodes = GllNodes(eb[2 * e], eb[2 * e + 1], part.ngll);
       for (auto k = std::size_t{0}; k < part.ngll; ++k) {
@@ -2521,6 +2729,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
         if (!rule || !std::ranges::contains(LATERAL_RULES, std::string_view{*rule})) {
           fail(vwhere, "states no known lateral rule");
         }
+        detail::CheckCarried(grid, *rule, source, vwhere);
         if (grid.LacksPole()) {
           const auto it = part.variables.find(vname + "_poles");
           if (it == part.variables.end()) {
@@ -2528,7 +2737,13 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
                                      "{}_poles is missing",
                                      vname));
           }
-          if (it->second.values.size() != nnode * 2 * ModelFile::CharacterOf(var).StoredSize()) {
+          // over the nodes and the two poles, then the variable's own components
+          auto shape = std::vector<std::size_t>{nnode, 2};
+          shape.insert(shape.end(), stored.begin(), stored.end());
+          const auto& poles = it->second;
+          if (poles.dimensions.size() < 2 || poles.dimensions[0] != "node" ||
+              poles.dimensions[1] != "pole" || poles.shape != shape ||
+              poles.values.size() != nnode * 2 * ModelFile::CharacterOf(var).StoredSize()) {
             fail(vwhere + "_poles", "does not hold both poles at every node");
           }
         }
@@ -2571,6 +2786,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       fail(where, "states no known lateral rule");
     }
     if (geometry.between != "linear") fail(where, "states an unknown rule between surfaces");
+    detail::CheckCarried(*geometry.grid, geometry.lateral, source, where);
     const auto& radii = geometry.radii;
     for (auto k = std::size_t{1}; k < radii.size(); ++k) {
       if (!(radii[k] > radii[k - 1])) {
@@ -2618,6 +2834,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       if (!rule || !std::ranges::contains(LATERAL_RULES, std::string_view{*rule})) {
         fail(vwhere, "states no known lateral rule");
       }
+      detail::CheckCarried(grid, *rule, source, vwhere);
       if (var.attributes.contains("interfaces")) {
         for (const auto x : var.Numbers("interfaces").value_or(std::vector<double>{-1.0})) {
           if (!std::ranges::contains(faces, static_cast<int>(x))) {
@@ -2680,23 +2897,9 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   out.name_ = text("name");
   out.written_by_ = text("source").value_or("");
   out.created_ = text("created").value_or("");
-  if (const auto citation = text("citation")) {
-    for (auto start = std::size_t{0}; start < citation->size();) {
-      const auto end = std::min(citation->find('\n', start), citation->size());
-      out.citation_.push_back(citation->substr(start, end - start));
-      start = end + 1;
-    }
-  }
-  auto scales = std::array<double, 4>{};
-  constexpr auto bases = std::array<std::string_view, 4>{"length", "mass", "time", "temperature"};
-  for (auto b = std::size_t{0}; b < 4; ++b) {
-    const auto key = std::format("scale_{}", bases[b]);
-    const auto value = number(key);
-    if (!value || !(*value > 0.0)) fail(key, "is missing or not positive");
-    scales[b] = *value;
-  }
-  out.scales_ = Scales({.length = scales[0], .mass = scales[1], .time = scales[2],
-                        .temperature = scales[3]});
+  out.citation_ = detail::CitationOf(attrs);
+  out.behaviours_ = detail::BehavioursOf(attrs, source);
+  out.scales_ = detail::ScalesOf(attrs, source);
   if (attrs.contains("rtol")) {
     const auto rtol = number("rtol");
     if (!rtol) fail("rtol", "is not a tolerance in (0, 1)");
@@ -2741,8 +2944,13 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
     }
     boundaries.push_back(bounds[2 * i]);
   }
+  if (nlayers == 0) fail("layer_bounds", "do not make a skeleton of contiguous layers");
   boundaries.push_back(bounds.back());
-  out.skeleton_ = Skeleton(boundaries);
+  try {
+    out.skeleton_ = Skeleton(boundaries);
+  } catch (const Error& e) {
+    fail("layer_bounds", std::format("do not make a skeleton: {}", e.what()));
+  }
   for (const auto& n : netcdf::ReadStrings(root, "layer_name", source)) {
     out.layer_names_.push_back(n.empty() ? std::nullopt : std::optional<std::string>{n});
   }
@@ -2752,7 +2960,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
   out.interface_radii_ = netcdf::ReadDoubles(root, "interface_radius", source).values;
   const auto layer_part_values = netcdf::ReadDoubles(root, "layer_part", source).values;
   auto layer_part = std::vector<int>{};
-  for (const auto x : layer_part_values) layer_part.push_back(static_cast<int>(x));
+  for (const auto x : layer_part_values) layer_part.push_back(detail::IndexOf(x));
   const auto groups = netcdf::GroupNames(root, source);
   auto part_numbers = layer_part;
   std::ranges::sort(part_numbers);
@@ -2791,15 +2999,15 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       fail(where + ".grid_kind",
            std::format("is {}, not a kind of grid", kind.value_or("a number")));
     }
-    const auto ngll = detail::NumberOf(gattrs, "ngll");
-    if (!ngll || !(*ngll >= 2.0)) fail(where + ".ngll", "is not a number of nodes, two or more");
-    part.ngll = static_cast<std::size_t>(*ngll);
+    const auto ngll = detail::NgllOf(gattrs);
+    if (!ngll) fail(where + ".ngll", "is not a whole number of nodes, two or more");
+    part.ngll = *ngll;
     for (const auto x : netcdf::ReadDoubles(g, "element_layer", source).values) {
-      part.element_layer.push_back(static_cast<int>(x));
+      part.element_layer.push_back(detail::IndexOf(x));
     }
     part.element_bounds = netcdf::ReadDoubles(g, "element_bounds", source).values;
     part.radius = netcdf::ReadDoubles(g, "radius", source).values;
-    part.grid = detail::GridOf(g, gattrs, source);
+    part.grid = detail::GridOf(g, gattrs, source, where);
     for (const auto& vname : netcdf::VariableNames(g, source)) {
       if (vname == "radius" || vname == "element_layer" || vname == "element_bounds" ||
           vname == "latitude" || vname == "longitude" || vname == "colatitude_weights") {
@@ -2822,9 +3030,14 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
     const auto var = detail::ReadVariable(g, "boundary_displacement", source);
     auto geometry = FileGeometry{};
     geometry.radii = netcdf::ReadDoubles(g, "boundary_radius", source).values;
-    geometry.grid = detail::GridOf(g, netcdf::ReadAttributes(g, netcdf::GLOBAL, source), source);
+    geometry.grid =
+        detail::GridOf(g, netcdf::ReadAttributes(g, netcdf::GLOBAL, source), source, "geometry");
     geometry.values = var.values;
     if (netcdf::HasVariable(g, "boundary_displacement_poles")) {
+      if (netcdf::DimensionNames(g, "boundary_displacement_poles", source) !=
+          std::vector<std::string>{"boundary", "pole"}) {
+        fail("geometry/boundary_displacement_poles", "has the wrong dimensions");
+      }
       geometry.poles = netcdf::ReadDoubles(g, "boundary_displacement_poles", source).values;
     }
     geometry.lateral = var.Text("lateral_interpolation").value_or("");
@@ -2860,7 +3073,7 @@ inline void ValidateModelFile(const ModelFile& file, const std::string& source) 
       }
       surfaces.interfaces.push_back(static_cast<int>(x));
     }
-    surfaces.grid = detail::GridOf(g, gattrs, source);
+    surfaces.grid = detail::GridOf(g, gattrs, source, "surfaces");
     for (const auto& vname : netcdf::VariableNames(g, source)) {
       if (vname == "surface_interface" || vname == "latitude" || vname == "longitude" ||
           vname == "colatitude_weights") {
@@ -2914,8 +3127,7 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
   put(root, global, "schema", schema_);
   put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
   put(root, global, "title", name_ ? "planetmodel model " + *name_ : "planetmodel model");
-  put(root, global, "source",
-      written_by_.empty() ? "planetmodel C++ " + std::string{Version()} : written_by_);
+  put(root, global, "source", detail::StampedSource(written_by_));
   put(root, global, "created", created_.empty() ? detail::CreatedNow() : created_);
   if (name_) put(root, global, "name", *name_);
   if (!citation_.empty()) {
@@ -2923,6 +3135,7 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
     for (auto k = std::size_t{1}; k < citation_.size(); ++k) joined += "\n" + citation_[k];
     put(root, global, "citation", joined);
   }
+  detail::WriteBehaviours(root, behaviours_, source);
   put(root, global, "scale_length", std::vector<double>{scales_.Length()});
   put(root, global, "scale_mass", std::vector<double>{scales_.Mass()});
   put(root, global, "scale_time", std::vector<double>{scales_.Time()});
@@ -3071,13 +3284,12 @@ inline void ModelFile::WriteTo(int root, const std::string& source) const {
  *
  * The file is checked as `ValidateModelFile` checks it, and as the reading
  * of its fields and the Python's `read_model` would (a vocabulary name
- * stated otherwise, the cubic rule on a grid that cannot carry it, a pole
- * node whose values are not one value), before anything is written; it is
- * written under a name of its own beside `path` and put in place when
- * whole, so that a failed write leaves no file and an existing file at
- * `path` stands until it is replaced.  The file has the permissions a
- * plain open for writing would give it: an existing file's, kept, or the
- * umask's.
+ * stated otherwise, a pole node whose values are not one value), before
+ * anything is written; it is written under a name of its own beside `path`
+ * and put in place when whole, so that a failed write leaves no file and
+ * an existing file at `path` stands until it is replaced.  The file has
+ * the permissions a plain open for writing would give it: an existing
+ * file's, kept, or the umask's.
  *
  * @param path The file to write; one there is replaced.
  * @param file The model file, read or built.

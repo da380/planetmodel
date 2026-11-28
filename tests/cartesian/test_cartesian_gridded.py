@@ -341,7 +341,47 @@ def test_a_gridded_displacement_reproduces_the_stretch_it_samples():
     check_mapping(stretch, FLAT.points(inside, lx, ly).reshape(-1, 3))
     stretched = geometry.stretched(gd)
     check_geometry(stretched)
-    assert stretched.knots() == gd.knots
+    assert stretched.knots == gd.knots
+
+
+@pytest.mark.parametrize("radial", ["polynomial", "linear"])
+def test_a_gridded_displacement_declares_where_its_depth_derivative_jumps(radial):
+    """Read by straight lines between the nodes, a displacement's derivative
+    in depth jumps at every node; read by the polynomial through an
+    element's nodes, at the element boundaries alone.  The depths where it
+    does jump are found from one-sided differences down a vertical, and
+    are knots; a mesh over the stretched geometry has an edge at every
+    knot."""
+    sk = Skeleton([0.0, 0.4, 1.0])
+    grid = flat.Grid(UNIT, (6, 6))
+
+    def rise(d, x, y):
+        return 0.05 * (1.0 - d) ** 2 * (1.0 + 0.2 * np.sin(2.0 * np.pi * x) + 0.0 * y)
+
+    fields = [flat.GriddedField.sampled(
+        flat.AnalyticField((lo, hi), rise), grid, breaks=[lo, 0.5 * (lo + hi), hi],
+        ngll=4, radial=radial, lateral="cubic")
+        for lo, hi in zip(sk.boundaries[:-1], sk.boundaries[1:])]
+    gd = flat.GriddedDisplacement(sk, fields)
+    nodes = np.unique(np.concatenate([f.radii.ravel() for f in fields]))
+    nodes = nodes[(nodes > 0.0) & (nodes < 1.0)]
+    assert nodes.size == 11
+    want = nodes if radial == "linear" else np.array([0.2, 0.4, 0.7])
+    assert np.allclose(gd.knots, want, rtol=0, atol=1e-14)
+    assert np.allclose(gd.scaled(3.0).knots, 3.0 * want, rtol=0, atol=1e-13)
+    x, y, h = 0.3, 0.1, 1e-6
+    probes = np.concatenate([nodes, 0.5 * (nodes[:-1] + nodes[1:])])
+    jump = np.abs((gd(probes + h, x, y) - 2.0 * gd(probes, x, y)
+                   + gd(probes - h, x, y)) / h)
+    jumping = probes[jump > 1e-4]
+    assert all(np.min(np.abs(np.array(gd.knots) - d)) < 1e-12 for d in jumping)
+    if radial == "linear":
+        # a parabola in depth joined by straight lines turns at every node
+        assert np.array_equal(np.sort(jumping), nodes)
+    stretched = flat.Geometry(sk, UNIT).stretched(gd)
+    assert stretched.knots == gd.knots
+    mesh = RadialMesh(stretched, ngll=3, drmax=1.0)
+    assert all(np.min(np.abs(mesh.left - k)) < 1e-12 for k in gd.knots)
 
 
 def test_a_gridded_displacement_refuses_what_does_not_fit():

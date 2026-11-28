@@ -128,7 +128,9 @@ spec = MeshSpec(sphere, sizing, dimension=3, order=2)
 # `build_layered_mesh` builds the mesh, writes it as a file in gmsh's
 # MSH 2.2 format with a JSON manifest beside it, and returns a
 # `MeshResult`: the paths, the element counts, the timings and the
-# validation report.
+# validation report. The report's minSICN is the shape of the worst
+# element: gmsh's signed inverse condition number, 1 for a regular
+# tetrahedron, falling to 0 as an element flattens.
 
 # %%
 result = build_layered_mesh(spec, workdir / "sphere")
@@ -213,10 +215,12 @@ else:
 # to the deformed planet. The simplest mapping is a radial stretch: a
 # displacement `h(r, theta, phi)` that moves every point along its own
 # radius. `Geometry.stretched(h)` builds that mapping and checks it: the
-# mapping must preserve orientation everywhere, and any radius at which
-# `h` has a kink must be declared as a knot and must lie on a skeleton
-# boundary, where the mesh has element faces. The example is the
-# degree-2 shape of a rotating planet with parameter 0.05, which grows in
+# mapping must preserve orientation everywhere and be continuous. Any
+# radius at which `h` has a kink must be declared as a knot. The mesh
+# has element faces on the skeleton's boundaries and nowhere else, so a
+# knot inside a layer falls inside elements, and a kink that the element
+# faces should follow is put on a boundary. The example is the degree-2
+# shape of a rotating planet with parameter 0.05, which grows in
 # proportion to the radius and does not vanish at the surface, so the
 # planet is oblate all the way through. This displacement has no kinks.
 #
@@ -237,7 +241,7 @@ else:
 # %%
 oblate = sphere.stretched(flattening(0.05))
 print(oblate)
-print("kinks at:", oblate.knots(), "| validity:", oblate.validity())
+print("kinks at:", oblate.knots, "| validity:", oblate.validity())
 
 oblate_result = build_layered_mesh(
     MeshSpec(oblate, sizing, dimension=3, order=2), workdir / "oblate"
@@ -296,7 +300,7 @@ def tapered(r, theta, phi):
 
 buffered = sphere.stretched(CallableDisplacement(tapered, knots=[1.0], name="tapered"))
 print(buffered)
-print("kinks at:", buffered.knots(), "| validity:", buffered.validity())
+print("kinks at:", buffered.knots, "| validity:", buffered.validity())
 
 buffered_spec = MeshSpec(
     buffered,

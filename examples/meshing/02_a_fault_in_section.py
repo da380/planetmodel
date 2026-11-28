@@ -56,7 +56,9 @@ fault = Fault([plane])
 # fault. By `EmbeddedFault`'s rule the size grows from it by about 30
 # per cent an element until it meets the interfaces' sizing; either way
 # the linear mesh is relocated by gmsh's Relocate3D pass, which moves no
-# node of a fault or an interface.
+# node of a fault or an interface. The minSICN printed is the shape of
+# the worst cell: gmsh's signed inverse condition number, 1 for a
+# regular tetrahedron, falling to 0 as a cell flattens.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_section_"))
@@ -66,7 +68,7 @@ for label, sizing in (("without", None), ("with", 0.025)):
         MeshSpec(geometry, UniformInterfaces(0.12, 0.3, 0.3), order=1,
                  faults=[EmbeddedFault(fault, name="fault", sizing=sizing)]),
         work / label)
-    mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+    mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
     faces = mesh.faces_with(card.fault_record("fault")["attribute"])
     p = mesh.points[faces]
     edge = np.linalg.norm(p - np.roll(p, 1, axis=1), axis=2).mean()

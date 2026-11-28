@@ -159,7 +159,7 @@ def test_a_section_of_a_model_composes_with_the_section_of_its_mesh(tmp_path):
                                       faults=[EmbeddedFault(Fault([fault]),
                                                             name="f")]),
                              tmp_path / "box")
-    mesh, card = read_mesh(res.msh_path), manifest.read(res.manifest_path)
+    mesh, card = read_mesh(res.mesh_path), manifest.read(res.manifest_path)
     model = flat.LayeredIsotropicElastic([0.0, 0.4, 1.0], box, rho=[2.0, 3.0],
                                          vp=[5.0, 7.0], vs=[3.0, 4.0])
     sec = slices.section(model, "rho", (0.0, 0.0), end=(1.0, 0.0), n=4, m=11)

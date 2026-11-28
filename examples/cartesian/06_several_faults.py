@@ -77,10 +77,12 @@ print("the splay's down-dip edge on the thrust, its tip",
 
 # %% [markdown]
 # The mesh of order 2, every fault's size 0.03 (graded to the background
-# and the linear mesh relocated, `EmbeddedFault`'s rule). Each fault's
-# record: its attribute, its
-# curve groups by kind (None where it has none), the faults it meets
-# and ends on, and its collars.
+# and the linear mesh relocated, `EmbeddedFault`'s rule). The summary's
+# minSICN is the shape of the worst cell: gmsh's signed inverse
+# condition number, 1 for a regular tetrahedron, falling to 0 as a cell
+# flattens. Each fault's record: its attribute, its curve groups by kind
+# (None where it has none), the faults it meets and ends on, and its
+# collars.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_faults_"))
@@ -89,7 +91,7 @@ result = build_layered_mesh(
              faults=[EmbeddedFault(f, name=n, sizing=0.03) for n, f in faults.items()]),
     work / "faulted")
 print(result.summary())
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 for record in card.faults:
     kinds = ", ".join(f"{key} {record[key]}" for key in manifest.FLAT_FAULT_CURVES)
     print(f"{record['name']}: attribute {record['attribute']}; {kinds}; meets "

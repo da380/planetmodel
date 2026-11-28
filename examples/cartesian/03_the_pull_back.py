@@ -12,8 +12,8 @@
 # mapping, where the fault's faces lie on the true plane and meet the
 # moved surface; and the negative control, the fault built in as given
 # and the nodes moved after, which carries it off the true plane by the
-# range's lift. Beside them, every node of the fault's faces, moved, by
-# its distance from the true fault.
+# range's lift. Beside them, the nodes of the fault's faces, moved, by
+# their distance from the true fault.
 #
 # Needs: meshing, plot
 # Network: none
@@ -76,7 +76,13 @@ print("the up-dip edge:", np.round(plane.cartesian(0.0, -0.5), 6), "the range ab
 # background and the linear mesh relocated, `EmbeddedFault`'s rule): one
 # under the range, the fault pulled back through its stretch, and one on
 # the reference box with the fault as given, its nodes moved by the same
-# mapping afterwards (the pull-back off).
+# mapping afterwards (the pull-back off). The manifest's record of the
+# pulled-back fault says how its preimage was built: the control nodes,
+# the grid of points on the fault through whose preimages the surface in
+# the reference box was built; the offset, the largest distance found
+# between the fault and that surface mapped forward; and the curve
+# group, a numbered set of edges in the mesh file, that holds the
+# fault's free edge, where it meets the surface.
 
 # %%
 work = Path(tempfile.mkdtemp(prefix="planetmodel_box_pullback_"))
@@ -87,7 +93,7 @@ for label, g in (("pulled back", geometry), ("built as given", reference)):
         MeshSpec(g, UniformInterfaces(0.1, 0.25, 0.3), order=2,
                  faults=[EmbeddedFault(fault, name="thrust", sizing=size)]),
         work / label.replace(" ", "_"))
-    meshes[label] = (read_mesh(result.msh_path), manifest.read(result.manifest_path))
+    meshes[label] = (read_mesh(result.mesh_path), manifest.read(result.manifest_path))
 mapping = geometry.mapping
 record = meshes["pulled back"][1].fault_record("thrust")
 print(f"the preimage: {record['controls'][0]} control nodes, offset "
@@ -95,9 +101,10 @@ print(f"the preimage: {record['controls'][0]} control nodes, offset "
 
 # %% [markdown]
 # Every node of the fault's faces, mid-edge nodes among them, moved by
-# the mapping and located on the true fault. Nodes located beyond its
-# up-dip edge lie on the part carried across to the surface, the plane
-# continued, and are counted apart.
+# the mapping and located on the true fault. In the pulled-back mesh,
+# nodes located beyond its up-dip edge lie on the part carried across to
+# the surface, the plane continued, and are counted apart. The fault
+# built as given has no such part, and all of its nodes are measured.
 
 # %%
 found = {}
@@ -105,11 +112,16 @@ for label, (mesh, card) in meshes.items():
     nodes = np.unique(mesh.faces_with(card.fault_record("thrust")["attribute"]))
     x = mapping(mesh.points[nodes])
     where = fault.locate(x, strict=False)
-    carried = ~where.inside & where.on_v_low
+    if label == "pulled back":
+        carried = ~where.inside & where.on_v_low
+        which = (f"{int(np.count_nonzero(carried))} carried across to the surface; "
+                 "the rest")
+    else:
+        carried, which = np.zeros(nodes.size, dtype=bool), "all"
     found[label] = (x[~carried], np.abs(where.distance[~carried]))
-    print(f"{label}: {nodes.size} nodes, {int(np.count_nonzero(carried))} carried "
-          f"across to the surface; the rest within {found[label][1].max():.2g} of the "
-          f"true fault, {found[label][1].max() / size:.2g} of an element")
+    print(f"{label}: {nodes.size} nodes, {which} within "
+          f"{found[label][1].max():.2g} of the true fault, "
+          f"{found[label][1].max() / size:.2g} of an element")
 
 # %% [markdown]
 # The section y = 0, zoomed on the fault, in its coordinates (x, z), z
@@ -163,7 +175,7 @@ for label, colour in CASES.items():
     x, d = found[label]
     dist.scatter(np.maximum(d, 1e-12), x[:, 2], s=6, color=colour, label=label)
 dist.set(xscale="log", xlim=(1e-12, 1.0), xlabel="distance from the true fault",
-         ylabel="z, up (unit lengths)", title="Every node of the fault, moved")
+         ylabel="z, up (unit lengths)", title="The fault's nodes, moved")
 dist.axvline(size, color=INK, lw=0.8, ls=":")
 dist.text(0.7 * size, -0.2, "the fault's\nelement size", color=INK, fontsize=8,
           ha="right", va="bottom")

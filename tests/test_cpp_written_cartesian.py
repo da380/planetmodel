@@ -3,9 +3,8 @@ model file validates, reads as a `cartesian.Model` with its fields on
 interfaces, and holds the values the C++ reader reads from it, the
 vertical stretch among them; a viscosity written in its logarithm reads
 as its closed form; a flat fixture the C++ read and wrote back reads as
-the fixture does; the flat surface files hold the fields they were
-written from; and the decks of depths are, character for character, the
-Python's own writing of them.
+the fixture does; and the flat surface files hold the fields they were
+written from.
 
 The C++ tests leave the files in their build tree; PLANETMODEL_CPP_WRITTEN
 names that directory (`build/cpp/tests/written` for the build of
@@ -18,8 +17,6 @@ import numpy as np
 import pytest
 
 from planetmodel import cartesian
-from planetmodel.cartesian import depth_names
-from planetmodel.deck import Deck, prony_branches, read_deck, write_deck
 
 WRITTEN = os.environ.get("PLANETMODEL_CPP_WRITTEN")
 FIXTURES = Path(__file__).resolve().parents[1] / "cpp" / "tests" / "fixtures"
@@ -88,7 +85,6 @@ def test_the_cpp_wrote_its_flat_files():
             "flat_roundtrip_model_stacked.nc", "flat_roundtrip_model_stretched.nc",
             "flat_roundtrip_model_surfaces.nc", "flat_roundtrip_model_held.nc",
             "flat_surface_written.nc", "flat_surface_written_rectangle.nc",
-            "flat_deck_elastic.txt", "flat_deck_maxwell_built.txt",
             "flat_example.nc"} <= names
 
 
@@ -123,6 +119,10 @@ def test_a_flat_fixture_written_back_reads_as_the_fixture(path):
     got, want = read_model_file(path), read_model_file(fixture)
     assert got.domain == want.domain
     assert got.source == want.source and got.created == want.created
+    assert got.behaviours == want.behaviours
+    if name == "model_depth":
+        assert got.behaviours == ("Elastic", "Tidal", "Viscoelastic")
+        assert got.parts[0].grid.shape == (1, 1)
     assert [p.grid for p in got.parts] == [p.grid for p in want.parts]
     for a, b in zip(got.parts, want.parts):
         assert set(a.variables) == set(b.variables)
@@ -146,6 +146,7 @@ def test_the_box_the_cpp_built_is_the_model_it_was_given():
     box = cartesian.Box([(0.0, 400e3), (0.0, 300e3)], padding=(50e3, 0.0))
     assert data.domain == box
     assert data.source == "planetmodel C++ tests"
+    assert data.behaviours == ("Elastic", "Creeping")
     assert [p.grid for p in data.parts] == [cartesian.Grid(box, (12, 8)),
                                             cartesian.Grid(box, (9, 6))]
     assert data.geometry.grid == cartesian.Grid(box, (16, 12))
@@ -306,91 +307,3 @@ def test_the_flat_surface_file_the_cpp_wrote_holds_what_it_was_given(box):
     f = history.function("ice_thickness", date=0.5)
     assert np.allclose(f(grid.x[2], 0.0 if not box else grid.y[1]),
                        50.0 + 2.0 + (0.01 if box else 0.0))
-
-
-# -- decks of depths --------------------------------------------------------------
-
-#: Each flat fixture the C++ writes back, and its format.
-DECKS = {"elastic": cartesian.ELASTIC, "isotropic": cartesian.ELASTIC,
-         "maxwell": cartesian.MAXWELL, "prony": cartesian.PRONY,
-         "burgers": cartesian.BURGERS}
-
-
-@pytest.mark.parametrize("label", sorted(DECKS))
-def test_a_deck_of_depths_written_back_by_the_cpp_is_the_pythons_writing(label,
-                                                                        tmp_path):
-    written = Path(WRITTEN) / f"flat_deck_{label}.txt"
-    assert written.exists(), f"the C++ tests wrote no {written.name}"
-    fmt = DECKS[label]
-    ours = write_deck(tmp_path / written.name,
-                      read_deck(FIXTURES / f"flat_deck_{label}.txt", fmt), fmt)
-    assert written.read_text() == ours.read_text()
-
-
-#: The knots and elastic columns of the boxes the C++ builds.
-_DEPTH = [0.0, 15e3, 30e3, 30e3, 100e3, 200e3]
-_ELASTIC = {"rho": [2.7e3, 2.8e3, 2.9e3, 3.3e3, 3.35e3, 3.4e3],
-            "vpv": [6e3, 6.2e3, 6.4e3, 8e3, 8.1e3, 8.2e3],
-            "vsv": [3.5e3, 3.6e3, 3.7e3, 4.5e3, 4.55e3, 4.6e3],
-            "vph": [6.1e3, 6.3e3, 6.5e3, 8.1e3, 8.2e3, 8.3e3],
-            "vsh": [3.6e3, 3.7e3, 3.8e3, 4.6e3, 4.65e3, 4.7e3],
-            "eta": [1.0, 1.0, 1.0, 0.95, 0.97, 1.0]}
-_NAMED = {"layers": ("crust", None), "interfaces": ("surface", "moho")}
-
-
-def _built(name: str, columns: dict, header: dict, fmt, tmp_path) -> Deck:
-    """A deck the C++ built, held to the Python's writing of the same deck,
-    and read back."""
-    written = Path(WRITTEN) / f"flat_deck_{name}_built.txt"
-    assert written.exists(), f"the C++ tests wrote no {written.name}"
-    ours = write_deck(tmp_path / written.name, Deck(_DEPTH, columns, header=header),
-                      fmt)
-    assert written.read_text() == ours.read_text()
-    return read_deck(written, fmt)
-
-
-def test_the_maxwell_deck_of_depths_the_cpp_built_is_the_pythons(tmp_path):
-    nan = np.nan
-    back = _built("maxwell", {**_ELASTIC,
-                              "viscosity": [nan, nan, nan, 1e23, 1e22, 1e21]},
-                  {"name": "a box built in C++", **_NAMED}, cartesian.MAXWELL,
-                  tmp_path)
-    assert back.header["columns"] == ("rho", "vpv", "vsv", "vph", "vsh", "eta",
-                                      "viscosity")
-    assert depth_names(back) == (["crust", None], ["surface", "moho"])
-    model = cartesian.MaxwellDeckModel(back, cartesian.Box([(0.0, 1e5), (0.0, 1e5)]))
-    assert model.layers_with("viscosity") == (1,)
-    assert float(model.layer(1)["viscosity"](30e3)) == pytest.approx(1e23)
-
-
-def test_the_prony_deck_of_depths_the_cpp_built_completes_alike(tmp_path):
-    nan = np.nan
-    back = _built("prony", {
-        **_ELASTIC,
-        "relaxation_strength_1": [nan, nan, nan, 1.0, 1.0, 1.0],
-        "relaxation_time_1": [nan, nan, nan, 3e11, 2e11, 1e11],
-        "relaxation_strength_2": [nan] * 6, "relaxation_time_2": [nan] * 6},
-        {"name": "a box built in C++", **_NAMED}, cartesian.PRONY, tmp_path)
-    assert prony_branches(back) == 2
-    assert list(back["relaxation_strength_2"][3:]) == [0.0, 0.0, 0.0]
-    assert list(back["relaxation_time_2"][3:]) == [3e11, 2e11, 1e11]
-
-
-def test_the_burgers_and_elastic_decks_of_depths_the_cpp_built_are_the_pythons(
-        tmp_path):
-    nan = np.nan
-    back = _built("burgers", {
-        **_ELASTIC, "viscosity": [nan, nan, nan, 1e22, 3e21, 1e21],
-        "kelvin_viscosity": [nan, nan, nan, 1e20, 5e19, 2e19],
-        "kelvin_modulus_fraction": [nan, nan, nan, 0.5, 1.0, 1.5]},
-        {"name": "a Burgers box built in C++", "layers": _NAMED["layers"]},
-        cartesian.BURGERS, tmp_path)
-    assert depth_names(back) == (["crust", None], ["surface", None])
-    back = _built("elastic", {
-        "rho": _ELASTIC["rho"], "vp": _ELASTIC["vpv"], "vs": _ELASTIC["vsv"],
-        "qkappa": [nan, nan, nan, 5e4, 5e4, 5e4],
-        "qmu": [600.0, 600.0, 600.0, 300.0, 250.0, 200.0]},
-        {"name": "an elastic box built in C++", **_NAMED}, cartesian.ELASTIC,
-        tmp_path)
-    assert back.names == ("rho", "vp", "vs", "qkappa", "qmu")
-    assert np.isnan(back["qkappa"][0]) and back["qmu"][5] == 200.0

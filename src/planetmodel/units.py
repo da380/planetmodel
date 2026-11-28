@@ -44,12 +44,14 @@ powers by "^n", `"**n"` or a trailing integer ("s-1", "m3"), numbers as
 factors (so that `scaled_unit`'s own strings read back), the spelled-out
 words sources use (kilometer, meters, second, sec, gram, per, percent,
 degrees), and the words they use for a pure number (1, count, ratio,
-dimensionless).  What it cannot express is refused by name, never
-guessed: an empty string, a unit with an offset from zero (Celsius,
-Fahrenheit), a logarithm, a symbol it does not know (electric units
-among them, there being no base dimension of current), a non-positive
-factor.  A source that states its unit wrongly is corrected where the
-source is described, not here.
+dimensionless).  A degree is the angle, pi / 180, except where K or
+kelvin follows it ("deg K", "degrees Kelvin", "degK", "degree_K"): a
+degree of temperature is the kelvin, whose factor is one.  What it
+cannot express is refused by name, never guessed: an empty string, a
+unit with an offset from zero (Celsius, Fahrenheit), a logarithm, a
+symbol it does not know (electric units among them, there being no base
+dimension of current), a non-positive factor.  A source that states its
+unit wrongly is corrected where the source is described, not here.
 """
 from __future__ import annotations
 
@@ -251,6 +253,13 @@ _OFFSETS = frozenset({
     "degrees f", "fahrenheit", "degrees fahrenheit", "°f",
 })
 
+#: A degree of temperature: deg, degree or degrees, in any case, or the
+#: degree sign, followed by K or kelvin with nothing, a space, an
+#: underscore or a dot between.  It is the kelvin; "degrees" alone is the
+#: angle.
+_DEGREE_KELVIN = re.compile(
+    r"(?<![A-Za-z])(?:(?i:deg(?:ree)?s?)[\s_.]*|°\s*)(?:K|(?i:kelvin))(?![A-Za-z])")
+
 #: One token of a unit string: a number, a symbol with its power, or an operator.
 _TOKEN = re.compile(r"""\s*(?:
       (?P<number>[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)(?![A-Za-z%µμ])
@@ -297,6 +306,7 @@ def parse_unit(text: str) -> tuple[Dimensions, float]:
         raise ValueError(f"{text!r} is the logarithm of a quantity, not a unit")
     if low in _WHOLE:
         return _WHOLE[low]
+    s = _DEGREE_KELVIN.sub("K", s)
     s = re.sub(r"[A-Za-z]+", lambda w: _WORDS.get(w.group(0).lower(), w.group(0)), s)
     dims, factor = DIMENSIONLESS, 1.0
     sign, expect_term, pos = 1, True, 0

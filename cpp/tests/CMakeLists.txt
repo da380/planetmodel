@@ -14,13 +14,11 @@ set(PLANETMODEL_FIXTURES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures" CACHE PATH
     "Where make_fixtures.py wrote the fixtures")
 
 add_executable(planetmodel_tests
-  test_cartesian_deck.cpp
   test_cartesian_manifest.cpp
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_cartesian_modelfile.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_cartesian_rules.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_cartesian_surfacefile.cpp>
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_cartesian_writer.cpp>
-  test_deck.cpp
   test_error.cpp
   $<$<BOOL:${PLANETMODEL_WITH_NETCDF}>:test_faultfile.cpp>
   test_faults.cpp

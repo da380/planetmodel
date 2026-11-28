@@ -268,6 +268,8 @@ class RadialMesh(Mesh1D):
                 raise ValueError("mesh range must lie within the skeleton")
             e[0], e[-1] = max(e[0], b[0]), min(e[-1], b[-1])
             tol = rtol * (e[-1] - e[0])
+            nearest = b[np.abs(e[:, None] - b[None, :]).argmin(axis=1)]
+            e = np.where(np.abs(e - nearest) <= tol, nearest, e)
             for lo, hi in zip(e[:-1], e[1:]):
                 inside = b[(b > lo + tol) & (b < hi - tol)]
                 if inside.size:
@@ -286,7 +288,7 @@ class RadialMesh(Mesh1D):
                 drmax = 0.1 * r1 / (lmax + 1)
             if drmax <= 0.0:
                 raise ValueError("drmax must be positive")
-            knots = np.asarray(geometry.knots() if hasattr(geometry, "mapping")
+            knots = np.asarray(geometry.knots if hasattr(geometry, "mapping")
                                else (), dtype=float)
             tol = rtol * (r1 - r0)
             inner = b[(b > r0 + tol) & (b < r1 - tol)]
@@ -314,13 +316,9 @@ class RadialMesh(Mesh1D):
             raise ValueError("degree must be non-negative")
         return float(self.right[-1] * eps ** (1.0 / (l + 1)))
 
-    def element_at(self, r: float) -> int:
-        """The element whose interval contains r; a boundary resolves upward."""
-        return self.element_of(r)
-
     def start_element(self, l: int, *, eps: float = 1e-8) -> int:
         """The first element of the sub-mesh for a degree-l solve."""
-        return self.element_at(self.truncation_radius(l, eps=eps))
+        return self.element_of(self.truncation_radius(l, eps=eps))
 
     def nodal(self, model: Model, name: str, *, nu: int = 0,
               missing: str = "refuse") -> np.ndarray:
@@ -331,10 +329,12 @@ class RadialMesh(Mesh1D):
         skeleton boundary carries both one-sided values, and where a
         field jumps at an element edge inside a layer each of the two
         nodes there carries its own side's (`fields.from_inside`); `nu`
-        asks for the nu-th radial derivative.  An element whose layer lacks the
-        name is refused by name, or filled with NaN when
-        `missing="nan"`.  Complex where any layer's field is complex.
-        A new array each call.
+        asks for the nu-th radial derivative, and a field that cannot
+        state one (a field composed from others, as the velocities of a
+        layer described by its moduli are) is refused by name.  An
+        element whose layer lacks the name is refused by name, or filled
+        with NaN when `missing="nan"`.  Complex where any layer's field
+        is complex.  A new array each call.
         """
         if missing not in ("refuse", "nan"):
             raise ValueError(f"missing must be 'refuse' or 'nan', got {missing!r}")
@@ -353,6 +353,12 @@ class RadialMesh(Mesh1D):
                     f"{name!r} on layer {int(i)} depends on direction; nodal "
                     "values are for radial fields")
             if nu:
+                if not hasattr(field, "derivative"):
+                    raise ValueError(
+                        f"{name!r} on layer {int(i)} ({layer.name!r}) cannot "
+                        "state its radial derivative (a field composed from "
+                        "others, say), so its nodal derivative cannot be formed; "
+                        "differentiate the nodal values instead")
                 field = field.derivative(nu=nu)
             r = self.r[self.layer == i]
             outer = np.zeros(r.shape, dtype=bool)

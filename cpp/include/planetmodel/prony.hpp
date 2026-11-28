@@ -10,10 +10,11 @@
  * A Burgers body in shear is a Maxwell element, of the shear modulus mu
  * and the viscosity eta, in series with a Kelvin element of the viscosity
  * eta_K and the shear modulus f mu, f the Kelvin modulus fraction: the
- * columns of a burgers deck (`BURGERS()`, `BURGERS_COLUMNS`).  It is
- * exactly two Prony branches without a relaxed part, the strengths w_k
- * and times tau_k of a generalised Maxwell body (`relaxation_strength_k`,
- * `relaxation_time_k`), the faster branch first.  With a = mu / eta,
+ * fields `viscosity`, `kelvin_viscosity` and `kelvin_modulus_fraction` of
+ * the vocabulary.  It is exactly two Prony branches without a relaxed
+ * part, the strengths w_k and times tau_k of a generalised Maxwell body
+ * (`relaxation_strength_k`, `relaxation_time_k`), the faster branch
+ * first.  With a = mu / eta,
  * b = mu / eta_K and c = f mu / eta_K, the rates 1 / tau_k are the roots
  * of x^2 - (a + b + c) x + a c, and w_1 = (1/tau_1 - c) / g,
  * w_2 = (c - 1/tau_2) / g, g the gap between the roots: both strengths
@@ -43,8 +44,7 @@ namespace planetmodel {
 
 /**
  * @brief A Burgers body's Maxwell viscosity and its Kelvin element, the
- * shear modulus aside: the last three columns of a burgers deck, by their
- * names.
+ * shear modulus aside, each by the name the vocabulary gives its field.
  */
 struct BurgersBody {
   double viscosity = std::numeric_limits<double>::quiet_NaN(); /**< The Maxwell element's, eta. */

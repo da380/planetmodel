@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from planetmodel import Scales, equiangular, gauss_legendre
+from planetmodel import AngularGrid, Scales, equiangular, gauss_legendre
 from planetmodel.surfacefile import (SCHEMA, SurfaceVariable, read_surface,
                                      read_surface_file, validate_structure,
                                      write_surface)
@@ -123,6 +123,13 @@ def test_refusals_on_writing(tmp_path: Path):
            source="  ")
     refuse("a netCDF attribute", {"a": SurfaceVariable(ones)},
            meta={"flag": True})
+    refuse("not one string", {"a": SurfaceVariable(ones)}, citation="Smith 2020")
+    refuse("is one line", {"a": SurfaceVariable(ones)},
+           citation=("Smith\n2020",))
+    custom = AngularGrid(grid.colatitudes, grid.longitudes)
+    with pytest.raises(ValueError, match="'a': the harmonic rule needs a grid"):
+        write_surface(path, custom, source="tests", fields={"a": SurfaceVariable(
+            ones, lateral_interpolation="harmonic", poles=[1.0, 1.0])})
     assert not path.exists(), "a refused write left a file behind"
 
 
@@ -132,6 +139,44 @@ def test_poles_against_a_grid_with_them(tmp_path: Path):
         write_surface(tmp_path / "p.nc", grid, source="tests",
                       fields={"a": SurfaceVariable(
                           np.ones((grid.ntheta, grid.nphi)), poles=[0.0, 0.0])})
+
+
+def test_a_reader_refuses_polar_values_on_a_grid_holding_both_poles(tmp_path: Path):
+    """What the writer refuses to write, a reader refuses to read: polar
+    values beside a field on a grid whose poles are nodes."""
+    grid = equiangular(9, 16, poles=True)
+    theta, _ = grid.nodes
+    good = write_surface(tmp_path / "good.nc", grid, fields={
+        "a": SurfaceVariable(np.cos(theta) + np.zeros(grid.shape))})
+    validate_structure(good)
+    bad = tmp_path / "bad.nc"
+    bad.write_bytes(good.read_bytes())
+    with netCDF4.Dataset(bad, "a") as ds:
+        ds.createDimension("pole", 2)
+        ds.createVariable("a_poles", "f8", ("pole",))[:] = [1.0, -1.0]
+    for read in (validate_structure, read_surface_file, read_surface):
+        with pytest.raises(ValueError, match="malformed surface file .*a_poles: 'a' "
+                                             "gives polar values, and the grid "
+                                             "holds both poles"):
+            read(bad)
+
+
+def test_a_writer_stamps_this_library_as_its_source_unless_given_one(tmp_path: Path):
+    """`source` is the model file's: this library and its version unless
+    given, and refused where it is not text."""
+    import planetmodel
+
+    grid = gauss_legendre(4)
+    fields = {"a": SurfaceVariable(np.ones(grid.shape))}
+    path = write_surface(tmp_path / "stamped.nc", grid, fields=fields)
+    assert read_surface_file(path).source == f"planetmodel {planetmodel.__version__}"
+    path = write_surface(tmp_path / "named.nc", grid, fields=fields,
+                         source="my code 1.0")
+    assert read_surface_file(path).source == "my code 1.0"
+    for source in (3, ""):
+        with pytest.raises(ValueError, match="source names the writing code"):
+            write_surface(tmp_path / "refused.nc", grid, fields=fields, source=source)
+    assert not (tmp_path / "refused.nc").exists()
 
 
 def test_malformed_files_are_refused(tmp_path: Path):
@@ -163,11 +208,120 @@ def test_malformed_files_are_refused(tmp_path: Path):
         "lateral_interpolation", "odd"), "lateral rule")
     corrupt(lambda ds: ds.variables["time"].__setitem__(
         slice(None), [3.0, 2.0, 1.0, 0.0]), "strictly increasing")
+    for value in (np.inf, "big", np.array([1.0, 2.0])):
+        corrupt(lambda ds: ds.setncattr("scale_length", value),
+                "malformed surface file .*scale_length is missing or")
+    corrupt(lambda ds: ds.setncattr("schema", np.int32([1, 2])),
+            "malformed surface file .*schema is")
+    corrupt(lambda ds: ds.variables["ice_thickness"].setncattr(
+        "time_support", np.int32([1, 2])), "malformed surface file .*time support")
+    corrupt(lambda ds: ds.variables["ice_thickness"].setncattr(
+        "time_interpolation", np.int32([1, 2])), "malformed surface file .*time rule")
+    corrupt(lambda ds: ds.variables["topography"].setncattr(
+        "lateral_interpolation", np.int32([1, 2])),
+        "malformed surface file .*lateral rule")
+    corrupt(lambda ds: ds.variables["latitude"].__setitem__(
+        slice(None), ds.variables["latitude"][::-1]),
+        "malformed surface file .*the grid is malformed")
+    corrupt(lambda ds: ds.variables["latitude"].__setitem__(0, 90.5),
+            "the grid is malformed: latitudes must lie in \\[-90, 90\\]")
+    # the stamps are text, and a field's dimensions four whole numbers
+    for key in ("source", "created"):
+        for value in (3.0, np.int32(2026), np.array([1.0, 2.0]), " "):
+            corrupt(lambda ds: ds.setncattr(key, value),
+                    f"malformed surface file .*: {key} is missing or empty")
+    for value in (np.int32([0, 1, 0]), np.int32([0, 1, 0, 0, 0]), np.int32(1),
+                  "length", np.array([0.0, 0.5, 0.0, 0.0])):
+        corrupt(lambda ds: ds.variables["topography"].setncattr("dimensions", value),
+                "malformed surface file .*: topography declares dimensions that "
+                "are not four exponents")
+    whole = tmp_path / "whole.nc"
+    whole.write_bytes(out.read_bytes())
+    with netCDF4.Dataset(whole, "a") as ds:
+        ds.variables["topography"].setncattr("dimensions",
+                                             np.array([0.0, 1.0, 0.0, 0.0]))
+    assert read_surface(whole).dimensions("topography") == Dimensions(length=1)
     with pytest.raises(ValueError, match="not a planetmodel surface file"):
         bad = tmp_path / "empty.nc"
         with netCDF4.Dataset(bad, "w"):
             pass
         validate_structure(bad)
+
+
+def _without(source: Path, target: Path, *names: str) -> Path:
+    """A copy of a surface file without the variables `names`."""
+    with netCDF4.Dataset(source) as old, netCDF4.Dataset(target, "w") as new:
+        new.setncatts({key: old.getncattr(key) for key in old.ncattrs()})
+        for name, dimension in old.dimensions.items():
+            new.createDimension(name, len(dimension))
+        for name, var in old.variables.items():
+            if name in names:
+                continue
+            var.set_auto_mask(False)
+            attributes = {key: var.getncattr(key) for key in var.ncattrs()}
+            copy = new.createVariable(name, var.dtype, var.dimensions,
+                                      fill_value=attributes.pop("_FillValue", None))
+            copy.setncatts(attributes)
+            copy[...] = var[...]
+    return target
+
+
+def test_a_field_in_time_needs_its_coordinate_and_poles_their_shape(tmp_path: Path):
+    grid = gauss_legendre(4)
+    time, instant, fields = _case(grid, poles=True)
+    del fields["rate"]              # no interval, whose size is held to time's
+    out = write_surface(tmp_path / "good.nc", grid, fields=fields,
+                        source="planetmodel tests", time=time, instant=instant)
+    for axis, field in (("time", "ice_thickness"), ("instant", "instantaneous")):
+        bad = _without(out, tmp_path / f"no_{axis}.nc", axis)
+        with pytest.raises(ValueError, match=f"malformed surface file .*{field} is "
+                                             f".* no coordinate variable '{axis}'"):
+            validate_structure(bad)
+        with pytest.raises(ValueError, match="no coordinate variable"):
+            read_surface(bad)
+    bad = _without(out, tmp_path / "poles.nc", "ice_thickness_poles")
+    with netCDF4.Dataset(bad, "a") as ds:
+        ds.createVariable("ice_thickness_poles", "f8", ("pole",))[:] = 0.0
+    with pytest.raises(ValueError, match="ice_thickness_poles does not run over "
+                                         r"\('time', 'pole'\)"):
+        validate_structure(bad)
+    bad = _without(out, tmp_path / "orphan.nc", "topography")
+    with pytest.raises(ValueError, match="topography_poles accompanies no field"):
+        validate_structure(bad)
+
+
+def test_a_harmonic_field_is_read_by_the_harmonic_rule(tmp_path: Path):
+    """A field stating the harmonic rule comes back as a function read by
+    it, exact for a field of the grid's band; a file stating it on a grid
+    without a band is refused."""
+    grid = gauss_legendre(4)
+    theta = grid.colatitudes[:, None] + 0.0 * grid.longitudes[None, :]
+    path = write_surface(tmp_path / "h.nc", grid, source="tests", fields={
+        "zonal": SurfaceVariable(np.cos(theta) ** 2,
+                                 lateral_interpolation="harmonic")})
+    fn = read_surface(path).function("zonal")
+    assert fn.lateral == "harmonic"
+    t, p = np.linspace(0.0, np.pi, 9), np.linspace(0.0, 6.0, 9)
+    assert np.allclose(fn(t, p), np.cos(t) ** 2, rtol=0, atol=1e-13)
+    for edit in (lambda ds: ds.setncattr("grid_kind", "custom"),
+                 lambda ds: ds.delncattr("grid_lmax")):
+        bad = tmp_path / "bad.nc"
+        bad.write_bytes(path.read_bytes())
+        with netCDF4.Dataset(bad, "a") as ds:
+            edit(ds)
+        with pytest.raises(ValueError, match="malformed surface file .*zonal states "
+                                             "the lateral rule 'harmonic'"):
+            read_surface_file(bad)
+
+
+def test_without_netcdf4_the_writer_names_the_extra(tmp_path: Path, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "netCDF4", None)
+    grid = gauss_legendre(4)
+    with pytest.raises(ImportError, match=r"planetmodel\[netcdf\]") as refusal:
+        write_surface(tmp_path / "s.nc", grid, source="tests", fields={
+            "a": SurfaceVariable(np.ones((grid.ntheta, grid.nphi)))})
+    assert "model file" not in str(refusal.value)
 
 
 def test_the_history_serves_every_support(tmp_path: Path):
@@ -193,6 +347,10 @@ def test_the_history_serves_every_support(tmp_path: Path):
     assert history.support("r") == "interval"
     assert history.dimensions("s") == Dimensions(length=1)
     assert history.dimensions("h") is None
+    assert history.variable("h").attributes["time_interpolation"] == "linear"
+    assert np.array_equal(history.variable("s").values, base)
+    with pytest.raises(KeyError, match="no field"):
+        history.variable("s_poles")
 
     # linear: between nodes, at a node (the NaN beside it kept out), held
     assert np.allclose(history.values("h", date=2.0)[1:], 15.0 + base[1:])

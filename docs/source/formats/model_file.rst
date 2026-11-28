@@ -5,7 +5,8 @@ One netCDF-4 file holds a planetary model: its skeleton of boundary
 radii, its fields at the nodes of a radial layout times an angular
 grid, and the mapping that places it in the physical world.  It is
 written by ``planetmodel.modelfile.write_model`` and read by
-``read_model`` (a ``Model``), by ``read_model_file`` (the numbers and
+``read_model`` (a ``Model``, with the behaviours the file names for it:
+`What the model is`_), by ``read_model_file`` (the numbers and
 metadata, nothing interpolated) and by any netCDF reader: the file is
 CF-styled, so xarray (``open_datatree`` for the whole file,
 ``open_dataset(path, group="part_0")`` for one part), Panoply and
@@ -59,17 +60,17 @@ Global attributes
    * - ``Conventions``
      - ``CF-1.8``
    * - ``source``
-     - the writing code and version, stamped by the writers (absent in
-       files written before it was)
+     - the writing code and version, stamped by the writers; optional
+       on reading
    * - ``created``
-     - when the file was written, ISO 8601, stamped by the writers
-       (absent in older files)
+     - when the file was written, ISO 8601, stamped by the writers;
+       optional on reading
    * - ``title``
      - ``planetmodel model`` and the model's name
    * - ``name``
      - the model's name, where it has one
    * - ``scale_length``, ``scale_mass``, ``scale_time``, ``scale_temperature``
-     - what one stored unit is in SI
+     - what one stored unit is in SI, each one positive, finite number
    * - ``rtol``
      - the geometry's tolerance, relative to the skeleton's span: radii
        closer than it are one radius, a point within it of a layer lies on
@@ -84,8 +85,74 @@ Global attributes
    * - ``citation``
      - the works the model cites, one a line, where it cites any: the
        papers of the models and data sets it was built from
+   * - ``behaviours``
+     - the names of the model's behaviours, separated by spaces, where it
+       has any: what kind of model the numbers are (`What the model is`_);
+       optional
    * - ``meta_<key>``
      - whatever the writer was given as ``meta``
+
+What the model is
+-----------------
+
+The fields, their names, characters and dimensions, the constants and
+the scales say what the numbers are.  What kind of model they make is
+said by the optional global attribute ``behaviours``: text, the names of
+the behaviours of the model written, each once, separated by single
+spaces, in the order the model has them, as in ::
+
+    :behaviours = "Elastic ConstantQ SelfGravitating Viscoelastic" ;
+
+A behaviour is a set of methods over a model's fields that holds no
+numbers of its own, so its name is all a file needs to carry.  The
+library's are
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - name
+     - what a model that has it offers
+   * - ``Elastic``
+     - an elastic description of every layer: the Love moduli ``A``,
+       ``C``, ``F``, ``L``, ``N``, the elastic tensor, the Voigt average
+       and whether a layer is fluid, read from ``rho`` with velocities or
+       from moduli
+   * - ``ConstantQ``
+     - the moduli at a frequency under the constant-Q absorption band,
+       from ``qkappa`` and ``qmu`` about the constant ``omega_ref``
+   * - ``SelfGravitating``
+     - gravity, mass and pressure from a radial ``rho`` on every layer
+   * - ``Viscoelastic``
+     - a linear rheology read from the fields (``viscosity``, relaxation
+       strengths and times), and the model frozen at a frequency
+
+and in Python they are the mixins of ``planetmodel.behaviours``, the
+attribute the names of the mixins of the model's class in the order of
+its bases (``Model.behaviours``).
+
+**Reading.**  ``read_model`` gives back a model that has the behaviours
+named, so that the methods are called on it as on the model written; a
+file without the attribute, or with an empty one, gives a plain model,
+and every file written before the attribute existed reads as it did.  A
+name that is none of the library's is a behaviour of the writing
+program's own, which a file can name and cannot carry: a reader keeps
+the name and warns, naming it; the model read has the library's
+behaviours that the file names and not that one's methods, and a file
+written from it states the attribute again as it was read, that name in
+its place.  The numbers and their meaning are the same whatever a
+reader makes of the names, and a reader that does not know the
+attribute loses nothing.  ``read_model(path, model_type=...)`` says what
+to give back instead, whatever the file names: a model type of the
+caller's own, or the behaviours of one.  A model is read without any
+constructor being called, so it holds the fields the file holds and no
+others.  A reader refuses an attribute that is not text, or that names
+a behaviour twice.
+
+**In C++** there are no behaviours: ``ModelFile::Behaviours()`` gives
+the names a file states, a file written from a ``ModelFile`` read
+states them again unchanged, and ``SetBehaviours`` states those of a
+model a code builds.
 
 The skeleton
 ------------
@@ -94,12 +161,17 @@ At the root, with dimensions ``layer``, ``interface`` and ``bound``
 (two):
 
 - ``layer_bounds(layer, bound)``: the inner and outer radius of each
-  layer, from the centre outward;
+  layer, from the centre outward: one layer or more, each radius finite
+  and not negative, and each layer's outer radius above its inner one
+  and the inner radius of the layer outside it; a reader refuses a file
+  in which they are not;
 - ``layer_name(layer)`` and ``interface_name(interface)``: strings,
   empty where the model gave no name;
-- ``interface_radius(interface)``: the interfaces are the boundaries
-  between layers and the outer boundary, plus the inner boundary of a
-  hollow model;
+- ``interface_radius(interface)``: the radii of the interfaces, from
+  the centre outward.  The interfaces are the boundaries between layers
+  and the outer boundary, plus the inner boundary of a hollow model, so
+  these are radii of ``layer_bounds``, and a reader refuses a file in
+  which they are not, to ``1e-12`` of the skeleton's span;
 - ``layer_part(layer)``: the part, ``part_<k>``, that holds the layer.
 
 Parts
@@ -107,9 +179,26 @@ Parts
 
 The layers are cut into parts, contiguous runs of whole layers, each a
 netCDF-4 group ``part_0``, ``part_1``, ... from the centre, with an
-angular grid of its own; a model written on one grid is one part.  Its
-attribute ``layers`` lists the layers it holds, and, where its grid
-lacks a pole, the dimension ``pole`` (two) runs over the poles its
+angular grid of its own; a model written on one grid is one part.
+
+**A radial model**, every field of the radius alone and the mapping the
+identity, needs no angular grid, and ``write_model`` given none writes
+it as one part on the grid of one node: one latitude, 0, and one
+longitude, 0, with ``grid_kind`` ``gauss_legendre``, ``grid_lmax`` 0 and
+the one weight 2 (the Gauss-Legendre grid of band 0, which the writer
+given that grid writes to the same file).  Every field is then
+``name(node)``, below, and nothing in the file varies with direction;
+the file is of the same schema and is read as any other.  The radial
+layout is the exact one of `Interpolation between nodes`_; a field that
+declares no piecewise polynomial in radius (a gravity, say) is laid out
+as a grid of band 0 asks, on elements no longer than a tenth of the
+outer radius with ``ngll`` at least 5, unless the writer is given the
+layout (``radial=``).  A model that is not radial is refused where no
+grid is given, the writer naming the field that varies with direction or
+the mapping.
+
+A part's attribute ``layers`` lists the layers it holds, and, where its
+grid lacks a pole, the dimension ``pole`` (two) runs over the poles its
 attribute ``poles`` names, ``north south``.  A part holds, for its
 layers alone:
 
@@ -120,10 +209,15 @@ one radius, each holding its own side's value (they differ at an
 interface, and inside a layer where a field jumps at the boundary, as a
 ``bullen_excess`` does where a neutral stretch ends); ``radius(node)``, an
 auxiliary coordinate since it repeats; ``element_layer(element)``, the
-layer of each element; ``element_bounds(element, bound)``; and the
-attribute ``ngll``, the nodes per element.  Node ``j`` of element ``e``
+layer of each element; ``element_bounds(element, bound)``, the radii of
+each element's ends; and the
+attribute ``ngll``, the nodes per element, a whole number of at least
+two.  Node ``j`` of element ``e``
 is node ``e * ngll + j``, at the GLL point ``xi_j`` mapped onto the
-element's bounds.
+element's bounds.  The elements tile the part's layers from its inner
+end to its outer one, each within the layer ``element_layer`` gives it,
+and a reader refuses a file in which they do not, to ``1e-12`` of the
+part's span.
 
 **The angular grid.**  ``latitude`` (degrees north, decreasing, since
 colatitude increases) and ``longitude`` (degrees east, in [0, 360)) are
@@ -134,7 +228,8 @@ degrees.  The attributes ``grid_kind`` (``gauss_legendre``,
 ``colatitude_weights(latitude)`` (quadrature weights against
 ``sin(theta) dtheta``, where it has them) say what the grid is.  Either
 pole may be a node: a Driscoll-Healy grid has the north pole, an
-equiangular grid either none or both.
+equiangular grid either none or both.  Latitudes lie in [-90, 90], and
+a reader refuses a file with one outside in the grid of any group.
 
 **Fields.**  One variable per field:
 
@@ -204,7 +299,12 @@ A relative or logarithmic perturbation is a pure number.
 every variable that varies with direction has ``name_poles(node, pole,
 ...)``, the field's value at the north and then the south pole of
 every node, evaluated exactly by the writer, with components in the
-Cartesian frame (the spherical frame has none at a pole).  A pole that
+Cartesian frame (the spherical frame has none at a pole).  Whether a
+grid lacks a pole is its nodes' to say, a first latitude that is not 90
+or a last that is not -90, and a reader refuses a part in which a
+variable that varies with direction on such a grid is without its polar
+values, or has them over other dimensions than the nodes, the two
+poles and its own components.  A pole that
 is a node of the grid is its own row, which holds one value: for a
 scalar, the same number at every longitude; for a field with
 components, the same Cartesian components, which the stored spherical
@@ -233,17 +333,29 @@ neither.
 
 - **Boundary displacements**, the group ``geometry``: dimension
   ``boundary``, ``boundary_radius(boundary)`` (the reference radii of
-  the surfaces, which may lie inside the model's layers),
+  the surfaces, which may lie inside the model's layers: two surfaces
+  or more, their radii strictly increasing, and a reader refuses a
+  group in which they are not), and
   ``boundary_displacement(boundary, latitude, longitude)`` (the radial
-  displacement of each surface, zero where it stays spherical), on the
-  group's own grid with ``boundary_displacement_poles(boundary, pole)``
-  where that grid lacks a pole, and the attributes
-  ``lateral_interpolation`` and ``between`` (``linear``: between two
-  surfaces the displacement is the linear interpolation in radius of
-  theirs, and the mapping moves each point along its radius).
+  displacement of each surface, zero where it stays spherical), with
+  the attributes ``lateral_interpolation`` and ``between`` (``linear``:
+  between two surfaces the displacement is the linear interpolation in
+  radius of theirs, and the mapping moves each point along its radius).
+  The group holds its own grid as a part does: the dimensions and
+  coordinate variables ``latitude`` and ``longitude``, which a reader
+  needs, ``colatitude_weights(latitude)`` where the grid has weights,
+  and the group's attributes ``grid_kind`` and, where the grid has a
+  band, ``grid_lmax``; a reader takes a group stating no ``grid_kind``
+  as a ``custom`` grid.  Where that grid lacks a pole the group has the
+  dimension ``pole`` (two) and
+  ``boundary_displacement_poles(boundary, pole)``, each surface's
+  displacement at the north and then the south pole, without which a
+  reader refuses the group.
 - **A displacement field**, ``displacement(node, latitude, longitude,
   component)`` in every part: ``m(X) - X`` in the spherical frame at
-  ``X``, with ``displacement_poles`` where the grid lacks a pole.  Its
+  ``X``, with ``displacement_poles(node, pole, component)`` where the
+  grid lacks a pole, as any variable that varies with direction has its
+  polar values.  Its
   deformation gradient is the derivatives of its interpolation rules,
   which are continuous in angle and may jump in radius at element
   boundaries.  Every part is then on one grid, so that the parts'
@@ -271,7 +383,8 @@ interface.  A file without the group holds no such fields.
   ``units`` (for CF tools), ``dimensions`` (where declared),
   ``lateral_interpolation`` and ``interfaces`` (the interfaces holding
   it); and ``name_poles(surface, pole)``, its values at the north and
-  south poles, where the grid lacks a pole.
+  south poles, where the grid lacks a pole: a reader refuses a group
+  in which a field on such a grid is without them.
 
 A field on an interface is a number at each point: it has no
 components and no law under the mapping, and is read at an interface's
@@ -288,7 +401,13 @@ Every variable states how it is read between nodes, and a reader uses
 the stated rules unless it is asked for others.  The writer states the
 rule the fields hold themselves to, the same on every layer of the
 variable (see below for which), and states ``harmonic`` only on a grid
-of a shipped kind whose band is at least the field's.
+of a shipped kind whose band is at least the field's, the band of a
+field held on a grid and read by the harmonic rule being that grid's.
+A reader refuses a file in which a variable states a lateral rule the
+grid of its group cannot carry: ``harmonic`` on a grid whose
+``grid_kind`` is ``custom`` or that states no ``grid_lmax``, or
+``cubic`` on a grid of fewer than three longitudes, or of fewer than
+four rows once a row is added for each pole it lacks.
 
 **Radially**, within the element holding the radius (the element above,
 at a shared boundary):
@@ -434,7 +553,9 @@ The skeleton is in depth from the free surface down:
 and ``interface_depth(interface)`` replaces ``interface_radius``.
 Interface 0 is the free surface (or the top of a body whose skeleton
 starts below it) and interface ``k`` the top of layer ``k``; the base of
-the box, the skeleton's last depth, is a face and no interface.  Parts
+the box, the skeleton's last depth, is a face and no interface, so
+``interface_depth`` holds every depth of ``layer_bounds`` but the last,
+which a reader checks as it does the radii.  Parts
 run from the surface down, ``part_0`` holding the top layer.
 
 **A part** holds ``depth(node)`` in place of ``radius(node)`` (CF
@@ -446,11 +567,19 @@ short of the far end, which the period closes on the first (and so in
 y).  A field is ``name(node)`` of depth alone, or ``name(node, x, y)``
 (``name(node, x)`` over a rectangle, the same at every y), with the
 trailing axes of its components as above, in the local frame; its
-``coordinates`` attribute is ``depth``.  No flat grid has poles, a kind,
+``coordinates`` attribute is ``depth``.  A model whose fields are all of
+depth alone, under the identity, needs no grid, as a radial model needs
+none: ``write_model`` given none writes it as one part on the grid of
+one node, ``nx = 1`` (and ``ny = 1``), at the start of the domain's
+extent.  No flat grid has poles, a kind,
 a band or weights: ``latitude``, ``longitude``, ``colatitude_weights``,
 ``grid_kind``, ``grid_lmax``, ``pole``, ``poles``, ``radius``,
 ``interface_radius`` and every ``*_poles`` are a spherical file's, and
-a reader of a flat file refuses one that has any of them.
+a reader of a flat file refuses one that has any of them; the writer
+refuses a field, in a layer or on an interface, that takes the name of
+a spherical file's variable (``latitude``, ``longitude``,
+``colatitude_weights``, ``radius``, ``interface_radius``,
+``boundary_radius``).
 
 **Lateral rules.**  A variable that varies laterally states one of the
 flat rules, each periodic along every axis of the grid closed by its
@@ -460,7 +589,8 @@ the first node:
 - ``linear``: the bilinear interpolant through the nodes and the wrap
   node one period on (linear along a rectangle's one axis);
 - ``cubic``: the tensor product of the periodic cubic splines through
-  the nodes, continuous with two derivatives across the seam;
+  the nodes, continuous with two derivatives across the seam, on a grid
+  of at least three nodes along every axis;
 - ``fourier``: analysis of the values on the grid into its real
   orthonormal Fourier basis and synthesis at the point, exact for a
   field the grid's shape holds (wavenumbers ``|k_i| <= n_i / 2``, the
@@ -483,8 +613,10 @@ vertical by its upward displacement ``w`` (a height, positive up), in one
 of two forms, never both; the identity is neither.
 
 - **Boundary reliefs**, the group ``geometry``: ``boundary_depth(boundary)``
-  (the reference depths of the surfaces, the free surface first and the
-  base last) and ``boundary_displacement(boundary, x, y)``, each
+  (the reference depths of the surfaces, two or more and strictly
+  increasing, the free surface first and the base last, none above the
+  free surface: a reader refuses a negative first depth, and depths
+  that are not so) and ``boundary_displacement(boundary, x, y)``, each
   surface's height above its reference place, with the attributes
   ``positive = "up"``, ``lateral_interpolation`` and ``between =
   "linear"`` (between two surfaces the height is the linear
@@ -579,6 +711,7 @@ a shape kernel on both its interfaces:
        :schema = "planetmodel.model/1" ; :Conventions = "CF-1.8" ;
        :scale_length = 1. ; :scale_mass = 1. ; :scale_time = 1. ;
        :scale_temperature = 1. ; :constant_G = 6.6743e-11 ;
+       :behaviours = "Elastic SelfGravitating" ;
 
    group: part_0 {
      dimensions: node = 8 ; element = 2 ; bound = 2 ; latitude = 5 ;
@@ -606,9 +739,14 @@ a shape kernel on both its interfaces:
      dimensions: boundary = 3 ; latitude = 17 ; longitude = 33 ; pole = 2 ;
      variables:
        double boundary_radius(boundary) ;
+       double latitude(latitude) ;     :units = "degrees_north" ;
+       double longitude(longitude) ;   :units = "degrees_east" ;
+       double colatitude_weights(latitude) ;
        double boundary_displacement(boundary, latitude, longitude) ;
            :lateral_interpolation = "cubic" ; :between = "linear" ;
        double boundary_displacement_poles(boundary, pole) ;
+     // group attributes:
+       :grid_kind = "gauss_legendre" ; :grid_lmax = 16 ;
      }
 
    group: surfaces {

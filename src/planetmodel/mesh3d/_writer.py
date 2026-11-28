@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import gmsh
+import numpy as np
 
 from ._session import session
 from .manifest import MSH_VERSION, beside
@@ -81,22 +82,20 @@ def confirm_reread(msh_path: str | Path, manifest_path: str | Path, dimension: i
 
 
 def element_counts(*, dimension: int = 3) -> dict[str, int]:
-    """Elements and nodes of the current model, by dimension.
+    """Elements and nodes of the current model, as the file will hold them.
 
-    `elements` counts what the file will hold: the cells of `dimension`
-    and the faces of `dimension - 1`, which carry physical groups.  The
-    seam curves and points OCC leaves on a sphere are meshed too, but
-    never written.
+    `elements` are the cells, of `dimension`; `boundary_elements` the
+    faces of `dimension - 1`, which carry physical groups and which
+    MFEM reads as boundary elements; `nodes` the nodes of the cells,
+    which are the nodes written.  The seam curves and points OCC leaves
+    on a sphere are meshed too, but never written, and the model may
+    hold nodes that no cell uses.
     """
-    counts: dict[str, int] = {}
-    total = 0
-    for dim in (0, 1, 2, 3):
+    def count(dim: int) -> int:
         _, tags, _ = gmsh.model.mesh.getElements(dim)
-        n = int(sum(len(t) for t in tags))
-        if n:
-            counts[f"dim{dim}"] = n
-        if dim in (dimension, dimension - 1):
-            total += n
-    counts["elements"] = total
-    counts["nodes"] = int(gmsh.model.mesh.getNodes()[0].size)
-    return counts
+        return int(sum(len(t) for t in tags))
+
+    cells = [np.asarray(n) for n in gmsh.model.mesh.getElements(dimension)[2]]
+    nodes = np.unique(np.concatenate(cells)).size if cells else 0
+    return {"elements": count(dimension), "boundary_elements": count(dimension - 1),
+            "nodes": int(nodes)}

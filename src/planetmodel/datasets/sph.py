@@ -29,7 +29,7 @@ r_moho], the perturbation zero beyond.  The values are fractions, dlnVs
 `SPH_RADII` are the CMB and Moho of these models in metres, 3480 and
 6346.6 km (6346.619 km in Ritsema's own code, 19 m higher).
 
-`SphReader(parameters)` reads a data set of such files, one name per
+`SphReader(parameters=...)` reads a data set of such files, one name per
 file (`vs`, `vp`), into the model `models.over_reference` makes over the
 entry's reference.
 """

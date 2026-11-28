@@ -228,6 +228,33 @@ def test_every_other_emc_spelling_is_refused_by_name(text):
         units.parse_unit(text)
 
 
+@pytest.mark.parametrize("text", [
+    "deg K", "degrees K", "degrees Kelvin", "degree kelvin", "Degrees K", "degK",
+    "degree_K", "degrees_kelvin", "deg.K", "°K", "kelvin", "K"])
+def test_a_degree_of_temperature_is_the_kelvin(text):
+    assert units.parse_unit(text) == (units.TEMPERATURE, 1.0)
+
+
+def test_a_degree_is_the_angle_unless_a_kelvin_follows_it():
+    # inside a product the degree of temperature is still the kelvin
+    conductivity = MASS * LENGTH / TIME ** 3 / units.TEMPERATURE
+    for text in ("W m-1 degK-1", "W/m/deg K", "W.m-1.degrees_K-1"):
+        assert units.parse_unit(text) == (conductivity, 1.0)
+    # and the angle is the angle wherever no kelvin follows
+    for text in ("deg", "degrees", "degree"):
+        dims, factor = units.parse_unit(text)
+        assert dims == DIMENSIONLESS and factor == pytest.approx(math.pi / 180)
+    dims, factor = units.parse_unit("deg/Myr")
+    assert dims == units.FREQUENCY
+    assert factor == pytest.approx(math.pi / 180 / 31557600e6, rel=1e-15)
+    dims, factor = units.parse_unit("K/deg")
+    assert dims == units.TEMPERATURE and factor == pytest.approx(180 / math.pi)
+    # an offset is still refused, alone or after a degree
+    for text in ("deg C", "degrees Celsius", "deg F"):
+        with pytest.raises(ValueError, match="offset"):
+            units.parse_unit(text)
+
+
 def test_a_mislabel_reads_as_written():
     # g.cm-1 labels densities in four EMC files: the parser reads what is
     # written, and the data set's entry corrects it.

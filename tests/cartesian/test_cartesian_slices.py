@@ -4,7 +4,7 @@ evaluated directly at the slices' points and to the slice contracts."""
 import numpy as np
 import pytest
 
-from planetmodel import VECTOR, LayeredIsotropicElastic, perturbed
+from planetmodel import VECTOR, LayeredIsotropicElastic, Scales, perturbed
 from planetmodel import cartesian as flat
 from planetmodel.cartesian import FLAT
 from planetmodel.cartesian import slices
@@ -95,6 +95,29 @@ def test_on_an_interface_a_plane_takes_the_side_asked_for(two):
     assert np.allclose(slices.plane(two, "rho", depth=1.0, grid=GRID).values, 3.0)
     lacking = slices.plane(two, "flow", depth=0.2, grid=GRID, component="norm")
     assert np.all(np.isnan(lacking.values))
+
+
+def test_a_depth_on_an_interface_to_the_tolerance_is_read_on_it(two):
+    """The geometry takes a depth within its tolerance of a boundary to lie
+    on it; the layer asked for is then read at its end, the field never
+    asked outside its interval."""
+    x, y = np.broadcast_arrays(*GRID.nodes)
+    tol = two.geometry.rtol * two.skeleton.span
+    off = 0.8 * tol
+    for at in ("reference", "physical"):
+        above = slices.plane(two, "rho", depth=0.4 + off, grid=GRID, side="above",
+                             at=at)
+        assert np.allclose(above.values, 2.0) and above.side == "above"
+        below = slices.plane(two, "vs", depth=0.4 - off, grid=GRID, side="below",
+                             at=at)
+        assert np.allclose(below.values, lateral(0.4, x, y), rtol=1e-12)
+        base = slices.plane(two, "vs", depth=1.0 + off, grid=GRID, at=at)
+        assert np.allclose(base.values, lateral(1.0, x, y), rtol=1e-12)
+    assert slices.evaluate(two, "rho", 0, 0.4 + off, 0.3, 0.2) == 2.0
+    with pytest.raises(ValueError, match="outside the body"):
+        slices.plane(two, "rho", depth=1.0 + 1e3 * tol, grid=GRID)
+    with pytest.raises(ValueError, match="outside the interval"):
+        slices.evaluate(two, "rho", 0, 0.4 + 1e3 * tol, 0.3, 0.2)
 
 
 def test_a_plane_of_a_rectangle_is_a_line_in_x():
@@ -238,6 +261,43 @@ def test_a_departure_from_a_reference_or_another_model(two):
         slices.plane(two, "vs", depth=0.8, grid=GRID, relative_to=sphere)
 
 
+def test_another_model_in_other_scales_is_compared_at_the_same_place(two):
+    """A departure compares numbers in one unit at one place: another model
+    in other scales is converted to the model's, so a model departs from
+    itself in other units by nothing, and from another by what their SI
+    numbers give."""
+    x, y = np.broadcast_arrays(*GRID.nodes)
+    plain = two.without_field("flow")
+    scales = Scales(length=0.5, mass=1e-3, time=3.0)
+    itself = plain.converted(scales)
+    assert itself.skeleton.boundaries[-1] == 2.0
+    for name, depth in (("rho", 0.8), ("vs", 0.8), ("rho", 0.2)):
+        s = slices.plane(plain, name, depth=depth, grid=GRID, relative_to=itself)
+        assert np.allclose(s.values, 0.0, rtol=0, atol=1e-12)
+    base = flat.LayeredIsotropicElastic([0.0, 0.4, 1.0], BOX, rho=[4.0, 7.0],
+                                        vp=[5.0, 7.0], vs=[3.0, 2.0]).named("base")
+    other = base.converted(scales)
+    rho = slices.plane(plain, "rho", depth=0.8, grid=GRID, relative_to=other)
+    assert np.allclose(rho.values, 100.0 * (3.0 / 7.0 - 1.0), rtol=1e-12)
+    vs = slices.plane(plain, "vs", depth=0.8, grid=GRID, relative_to=other,
+                      departure="difference")
+    assert np.allclose(vs.values, lateral(0.8, x, y) - 2.0, rtol=1e-12)
+    sec = slices.section(plain, "rho", (0.1, 0.0), end=(1.9, 0.0), relative_to=other,
+                         departure="difference", n=3, m=4)
+    assert np.allclose(sec.layers[0].values, -2.0, rtol=1e-12)
+    assert np.allclose(sec.layers[1].values, -4.0, rtol=1e-12)
+    # two fields correlated: the other model read at the first one's depths,
+    # where its spectrum is the first's own
+    cr = slices.correlation(plain, "vs", itself, depths=[0.5, 0.9], grid=GRID)
+    assert np.allclose(cr.total, 1.0)
+    for first, second, depth in zip(cr.first, cr.second, cr.depths):
+        assert np.isclose(first.power[1], depth ** 2 * (0.3 ** 2 + 0.2 ** 2) / 2.0)
+        assert np.allclose(second.power, first.power, rtol=1e-12, atol=1e-14)
+    with pytest.raises(ValueError, match="fields given by layer state no scales"):
+        slices.correlation(plain, "vs", itself, depths=[0.5], grid=GRID,
+                           other_fields={1: itself.layer(1)["vs"]})
+
+
 # -- reference and physical --------------------------------------------------------
 
 def test_slices_at_reference_points_give_their_physical_positions(raised):
@@ -305,6 +365,21 @@ def test_a_mapping_without_an_inverse_or_off_the_verticals_is_refused(two):
 
 # -- the mean and its spread -------------------------------------------------------
 
+@pytest.mark.parametrize("domain, centre", [
+    (flat.Box([(0.0, 2.0), (-1.0, 3.0)], padding=(0.5, 0.25)), (1.0, 1.0)),
+    (flat.Rectangle((1.0, 2.0), padding=0.5), (1.5, 0.0))], ids=repr)
+def test_a_mean_profile_stands_at_the_middle_of_the_extent(domain, centre):
+    """Its points are at the middle of each axis the domain bounds, and at
+    zero along one it does not."""
+    m = flat.LayeredIsotropicElastic([0.0, 0.4, 1.0], domain, rho=[2.0, 3.0],
+                                     vp=[5.0, 6.0], vs=[3.0, 4.0])
+    mp = slices.mean_profile(m, "vs", mean_grid=flat.Grid(domain, 4), n=5)
+    for lay, vs in zip(mp.layers, (3.0, 4.0)):
+        _, x, y, _ = FLAT.split(lay.reference)
+        assert np.all(x == centre[0]) and np.all(y == centre[1])
+        assert np.allclose(lay.values, vs)
+
+
 def test_the_mean_profile_and_its_spread(two):
     mp = slices.mean_profile(two, "vs", mean_grid=GRID, n=6)
     assert mp.x is None and mp.label == "vs, horizontal mean [m s-1]"
@@ -330,6 +405,29 @@ def test_the_mean_profile_and_its_spread(two):
     assert np.allclose(std.layers[1].values - lo, dev, rtol=1e-12)
     # a field of depth alone has no spread
     assert np.allclose(np.subtract(*std.bands[0]), 0.0)
+
+
+@pytest.mark.parametrize("spread", ["range", "std"])
+def test_a_normalised_mean_profile_keeps_its_bands_about_its_values(two, spread):
+    """The bands are a spread about the values, so the number that divides
+    the values divides them: the largest mean here, 4."""
+    mp = slices.mean_profile(two, "vs", mean_grid=GRID, n=6, spread=spread)
+    unit = normalised(mp)
+    assert unit.spread == spread and unit.label == "vs, horizontal mean, normalised"
+    assert np.isclose(max(np.max(np.abs(lay.values)) for lay in mp.layers), 4.0)
+    for raw, got, was, lay in zip(mp.bands, unit.bands, mp.layers, unit.layers):
+        assert np.allclose(lay.values, was.values / 4.0, rtol=1e-14)
+        assert np.allclose(got[0], raw[0] / 4.0, rtol=1e-14)
+        assert np.allclose(got[1], raw[1] / 4.0, rtol=1e-14)
+        assert np.all(got[0] <= lay.values + 1e-14)
+        assert np.all(lay.values <= got[1] + 1e-14)
+    assert np.ptp(unit.bands[1][1] - unit.bands[1][0]) > 0.0
+    # a layer lacking the field has no band, and none is made for it
+    lacking = slices.mean_profile(two.without_field("vs", layers=[0]), "vs",
+                                  mean_grid=GRID, n=6, spread=spread)
+    assert normalised(lacking).bands[0] is None
+    # a profile without a spread has none
+    assert normalised(slices.mean_profile(two, "vs", mean_grid=GRID, n=6)).bands is None
 
 
 def test_a_spread_is_taken_a_block_of_depths_at_a_time():
@@ -451,6 +549,44 @@ def test_an_integral_down_the_vertical_is_its_closed_form(two):
     assert np.allclose(whole.values, 2.0 * 0.4 + 3.0 * 0.6)
 
 
+@pytest.mark.parametrize("kind", ["relative", "log"])
+def test_an_integral_of_a_perturbed_field_is_of_its_values(two, kind):
+    """A reference cubic in depth times one plus a cubic is of degree six,
+    integrated here in closed form; times the exponential of one it is no
+    polynomial, and `n` points on each piece hold it, held here to scipy's
+    adaptive quadrature."""
+    from numpy.polynomial import Polynomial
+    from scipy.integrate import quad
+    from scipy.interpolate import PPoly
+    from planetmodel.layerfunction import PolynomialLayer
+    iv = (0.4, 1.0)
+    x, y = np.broadcast_arrays(*GRID.nodes)
+    # in s = depth - 0.4: the reference 3 + 2 s - 4 s^2 + 5 s^3, the
+    # perturbation 0.4 s^3 cos(pi x)
+    ref = flat.DepthField(iv, PolynomialLayer(iv, PPoly(
+        np.array([[5.0], [-4.0], [2.0], [3.0]]), np.array(iv))), name="vs",
+        character=two.layer(1)["vs"].character)
+    dp = flat.GriddedField.sampled(
+        flat.AnalyticField(iv, lambda d, x, y: 0.4 * (d - 0.4) ** 3 * np.cos(np.pi * x)
+                           + 0.0 * y), GRID, breaks=[0.4, 0.6, 1.0], ngll=4)
+    m = perturbed(two.with_field(1, "vs", ref, replace=True), "vs", dp, kind=kind)
+    reference, cubic = Polynomial([3.0, 2.0, -4.0, 5.0]), Polynomial([0, 0, 0, 0.4])
+    if kind == "relative":
+        want = (reference.integ()(0.6)
+                + (reference * cubic).integ()(0.6) * np.cos(np.pi * x))
+    else:
+        want = np.array([quad(lambda s, c=c: reference(s) * np.exp(cubic(s) * c),
+                              0.0, 0.6, epsabs=0.0, epsrel=1e-13)[0]
+                         for c in np.cos(np.pi * x[:, 0])])
+        want = np.broadcast_to(want[:, None], x.shape)
+    got = slices.integrated(m, "vs", depths=iv, grid=GRID)
+    assert np.allclose(got.values, want, rtol=1e-13, atol=0)
+    if kind == "log":
+        coarse = slices.integrated(m, "vs", depths=iv, grid=GRID, n=2)
+        assert not np.allclose(coarse.values, got.values, rtol=1e-9, atol=0)
+        assert np.allclose(coarse.values, got.values, rtol=1e-3, atol=0)
+
+
 def test_a_block_is_the_top_and_two_sides_toward_its_corner(two):
     b = slices.block(two, "vs", n=4, m=5)
     assert b.faces == ("top", "south", "south", "east", "east")
@@ -517,6 +653,26 @@ def test_every_flat_slice_meets_the_slice_contract(two, raised):
         check_slice(slices.section(model, "vs", (0.0, 0.0), end=(2.0, 0.0),
                                    relative_to="mean", mean_grid=GRID, n=3, m=4), model)
     check_spectrum(slices.spectrum(two, "vs", depth=0.7, grid=GRID))
+
+
+def test_the_slice_contract_holds_a_mean_profile_s_bands(two):
+    """The bands stay about the values, one for each layer, and none is
+    held where a layer has values."""
+    from dataclasses import replace
+    for spread in ("std", "range"):
+        profile = slices.mean_profile(two, "vs", mean_grid=GRID, n=4, spread=spread)
+        check_slice(profile, two)
+        low, high = profile.bands[0]
+        beside = (profile.bands[0][0] + 10.0, profile.bands[0][1] + 10.0)
+        with pytest.raises(AssertionError, match="values leave its band"):
+            check_slice(replace(profile, bands=(beside,) + profile.bands[1:]), two)
+        with pytest.raises(AssertionError, match="has values and no band"):
+            check_slice(replace(profile, bands=(None,) + profile.bands[1:]), two)
+        with pytest.raises(AssertionError, match="1 bands for 2 layers"):
+            check_slice(replace(profile, bands=profile.bands[:1]), two)
+        with pytest.raises(AssertionError, match="has shapes"):
+            check_slice(replace(profile, bands=((low[:2], high[:2]),)
+                                + profile.bands[1:]), two)
 
 
 def test_the_slice_contract_holds_a_physical_section_to_the_mapped_body(raised):

@@ -65,7 +65,7 @@ def ppoly_of(spline: BSpline) -> PPoly:
     B-spline of the layered coordinate are held so, here and in a box
     (`cartesian.FourierField`)."""
     k = spline.k
-    x = np.unique(spline.t[k:-k])
+    x = np.unique(spline.t[k:len(spline.t) - k])
     c = np.stack([spline(x[:-1], nu=d) / factorial(d) for d in range(k, -1, -1)])
     return PPoly(c, x)
 
@@ -244,8 +244,9 @@ class HarmonicFunction:
     `coefficients` has shape (2, lmax + 1, lmax + 1), in the layout of
     `planetmodel.harmonics`.  Calling it gives the values at points;
     `angular_gradient` gives (d/dtheta, d/dphi), so that it is a relief
-    for `layer_linear`; `on_grid` the values on a grid's nodes, and
-    `mean` the spherical mean.  Values are real.
+    for `layer_linear`; `on_grid` the values on a grid's nodes,
+    `mean` the spherical mean, and `scaled(k)` k times the function, a
+    harmonic function still.  Values are real.
     """
 
     def __init__(self, coefficients: ArrayLike) -> None:
@@ -289,6 +290,11 @@ class HarmonicFunction:
     def mean(self) -> float:
         """The mean over the sphere, c_00 / sqrt(4 pi)."""
         return float(self._c[0, 0, 0] / np.sqrt(4.0 * np.pi))
+
+    def scaled(self, k: float) -> "HarmonicFunction":
+        """k times the function, every coefficient multiplied by k: the
+        relief of a body k times the size."""
+        return HarmonicFunction(float(k) * self._c)
 
     def __repr__(self) -> str:
         return f"HarmonicFunction(lmax={self._lmax})"

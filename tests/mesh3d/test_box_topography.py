@@ -88,7 +88,7 @@ def held(res, faults):
     plain = {n: f.fault if isinstance(f, EmbeddedFault) else Fault([f])
              for n, f in faults.items()}
     off = max((p.offset for v in res.preimages.values() for p in v), default=0.0)
-    testing.check_fault_mesh(res.msh_path, plain, mapping=res.mapping,
+    testing.check_fault_mesh(res.mesh_path, plain, mapping=res.mapping,
                              distance=max(1e-12, 2.0 * off))
     return sc.read(res.manifest_path)
 
@@ -98,7 +98,7 @@ def gate(res, fault):
     fault, over the element size; every node but those of its tip
     located inside it."""
     record = sc.read(res.manifest_path).faults[0]
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     nodes = np.unique(mesh.faces_with(record["attribute"]))
     x = res.mapping(mesh.points[nodes])
     found = fault.locate(x, strict=False)
@@ -109,7 +109,7 @@ def gate(res, fault):
 
 def mapped_nodes(res, attribute):
     """The physical positions of the nodes of a boundary group."""
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     return res.mapping(mesh.points[np.unique(mesh.faces_with(attribute))])
 
 
@@ -128,7 +128,7 @@ def test_the_reference_box_is_meshed_and_the_mapping_moves_it_onto_the_relief(
     assert card.mesh["nodes"] == "reference" and not card.faults
     assert [e["depth"] for e in card.interfaces] == [0.0, 0.4]
     assert [e["value"] for e in card.faces] == [-1.0, 0.0, 1.0, -0.5, 0.5]
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     for k, relief in enumerate((ridge, root)):
         ref = mesh.points[np.unique(mesh.faces_with(card.interfaces[k]["attribute"]))]
         assert np.abs(ref[:, 2] + DEPTHS[k]).max() < 1e-12
@@ -195,7 +195,7 @@ def by_side(res, record):
     """The fault's nodes on the faces in each layer, and the nodes the
     two layers' faces share: where its pieces join."""
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     tri = mesh.faces_with(record["attribute"])
     layer = mesh.layers(card)[mesh.face_cells(tri[:, :3])[:, 0]]
     sides = [np.unique(tri[layer == k]) for k in record["layers"]]
@@ -287,7 +287,7 @@ def test_an_edge_at_the_reference_surface_under_a_mountain_is_carried_onto_it(
     res = build(tmp_path / "trace", {"f": fault})
     (record,) = held(res, {"f": fault}).faults
     assert record["free_edge"] is not None and record["face_edge"] is None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     trace = mesh.points[np.unique(mesh.curves[record["free_edge"]])]
     assert np.abs(trace[:, 2]).max() < 1e-9           # on the reference top
     x = res.mapping(trace)
@@ -309,7 +309,7 @@ def test_a_fault_cut_by_the_topography_has_its_trace_on_it(tmp_path):
     res = build(tmp_path / "cut", {"f": fault})
     (record,) = held(res, {"f": fault}).faults
     assert record["free_edge"] is not None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     x = res.mapping(mesh.points[np.unique(mesh.curves[record["free_edge"]])])
     assert np.abs(x[:, 2] - ridge(x[:, 0], x[:, 1])).max() < 1e-9
     found = Fault([fault]).locate(x, strict=False)
@@ -331,7 +331,7 @@ def test_an_edge_under_the_crest_is_carried_as_the_plane_continued(tmp_path):
     res = build(tmp_path / "crest", {"f": fault})
     (record,) = held(res, {"f": fault}).faults
     assert record["free_edge"] is not None and record["face_edge"] is None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     x = res.mapping(mesh.points[np.unique(mesh.faces_with(record["attribute"]))])
     found = Fault([fault]).locate(x, strict=False)
     beyond = ~found.inside
@@ -367,14 +367,14 @@ def test_a_fault_leaves_through_a_side_under_topography(tmp_path):
     res = build(tmp_path / "through", {"f": through}, geometry=g)
     (record,) = held(res, {"f": through}).faults
     assert record["face_edge"] is not None and record["free_edge"] is None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     side = mesh.points[np.unique(mesh.curves[record["face_edge"]])]
     assert np.abs(side[:, 0] - 1.0).max() < 1e-9
     assert np.abs(res.mapping(side)[:, 0] - 1.0).max() < 1e-9
     res = build(tmp_path / "short", {"f": short}, geometry=g)
     (record,) = held(res, {"f": short}).faults
     assert record["face_edge"] is None and record["tip"] is not None
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     x = res.mapping(mesh.points[np.unique(mesh.faces_with(record["attribute"]))])
     assert x[:, 0].max() == pytest.approx(0.95, abs=1e-9)
     # the stretch moves the side's points by more than 0.05 over the
@@ -467,7 +467,7 @@ def test_adgia_s_range_over_its_fault_at_unit_scale(tmp_path):
     assert np.abs(surface[:, 2] - height(surface[:, 0], surface[:, 1])).max() < 1e-12
     # the range over the hanging wall, 0.09 at its highest node at unit scale
     assert 0.08 < surface[:, 2].max() < 0.1
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     centres = res.mapping(mesh.points[mesh.cells[:, :4]].mean(axis=1))
     normal = fault.normal(0.0, 0.0)
     side = (centres - fault.cartesian(0.0, 0.0)) @ normal
@@ -475,7 +475,7 @@ def test_adgia_s_range_over_its_fault_at_unit_scale(tmp_path):
     assert np.all(side[walls == 1] > 0.0) and np.all(side[walls == -1] < 0.0)
     # measured: 2.1e-6 of the element size on the fault, 0.04
     assert gate(res, Fault([fault])) * H / 0.04 < 1e-5
-    assert res.counts["dim3"] < 5000
+    assert res.counts["elements"] < 5000
 
 
 # ------------------------------------------------------------ pictures
@@ -496,7 +496,7 @@ def test_a_section_under_topography_is_drawn_in_both_shapes(tmp_path):
                   width=0.5, slip=ZERO)
     res = build(tmp_path / "drawn", {"f": fault}, order=1)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     origin, axes = [0.0, 0.05, 0.0], [[1, 0, 0], [0, 0, 1]]
     x = res.mapping(mesh.points)
     for points, area in ((mesh.points, 1.0), (x, None)):

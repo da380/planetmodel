@@ -456,14 +456,16 @@ class Sample(SampleBase):
     that depends on direction and `(nnode,) + c` for one that does not,
     with `c` the stored shape of its character: Voigt where the
     character has one, the component shape otherwise; the components
-    are in the spherical frame at the node.  A field a layer lacks is
-    NaN on the nodes of that layer's elements.  `displacement` is
-    `m(X) - X` in the spherical frame at X, shape `(nnode, ntheta, nphi,
-    3)`, or None for an identity geometry.  `characters` and
-    `dimensions` say what each array is, `scales` what its numbers are
-    in, and `layer_names` names the layers the nodes refer to.  Every
-    array and mapping the sample holds or hands out is read-only; the
-    radial mesh is the mesh's own.
+    are in the spherical frame at the node.  Every array is real: a
+    complex field (a modulus of a model frozen at a frequency) is not
+    held, and `sample` refuses one; its real and imaginary parts are
+    sampled as fields of their own.  A field a layer lacks is NaN on the
+    nodes of that layer's elements.  `displacement` is `m(X) - X` in the
+    spherical frame at X, shape `(nnode, ntheta, nphi, 3)`, or None for
+    an identity geometry.  `characters` and `dimensions` say what each
+    array is, `scales` what its numbers are in, and `layer_names` names
+    the layers the nodes refer to.  Every array and mapping the sample
+    holds or hands out is read-only; the radial mesh is the mesh's own.
     """
 
     radial: RadialMesh
@@ -610,7 +612,9 @@ def sample_fields(model: ModelBase, mesh: RadialMesh, grid: LateralGrid, *,
     those of `sample`.  Each field is evaluated once per layer on the
     nodes of that layer's elements and on `grid.nodes`, its array
     `(nnode,) + grid.shape + c`, or `(nnode,) + c` when every layer's
-    field is radial.  The samplers of every coordinate system share it.
+    field is radial; one that evaluates to complex values is refused
+    with TypeError naming it, the arrays being real.  The samplers of
+    every coordinate system share it.
     """
     if missing not in MISSING:
         raise ValueError(f"missing must be one of {MISSING}, got {missing!r}")
@@ -664,8 +668,12 @@ def sample(model: Model, grid: AngularGrid, *, fields: Iterable[str] | None = No
     layer's elements, so the two one-sided values at an interface come
     from the two layers that own them.  A layer lacking a name is
     refused with KeyError naming the layer and the name, unless
-    `missing="nan"` asks for NaN on that layer's nodes.  The
-    displacement is sampled unless the geometry is the identity.
+    `missing="nan"` asks for NaN on that layer's nodes.  A sample is
+    real: a field that evaluates to complex values is refused with
+    TypeError naming it, so a model frozen at a frequency, whose moduli
+    are complex and among the names every layer holds, is sampled by
+    naming its real fields in `fields`.  The displacement is sampled
+    unless the geometry is the identity.
     """
     if not isinstance(model, Model):
         raise TypeError(f"expected a Model, got {type(model).__name__}")

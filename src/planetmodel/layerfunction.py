@@ -295,6 +295,12 @@ class PolynomialLayer:
                                 lambda r: self(r) / as_values(other(r)))
         return NotImplemented
 
+    def __rtruediv__(self, other: float | complex) -> "NumericLayer":
+        if not _is_number(other):
+            return NotImplemented
+        c = as_scalar(other)
+        return NumericLayer(self._interval, lambda r: c / self(r))
+
     def __pow__(self, n: int) -> "PolynomialLayer":
         if not isinstance(n, (int, np.integer)) or n < 0:
             raise ValueError("a polynomial layer is raised to a non-negative integer")

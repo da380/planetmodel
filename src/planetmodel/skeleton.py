@@ -296,14 +296,18 @@ class CoarseningMap:
     boundaries: tuple[int, ...]           # coarse boundary -> fine boundary index
 
     @property
-    def kept_interfaces(self) -> tuple[int, ...]:
-        """Interior boundaries retained, indexed on the fine skeleton."""
+    def kept_interior(self) -> tuple[int, ...]:
+        """The interior boundaries of the fine skeleton that are kept, each
+        by its index among them, from 0, as `Skeleton.coarsened` counts
+        them; a geometry's interfaces are counted otherwise where its
+        first boundary is one."""
         return tuple(i - 1 for i in self.boundaries[1:-1])
 
     @property
-    def dropped_interfaces(self) -> tuple[int, ...]:
-        """Interior boundaries removed, indexed on the fine skeleton."""
-        kept = set(self.kept_interfaces)
+    def dropped_interior(self) -> tuple[int, ...]:
+        """The interior boundaries of the fine skeleton that are removed,
+        counted as `kept_interior` counts them."""
+        kept = set(self.kept_interior)
         return tuple(i for i in range(self.fine.boundaries.size - 2)
                      if i not in kept)
 
@@ -313,4 +317,4 @@ class CoarseningMap:
 
     def __repr__(self) -> str:
         return (f"CoarseningMap({self.fine.nlayers} -> {self.coarse.nlayers} "
-                f"layers, dropped {list(self.dropped_interfaces)})")
+                f"layers, dropped {list(self.dropped_interior)})")

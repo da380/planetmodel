@@ -59,10 +59,10 @@ inline constexpr std::string_view SURFACE_SCHEMA = SURFACE_SCHEMA_FLAT;
 
 namespace detail {
 
-/// Names the flat surface file gives its own variables, which no field
-/// may take.
+/// Names no field of a flat surface file may take: those the file gives
+/// its own variables, and those of a spherical file's variables.
 inline constexpr auto SURFACE_RESERVED =
-    std::array<std::string_view, 4>{"x", "y", "time", "instant"};
+    WithSphericalVariables(std::array<std::string_view, 4>{"x", "y", "time", "instant"});
 
 }  // namespace detail
 
@@ -79,7 +79,9 @@ struct SurfaceFile {
   /** @brief The depth of the plane in the reference body, where stated; the
    * fields lie on the free surface where it is not. */
   std::optional<double> depth{};
-  std::string source{};                         /**< The writing code and version; required. */
+  /** @brief The writing code and version, which a file read states; the
+   * writer stamps this library and its version when empty. */
+  std::string source{};
   /** @brief When, ISO 8601; the writer stamps it when empty. */
   std::string created{};
   std::optional<std::string> title{};           /**< A name for the contents, where given. */
@@ -95,8 +97,9 @@ struct SurfaceFile {
  * Python's `cartesian.surfacefile.read_surface_file` among them: the
  * schema, a source, a grid, increasing axes, a depth that is finite and
  * not negative, no polar values, and every field of a known support with
- * its values filling it and the grid, known rules, and `none` in time
- * unless it is a `node` field.
+ * its values filling it and the grid, known rules, a lateral rule the grid
+ * can carry (`cubic` as `CheckRule` holds it), and `none` in time unless
+ * it is a `node` field.
  * @param file The file, read or built.
  * @param source The file's path, as the errors name it.
  * @throws planetmodel::Error naming the place of the first fault.
@@ -143,6 +146,7 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
     if (!lateral || !std::ranges::contains(LATERAL_RULES, std::string_view{*lateral})) {
       fail(name, "states no known lateral rule");
     }
+    detail::CheckCarried(*file.grid, *lateral, source, name);
     auto size = cells;
     if (*support != "static") {
       const auto leading = detail::LeadingOf(*support, file.time, file.instant);
@@ -153,8 +157,8 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
       fail(name, std::format("holds {} values, not the {} of its support and the grid",
                              var.values.size(), size));
     }
-    if (const auto dims = detail::NumbersOf(var.attributes, "dimensions");
-        dims && !detail::DimensionsFrom(dims)) {
+    if (var.attributes.contains("dimensions") &&
+        !detail::StatesExponents(var.attributes, "dimensions")) {
       fail(name, "declares dimensions that are not four exponents");
     }
   }
@@ -229,10 +233,7 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
     auto var = detail::ReadVariable(root, name, source);
     // the support's leading dimension, then the grid's
     const auto support = detail::TextOf(var.attributes, "time_support").value_or("");
-    auto want = std::vector<std::string>{};
-    if (support == "node") want.emplace_back("time");
-    if (support == "interval") want.emplace_back("interval");
-    if (support == "instant") want.emplace_back("instant");
+    auto want = detail::LeadingDimension(support);
     want.insert(want.end(), axes.begin(), axes.end());
     if (std::ranges::contains(TIME_SUPPORTS, std::string_view{support}) &&
         var.dimensions != want) {
@@ -249,18 +250,24 @@ inline void ValidateSurfaceFile(const SurfaceFile& file, const std::string& sour
  * permissions a plain open for writing would give it: an existing file's,
  * kept, or the umask's.
  * @param path The file to write; one there is replaced.
- * @param file The surface file, built or read; an empty `created` is
- *        stamped with the writing time in UTC, and each field's `units`
- *        comes from its `dimensions` and the file's scales where the
- *        field does not carry one.
- * @throws planetmodel::Error naming the place of the first fault, or what
- *         kept the file from being written.
+ * @param file The surface file, built or read; an empty `source` is
+ *        stamped with this library and its version, as the model file's
+ *        is, and an empty `created` with the writing time in UTC; each
+ *        field's `units` comes from its `dimensions` and the file's scales
+ *        where the field does not carry one, and each work of `citation`
+ *        is written trimmed of white space at its ends, an empty one or a
+ *        repeat dropped.
+ * @throws planetmodel::Error naming the place of the first fault, a work
+ *         cited of more than one line among them, or what kept the file
+ *         from being written.
  */
 inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFile& file) {
   namespace nc = netcdf;
   const auto source = path.string();
   auto stamped = file;
+  stamped.source = detail::StampedSource(file.source);
   if (stamped.created.empty()) stamped.created = detail::CreatedNow();
+  stamped.citation = detail::Cited(file.citation, source);
   ValidateSurfaceFile(stamped, source);
   const auto partial = detail::PartialName(path);
   try {
@@ -301,13 +308,13 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
     if (needs_interval) nc::Dimension(root, "interval", stamped.time->size() - 1, source);
     for (const auto& [name, field] : stamped.variables) {
       const auto support = *detail::TextOf(field.attributes, "time_support");
-      auto dims = std::vector<std::string>{};
-      if (support != "static") {
-        dims.push_back(support == "interval" ? "interval" : support == "node" ? "time" : "instant");
-      }
+      auto dims = detail::LeadingDimension(support);
       dims.insert(dims.end(), axes.begin(), axes.end());
       const auto var = nc::WriteDoubles(root, name, dims, field.values, source);
-      for (const auto& [key, value] : field.attributes) put(root, var, key, value);
+      // netCDF's own attributes (`_FillValue`) are the writer's to state
+      for (const auto& [key, value] : field.attributes) {
+        if (!key.starts_with('_')) put(root, var, key, value);
+      }
       if (!field.attributes.contains("units")) {
         put(root, var, "units",
             units::ScaledUnit(
@@ -332,7 +339,8 @@ inline void WriteSurfaceFile(const std::filesystem::path& path, const SurfaceFil
  *
  * The time rules, their tolerance and their extrapolation are the
  * spherical surface file's (`planetmodel::SurfaceHistory`, `TimeRowsAt`),
- * and the Python's, so the two languages read a file identically.
+ * and the Python's, so the two languages read a file identically; a date
+ * is read as `DateOptions` say.
  */
 class SurfaceHistory {
  public:
@@ -359,12 +367,12 @@ class SurfaceHistory {
   }
 
   /**
-   * @brief How a field sits in time, one of `TIME_SUPPORTS`.
+   * @brief How a field sits in time.
    * @param name The field.
    * @throws planetmodel::Error where the file holds no such field.
    */
-  [[nodiscard]] std::string Support(std::string_view name) const {
-    return *detail::TextOf(VariableOf(name).attributes, "time_support");
+  [[nodiscard]] TimeSupport Support(std::string_view name) const {
+    return detail::SupportOf(VariableOf(name), name);
   }
 
   /**
@@ -373,33 +381,22 @@ class SurfaceHistory {
    * @param name The field.
    * @param date The date, in the file's units; a `static` field takes
    *        none.
-   * @param extrapolation What to do outside the field's span: refuse
-   *        (the default), or hold its nearest value (`linear`,
-   *        `previous` and `interval` fields).
-   * @param time_rtol The date's tolerance on a stored time and on an end
-   *        of the span, relative to the scale of the axis (`TimeRowsAt`);
-   *        zero matches exactly.
+   * @param options How the date is read: what to do outside the field's
+   *        span, refuse (the default) or hold its nearest value (`linear`,
+   *        `previous` and `interval` fields), and the date's tolerance on
+   *        a stored time and on an end of the span, relative to the scale
+   *        of the axis (`TimeRowsAt`), zero matching exactly.
    * @throws planetmodel::Error where the file holds no such field, the
    *         date is refused, or a dated field is given no date.
    */
   [[nodiscard]] std::vector<double> Values(std::string_view name, std::optional<double> date = {},
-                                           Extrapolation extrapolation = Extrapolation::Refuse,
-                                           double time_rtol = TIME_RTOL) const {
+                                           const DateOptions& options = {}) const {
     const auto& var = VariableOf(name);
-    const auto size = file_.grid->Size();
-    const auto rows = TimeRowsAt(*detail::TextOf(var.attributes, "time_support"),
-                                 *detail::TextOf(var.attributes, "time_interpolation"), date,
-                                 file_.time, file_.instant, extrapolation, "surface history",
-                                 name, time_rtol);
-    if (!rows) return var.values;
-    const auto [first, second] = *rows;
-    const auto [k0, w0] = first;
-    const auto [k1, w1] = second;
-    auto out = std::vector<double>(size);
-    for (auto n = std::size_t{0}; n < size; ++n) {
-      out[n] = w0 * var.values[k0 * size + n] + w1 * var.values[k1 * size + n];
-    }
-    return out;
+    return detail::AtRows(
+        var.values, file_.grid->Size(),
+        TimeRowsAt(detail::SupportOf(var, name), detail::TimeRuleOf(var, name), date, file_.time,
+                   file_.instant, options.extrapolation, "surface history", name,
+                   options.time_rtol));
   }
 
   /**
@@ -407,9 +404,7 @@ class SurfaceHistory {
    * lateral rule on the file's grid.
    * @param name The field.
    * @param date The date, as `Values` takes it.
-   * @param extrapolation What to do outside the field's span, as `Values`
-   *        takes it.
-   * @param time_rtol The date's tolerance, as `Values` takes it.
+   * @param options How the date is read, as `Values` takes it.
    * @return Its interpolant: `Value(x, y)` and `Gradient(x, y)`.
    * @throws planetmodel::Error as `Values` does, or if the field's lateral
    *         rule is `fourier`, which the C++ does not read, or its values
@@ -417,13 +412,11 @@ class SurfaceHistory {
    */
   [[nodiscard]] LateralInterpolant Function(std::string_view name,
                                             std::optional<double> date = {},
-                                            Extrapolation extrapolation = Extrapolation::Refuse,
-                                            double time_rtol = TIME_RTOL) const {
+                                            const DateOptions& options = {}) const {
     const auto rule = LateralRuleNamed(
-        *detail::TextOf(VariableOf(name).attributes, "lateral_interpolation"),
+        detail::TextOf(VariableOf(name).attributes, "lateral_interpolation").value_or(""),
         "surface history", name);
-    return LateralInterpolant(*file_.grid, Values(name, date, extrapolation, time_rtol), rule,
-                              name);
+    return LateralInterpolant(*file_.grid, Values(name, date, options), rule, name);
   }
 
  private:

@@ -35,7 +35,7 @@ def test_the_contract(case, rule):
     for l in degrees:
         basis = SpectralBasis(fam, l, restrict=R, **rule)
         testing.check_spectral_basis(basis)
-        assert basis.degree == l and basis.family is fam and basis.restriction is R
+        assert basis.label == l and basis.family is fam and basis.restriction is R
         assert repr(basis).startswith("SpectralBasis(l=")
 
 

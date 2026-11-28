@@ -81,11 +81,11 @@ print("polar radius:", polar, "| equatorial:", equatorial,
 # colatitude and longitude giving the radial displacement of that
 # boundary, or `None` where a boundary stays spherical. Within each
 # layer it interpolates linearly in radius between the reliefs of the
-# two bounding surfaces. The displacement is therefore continuous, and
-# its radial derivative can jump only at the boundaries, which is what a
-# geometry requires of its mapping. The boundaries are the displacement's
-# knots. Here the core-mantle boundary takes a degree-2 shape and the
-# surface a degree-2, order-2 one.
+# two bounding surfaces. The displacement is therefore continuous, as a
+# geometry requires of its mapping, and its radial derivative can jump
+# only at the boundaries. The boundaries are the displacement's knots,
+# the radii it declares for such jumps. Here the core-mantle boundary
+# takes a degree-2 shape and the surface a degree-2, order-2 one.
 
 # %%
 sk = Skeleton([0.0, 0.55, 1.0])
@@ -122,7 +122,7 @@ except ImportError:
     print("matplotlib is not installed; no figure")
     raise SystemExit(0)
 
-fig, axes = plt.subplots(1, 2, figsize=(9, 4.5))
+fig, axes = plt.subplots(1, 2, figsize=(9, 4.5), layout="constrained")
 theta = np.linspace(0.0, 2.0 * np.pi, 400)
 for ax, model, title, gain in ((axes[0], oblate, "flattening(1/300) (x 30)", 30.0),
                                (axes[1], shaped, "layer_linear reliefs (x 5)", 5.0)):
@@ -133,7 +133,7 @@ for ax, model, title, gain in ((axes[0], oblate, "flattening(1/300) (x 30)", 30.
         ax.plot(rr * np.sin(theta), rr * np.cos(theta), lw=1.5)
         ax.plot(b * np.sin(theta), b * np.cos(theta), "0.7", lw=0.6)
     ax.set_aspect("equal"); ax.set_title(title); ax.set_xticks([]); ax.set_yticks([])
-fig.tight_layout()
+    ax.set_xlim(-1.15, 1.15); ax.set_ylim(-1.15, 1.15)
 out = FIGURES / "tutorial_08_simple_models.png"
 fig.savefig(out, dpi=120)
 print("figure written to", out)

@@ -101,7 +101,8 @@ def test_holding_pads_below_the_base_with_the_lowest_properties_exactly():
     m = three_layers()
     rho = m.layer(-1)["rho"]
     base = float(rho(100e3))
-    padded = m.extended([150e3, 250e3], fields="hold", names=["pad", "far"],
+    padded = m.extended([150e3, 250e3], fields="hold",
+                        layer_names=["pad", "far"],
                         interface_names=["base", "pad"])
     assert type(padded) is flat.Model and padded.nlayers == 5
     assert [f.radius for f in padded.geometry.interfaces] == [0.0, 20e3, 60e3, 100e3,
@@ -153,3 +154,11 @@ def test_coarsening_a_flat_model_keeps_the_surface():
     coarse, fit = flatter.coarsened(drop=["d60"])
     assert [f.name for f in coarse.geometry.interfaces] == ["surface", "moho"]
     assert coarse.layer(1).interval == (20e3, 100e3) and fit.worst < 1e-2
+    # an integer is an interface on the model and on its geometry alike
+    for selection in ({"drop": [2]}, {"keep": [1]}, {"drop": ["d60"]}):
+        again, refit = flatter.coarsened(**selection)
+        g, cmap = flatter.geometry.coarsened(**selection)
+        assert again.skeleton == coarse.skeleton == g.skeleton
+        assert cmap.layers == refit.map.layers == fit.map.layers
+    with pytest.raises(ValueError, match="'surface' is the outermost boundary"):
+        flatter.geometry.coarsened(drop=[0])

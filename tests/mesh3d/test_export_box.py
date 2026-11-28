@@ -12,7 +12,7 @@ from planetmodel.layerfunction import polynomial_layer
 from planetmodel.mapping import MappingBase
 from planetmodel.mesh3d import (MeshSpec, build_layered_mesh, export_mfem,
                                 export_mfem_mesh, manifest as sc)
-from planetmodel.mesh3d.export import MESH_READ_OPTIONS, _node_array, jacobian_report
+from planetmodel.mesh3d.export import MESH_READ_OPTIONS, node_array, jacobian_report
 from planetmodel.vocabulary import FieldSpec
 
 from test_box import DEPTHS, GEOMETRIES, ORDERS, SIZING, Stretch
@@ -96,7 +96,7 @@ def test_mfem_reads_the_export_with_attributes_by_layer_and_face(built, kind,
         (entry,) = card.fields
         assert entry["vdim"] == d and export.displacement_path.exists()
         gf = mfem.GridFunction(mesh, str(export.displacement_path))
-        assert np.abs(np.asarray(_node_array(gf))).max() == 0.0
+        assert np.abs(np.asarray(node_array(gf))).max() == 0.0
     # every element in its layer, every boundary element on its plane
     xyz = physical(np.asarray(mesh.GetVertexArray(), dtype=float), card)
     for e in range(mesh.GetNE()):
@@ -156,7 +156,7 @@ def test_the_fields_of_a_flat_model_are_written_by_layer(built, kind, tmp_path):
     X = physical(dof_points(mesh, scalar), card)
     attributes = dof_attributes(mesh, scalar)
     depth = -X[:, 2]
-    values = {name: np.array(_node_array(g), dtype=float) for name, g in gf.items()}
+    values = {name: np.array(node_array(g), dtype=float) for name, g in gf.items()}
     assert np.array_equal(values["rho"][:, 0], attributes.astype(float))
     assert np.abs(values["q"][:, 0] - 2.0 * depth).max() < 1e-12
     # Cartesian components (x, y, z) of w = (depth, x, y), over a rectangle too
@@ -187,15 +187,15 @@ def test_the_mapping_is_applied_at_the_export(built, kind, tmp_path):
     phys = export_mfem_mesh(res, tmp_path / "phys", delivery="physical")
     assert sc.read(phys.manifest_path).mesh["nodes"] == "physical"
     mesh = load(ref.mesh_path)
-    X = np.array(_node_array(mesh.GetNodes()), dtype=float)
+    X = np.array(node_array(mesh.GetNodes()), dtype=float)
     gf = mfem.GridFunction(mesh, str(ref.displacement_path))
-    u = np.array(_node_array(gf), dtype=float)
+    u = np.array(node_array(gf), dtype=float)
     card = sc.read(ref.manifest_path)
     want = (Stretch()(physical(X, card)) - physical(X, card))[
         :, list(card.mesh_axes(X.shape[1]))]
     assert np.abs(u - want).max() < 1e-12
     moved = load(phys.mesh_path)
-    x = np.array(_node_array(moved.GetNodes()), dtype=float)
+    x = np.array(node_array(moved.GetNodes()), dtype=float)
     assert np.abs(x - (X + u)).max() < 1e-12
     assert x[:, -1].min() == pytest.approx(-1.2, abs=1e-12)
     assert phys.quality["negative_jacobians"] == 0
@@ -242,7 +242,7 @@ def test_a_flat_model_file_is_written_beside_the_mesh_and_named_in_the_manifest(
                                                           for e in card.layers]
     assert np.array_equal(back.skeleton.boundaries, card.boundaries)
     # True takes a model that does not vary laterally, on the smallest grid
-    with pytest.raises(ValueError, match="does not vary with direction"):
+    with pytest.raises(ValueError, match=r"depends on \(x, y\).*give the grid"):
         export_mfem(res, tmp_path / "varies", model=model, model_file=True)
     assert not (tmp_path / "varies.model.nc").exists()
     layered = export_mfem(res, tmp_path / "layered", model=model, fields=["rho", "q"],

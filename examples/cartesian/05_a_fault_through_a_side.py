@@ -68,14 +68,16 @@ result = build_layered_mesh(
     MeshSpec(geometry, UniformInterfaces(0.1, 0.25, 0.3), order=2,
              faults=[EmbeddedFault(fault, name="fault", sizing=0.03)]),
     work / "side")
-mesh, card = read_mesh(result.msh_path), manifest.read(result.manifest_path)
+mesh, card = read_mesh(result.mesh_path), manifest.read(result.manifest_path)
 record = card.fault_record("fault")
 
 # %% [markdown]
 # What the manifest records: the fault's boundary attribute, and one
 # curve group of each kind it has, numbered 4k - 3 to 4k for the k-th
 # fault (tip, free edge, junction, face edge), None where it has none;
-# the box's faces after the interfaces, each with its plane.
+# its collars, the element attributes of the cells of its hanging wall
+# that touch its slip; the box's faces after the interfaces, each with
+# its plane.
 
 # %%
 print(f"fault {record['name']!r}: boundary attribute {record['attribute']}, tip "

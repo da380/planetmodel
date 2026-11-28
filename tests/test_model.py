@@ -137,7 +137,7 @@ def test_geometry_changes_keep_the_fields():
 # ----------------------------------------------------------------- surgery
 
 def test_refined_re_states_the_split_layer_exactly():
-    m = model().refined([0.75], names=["mid"])
+    m = model().refined([0.75], interface_names=["mid"])
     assert m.nlayers == 3 and m.layer(1).name is None and m.layer(2).name is None
     assert m.geometry.interfaces[1].name == "mid"
     for i in (1, 2):
@@ -165,7 +165,7 @@ def test_extended_shells_hold_what_they_are_given():
     empty = m.extended([1.2])
     assert empty.nlayers == 3 and empty.layer(2).names == ()
     assert empty.common_names() == ()
-    ext = m.extended([1.2, 1.5], fields="extrapolate", names=["a", "b"])
+    ext = m.extended([1.2, 1.5], fields="extrapolate", layer_names=["a", "b"])
     assert ext.layer("b")["rho"](1.4) == m.layer(1)["rho"].on_interval(1.2, 1.5)(1.4)
     given = m.extended([1.2], fields=[{"rho": constant_field((1.0, 1.2), 0.5,
                                                              character=DENSITY)}])
@@ -256,6 +256,42 @@ def test_a_model_may_be_named_and_the_name_survives_every_copy():
                                                name="one").name == "one"
 
 
+def test_a_model_is_restored_as_a_type_without_its_constructor():
+    """`restored` makes a model of a type from the parts given as `replaced`
+    makes a copy: no constructor is called, the fields are those given,
+    and the behaviours a file named are kept where they name the type's
+    own in its order."""
+    from planetmodel.behaviours import Elastic, SelfGravitating
+    from planetmodel.model import restored
+
+    class Own(Elastic, SelfGravitating, Model):
+        def __init__(self, radius):
+            raise AssertionError("the constructor is not called")
+
+    assert Model(geometry(), [fields(0), fields(1)]).behaviours == ()
+    m = restored(Own, geometry(), [fields(0), fields(1)], name="own",
+                 citation=["A work."], constants={"omega_ref": Constant(
+                     2.0, DIMENSIONLESS / TIME)})
+    assert type(m) is Own and m.name == "own" and m.citation == ("A work.",)
+    assert m.layer(1).names == ("rho", "vs")          # nothing derived
+    assert m.constant("omega_ref") == 2.0
+    assert m.behaviours == ("Elastic", "SelfGravitating")
+    assert type(m.refined([0.25])) is Own
+    check_model(m)
+    named = ("Elastic", "Tidal", "SelfGravitating")
+    kept = restored(Own, geometry(), [fields(0), fields(1)], behaviours=named)
+    assert kept.behaviours == named and kept.refined([0.25]).behaviours == named
+    assert kept.named("other").behaviours == named
+    check_model(kept)
+    for wrong in (("Elastic", "Tidal"), ("SelfGravitating", "Elastic")):
+        with pytest.raises(ValueError, match="do not name those of Own"):
+            restored(Own, geometry(), [fields(0), fields(1)], behaviours=wrong)
+    with pytest.raises(TypeError, match="expected a model type"):
+        restored(Elastic, geometry(), [fields(0), fields(1)])
+    with pytest.raises(ValueError, match="fields for 1 layers"):
+        restored(Own, geometry(), [fields(0)])
+
+
 # ------------------------------------------------------------- coarsening
 
 def _rho_on(interval, coeffs):
@@ -285,7 +321,7 @@ def test_coarsened_refits_merged_layers_and_keeps_the_rest():
     # the layer left whole keeps its field object
     assert coarse.layer(1)["rho"] is m.layer(2)["rho"]
     # the fit says what it did
-    assert fit.map.dropped_interfaces == (0,)
+    assert fit.map.dropped_interior == (0,)
     assert set(fit.residuals) == {(0, "rho")}
     assert fit.worst < 1e-12
     assert "rho" in fit.describe()
@@ -313,6 +349,38 @@ def test_coarsened_refusals_name_the_problem():
     hollow = m.hollowed(0.3)
     with pytest.raises(ValueError, match="inner boundary"):
         hollow.coarsened(drop=[0])
+
+
+def test_a_hollow_geometry_and_its_model_coarsen_by_the_same_interfaces():
+    """`keep` and `drop` count interfaces on both: on a hollow body, where
+    interface k is boundary k, one integer selects one boundary."""
+    sk = Skeleton([0.2, 0.4, 0.6, 0.8, 1.0])
+    g = Geometry(sk, interface_names=["floor", "a", "b", "c", "surface"])
+    m = Model(g, [{"rho": _rho_on(sk.interval(i), [2.0, 1.0])} for i in range(4)])
+    assert g.is_hollow and g.interface(1).radius == 0.4
+    for selection, boundaries in (({"drop": [1]}, [0.2, 0.6, 0.8, 1.0]),
+                                  ({"drop": ["a"]}, [0.2, 0.6, 0.8, 1.0]),
+                                  ({"keep": [2]}, [0.2, 0.6, 1.0]),
+                                  ({"keep": [-2, "a"]}, [0.2, 0.4, 0.8, 1.0]),
+                                  ({"drop": [3, 1]}, [0.2, 0.6, 1.0])):
+        coarse, fit = m.coarsened(**selection)
+        alone, cmap = g.coarsened(**selection)
+        assert list(alone.skeleton.boundaries) == boundaries, selection
+        assert coarse.skeleton == alone.skeleton
+        assert cmap.layers == fit.map.layers
+        assert coarse.geometry.interfaces == alone.interfaces
+        assert coarse.geometry.layers == alone.layers
+    for refused, why in (([0], "'floor' is the inner boundary of a hollow"),
+                         ([-1], "'surface' is the outermost boundary"),
+                         (["surface"], "'surface' is the outermost boundary")):
+        for body in (g, m):
+            with pytest.raises(ValueError, match=why):
+                body.coarsened(drop=refused)
+    for body in (g, m):
+        with pytest.raises(ValueError, match="exactly one of keep and drop"):
+            body.coarsened(keep=[1], drop=[2])
+        with pytest.raises(KeyError, match="no interface named 'moho'"):
+            body.coarsened(drop=["moho"])
 
 
 def test_coarsened_reports_an_honest_residual():

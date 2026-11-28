@@ -43,6 +43,7 @@
 #include <format>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
@@ -169,6 +170,21 @@ inline constexpr auto LATERAL_RULES =
               std::format("{} is not a lateral rule; they are linear and cubic", name));
 }
 
+namespace detail {
+
+/// What keeps a grid from carrying the cubic rule, or nothing where it
+/// carries it: fewer than four rows once the poles the grid lacks are
+/// added, or fewer than three longitudes.
+inline std::optional<std::string> CubicRefusal(const AngularGrid& grid) {
+  const auto rows = grid.NTheta() + (grid.NorthPoleNode() ? 0 : 1) + (grid.SouthPoleNode() ? 0 : 1);
+  if (rows >= 4 && grid.NPhi() >= 3) return std::nullopt;
+  return std::format("the cubic rule needs at least 4 rows on the padded grid and 3 "
+                     "longitudes; this grid gives {} rows and has {} longitudes",
+                     rows, grid.NPhi());
+}
+
+}  // namespace detail
+
 /**
  * @brief Refuse a lateral rule the grid cannot carry, as `check_rule`
  * does: the cubic rule on fewer than four rows once the poles the grid
@@ -180,13 +196,7 @@ inline constexpr auto LATERAL_RULES =
  */
 inline void CheckRule(const AngularGrid& grid, LateralRule rule, std::string_view where = "") {
   if (rule != LateralRule::Cubic) return;
-  const auto rows = grid.NTheta() + (grid.NorthPoleNode() ? 0 : 1) + (grid.SouthPoleNode() ? 0 : 1);
-  if (rows < 4 || grid.NPhi() < 3) {
-    throw Error("LateralInterpolant", where,
-                std::format("the cubic rule needs at least 4 rows on the padded grid and 3 "
-                            "longitudes; this grid gives {} rows and has {} longitudes",
-                            rows, grid.NPhi()));
-  }
+  if (const auto why = detail::CubicRefusal(grid)) throw Error("LateralInterpolant", where, *why);
 }
 
 /**

@@ -82,6 +82,8 @@ def test_the_faults_are_boundary_elements_of_their_attributes(exported, delivery
     card = sc.read(out[delivery].manifest_path)
     assert card.faults == built.faults
     mesh = load(out[delivery])
+    for what in ("elements", "boundary_elements", "nodes"):
+        assert out[delivery].counts[what] == res.counts[what]
     attributes = np.array([mesh.GetBdrAttribute(i) for i in range(mesh.GetNBE())])
     for record in card.faults:
         assert np.count_nonzero(attributes == record["attribute"]) > 0
@@ -163,7 +165,7 @@ def test_the_curves_are_recovered_from_mfem_s_boundary_elements(exported):
             list(mesh.GetBdrElementVertices(be)))
     recovered = sc.fault_curves([faces[r["attribute"]] for r in card.faults],
                                 faces[card.surface_attribute])
-    built = read_mesh(res.msh_path)
+    built = read_mesh(res.mesh_path)
     at = np.round(built.points, 10)
     lines = {group: {tuple(sorted((tuple(at[a]), tuple(at[b]))))
                      for a, b in edges[:, :2].tolist()}
@@ -177,4 +179,4 @@ def test_the_curves_are_recovered_from_mfem_s_boundary_elements(exported):
 
 
 def _triangles(res, attribute):
-    return read_mesh(res.msh_path).faces_with(attribute)
+    return read_mesh(res.mesh_path).faces_with(attribute)

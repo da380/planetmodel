@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from ._faults import CollarTagging
     from ._geometry import ConcentricGeometry
     from ._tagging import Tagging
-    from .spec import MeshSpec
+    from .spec import CubedSpec, MeshSpec
 
 __all__ = ["Layout", "Concentric", "Planar", "layout_of", "PlanarFace", "Exit"]
 
@@ -278,8 +278,8 @@ class Concentric:
                                trim=float(spec.geometry.skeleton.boundaries[-1]))
         return cad, identify(cad, [f.radius for f in domain.interfaces])
 
-    def records(self, spec: MeshSpec, *, collared: CollarTagging | None
-                ) -> dict[str, Any]:
+    def records(self, spec: MeshSpec | CubedSpec, *,
+                collared: CollarTagging | None) -> dict[str, Any]:
         """The layers by radius, shells flagged, with their collars'
         attributes where the mesh has faults, and the interfaces."""
         domain = spec.domain
@@ -335,9 +335,7 @@ class Planar:
     def bounds(self) -> dict[str, tuple[float, float]]:
         """The extent of the domain along each lateral axis: the period,
         padding included, which the body a geometry over it holds."""
-        extent = np.reshape(np.asarray(self._domain.extent, dtype=float), (-1, 2))
-        return {axis: (float(lo), float(hi))
-                for axis, (lo, hi) in zip(self._domain.axes, extent)}
+        return dict(zip(self._domain.axes, self._domain.extent))
 
     def faces(self, spec: MeshSpec) -> tuple[PlanarFace, ...]:
         """The faces of the mesh in the order of their attributes, each with

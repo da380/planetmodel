@@ -61,6 +61,15 @@ def test_the_inverse_undoes_the_projection(p):
     assert 50.0 < g < 50.2
 
 
+def test_the_inverse_gives_longitudes_from_minus_180_up_to_180():
+    p = PolarStereographic(1, standard_parallel=70.0)
+    assert p.inverse(0.0, 1e6)[1] == -180.0       # on the meridian 180 E
+    lon = np.linspace(-360.0, 360.0, 49)
+    back = p.inverse(*p.forward(np.full(lon.shape, 80.0), lon))[1]
+    assert np.all((back >= -180.0) & (back < 180.0))
+    assert np.allclose((back - lon + 180.0) % 360.0 - 180.0, 0.0, atol=1e-9)
+
+
 def test_the_projection_is_pyproj_s():
     pyproj = pytest.importorskip("pyproj", reason="pyproj, a dependency of cartopy")
     p = PolarStereographic.from_proj4(EPSG_3031)

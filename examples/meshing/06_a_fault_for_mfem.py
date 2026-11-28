@@ -102,8 +102,11 @@ for entry in card.layers:
 # boundary, its free edge where the surface's boundary elements use it
 # too and its tip, pinned, elsewhere. Its slip lives on the dofs of its
 # boundary elements less those of its pinned edges, here in the mesh's
-# own order-2 space. Then u = u_w + chi s jumps by the slip across the
-# fault: element by element, chi s on the two sides of each interior
+# own order-2 space. A split-node code writes the displacement as
+# u = u_w + chi s, where u_w is a continuous field, s is the slip, a
+# field on those dofs, and chi is the indicator of the hanging wall, 1
+# on its elements and 0 on every other. Then u jumps by the slip across
+# the fault: element by element, chi s on the two sides of each interior
 # face differs by exactly the slip at the face's dofs across the
 # fault's faces, and not at all across any other.
 

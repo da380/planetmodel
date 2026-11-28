@@ -151,6 +151,17 @@ def test_division_by_a_polynomial_goes_numeric():
     assert np.allclose(h(r), f(r) / g(r), rtol=1e-14)
 
 
+def test_a_number_divided_by_a_polynomial_goes_numeric():
+    g = _poly(3)
+    r = np.linspace(*IV, 21)
+    for c in (1.0, 3, np.float64(2.5), 1.0 + 2.0j):
+        h = c / g
+        assert isinstance(h, NumericLayer) and h.interval == g.interval
+        assert np.allclose(h(r), c / g(r), rtol=1e-14)
+    with pytest.raises(TypeError):
+        "one" / g
+
+
 def test_different_intervals_are_refused():
     f = _poly(0)
     g = _poly(1, interval=(1.0, 3.0))

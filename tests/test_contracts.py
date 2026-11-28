@@ -35,6 +35,39 @@ def test_mappings(m):
     testing.check_mapping(m, X[np.linalg.norm(X, axis=-1) > 0.0])
 
 
+def test_a_mapping_is_held_to_its_validity():
+    from planetmodel.mapping import MappingBase, ValidityReport
+
+    class Reflected(MappingBase):
+        """x -> -x, which turns the body inside out: J = -1."""
+
+        def __call__(self, X):
+            return -np.asarray(X, dtype=float)
+
+        def deformation_gradient(self, X):
+            return -IdentityMapping().deformation_gradient(X)
+
+        def jacobian(self, X):
+            return -IdentityMapping().jacobian(X)
+
+    class Careless(Reflected):
+        def validity(self, *, X=None, sample=None, coordinates=None):
+            return ValidityReport(True, 1.0)
+
+    class Terse(Reflected):
+        def validity(self, *, X=None, sample=None, coordinates=None):
+            return False
+
+    X = cartesian_points(*validity_lattice(HOLLOW, n_r=2, n_theta=4, n_phi=3))
+    X = X.reshape(-1, 3)
+    assert not Reflected().validity(X=X)
+    testing.check_mapping(Reflected(), X)
+    with pytest.raises(AssertionError, match="passes points where J is not positive"):
+        testing.check_mapping(Careless(), X)
+    with pytest.raises(AssertionError, match="a bool, not a ValidityReport"):
+        testing.check_mapping(Terse(), X)
+
+
 @pytest.mark.parametrize("sk", [SK, HOLLOW])
 @pytest.mark.parametrize("mapping", [None, RadialStretch(bump, rmax=1.0)])
 def test_geometries(sk, mapping):

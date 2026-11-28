@@ -81,9 +81,9 @@ class SpectralBasis:
     most `tol`, never fewer than one); with none of them every mode is
     kept.
 
-    Attributes: `family`, `degree` (the member's label as the family
-    holds it: the integer of a degree or an order, the float of a
-    lateral eigenvalue), `lateral_eigenvalue`, `restriction`, `theta`
+    Attributes: `family`, `label` (the member's, as the family holds
+    it: the integer of a degree or an order, the float of a lateral
+    eigenvalue), `lateral_eigenvalue`, `restriction`, `theta`
     (the kept eigenvalues, ascending, read-only), `nmodes`, and `r`,
     the physical nodes.
     """
@@ -108,7 +108,7 @@ class SpectralBasis:
             raise ValueError("the restriction is not one of the family's mesh")
 
         self.family = family
-        self.degree = family.label(l)
+        self.label = family.label(l)
         self.restriction = restrict
         self.r = restrict.r
 
@@ -116,7 +116,7 @@ class SpectralBasis:
         self.theta = theta.view()
         self.theta.setflags(write=False)
         self._Phi = Phi                               # active dofs
-        self._modes = family.embed(self.degree, Phi).view()
+        self._modes = family.embed(self.label, Phi).view()
         self._modes.setflags(write=False)
         self._ppoly: PPoly | None = None
 
@@ -124,7 +124,7 @@ class SpectralBasis:
                   power: float | None, tol: float | None
                   ) -> tuple[np.ndarray, np.ndarray]:
         """The kept eigenpairs under the rule given."""
-        fam, l = self.family, self.degree
+        fam, l = self.family, self.label
         if theta_max is not None:
             theta, Phi = fam.eig(l, theta_max=float(theta_max))
             if theta.size == 0:
@@ -163,7 +163,7 @@ class SpectralBasis:
     def lateral_eigenvalue(self) -> float:
         """The lambda of the member the basis is of: l (l + 1) of a degree,
         m^2 of an order, the label itself of a family indexed by value."""
-        return self.family.lateral_eigenvalue(self.degree)
+        return self.family.lateral_eigenvalue(self.label)
 
     def modes(self) -> np.ndarray:
         """The kept eigenfunctions at the nodes of the full mesh, shape
@@ -196,7 +196,7 @@ class SpectralBasis:
         if v.ndim not in (1, 2) or v.shape[0] != nglob:
             raise ValueError(f"expected values at the {nglob} nodes of the mesh "
                              f"along the first axis, got shape {v.shape}")
-        mass = self.family.mass(self.degree)
+        mass = self.family.mass(self.label)
         v = v[nglob - mass.size:]             # a centre is massless
         return self._Phi.T @ (mass * v if v.ndim == 1 else mass[:, None] * v)
 
@@ -277,7 +277,7 @@ class SpectralBasis:
                              f"{other.rglob[-1]:g}]) is not this basis's "
                              f"({mesh.nspec} elements of {mesh.ngll} nodes on "
                              f"[{mesh.rglob[0]:g}, {mesh.rglob[-1]:g}])")
-        l = self.degree
+        l = self.label
         mass = family.mass(l)
         B = self._Phi.T @ (mass[:, None] * family.apply(l, self._Phi))
         return 0.5 * (B + B.T)
@@ -294,7 +294,7 @@ class SpectralBasis:
 
     def __repr__(self) -> str:
         r1, r2 = self.restriction.interval
-        return (f"SpectralBasis(l={self.degree!r}, {self.nmodes} modes, "
+        return (f"SpectralBasis(l={self.label!r}, {self.nmodes} modes, "
                 f"theta <= {self.theta[-1]:g}, on [{r1:g}, {r2:g}])")
 
 
@@ -322,8 +322,8 @@ class SphericalBasis:
         for l, b in enumerate(bases):
             if not isinstance(b, SpectralBasis):
                 raise TypeError("bases must be SpectralBasis objects")
-            if b.degree != l:
-                raise ValueError(f"bases[{l}] has degree {b.degree}")
+            if b.label != l:
+                raise ValueError(f"bases[{l}] has degree {b.label}")
             if b.family is not first.family:
                 raise ValueError("the bases must share one family")
             if (b.restriction.interval != first.restriction.interval

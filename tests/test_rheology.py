@@ -127,6 +127,45 @@ def test_a_frozen_model_refuses_what_would_leave_its_moduli_stale():
     assert frozen(slow, 2 * np.pi / 3600.0).layer("lower_mantle")["L"].dtype == complex
 
 
+def test_a_frozen_model_takes_the_names_of_power_law_creep():
+    """Freezing reads the linear rheology alone, so the names of power-law
+    creep are attached to a frozen model as any other field is, and the
+    names a linear rheology is read from are the ones refused."""
+    from planetmodel.character import DENSITY
+    from planetmodel.rheology import (POWER_LAW_NAMES, is_linear_rheology_name,
+                                      is_rheology_name)
+
+    warm = PREM(ocean=False)
+    omega = 2 * np.pi / 3600.0
+    cold = frozen(warm, omega)
+    lay = cold.layer("lower_mantle")
+    iv = lay.interval
+    creep = {"stress_exponent": constant_field(iv, 3.5, name="stress_exponent"),
+             "transition_stress": constant_field(iv, 1e6, character=DENSITY,
+                                                 name="transition_stress")}
+    assert tuple(creep) == POWER_LAW_NAMES
+    held, creeping = warm, cold
+    for name, field in creep.items():
+        assert is_rheology_name(name) and not is_linear_rheology_name(name)
+        creeping = creeping.with_field("lower_mantle", name, field)
+        held = held.with_field("lower_mantle", name, field)
+    assert all(name in creeping.layer("lower_mantle") for name in creep)
+    assert creeping.layer("lower_mantle")["L"] is lay["L"]
+    testing.check_model(creeping)
+    # freezing a model that holds them gives the moduli of the one that does not
+    r = np.linspace(*iv, 7)
+    again = frozen(held, omega).layer("lower_mantle")
+    for n in ("A", "C", "F", "L", "N"):
+        assert again[n].dtype == complex and np.array_equal(again[n](r), lay[n](r))
+    # a branch's names are a linear rheology's, and refused like its others
+    for name in ("viscosity", "qmu", "qkappa", "relaxation_strength_1",
+                 "relaxation_time_2"):
+        assert is_rheology_name(name) and is_linear_rheology_name(name)
+    with pytest.raises(ValueError, match="derived from 'relaxation_time_1'"):
+        cold.with_field("lower_mantle", "relaxation_time_1",
+                        constant_field(iv, 1e10, name="relaxation_time_1"))
+
+
 def test_moduli_conversions_keep_complex_numbers():
     from planetmodel.materials import kappa_mu_from_moduli, moduli_from_velocities
 

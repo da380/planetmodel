@@ -196,7 +196,7 @@ def test_shell_sample_on_a_grid_has_the_marginal_variance():
     # the sampling scatter of ~ (2 / N_modes)^(1/2)
     assert abs(mean_sq / g.sigma[3] ** 2 - 1.0) < 0.5
     # against the point synthesis at the grid nodes
-    c = g.sample(rng=5)
+    c = g.synthesise(g.sample(rng=5))
     want = synthesise_grid(c, grid)
     assert np.allclose(values, want)
 

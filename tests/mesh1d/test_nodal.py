@@ -26,8 +26,8 @@ def test_nodal_values_are_each_elements_own_layer(model, mesh):
         want = model.layer(int(mesh.layer[e]))["rho"](mesh.r[e])
         assert np.allclose(rho[e], want, rtol=1e-14)
     cmb = 3480e3
-    e_below = mesh.element_at(cmb) - 1
-    e_above = mesh.element_at(cmb)
+    e_below = mesh.element_of(cmb) - 1
+    e_above = mesh.element_of(cmb)
     assert rho[e_below, -1] == model.layer("outer_core")["rho"](cmb)
     assert rho[e_above, 0] == model.layer("lowermost_mantle")["rho"](cmb)
     assert rho[e_below, -1] != rho[e_above, 0]
@@ -66,6 +66,37 @@ def test_a_direction_dependent_field_is_refused(model, mesh):
     m = model.with_field(3, "a", AnalyticField(iv, lambda r, t, p: np.cos(t)))
     with pytest.raises(ValueError, match="depends on direction"):
         mesh.nodal(m, "a", missing="nan")
+
+
+def test_an_edge_pinned_beside_a_boundary_reads_each_layer_from_inside():
+    from planetmodel.catalogue import LayeredIsotropicElastic
+    a, b = 6368e3, 6371e3
+    m = LayeredIsotropicElastic([0.0, a, b], rho=[3.0, 1.0], vp=[2.0, 2.0],
+                                vs=[1.0, 1.0])
+    for near in (a - 5e-3, a + 5e-3):
+        mesh = RadialMesh(m, edges=[0.0, 3e6, near, b])
+        assert list(mesh.left) == [0.0, 3e6, a]
+        rho = mesh.nodal(m, "rho")
+        assert np.all(rho[:2] == 3.0) and np.all(rho[2] == 1.0)
+
+
+def test_the_derivative_of_a_field_that_states_none_is_refused_by_name():
+    from planetmodel import DENSITY, Elastic, Geometry, Model, Skeleton
+
+    class FromModuli(Elastic, Model):
+        pass
+
+    iv = (0.0, 1.0)
+    five = dict(A=3.0, C=3.0, F=1.0, L=1.0, N=1.0)
+    fields = {n: RadialField(iv, v, character=DENSITY) for n, v in five.items()}
+    fields["rho"] = RadialField(iv, 1.0, character=DENSITY)
+    m = FromModuli(Geometry(Skeleton([0.0, 1.0])), [fields])
+    mesh = RadialMesh(m, drmax=0.5)
+    # the velocities are composed from rho and the five: they have values
+    assert np.allclose(mesh.nodal(m, "vp"), np.sqrt(3.0), rtol=1e-14)
+    with pytest.raises(ValueError, match="'vp' on layer 0.*radial derivative"):
+        mesh.nodal(m, "vp", nu=1)
+    assert np.all(mesh.nodal(m, "rho", nu=1) == 0.0)
 
 
 def test_nodal_gravity_is_over_the_whole_model(model):

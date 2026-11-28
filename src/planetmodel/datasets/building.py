@@ -121,7 +121,10 @@ def transplanted(model: Model, source: Model | DatasetLike, *,
                  kind: str = "relative") -> Model:
     """The model with the source's perturbations on it, by the steps of the
     module docstring: `source` a data set's model or its entry (loaded),
-    the rest each step's own arguments."""
+    the rest each step's own arguments.  A source, or a
+    `source_reference`, in other scales than the model is converted to
+    the model's first (`rereferenced`), and every length given (`taper`)
+    is in the model's units."""
     if not isinstance(source, Model):
         d = as_dataset(source)
         loaded = load(d)

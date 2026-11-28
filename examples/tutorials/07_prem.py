@@ -127,8 +127,8 @@ print("elastic PREM is viscoelastic nowhere:",
 # every viscoelastic layer holds complex `A, C, F, L, N`, from constant
 # Q where the layer has Q fields and from a Maxwell body where it has a
 # viscosity, with the frequency recorded as the model constant `omega`.
-# The copy is still a `PREM`, and it is what the Love number solver of
-# `planetmodel.loading` takes.
+# The copy is still a `PREM`, and it is what the Love number solver
+# `pyslfp.love_numbers`, in the separate library pyslfp, takes.
 #
 # The example looks at the shear modulus `L` in the lower mantle at two
 # periods. Its imaginary part over its value at one second is one over
@@ -197,7 +197,7 @@ print("dg/dr at 4000 km:", g_mantle.derivative()(4000e3), "1/s^2")
 mesh = RadialMesh(model, ngll=5, drmax=200e3)
 rho_n = mesh.nodal(model, "rho")
 print(mesh, "| nodal rho:", rho_n.shape)
-e = mesh.element_at(cmb)
+e = mesh.element_of(cmb)
 print("rho at the CMB from below and above:", rho_n[e - 1, -1], rho_n[e, 0])
 qmu = mesh.nodal(model, "qmu", missing="nan")
 print("qmu is NaN on", int(np.isnan(qmu).all(axis=1).sum()), "fluid elements")

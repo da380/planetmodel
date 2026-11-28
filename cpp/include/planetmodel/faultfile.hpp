@@ -64,7 +64,9 @@ struct FaultFile {
   std::string schema{}; /**< `FAULT_SCHEMA`; empty in one built to write. */
   Fault fault;          /**< The fault. */
   std::vector<std::optional<std::string>> names{}; /**< Each patch's name, where it has one. */
-  std::string source{};                            /**< The writing code and version. */
+  /** @brief The writing code and version, which a file read states; the
+   * writer stamps this library and its version when empty. */
+  std::string source{};
   std::string created{};                           /**< When, ISO 8601; stamped where empty. */
   std::optional<std::string> title{};              /**< A name for the contents, where given. */
   netcdf::Attributes meta{};                       /**< The free `meta_<key>` attributes, by key. */
@@ -410,14 +412,7 @@ inline std::pair<FaultPatch, std::optional<std::string>> FaultPatchOf(
   for (const auto key : {"title", "citation"}) {
     if (attrs.contains(key) && !detail::TextOf(attrs, key)) fail(key, "is not text");
   }
-  auto scales = std::array<double, 4>{};
-  constexpr auto bases = std::array<std::string_view, 4>{"length", "mass", "time", "temperature"};
-  for (auto b = std::size_t{0}; b < 4; ++b) {
-    const auto key = std::format("scale_{}", bases[b]);
-    const auto value = detail::NumberOf(attrs, key);
-    if (!value || !(*value > 0.0)) fail(key, "is missing or not positive");
-    scales[b] = *value;
-  }
+  const auto scales = detail::ScalesOf(attrs, source);
   const auto frame_name = detail::TextOf(attrs, "frame");
   if (!frame_name || !std::ranges::contains(FAULT_FRAMES, std::string_view{*frame_name})) {
     fail("frame", std::format("is missing or not one of {}", detail::Listed(FAULT_FRAMES)));
@@ -490,21 +485,10 @@ inline std::pair<FaultPatch, std::optional<std::string>> FaultPatchOf(
   for (const auto& [key, value] : attrs) {
     if (key.starts_with("meta_")) meta.emplace(key.substr(5), value);
   }
-  auto citation = std::vector<std::string>{};
-  if (const auto text = detail::TextOf(attrs, "citation")) {
-    for (auto start = std::size_t{0}; start < text->size();) {
-      const auto end = std::min(text->find('\n', start), text->size());
-      citation.push_back(text->substr(start, end - start));
-      start = end + 1;
-    }
-  }
+  auto citation = detail::CitationOf(attrs);
   return FaultFile{.schema = *schema,
                    .fault = Fault(std::move(patches), *TimeSupportNamed(*support),
-                                  *TimeRuleNamed(rule), std::move(time),
-                                  Scales({.length = scales[0],
-                                          .mass = scales[1],
-                                          .time = scales[2],
-                                          .temperature = scales[3]})),
+                                  *TimeRuleNamed(rule), std::move(time), scales),
                    .names = std::move(names),
                    .source = *detail::TextOf(attrs, "source"),
                    .created = *detail::TextOf(attrs, "created"),
@@ -547,8 +531,8 @@ inline void CheckFaultToWrite(const FaultFile& file, const std::string& source) 
   if (!file.schema.empty() && file.schema != FAULT_SCHEMA) {
     Fail(source, "schema", std::format("is {}; this writer writes {}", file.schema, FAULT_SCHEMA));
   }
-  if (file.source.find_first_not_of(" \t\n\r") == std::string::npos) {
-    Fail(source, "source", "names the writing code and version, and is empty");
+  if (!file.source.empty() && file.source.find_first_not_of(" \t\n\r") == std::string::npos) {
+    Fail(source, "source", "names the writing code and version, and is blank");
   }
   const auto npatches = file.fault.Patches().size();
   if (!file.names.empty() && file.names.size() != npatches) {
@@ -583,12 +567,15 @@ inline void CheckFaultToWrite(const FaultFile& file, const std::string& source) 
  *
  * @param path The file to write; one there is replaced.
  * @param file The fault and the file's metadata: `schema` empty or
- *        `FAULT_SCHEMA`; `source`, the writing code and version, not
- *        empty; `names` empty (no patch named) or one a patch, each
+ *        `FAULT_SCHEMA`; `source`, the writing code and version, this
+ *        library and its version where it is empty, as the model file's
+ *        is; `names` empty (no patch named) or one a patch, each
  *        written where it is given; an empty `created` stamped with the
  *        writing time in UTC; `title` written where given and not empty,
- *        `citation` one work a line, and `meta` as `meta_<key>`
- *        attributes, each text or one number.
+ *        `citation` one work a line (each trimmed of white space at its
+ *        ends, an empty one or a repeat dropped, a work of more than one
+ *        line refused), and `meta` as `meta_<key>` attributes, each text
+ *        or one number.
  * @throws planetmodel::Error naming what is wrong, before anything is
  *         written, or what kept the file from being written.
  */
@@ -596,6 +583,7 @@ inline void WriteFaultFile(const std::filesystem::path& path, const FaultFile& f
   namespace nc = netcdf;
   const auto source = path.string();
   detail::CheckFaultToWrite(file, source);
+  const auto citation = detail::Cited(file.citation, source);
   const auto& fault = file.fault;
   const auto& scales = fault.GetScales();
   const auto& frame = fault.Frame();
@@ -612,18 +600,13 @@ inline void WriteFaultFile(const std::filesystem::path& path, const FaultFile& f
     put(root, global, "schema", std::string{FAULT_SCHEMA});
     put(root, global, "Conventions", std::string{MODEL_CONVENTIONS});
     if (file.title && !file.title->empty()) put(root, global, "title", *file.title);
-    put(root, global, "source", file.source);
+    put(root, global, "source", detail::StampedSource(file.source));
     put(root, global, "created", file.created.empty() ? detail::CreatedNow() : file.created);
     put(root, global, "scale_length", real(scales.Length()));
     put(root, global, "scale_mass", real(scales.Mass()));
     put(root, global, "scale_time", real(scales.Time()));
     put(root, global, "scale_temperature", real(scales.Temperature()));
-    if (!file.citation.empty()) {
-      auto joined = file.citation.front();
-      for (auto k = std::size_t{1}; k < file.citation.size(); ++k)
-        joined += "\n" + file.citation[k];
-      put(root, global, "citation", joined);
-    }
+    detail::WriteCitation(root, citation, source);
     for (const auto& [key, value] : file.meta) put(root, global, "meta_" + key, value);
     put(root, global, "frame", std::string{frame.Name()});
     put(root, global,

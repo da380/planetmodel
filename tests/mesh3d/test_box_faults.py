@@ -145,11 +145,11 @@ def test_every_configuration_holds_to_the_contract(built, name):
     assert v.misoriented_fault_faces == 0 and v.nonconforming_fault_faces == 0
     assert v.inward_faces == 0 and v.negative_cells == 0 and v.min_sicn > 0.0
     faults = {n: Fault([p]) for n, p in CASES[name][0].items()}
-    testing.check_fault_mesh(res.msh_path, faults, distance=1e-12)
+    testing.check_fault_mesh(res.mesh_path, faults, distance=1e-12)
     card = sc.read(res.manifest_path)
     assert card.schema == sc.SCHEMA_FLAT
     assert res.counts["faults"] == len(faults) and res.counts["faces"] == 5
-    assert 100 < res.counts["dim3"] < 5000
+    assert 100 < res.counts["elements"] < 5000
 
 
 @pytest.mark.parametrize("name", list(CASES))
@@ -160,7 +160,7 @@ def test_each_fault_has_the_curves_where_it_meets_the_box(built, name):
     inside the box."""
     res = built(name)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     planes = physical_planes(card)
     for k, record in enumerate(card.faults, start=1):
         want = CASES[name][1][record["name"]]
@@ -196,7 +196,7 @@ def test_a_fault_reaches_the_surface_where_its_edge_was(built):
     its free edge are free: the collar reaches the surface."""
     res = built("surface")
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     trace = mesh.points[np.unique(mesh.curves[card.faults[0]["free_edge"]])]
     p = CASES["surface"][0]["f"]
     assert np.abs(trace[:, 2]).max() <= 1e-12
@@ -216,7 +216,7 @@ def test_a_face_edge_carries_slip_and_its_cells_are_in_the_walls(built, name):
     taken for its tip."""
     res = built(name)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     faces = mesh.faces_with(card.faults[0]["attribute"])[:, :3]
     surface = mesh.faces_with(card.surface_attribute)[:, :3]
     box_faces = mesh.boundary_of(card.face_attributes)
@@ -259,7 +259,7 @@ def test_the_collar_lies_on_the_hanging_wall_side_by_position(built, name):
     those of the hanging wall, in the layers its faces cross."""
     res = built(name)
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     p = CASES[name][0]["f"]
     centroid = mesh.points[mesh.cells[:, :4]].mean(axis=1)
     side = (centroid - p.cartesian(0.0, 0.0)) @ p.normal(0.0, 0.0)
@@ -531,12 +531,12 @@ def test_adgia_s_faulted_box_at_unit_scale(tmp_path):
                                        sizing=InterfaceSizing(0.04, 0.15, 0.1))]),
         tmp_path / "adgia")
     assert res.validation.ok, res.validation.failures
-    testing.check_fault_mesh(res.msh_path, {"fault": Fault([fault])}, distance=1e-12)
+    testing.check_fault_mesh(res.mesh_path, {"fault": Fault([fault])}, distance=1e-12)
     card = sc.read(res.manifest_path)
     record = card.fault_record("fault")
     assert record["tip"] == 1 and record["free_edge"] is record["face_edge"] is None
     assert record["attribute"] == 1 + 5 + 1 and record["hanging_wall"] == [2]
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     tri = mesh.faces_with(record["attribute"])[:, :3]
     x = mesh.points[tri]
     assert 0.5 * np.linalg.norm(np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0]),
@@ -545,7 +545,7 @@ def test_adgia_s_faulted_box_at_unit_scale(tmp_path):
     walls = mesh.walls(card)[0]
     assert np.all(side[walls == 1] > 0.0) and np.all(side[walls == -1] < 0.0)
     assert np.array_equal(mesh.cell_attributes == 2, walls == 1)
-    assert res.counts["dim3"] < 5000
+    assert res.counts["elements"] < 5000
 
 
 # ------------------------------------------------------------ pictures
@@ -563,7 +563,7 @@ def test_a_section_through_a_faulted_box_is_drawn(built):
 
     res = built("surface")
     card = sc.read(res.manifest_path)
-    mesh = read_mesh(res.msh_path)
+    mesh = read_mesh(res.mesh_path)
     origin, axes = [0.0, 0.05, 0.0], [[1, 0, 0], [0, 0, 1]]
     cut = plane_cut(mesh.points, mesh.cells[:, :4], origin, axes)
     s, t = cut.pieces[..., 0], cut.pieces[..., 1]

@@ -1,9 +1,9 @@
 // The flat surface file: the fixtures of a box and of a rectangle read and
 // held to their expectations, the fields as functions of (x, y) among
-// them; files built from known fields written, read back and left for the
-// Python to read; each reader refusing the other's files by their schema;
-// the malformed copies refused at their places; and the refusals of the
-// writer, before anything is written.
+// them, and written back; files built from known fields written, read
+// back and left for the Python to read; each reader refusing the other's
+// files by their schema; the malformed copies refused at their places;
+// and the refusals of the writer, before anything is written.
 #include "planetmodel/cartesian/surfacefile.hpp"
 
 #include <gtest/gtest.h>
@@ -21,7 +21,9 @@
 
 #include "fixtures.hpp"
 #include "planetmodel/surfacefile.hpp"
+#include "planetmodel/time.hpp"
 #include "planetmodel/units.hpp"
+#include "planetmodel/version.hpp"
 
 namespace {
 
@@ -97,7 +99,7 @@ void ExpectAsThePython(const std::string& label, double& worst_function) {
       EXPECT_EQ(pm::detail::TextOf(attrs, "time_support").value_or(""), support) << line;
       EXPECT_EQ(pm::detail::TextOf(attrs, "time_interpolation").value_or(""), in_time) << line;
       EXPECT_EQ(pm::detail::TextOf(attrs, "lateral_interpolation").value_or(""), lateral) << line;
-      EXPECT_EQ(history.Support(name), support) << line;
+      EXPECT_EQ(pm::TimeSupportName(history.Support(name)), support) << line;
       if (first == "-") {
         EXPECT_FALSE(attrs.contains("dimensions")) << line;
       } else {
@@ -130,9 +132,10 @@ void ExpectAsThePython(const std::string& label, double& worst_function) {
       auto value = 0.0;
       words >> name >> tag >> extrap >> i >> j >> value;
       const auto date = tag == "-" ? std::optional<double>{} : std::optional{std::stod(tag)};
-      const auto at = history.Values(name, date,
-                                     extrap == "hold" ? pm::Extrapolation::Hold
-                                                      : pm::Extrapolation::Refuse);
+      const auto at = history.Values(
+          name, date,
+          {.extrapolation = extrap == "hold" ? pm::Extrapolation::Hold
+                                             : pm::Extrapolation::Refuse});
       ASSERT_LT(i * ny + j, at.size()) << line;
       EXPECT_DOUBLE_EQ(at[i * ny + j], value) << line;
     } else if (what == "function") {
@@ -197,17 +200,19 @@ flat::SurfaceFile WrittenSurface(bool box = true) {
                        on_grid(3, [](auto k, auto i, auto j) {
                          return 100.0 * k + 1.0 * i + 0.01 * j;
                        }),
-                       {.support = "node", .time_interpolation = "linear",
+                       {.support = pm::TimeSupport::Node,
+                        .time_interpolation = pm::TimeRule::Linear,
                         .dimensions = pm::units::LENGTH}));
   file.variables.emplace("rate", pm::SurfaceField("rate", on_grid(2, [](auto k, auto i, auto j) {
                                                     return 10.0 * k + 1.0 * i - 0.1 * j;
                                                   }),
-                                                  {.support = "interval"}));
+                                                  {.support = pm::TimeSupport::Interval}));
   file.variables.emplace(
       "instantaneous",
       pm::SurfaceField("instantaneous",
                        on_grid(2, [](auto k, auto i, auto j) { return 1.0 * k + 2.0 * i + 0.2 * j; }),
-                       {.support = "instant", .lateral_interpolation = "cubic"}));
+                       {.support = pm::TimeSupport::Instant,
+                        .lateral_interpolation = pm::LateralRule::Cubic}));
   return file;
 }
 
@@ -218,6 +223,52 @@ TEST(CartesianSurfaceFile, ReadsTheFixturesToTheirExpectations) {
   ExpectAsThePython("box", worst);
   ExpectAsThePython("rectangle", worst);
   RecordProperty("worst_relative_function", std::format("{:.3e}", worst));
+}
+
+TEST(CartesianSurfaceFile, WritesBackTheFixturesItReads) {
+  // a variable read carries netCDF's own attributes (`_FillValue`), which
+  // are the writer's to state
+  for (const auto* label : {"box", "rectangle"}) {
+    SCOPED_TRACE(label);
+    PLANETMODEL_FIXTURE(fixture, std::format("flat_surface_{}.nc", label));
+    const auto before = flat::ReadSurfaceFile(fixture);
+    ASSERT_FALSE(before.variables.empty());
+    ASSERT_TRUE(before.variables.begin()->second.attributes.contains("_FillValue"));
+    const auto path = pm::testing::WrittenDir() / std::format("flat_surface_back_{}.nc", label);
+    flat::WriteSurfaceFile(path, before);
+    const auto after = flat::ReadSurfaceFile(path);
+    EXPECT_EQ(after.source, before.source);
+    EXPECT_EQ(after.created, before.created);
+    EXPECT_EQ(after.title, before.title);
+    EXPECT_EQ(after.scales, before.scales);
+    EXPECT_EQ(after.time, before.time);
+    EXPECT_EQ(after.instant, before.instant);
+    EXPECT_EQ(after.depth, before.depth);
+    EXPECT_EQ(after.citation, before.citation);
+    EXPECT_EQ(after.meta, before.meta);
+    EXPECT_EQ(*after.grid, *before.grid);
+    ASSERT_EQ(after.variables.size(), before.variables.size());
+    for (const auto& [name, var] : before.variables) {
+      SCOPED_TRACE(name);
+      ASSERT_TRUE(after.variables.contains(name));
+      const auto& got = after.variables.at(name);
+      EXPECT_EQ(got.dimensions, var.dimensions);
+      EXPECT_EQ(got.shape, var.shape);
+      ASSERT_EQ(got.values.size(), var.values.size());
+      for (auto n = std::size_t{0}; n < var.values.size(); ++n) {
+        if (std::isnan(var.values[n])) {
+          EXPECT_TRUE(std::isnan(got.values[n])) << n;
+        } else {
+          EXPECT_EQ(got.values[n], var.values[n]) << n;
+        }
+      }
+      for (const auto& [key, value] : var.attributes) {
+        if (key.starts_with('_')) continue;
+        ASSERT_TRUE(got.attributes.contains(key)) << key;
+        EXPECT_EQ(got.attributes.at(key), value) << key;
+      }
+    }
+  }
 }
 
 TEST(CartesianSurfaceFile, EachReaderRefusesTheOthersFilesByTheirSchema) {
@@ -293,19 +344,20 @@ TEST(CartesianSurfaceHistory, ServesEverySupportAndTheFieldsAsFunctions) {
   for (auto n = std::size_t{0}; n < size; ++n) {
     EXPECT_DOUBLE_EQ(mid[n], 0.5 * nodes[n] + 0.5 * nodes[size + n]);
   }
-  const auto held = history.Values("ice_thickness", 9.0, pm::Extrapolation::Hold);
+  const auto hold = pm::DateOptions{.extrapolation = pm::Extrapolation::Hold};
+  const auto held = history.Values("ice_thickness", 9.0, hold);
   for (auto n = std::size_t{0}; n < size; ++n) EXPECT_EQ(held[n], nodes[2 * size + n]);
   const auto& rate = file.variables.at("rate").values;
   EXPECT_EQ(history.Values("rate", 2.5).front(), rate[size]);
   EXPECT_EQ(history.Values("instantaneous", 1.5).front(),
             file.variables.at("instantaneous").values.front());
-  EXPECT_THROW(static_cast<void>(history.Values("instantaneous", 1.6, pm::Extrapolation::Hold)),
-               pm::Error);
+  EXPECT_THROW(static_cast<void>(history.Values("instantaneous", 1.6, hold)), pm::Error);
   EXPECT_TRUE(std::isnan(history.Values("topography", 7.0)[1]));
   EXPECT_THROW(static_cast<void>(history.Values("ice_thickness")), pm::Error);
   EXPECT_THROW(static_cast<void>(history.Values("ice_thickness", 9.0)), pm::Error);
   EXPECT_THROW(static_cast<void>(history.Values("missing", 0.0)), pm::Error);
   EXPECT_EQ(history.Names().size(), 4u);
+  EXPECT_EQ(history.Support("rate"), pm::TimeSupport::Interval);
   EXPECT_EQ(history.GetGrid(), *file.grid);
   // a field at a date as a function of (x, y): its values at the nodes,
   // periodic over the extent
@@ -316,6 +368,11 @@ TEST(CartesianSurfaceHistory, ServesEverySupportAndTheFieldsAsFunctions) {
     EXPECT_NEAR(f.Value(x, y), mid[n], 1e-12 * 100.0);
     EXPECT_NEAR(f.Value(x + 5.0, y - 3.0), mid[n], 1e-12 * 100.0);
   }
+  // held beyond the span, as the values are: the last node's
+  const auto late = history.Function("ice_thickness", 9.0, hold);
+  const auto [x0, y0] = grid.Node(0);
+  EXPECT_NEAR(late.Value(x0, y0), held[0], 1e-12 * 200.0);
+  EXPECT_THROW(static_cast<void>(history.Function("ice_thickness", 9.0)), pm::Error);
   // a field with a point it does not cover is no function
   EXPECT_THROW(static_cast<void>(history.Function("topography")), pm::Error);
   auto fourier = file;
@@ -360,17 +417,22 @@ TEST(CartesianSurfaceFile, RefusesWhatTheFormatCannotHold) {
     EXPECT_THROW(flat::WriteSurfaceFile(refused, file), pm::Error) << what;
     EXPECT_FALSE(std::filesystem::exists(refused)) << what;
   };
-  expect_refusal([](flat::SurfaceFile& f) { f.source = "  "; }, "an empty source");
+  expect_refusal([](flat::SurfaceFile& f) { f.source = "  "; }, "a blank source");
   expect_refusal([](flat::SurfaceFile& f) { f.depth = -1.0; }, "a negative depth");
   expect_refusal([](flat::SurfaceFile& f) { f.schema = std::string{pm::SURFACE_SCHEMA}; },
                  "the spherical schema");
   expect_refusal([](flat::SurfaceFile& f) { f.time = std::vector<double>{1.0, 1.0, 2.0}; },
                  "a time axis that does not increase");
-  expect_refusal(
-      [](flat::SurfaceFile& f) {
-        f.variables.emplace("x", pm::SurfaceField("x", f.variables.at("topography").values));
-      },
-      "a reserved name");
+  // the file's own names, and those of a spherical file's variables, which
+  // a reader refuses in a flat file
+  for (const auto* name : {"x", "y", "time", "instant", "radius", "latitude", "longitude",
+                           "colatitude_weights", "interface_radius", "boundary_radius"}) {
+    expect_refusal(
+        [name](flat::SurfaceFile& f) {
+          f.variables.emplace(name, pm::SurfaceField(name, f.variables.at("topography").values));
+        },
+        std::format("the reserved name {}", name));
+  }
   expect_refusal(
       [](flat::SurfaceFile& f) {
         f.variables.emplace("topography_poles",
@@ -392,6 +454,65 @@ TEST(CartesianSurfaceFile, RefusesWhatTheFormatCannotHold) {
                  "too few values");
   expect_refusal([](flat::SurfaceFile& f) { f.time.reset(); },
                  "time-supported fields without a time axis");
+}
+
+TEST(CartesianSurfaceFile, RefusesTheCubicRuleOnAGridTooSmallForIt) {
+  // three nodes along every axis, on writing as on reading
+  const auto domain = flat::Domain::Box({0.0, 4.0}, {-1.0, 2.0}, {0.5, 0.0});
+  auto on = [&domain](std::size_t nx, std::size_t ny, pm::LateralRule rule) {
+    auto file = flat::SurfaceFile{};
+    file.grid = flat::Grid(domain, nx, ny);
+    file.source = "planetmodel cpp tests";
+    file.variables.emplace("h", pm::SurfaceField("h", std::vector<double>(nx * ny, 1.0),
+                                                 {.lateral_interpolation = rule}));
+    return file;
+  };
+  const auto refused = pm::testing::WrittenDir() / "refused_flat_surface_rule.nc";
+  const auto thin = on(4, 2, pm::LateralRule::Cubic);
+  try {
+    flat::ValidateSurfaceFile(thin, "a built file");
+    ADD_FAILURE() << "the cubic rule was accepted on two nodes along y";
+  } catch (const pm::Error& e) {
+    EXPECT_EQ(e.Source(), "a built file");
+    EXPECT_EQ(e.Where(), "h");
+    EXPECT_NE(std::string{e.what()}.find("states the lateral rule cubic"), std::string::npos)
+        << e.what();
+    EXPECT_NE(std::string{e.what()}.find("this grid has 4 by 2"), std::string::npos) << e.what();
+  }
+  EXPECT_THROW(flat::WriteSurfaceFile(refused, thin), pm::Error);
+  EXPECT_FALSE(std::filesystem::exists(refused));
+  EXPECT_NO_THROW(flat::ValidateSurfaceFile(on(4, 2, pm::LateralRule::Linear), "a built file"));
+  EXPECT_NO_THROW(flat::ValidateSurfaceFile(on(4, 3, pm::LateralRule::Cubic), "a built file"));
+}
+
+TEST(CartesianSurfaceFile, StampsThisLibraryAsItsSourceUnlessGivenOne) {
+  // as the model file's writer does
+  auto file = WrittenSurface();
+  file.source = "";
+  const auto path = pm::testing::WrittenDir() / "flat_surface_stamped.nc";
+  flat::WriteSurfaceFile(path, file);
+  EXPECT_EQ(flat::ReadSurfaceFile(path).source, "planetmodel C++ " + std::string{pm::Version()});
+  EXPECT_THROW(flat::ValidateSurfaceFile(file, "a built file"), pm::Error);
+}
+
+TEST(CartesianSurfaceFile, WritesACitationByTheRuleOfAModels) {
+  // each work trimmed of white space at its ends, an empty one or a repeat
+  // dropped, and a work of more than one line refused
+  auto file = WrittenSurface();
+  file.citation = {" A. ", "", "B.", "A.", "\tC.\n"};
+  const auto path = pm::testing::WrittenDir() / "flat_surface_cited.nc";
+  flat::WriteSurfaceFile(path, file);
+  EXPECT_EQ(flat::ReadSurfaceFile(path).citation, (std::vector<std::string>{"A.", "B.", "C."}));
+  file.citation = {"A.\nB."};
+  const auto refused = pm::testing::WrittenDir() / "refused_flat_surface_citation.nc";
+  try {
+    flat::WriteSurfaceFile(refused, file);
+    ADD_FAILURE() << "a work of two lines was written";
+  } catch (const pm::Error& e) {
+    EXPECT_EQ(e.Where(), "citation");
+    EXPECT_NE(std::string{e.what()}.find("more than one line"), std::string::npos) << e.what();
+  }
+  EXPECT_FALSE(std::filesystem::exists(refused));
 }
 
 #if defined(__unix__) || defined(__APPLE__)

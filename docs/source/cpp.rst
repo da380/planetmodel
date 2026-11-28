@@ -23,7 +23,12 @@ It reads and writes the Python's files:
   reader refuses it by its schema, naming that reader.
 * **Surface files** (:doc:`formats/surface_file`). Reading gives the
   fields on the surface, static or in time, each served at any date by
-  its own time rule; writing builds a file from a code's own fields.  A
+  its own time rule, and there as a function of position by its lateral
+  rule, its stored polar values carried along; writing builds a file
+  from a code's own fields.  A field's support and rules are
+  enumerations in the interface (``TimeSupport``, ``TimeRule``,
+  ``LateralRule``) and names in the file, and a date is read as
+  ``DateOptions`` say, as a fault's is.  A
   flat surface's file (``planetmodel.surface/2``) is read and written by
   the flat side of the library (below), and refused here by its schema.
 * **Fault files** (:doc:`formats/fault_file`). Reading makes the Python
@@ -35,7 +40,8 @@ It reads and writes the Python's files:
   there. Writing makes the file the Python writes from the same fault,
   a fault built in code or read.
 * **Mesh manifests** (:doc:`formats/mesh_manifest`). The library reads
-  these on a strict JSON reader of its own, the faults built into a mesh
+  these (``ReadMeshManifest``) on a strict JSON reader of its own, the
+  faults built into a mesh
   and the element attributes of their hanging walls among them, and
   states the three rules of a fault's faces: which of a face's two cells
   is on the hanging wall, which edges are the fault's tip, free edge and
@@ -43,20 +49,11 @@ It reads and writes the Python's files:
   hanging wall and its footwall.  A flat mesh's manifest (schema 7) is
   read by the flat side of the library (below), and refused here by its
   schema.
-* **Decks**, the mineos, Maxwell, prony and burgers tables of knots
-  (:doc:`formats/maxwell_deck`, :doc:`formats/prony_deck`,
-  :doc:`formats/burgers_deck`) and TauP's ``.nd`` and ``.tvel`` tables,
-  with the names of the layers and interfaces their headers or labels
-  give, a prony deck's number of branches, and the checks the Python
-  makes of a prony or burgers deck's values, with its messages. Each
-  layer's columns are joined into functions of the radius by the rules
-  the Python uses, and a deck is written as the Python writes it,
-  character for character. A burgers deck's Burgers body is turned into
-  its two Prony branches, and two branches into the body, by the
-  Python's arithmetic.
 
-The units, scales and vocabulary are the Python's, restated in C++. Tests
-hold the two sides equal, against fixtures that the Python writes.
+The units, scales and vocabulary are the Python's, restated in C++, and a
+Burgers body is turned into its two Prony branches, and two branches
+into the body, by the Python's arithmetic. Tests hold the two sides
+equal, against fixtures that the Python writes.
 
 **Flat models.**  The files of ``planetmodel.cartesian``, a body layered
 in depth over a box or a rectangle, are read and written by the headers
@@ -83,10 +80,7 @@ are in the local frame (up, x, y) or the Cartesian one:
   :doc:`formats/mesh_manifest`): the layers and interfaces by depth, the
   faces of the box, and the faults with their face edge, where a fault
   leaves the box through its base or a side, which
-  ``cartesian::FaultCurves`` tells from its tip by the faces of the box;
-* decks of depths (``cartesian/deck.hpp``): the elastic, Maxwell, prony
-  and burgers formats with ``depth`` for ``r``, named from the surface
-  down, read and written as the Python does, character for character.
+  ``cartesian::FaultCurves`` tells from its tip by the faces of the box.
 
 The fault file needs no flat counterpart: its ``cartesian`` frame is the
 flat model's points.
@@ -104,8 +98,8 @@ with CMake's ``FetchContent``:
    FetchContent_MakeAvailable(planetmodel)
    target_link_libraries(my_code PRIVATE planetmodel::planetmodel)
 
-The model file needs netCDF-C. A code that reads only manifests and
-decks can build without it, by setting ``PLANETMODEL_WITH_NETCDF=OFF``.
+The model file needs netCDF-C. A code that reads only manifests can
+build without it, by setting ``PLANETMODEL_WITH_NETCDF=OFF``.
 
 Reading a field from a model file looks like this:
 
